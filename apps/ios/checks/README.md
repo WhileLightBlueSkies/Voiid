@@ -36,3 +36,23 @@ Two bugs in the harness itself were found this way, and both are noted in the fi
 inserting the same `UIImage` instance under every key (so `NSCache` saw one live
 object and evicted nothing), and comparing an image's pixel dimensions against a
 point value (a phantom "upscale" that never occurred).
+
+## TabTransitionCheck.swift (U05)
+
+Models both implementations of the tab bar's "release the indicator stretch" timer
+and runs U05's acceptance sequence — rapid A→B→C→A taps, 30ms apart, well inside
+the 100–140ms release delays — against each.
+
+```sh
+xcrun -sdk macosx swiftc -O -o /tmp/tabcheck apps/ios/checks/TabTransitionCheck.swift
+/tmp/tabcheck
+```
+
+The first check asserts the OLD behaviour still reproduces (an earlier tap's
+uncancellable `asyncAfter` sets `isSliding = false` during a later transition). If
+that check ever starts failing, the harness has stopped modelling the defect and
+the remaining checks prove nothing.
+
+Measured 2026-09-06: 90ms after the final tap, the old bar reports
+`isSliding = false` — its stretch was cancelled mid-flight by a stale callback —
+while the new bar reports `true` and releases on its own schedule.
