@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 findings · 18 DONE, 15 IMPLEMENTED_UNVERIFIED, 17 TODO. Statuses corrected 2026-09-06; DONE entries not changed this session retain their historical evidence.
+Baseline: `a2e24e5` · 50 findings · 19 DONE, 15 IMPLEMENTED_UNVERIFIED, 16 TODO. Statuses corrected 2026-09-06; DONE entries not changed this session retain their historical evidence.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -33,7 +33,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | Q04 | P1 | Deploy verified artifacts with readiness, draining and rollback | Confirmed gap | [13](13-RELEASE-AND-OPERATIONS.md) | TODO |
 | R01 | P1 | Use the conference grant format in the actual relay | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | IMPLEMENTED_UNVERIFIED |
 | R03 | P1 | Authenticate before registering sockets; handle slow consumers | Confirmed sequence and resource gap | [05](05-REALTIME-CALLS-GAMES.md) | IMPLEMENTED_UNVERIFIED |
-| R05 | P1 | Serialize conference admission under the participant cap | Static concurrency risk | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
+| R05 | P1 | Serialize conference admission under the participant cap | Static concurrency risk | [05](05-REALTIME-CALLS-GAMES.md) | DONE |
 | S05 | P1 | Verify database TLS identity | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S06 | P1 | Make device linking claims atomic | Confirmed race risk | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | U01 | P1 | Await Android sheet dismissal before removing it | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | IMPLEMENTED_UNVERIFIED |
@@ -1131,3 +1131,58 @@ See [API throttle evidence](../../docs/audit-evidence/api-throttles.md) for repr
 ## Continuation review — 6 September 2026
 
 The table above supersedes historical completion records below it. A02/M01/C02/C04 have been reclassified as implemented/unverified because their complete acceptance is still outstanding; source fixes were retained. See [continuation evidence](../../docs/audit-evidence/continuation-2026-09-06.md) and the [single current report](../../docs/AUDIT-FINAL-REPORT.md).
+
+## R05 — the conference cap is serialized, and now proven (2026-09-06)
+
+- **Status:** DONE. This closes the guarantee Q01's record explicitly left open.
+- **Source/fix commit:** commit containing this record, parent `1a09ad1`.
+- **Files:** `backend/api/src/routes/calls.ts`;
+  `backend/api/test/conferenceCapPostgres.test.ts` (new);
+  `backend/api/test/callConference.test.ts` (fake updated to the new shape);
+  `.github/workflows/ci.yml`.
+- **Failure reproduced — this is the point of the issue.** The cap lived inside the INSERT's own
+  WHERE, justified in a comment as "Postgres evaluates it against the same snapshot that
+  performs the write". That is true and it is not sufficient: under READ COMMITTED the count
+  subquery reads the snapshot taken when the STATEMENT began, so two transactions that both
+  begin before either commits both see seven, both pass the count, and both insert DIFFERENT
+  users. Two connections on a call with one seat left produced a **nine-person roster on an
+  eight-person cap**. Q01 predicted exactly this: "a fake cannot prove Postgres evaluates the
+  count and the write in one snapshot... the real concurrency guarantee remains UNVERIFIED and
+  is R05's isolated-database race test."
+- **Implementation:** admission is a transaction that takes `select ... for update` on the
+  parent `calls` row, re-checks the lifecycle inside the lock, seeds the original pair on the
+  same connection, then counts and inserts. The lock is on `calls` rather than
+  `call_participants` because the invariant is about the SET of participants — there is no
+  single row to lock for "how many are there", and a gap-free count needs something outside the
+  set to serialize on. A re-invite is explicitly exempt: someone already on the roster takes no
+  new seat, so re-inviting the eighth person after a dropped connection still works.
+- **`admitParticipant` is exported so the test drives production code.** A concurrency test that
+  re-implements the statement it is checking proves only that the copy is correct.
+- **Regression evidence, and a test that needed rewriting twice.** The first version fired two
+  admissions with `Promise.all` and hoped they would interleave — it passed against a build with
+  the lock removed, because each admission awaits several statements and Node ran them almost
+  sequentially. It now holds the call row from a blocker transaction and waits on
+  `pg_stat_activity` until an admission is provably blocked before releasing; removing
+  `for update` then fails it by name. This is the second time in this audit a concurrency test
+  has been decoration on first writing (S06 was the first), which is worth stating as a pattern
+  rather than an anecdote.
+- **The fake had to change with it.** `callConference.test.ts` modelled the cap as part of the
+  INSERT's WHERE, which is no longer where the decision lives. It now models the write
+  unconditionally and answers the lock/count statements separately. Q01's rewrite of that fake
+  is not weakened — the refusal it asserts still happens, from the count.
+- **Validation:** 6 scenarios against real PostgreSQL (two-way race, six-way race, re-invite
+  exemption, freed-seat reuse raced, ordinary admission); 33 fake-DB conference tests still
+  pass; full `npm test` exit 0 (API 311/312, games 6/6, relay 28/28, workers 32/32, admin
+  10/10); typecheck clean.
+- **Remaining limitations:**
+  - **Not every roster-changing endpoint takes the lock.** R05 asks for "the same serialization
+    discipline in every roster-changing endpoint". Admission does; join and leave still update
+    `call_participants` directly without locking the call. Those transitions move an existing
+    participant rather than adding a seat, so they cannot breach the cap — but a leave racing an
+    admission is not serialized, and the roster the admission counts may be one row stale in the
+    permissive direction. Worth closing when join/leave are next touched.
+  - **Grant publication is unchanged.** The fix ends at the roster; `refreshCallGrant` still runs
+    after the transaction with no retry or reconciliation, so a publish failure leaves a correct
+    roster and a stale grant. R05 mentions this and it is not addressed here.
+  - No load or latency measurement: the lock serializes admissions to one call, and no figure was
+    taken for how that behaves under a busy conference.

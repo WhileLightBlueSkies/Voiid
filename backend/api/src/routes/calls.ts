@@ -6,7 +6,7 @@
 // over Redis; call MEDIA and SRTP keys are derived E2E on the devices (e2e-core).
 // The server NEVER sees media, keys, SDP, or candidates here (Section 4.14).
 import { Router } from 'express';
-import { query } from '../db';
+import { query, withTransaction } from '../db';
 import { resolveIceServers } from '../turn';
 import {
   normalizeCallMetrics,
@@ -843,8 +843,112 @@ async function isLiveCallParticipant(call: CallRow, userId: string): Promise<boo
  * 031 — never the 014 `(call_id, user_id, device_id)` one, whose NULL device_id makes
  * every ON CONFLICT miss and insert a duplicate (the 027 bug class).
  */
-async function seedOriginalParticipants(call: CallRow): Promise<void> {
-  await query(
+
+/**
+ * Admit someone to a conference, under the participant cap, serialized on the call row (R05).
+ *
+ * ── WHY A LOCK AND NOT A CLEVERER STATEMENT ──────────────────────────────────────
+ *
+ * The cap used to live inside the INSERT's own WHERE, on the reasoning that Postgres evaluates
+ * the count "against the same snapshot that performs the write". That is true and it is not
+ * enough. Under READ COMMITTED the count subquery reads the snapshot taken when the STATEMENT
+ * began, so two transactions that both start before either commits both see the same roster,
+ * both pass the count, and both insert DIFFERENT users. One statement is not a serialization
+ * boundary for an invariant that spans rows — only a lock is.
+ *
+ * Proven rather than argued: backend/api/test/conferenceCapPostgres.test.ts opened two
+ * connections on a call with one seat left and admitted two people. Q01's record predicted
+ * exactly this and left it as R05's job.
+ *
+ * The lock is on `calls`, not on `call_participants`, because the invariant is about the SET
+ * of participants: there is no single row to lock for "how many are there", and a gap-free
+ * count needs something outside the set to serialize on.
+ *
+ * Exported so the race test drives THIS code rather than a copy of the SQL — a concurrency
+ * test that re-implements the statement it is checking proves only that the copy is correct.
+ */
+export async function admitParticipant(input: {
+  call: CallRow;
+  callId: string;
+  requesterId: string;
+  requesterDeviceId: string | null;
+  inviteeId: string;
+}): Promise<{ status: number; body?: any }> {
+  const { call, callId, requesterId, requesterDeviceId, inviteeId } = input;
+  return withTransaction<{ status: number; body?: any }>(async (execute) => {
+    const live = await execute<{ status: string }>(
+      `select status from calls where id = $1 for update`,
+      [callId]
+    );
+    // Re-checked INSIDE the lock. The caller's lifecycle check ran before it, so a call that
+    // ended in between would otherwise be re-opened as a ringing channel by this write.
+    if (!live[0]) return { status: 404, body: { error: 'call not found' } };
+    if (live[0].status !== 'ringing' && live[0].status !== 'connected') {
+      return { status: 409, body: { error: 'call is not live' } };
+    }
+
+    // Bring the original 1:1 pair in (idempotent), then record the requester's device. Inside
+    // the lock, so the seeded pair is counted by any admission that follows.
+    await seedOriginalParticipants(call, execute);
+    await execute(
+      `insert into call_participants (call_id, user_id, device_id, state, state_changed_at)
+       values ($1, $2, $3, 'joined', now())
+       on conflict (call_id, user_id) do update
+          set state = 'joined',
+              device_id = coalesce(excluded.device_id, call_participants.device_id),
+              left_at = null,
+              state_changed_at = now()`,
+      [callId, requesterId, requesterDeviceId]
+    );
+
+    // A RE-INVITE IS NOT AN ADMISSION. Someone already on the roster takes no new seat, so the
+    // cap does not apply — refusing it would break re-inviting the eighth person after a
+    // dropped connection.
+    const already = await execute<{ one: number }>(
+      `select 1 as one from call_participants
+        where call_id = $1 and user_id = $2 and left_at is null limit 1`,
+      [callId, inviteeId]
+    );
+
+    if (!already.length) {
+      const seats = await execute<{ n: string }>(
+        `select count(*)::text as n from call_participants
+          where call_id = $1 and left_at is null`,
+        [callId]
+      );
+      if (Number(seats[0].n) >= MAX_CALL_PARTICIPANTS) {
+        return {
+          status: 409,
+          body: {
+            error: `a call can hold at most ${MAX_CALL_PARTICIPANTS} participants`,
+            max_participants: MAX_CALL_PARTICIPANTS,
+          },
+        };
+      }
+    }
+
+    // The CASE keeps an already-`joined` participant joined: re-inviting someone who is in the
+    // room must not demote them to "Ringing…".
+    await execute(
+      `insert into call_participants (call_id, user_id, state, invited_by, state_changed_at)
+       values ($1, $2, 'invited', $3, now())
+       on conflict (call_id, user_id) do update
+          set state = case when call_participants.state = 'joined' then 'joined' else 'invited' end,
+              invited_by = coalesce(call_participants.invited_by, excluded.invited_by),
+              left_at = null,
+              state_changed_at = now()`,
+      [callId, inviteeId, requesterId]
+    );
+
+    return { status: 200 };
+  });
+}
+
+async function seedOriginalParticipants(call: CallRow, execute: typeof query = query): Promise<void> {
+  // Takes an executor so the escalation path can seed INSIDE its transaction (R05): a pair
+  // seeded on a different connection is invisible to the count that is about to run under the
+  // call-row lock, which would let an admission see a smaller roster than really exists.
+  await execute(
     `insert into call_participants (call_id, user_id, state, state_changed_at)
      select $1, cm.user_id, 'joined', now()
        from conversation_members cm
@@ -996,58 +1100,11 @@ router.post('/:id/escalate', requireAuth, asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'not permitted to add this user' });
   }
 
-  // Bring the original 1:1 pair into call_participants (idempotent, once per call), then
-  // record the requester's current device.
-  await seedOriginalParticipants(call);
-  await query(
-    `insert into call_participants (call_id, user_id, device_id, state, state_changed_at)
-     values ($1, $2, $3, 'joined', now())
-     on conflict (call_id, user_id) do update
-        set state = 'joined',
-            device_id = coalesce(excluded.device_id, call_participants.device_id),
-            left_at = null,
-            state_changed_at = now()`,
-    [callId, user_id, device_id ?? null]
-  );
-
-  // Upsert the invitee as `invited`, WITH THE CAP ENFORCED IN THE SAME STATEMENT.
-  //
-  // This was a read-then-write: count the roster, compare to the cap, then insert. Two
-  // people adding someone to a 7-person call at the same moment both read 7, both passed
-  // the check, and both inserted — a 9-person room on an 8-person cap. Not hypothetical:
-  // "add someone" is exactly the action several people take at once when a call is getting
-  // going.
-  //
-  // The count now lives inside the INSERT's own WHERE, so Postgres evaluates it against
-  // the same snapshot that performs the write and the second racer inserts nothing.
-  //
-  // The CASE keeps an already-`joined` participant joined: re-inviting someone who is in
-  // the room must not demote them to "Ringing…". `not exists` lets a RE-invite through
-  // regardless of the cap — that adds nobody, and refusing it would break re-inviting the
-  // eighth person after a dropped connection.
-  const inserted = await query<{ user_id: string }>(
-    `insert into call_participants (call_id, user_id, state, invited_by, state_changed_at)
-     select $1, $2, 'invited', $3, now()
-      where exists (select 1 from call_participants
-                     where call_id = $1 and user_id = $2 and left_at is null)
-         or (select count(*) from call_participants
-              where call_id = $1 and left_at is null) < $4
-     on conflict (call_id, user_id) do update
-        set state = case when call_participants.state = 'joined' then 'joined' else 'invited' end,
-            invited_by = coalesce(call_participants.invited_by, excluded.invited_by),
-            left_at = null,
-            state_changed_at = now()
-     returning user_id`,
-    [callId, invitee_user_id, user_id, MAX_CALL_PARTICIPANTS]
-  );
-
-  // No row means the WHERE refused it: the room was full at write time.
-  if (!inserted[0]) {
-    return res.status(409).json({
-      error: `a call can hold at most ${MAX_CALL_PARTICIPANTS} participants`,
-      max_participants: MAX_CALL_PARTICIPANTS,
-    });
-  }
+  const outcome = await admitParticipant({
+    call, callId, requesterId: user_id, requesterDeviceId: device_id ?? null,
+    inviteeId: invitee_user_id,
+  });
+  if (outcome.status !== 200) return res.status(outcome.status).json(outcome.body);
 
   const participants = await refreshCallGrant(call);
   const room = adhocRoomName(callId);

@@ -223,6 +223,7 @@ jobs:
            .then(()=>c.query('create database voiid_test_pending'))
            .then(()=>c.query('create database voiid_test_linking'))
            .then(()=>c.query('create database voiid_test_reap'))
+           .then(()=>c.query('create database voiid_test_conf'))
            .then(()=>c.end())"
 
       # S03. Both suites run HERE rather than in the node job because they need a real
@@ -265,6 +266,13 @@ jobs:
         env:
           REAP_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_reap
         run: npx tsx --test backend/workers/test/reapHealth.test.ts
+
+      # R05. The conference cap under two genuinely concurrent admissions, forced to overlap
+      # with a blocking transaction. Q01 left this guarantee explicitly unverified.
+      - name: Conference participant cap against PostgreSQL
+        env:
+          CONF_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_conf
+        run: npx tsx --test backend/api/test/conferenceCapPostgres.test.ts
 
       - name: Outbox sweep against PostgreSQL
         env:

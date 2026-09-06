@@ -10,7 +10,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 18 fixed · 4 implemented but unverified · 30 open**
+**Status: 19 fixed · 15 awaiting verification · 16 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -21,6 +21,21 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### R05 — Two people adding to a full call can no longer both succeed
+`pending` · P1 · API
+
+A conference holds eight. The cap was enforced inside the insert statement itself, on the
+reasoning that the database evaluates the count and the write together. It does — but two
+requests that *start* before either finishes both count seven, both pass, and both add someone.
+Two connections racing the last seat produced a **nine-person call**.
+
+The audit predicted this and said only a test against a real database could settle it. That test
+now exists, and it reproduced the fault before the fix. Admission takes a lock on the call
+itself, so the second request counts a roster that already includes the first.
+
+**Still open:** join and leave don't take the same lock — they move existing people rather than
+adding seats, so they can't breach the cap, but they aren't serialized against admission either.
 
 ### C02 / C04 — Workers that report what they actually did
 `0a70755` · P1 · workers

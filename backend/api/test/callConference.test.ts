@@ -393,18 +393,20 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
 
   // ── calls.ts: upsert invitee as invited, WITH THE CAP IN THE SAME STATEMENT
   //
-  // This models the real statement's three-part contract, because the route's 409 is driven
-  // entirely by whether it returns a row:
-  //   1. the WHERE admits a RE-invite (an existing, non-left row) regardless of the cap,
-  //   2. otherwise it admits only while the live roster is under the cap ($4),
-  //   3. and it `returning user_id` — an empty result means, and only means, "refused".
-  // Returning rows([]) unconditionally made every invite look like a full room.
+  // ── calls.ts: admission (R05)
+  //
+  // The cap is no longer decided by this INSERT's own WHERE. It could not be: under READ
+  // COMMITTED the count subquery reads the statement's snapshot, so two concurrent
+  // transactions both counted seven and both inserted. `admitParticipant` now locks the call
+  // row and counts inside that lock, which is what conferenceCapPostgres.test.ts verifies
+  // against a real database — the thing a fake cannot settle.
+  //
+  // What is left for the fake to model is the WRITE, unconditionally: the refusal decision has
+  // moved to the count handler below. Returning a row here is correct, because the real
+  // statement is now a plain upsert.
   if (s.startsWith('insert into call_participants (call_id, user_id, state, invited_by, state_changed_at)')) {
-    const [callId, userId, invitedBy, maxParticipants] = p;
+    const [callId, userId, invitedBy] = p;
     const cp = db.call_participants.find((r) => r.call_id === callId && r.user_id === userId);
-    const reInvite = !!cp && cp.left_at === null;
-    const live = db.call_participants.filter((r) => r.call_id === callId && r.left_at === null).length;
-    if (!reInvite && !(live < maxParticipants)) return rows([]);
     if (cp) Object.assign(cp, {
       state: cp.state === 'joined' ? 'joined' : 'invited',
       invited_by: cp.invited_by ?? invitedBy, left_at: null, state_changed_at: now(),
@@ -414,6 +416,27 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
       invited_by: invitedBy, joined_at: now(), left_at: null, state_changed_at: now(),
     });
     return rows([{ user_id: userId }]);
+  }
+
+  // ── calls.ts: the lifecycle re-check taken INSIDE the admission lock.
+  if (s.startsWith('select status from calls where id =')) {
+    const call = db.calls.find((c) => c.id === p[0]);
+    return rows(call ? [{ status: call.status }] : []);
+  }
+
+  // ── calls.ts: "is this invitee already on the roster?" — a re-invite takes no new seat.
+  if (s.startsWith('select 1 as one from call_participants')) {
+    const [callId, userId] = p;
+    const cp = db.call_participants.find(
+      (r) => r.call_id === callId && r.user_id === userId && r.left_at === null
+    );
+    return rows(cp ? [{ one: 1 }] : []);
+  }
+
+  // ── calls.ts: the seat count, now the thing that actually enforces the cap.
+  if (s.startsWith('select count(*)::text as n from call_participants')) {
+    const live = db.call_participants.filter((r) => r.call_id === p[0] && r.left_at === null).length;
+    return rows([{ n: String(live) }]);
   }
 
   // ── calls.ts: join / leave transitions
