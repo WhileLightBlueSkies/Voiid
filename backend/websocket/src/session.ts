@@ -20,7 +20,7 @@
 // Connection budget matters because staging and production are Supabase; two is a rounding
 // error against its pooler, and the queries are simple enough for transaction-mode pooling.
 import { Pool } from 'pg';
-import { resolveDatabaseSsl, describeDatabaseTls } from '@voiid/common-utils';
+import { resolveDatabaseSsl, describeDatabaseTls, poolBudget, describePoolBudget } from '@voiid/common-utils';
 import jwt from 'jsonwebtoken';
 
 /** Close codes. 4401/4403 mean stop; 4503 means the answer is unknown — retry. */
@@ -45,16 +45,16 @@ export function sessionPool(): Pool {
   // copied the unverified form along with everything else.
   const ssl = resolveDatabaseSsl(url);
   console.log(`[voiid:ws] ${describeDatabaseTls(ssl)}`);
+  const budget = poolBudget('websocket');
+  console.log(`[voiid:ws] ${describePoolBudget('websocket', budget)}`);
   pool = new Pool({
     connectionString: url,
     ssl,
-    // Deliberately tiny: this pool answers one question at connect time and nothing else.
-    max: Number(process.env.WS_DB_POOL_MAX) || 2,
-    idleTimeoutMillis: 30_000,
-    // A socket must not hang on a saturated pool. Failing fast surfaces as 4503, which the
-    // client retries — far better than a connection that never resolves either way.
-    connectionTimeoutMillis: Number(process.env.WS_DB_CONNECT_TIMEOUT_MS) || 5_000,
+    // Deliberately tiny, and now also bounded in TIME (P04): a socket that cannot verify its
+    // session quickly should be told to retry rather than queued behind a saturated pool.
+    ...budget,
   });
+
   // A pool error with no listener is an unhandled 'error' event, which takes the whole
   // relay down — every live socket with it — over a dropped idle connection.
   pool.on('error', (error) => console.error('[voiid:ws] session pool error:', error.message));

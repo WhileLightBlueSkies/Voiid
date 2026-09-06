@@ -15,6 +15,15 @@
 import { publisher } from './redis';
 import type { query as Query } from './db';
 
+/**
+ * How many wakes are published at once from the request path.
+ *
+ * Small on purpose: this runs while the sender is waiting, and the point is to stop a group
+ * send paying one round-trip per recipient — not to let one send monopolise Redis. The sweep
+ * has its own, separate concurrency for draining a backlog off the request path.
+ */
+const PUBLISH_CONCURRENCY = Number(process.env.VOIID_PUBLISH_CONCURRENCY) || 8;
+
 export interface OutboxEntry {
   channel: string;
   payload: unknown;
@@ -55,15 +64,31 @@ export async function publishOutbox(
   entries: { id: string; channel: string; payload: unknown }[]
 ): Promise<void> {
   const settled: string[] = [];
-  for (const entry of entries) {
-    try {
-      await publisher.publish(entry.channel, JSON.stringify(entry.payload));
-      settled.push(entry.id);
-    } catch {
-      // Left owed on purpose. Marking it failed here would be an extra write on a path that
-      // has just proved the infrastructure is unhappy; `pending` is already claimable.
-    }
-  }
+  // BOUNDED PARALLELISM, not a sequential loop and not Promise.all (P04).
+  //
+  // This awaited each publish in turn, so a group send paid one Redis round-trip PER RECIPIENT
+  // on the request path: a 50-member conversation meant 50 sequential RTTs before the sender's
+  // 200 came back. `Promise.all` over the whole set is the other wrong answer — it hands Redis
+  // an unbounded burst from every concurrent send at once, which is how a recovery turns into
+  // the next outage.
+  //
+  // Fixed-size workers over a shared cursor, the same shape the outbox sweep uses. A chunked
+  // Promise.all would run at the speed of its slowest member; this keeps every worker busy.
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(PUBLISH_CONCURRENCY, entries.length) }, async () => {
+      while (cursor < entries.length) {
+        const entry = entries[cursor++];
+        try {
+          await publisher.publish(entry.channel, JSON.stringify(entry.payload));
+          settled.push(entry.id);
+        } catch {
+          // Left owed on purpose. Marking it failed here would be an extra write on a path
+          // that has just proved the infrastructure is unhappy; `pending` is already claimable.
+        }
+      }
+    })
+  );
   if (!settled.length) return;
   try {
     await execute(
