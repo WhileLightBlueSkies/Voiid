@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Games — catalog and match lifecycle (docs/GAMES.md §3).
 //
 // This router handles the parts of a game that are SLOW and DURABLE: what games exist,
@@ -122,6 +123,7 @@ async function reachableOpponents(userId: string, opponentIds: string[]): Promis
 router.get(
   '/',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (_req, res) => {
     const rows = await query(
       `select id, slug, name, category, min_players, max_players, icon_key
@@ -168,6 +170,7 @@ router.get(
 router.get(
   '/visibility',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const rows = await query<{ preferences: Record<string, unknown> | null }>(
@@ -193,6 +196,7 @@ router.get(
 router.put(
   '/visibility',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const body = req.body?.hidden_slugs;
@@ -243,6 +247,7 @@ router.put(
 router.post(
   '/matches',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const { slug, opponent_ids, options, skin } = req.body ?? {};
@@ -442,6 +447,7 @@ router.post(
 router.post(
   '/matches/:id/join',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -502,6 +508,7 @@ router.post(
 router.post(
   '/matches/:id/leave',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -549,6 +556,7 @@ const INVITE_TTL_MS = 10 * 60 * 1000;
 router.get(
   '/invites',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const rows = await query<{
@@ -615,6 +623,7 @@ router.get(
 router.post(
   '/matches/:id/decline',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -648,6 +657,7 @@ router.post(
 router.post(
   '/matches/:id/cancel',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -676,6 +686,7 @@ router.post(
 router.post(
   '/matches/:id/forfeit',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -713,6 +724,7 @@ router.post(
 router.get(
   '/matches/:id/snapshot',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -903,6 +915,7 @@ router.get(
 router.post(
   '/matches/:id/rematch',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -995,6 +1008,7 @@ router.post(
 router.get(
   '/matches',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const rows = await query(
@@ -1026,6 +1040,7 @@ router.get(
 router.get(
   '/leaderboard',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const slug = typeof req.query.game === 'string' ? req.query.game : null;
@@ -1146,6 +1161,7 @@ function challengeSeed(day: string): number {
 router.post(
   '/daily',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const day = challengeDay();
@@ -1204,6 +1220,7 @@ router.post(
 router.get(
   '/daily',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const day = challengeDay();
@@ -1457,6 +1474,7 @@ async function loadLobby(matchId: string): Promise<
 router.post(
   '/matches/:id/lobby',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -1534,6 +1552,7 @@ router.post(
 router.get(
   '/matches/:id/lobby',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -1610,6 +1629,7 @@ router.get(
 router.post(
   '/lobbies/join',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const raw = req.body?.join_code;
@@ -1692,6 +1712,7 @@ router.post(
 router.post(
   '/matches/:id/lobby/ready',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -1749,6 +1770,7 @@ router.post(
 router.post(
   '/matches/:id/lobby/leave',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -1833,6 +1855,7 @@ router.post(
 router.post(
   '/matches/:id/lobby/messages',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
@@ -1901,6 +1924,7 @@ router.post(
 router.post(
   '/matches/:id/lobby/start',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;

@@ -141,6 +141,7 @@ async function openEvent(
 router.post(
   '/communities/:id/events',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   rateLimit({ max: 30, windowSeconds: 3600, bucket: 'event-create' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
@@ -224,6 +225,7 @@ router.post(
 router.get(
   '/communities/:id/events',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -267,6 +269,7 @@ router.get(
 router.get(
   '/events/:id',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openEvent(req.params.id, userId, false);
@@ -317,6 +320,7 @@ router.get(
 router.patch(
   '/events/:id',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openEvent(req.params.id, userId, true);
@@ -404,6 +408,7 @@ router.patch(
 router.post(
   '/events/:id/publish',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openEvent(req.params.id, userId, true);
@@ -423,6 +428,7 @@ router.post(
 router.post(
   '/events/:id/cancel',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openEvent(req.params.id, userId, true);
@@ -455,6 +461,7 @@ router.post(
 router.post(
   '/events/:id/orders',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   rateLimit({ max: 60, windowSeconds: 3600, bucket: 'event-order' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
@@ -678,6 +685,7 @@ router.post(
 router.post(
   '/events/:id/orders/:orderId/cancel',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openEvent(req.params.id, userId, false);
@@ -740,6 +748,7 @@ router.post(
 router.get(
   '/events/:id/orders',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openEvent(req.params.id, userId, true);
@@ -781,6 +790,7 @@ router.get(
 router.get(
   '/events/:id/my-order',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     // needsAdmin false: this is a member-facing route by definition.
@@ -812,6 +822,7 @@ router.get(
 router.get(
   '/my/event-tickets',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const rows = await query(
@@ -872,6 +883,7 @@ async function loadOwnTicket(ticketId: unknown, userId: string) {
 router.get(
   '/event-tickets/:id/code',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   rateLimit({ max: 120, windowSeconds: 3600, bucket: 'ticket-code' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
@@ -904,6 +916,7 @@ router.get(
 router.post(
   '/event-tickets/:id/rotate',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   rateLimit({ max: 20, windowSeconds: 3600, bucket: 'ticket-rotate' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
@@ -944,6 +957,7 @@ router.post(
 router.post(
   '/events/:id/check-in',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }),
   rateLimit({ max: 600, windowSeconds: 3600, bucket: 'event-checkin' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;

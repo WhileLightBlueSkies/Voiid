@@ -36,106 +36,80 @@ export async function logSecurityEvent(
   } catch { /* monitoring must never break the request path */ }
 }
 
-/**
- * Sliding-window rate-limit middleware (Section 4.6/4.9).
- * Per-phone OTP limiting lives in the auth route; this guards general API abuse.
- *
- * ── KEYED BY USER WHEN WE KNOW ONE, BY IP OTHERWISE ─────────────────────────────
- * This used to key on IP alone, which quietly punished the wrong people. Everyone
- * behind one NAT — an office, a home, a phone and a simulator on the same Wi-Fi —
- * shared a single bucket, so a colleague creating communities could exhaust yours,
- * and a ten-per-hour limit became ten per hour FOR THE BUILDING. That is not the
- * abuse this guards against; it is a shared-fate accident.
- *
- * An authenticated caller is a far better subject than their address: it is the
- * thing the limit is actually about ("how much may THIS ACCOUNT do"), it survives a
- * network change mid-session, and it cannot be diluted by a neighbour.
- *
- * Anonymous traffic still keys on IP, because there is nothing else to key on — and
- * that is precisely where address-based limiting earns its keep, since an
- * unauthenticated flood is the attack this exists to blunt.
- *
- * The bucket NAMESPACE separates the two (`u:` / `ip:`), so an account cannot reset
- * its own counter by dropping its token, and an IP cannot inherit a user's count.
+/** Atomic fixed window, starting at the first request. Repair a legacy key without TTL. */
+export const RATE_LIMIT_SCRIPT = `
+local count = redis.call('INCR', KEYS[1])
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+  ttl = tonumber(ARGV[1])
+end
+return {count, ttl}
+`;
+
+// Only configured bucket names appear here; never account IDs, addresses or targets.
+export const rateLimitMetrics = { rejected: 0, unavailable: 0 };
+type LimitOptions = { max: number; windowSeconds: number; bucket: string; outage?: 'open' | 'closed' };
+const sensitiveBuckets = new Set(['auth', 'admin-login', 'recovery', 'reachability', 'keyfetch']);
+
+async function countWindow(key: string, windowSeconds: number): Promise<{ count: number; retryAfter: number }> {
+  const result = await redis.eval(RATE_LIMIT_SCRIPT, 1, key, windowSeconds * 1000) as [number, number];
+  if (!Array.isArray(result) || !Number.isFinite(Number(result[0])) || !Number.isFinite(Number(result[1]))) {
+    throw new Error('invalid limiter response');
+  }
+  return { count: Number(result[0]), retryAfter: Math.max(1, Math.ceil(Number(result[1]) / 1000)) };
+}
+
+/** General traffic fails open on cache outage; credential and key-depletion guards fail closed.
+ * Redis command deadlines and its disabled offline queue bound either outcome (redis.ts).
+ * Rejections update counters only: a flood must not become a database-write flood.
  */
-export function rateLimit(opts: { max: number; windowSeconds: number; bucket: string }) {
+export function rateLimit(opts: LimitOptions) {
   return async (req: Request, res: Response, next: NextFunction) => {
-    // req.ip, not a hand-parsed x-forwarded-for: Express resolves it against the app's
-    // `trust proxy` setting (index.ts), so a client that reaches the port directly cannot
-    // hand itself a fresh bucket — or push someone else's address over the limit.
-    const ip = clientIp(req) ?? 'unknown';
-    // `requireAuth` has already run on every route that carries a limiter worth caring
-    // about, so `auth.user_id` is present. Read defensively anyway: a limiter mounted
-    // BEFORE auth (or on a public route) must still work rather than throw.
     const userId = (req as any).auth?.user_id as string | undefined;
-    const subject = userId ? `u:${userId}` : `ip:${ip}`;
-    const key = `ratelimit:${opts.bucket}:${subject}`;
+    const subject = userId ? `u:${userId}` : `ip:${clientIp(req) ?? 'unknown'}`;
     try {
-      const count = await redis.incr(key);
-      if (count === 1) await redis.expire(key, opts.windowSeconds);
+      const { count, retryAfter } = await countWindow(`ratelimit:${opts.bucket}:${subject}`, opts.windowSeconds);
       if (count > opts.max) {
-        // Both identifiers are logged: the account tells you WHO, the address tells you
-        // whether one machine is driving several accounts, which is the shape abuse
-        // actually takes.
-        await logSecurityEvent('api_abuse', {
-          user_id: userId,
-          ip_address: ip,
-          metadata: { bucket: opts.bucket, count, subject },
-        });
-        return res.status(429).json({ error: 'rate limit exceeded' });
+        rateLimitMetrics.rejected++;
+        res.setHeader('Retry-After', String(retryAfter));
+        return res.status(429).json({ error: 'rate limit exceeded', code: 'rate_limited' });
       }
-    } catch { /* if Redis is down, fail open rather than block all traffic */ }
+    } catch {
+      rateLimitMetrics.unavailable++;
+      if (opts.outage === 'closed' || (opts.outage !== 'open' && sensitiveBuckets.has(opts.bucket))) {
+        res.setHeader('Retry-After', '2');
+        return res.status(503).json({ error: 'temporarily unavailable', code: 'rate_limit_unavailable' });
+      }
+    }
     next();
   };
 }
 
-/**
- * The counting core of the pair limit, callable outside middleware chains.
- * Returns false when the call should be rejected (limit exceeded).
- */
-export async function checkPairRateLimit(opts: {
-  max: number;
-  windowSeconds: number;
-  bucket: string;
-  callerId: string;
-  targetId: string;
-}): Promise<boolean> {
-  const key = `ratelimit:${opts.bucket}:${opts.callerId}:${opts.targetId}`;
+/** Pair limits protect one-time key material and deliberately fail closed. */
+export async function checkPairRateLimit(opts: LimitOptions & { callerId: string; targetId: string }): Promise<boolean> {
   try {
-    const count = await redis.incr(key);
-    if (count === 1) await redis.expire(key, opts.windowSeconds);
-    if (count > opts.max) {
-      await logSecurityEvent('api_abuse', {
-        user_id: opts.callerId,
-        metadata: { bucket: opts.bucket, target: opts.targetId, count },
-      });
-      return false;
-    }
-  } catch { /* fail open, same policy as rateLimit above */ }
-  return true;
+    const { count } = await countWindow(`ratelimit:${opts.bucket}:${opts.callerId}:${opts.targetId}`, opts.windowSeconds);
+    if (count > opts.max) { rateLimitMetrics.rejected++; return false; }
+    return true;
+  } catch { rateLimitMetrics.unavailable++; return false; }
 }
 
-/**
- * Sliding-window rate limit keyed by a (caller, target) PAIR rather than an IP.
- *
- * Why this exists: GET /prekeys/:user_id and GET /mls/keypackages/:user_id
- * CONSUME one-time material on every call, so the abuse is not "one IP hammers
- * the API" (the global limiter already caps that) but "one authenticated caller
- * drains one specific victim's supply" — trivially spread across IPs. The
- * bucket has to be the pair.
- */
-export function pairRateLimit(opts: {
-  max: number;
-  windowSeconds: number;
-  bucket: string;
-  callerId: string;
-  targetId: string;
-}) {
+export function pairRateLimit(opts: LimitOptions & { callerId: string; targetId: string }) {
   return async (_req: Request, res: Response, next: NextFunction) => {
-    if (!(await checkPairRateLimit(opts))) {
-      return res.status(429).json({ error: 'rate limit exceeded' });
+    try {
+      const { count, retryAfter } = await countWindow(`ratelimit:${opts.bucket}:${opts.callerId}:${opts.targetId}`, opts.windowSeconds);
+      if (count > opts.max) {
+        rateLimitMetrics.rejected++;
+        res.setHeader('Retry-After', String(retryAfter));
+        return res.status(429).json({ error: 'rate limit exceeded', code: 'rate_limited' });
+      }
+      next();
+    } catch {
+      rateLimitMetrics.unavailable++;
+      res.setHeader('Retry-After', '2');
+      return res.status(503).json({ error: 'temporarily unavailable', code: 'rate_limit_unavailable' });
     }
-    next();
   };
 }
 

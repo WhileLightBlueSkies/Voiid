@@ -232,6 +232,7 @@ function seedRoundRobin(players: string[]): Fixture[] {
 router.post(
   '/communities/:id/tournaments',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   rateLimit({ max: 20, windowSeconds: 3600, bucket: 'tournament-create' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
@@ -333,6 +334,7 @@ router.post(
 router.get(
   '/communities/:id/tournaments',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -391,6 +393,7 @@ async function openTournament(
 router.get(
   '/tournaments/:id',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openTournament(req.params.id, userId, false);
@@ -421,6 +424,7 @@ router.get(
 router.post(
   '/tournaments/:id/register',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   rateLimit({ max: 60, windowSeconds: 3600, bucket: 'tournament-register' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
@@ -507,6 +511,7 @@ router.post(
 router.post(
   '/tournaments/:id/withdraw',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openTournament(req.params.id, userId, false);
@@ -554,6 +559,7 @@ router.post(
 router.post(
   '/tournaments/:id/start',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   rateLimit({ max: 30, windowSeconds: 3600, bucket: 'tournament-start' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
@@ -678,6 +684,7 @@ router.post(
 router.post(
   '/tournaments/:id/cancel',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openTournament(req.params.id, userId, true);
@@ -704,6 +711,7 @@ router.post(
 router.get(
   '/tournaments/:id/matches',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openTournament(req.params.id, userId, false);
@@ -762,6 +770,7 @@ router.get(
 router.get(
   '/tournaments/:id/standings',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
     const opened = await openTournament(req.params.id, userId, false);

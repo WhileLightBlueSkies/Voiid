@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Content reports — the user-facing half (plan item 3.29).
 //
 // There was no way for anyone to report anything. The schema (035_reports.sql) shipped and
@@ -57,7 +58,7 @@ const MAX_EVIDENCE_BYTES = 16 * 1024;
 // POST /reports  { target_type, target_id, reason, note?, disclosure?, evidence?,
 //                  context_conversation_id? }
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAuth, rateLimit({ max: 20, windowSeconds: 60, bucket: 'reports' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const {
     target_type, target_id, reason, note,

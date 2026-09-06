@@ -502,9 +502,17 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
       ? undefined
       : await findByClientId(query, user_id, device_id, client_message_id);
     if (!winner) throw e;
-    result = { status: 200, body: {
+    const identical = samePayload(winner, payloadFingerprint({
+      conversationId: String(conversation_id ?? ''), contentType: content_type,
+      mediaUrl: media_url, mediaMime: media_mime, ciphertext,
+      fanout: Array.isArray(messages) ? messages : undefined,
+    }));
+    result = { status: identical ? 200 : 409, body: {
       message_id: winner.id, created_at: winner.created_at,
-      delivered_devices: winner.delivered_devices, duplicate: true,
+      delivered_devices: winner.delivered_devices,
+      ...(identical ? { duplicate: true } : {
+        error: 'client_message_id already used for a different payload', code: 'idempotency_key_reuse',
+      }),
     } };
   }
 

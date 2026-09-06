@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Stories backend — 24h ephemeral media, E2EE (see docs/STORIES_PROTOCOL.md).
 //
 // ============================== THE PRIVACY MODEL ==================================
@@ -199,7 +200,7 @@ async function storeKeysAndRelay(
 // untouched `startsWith('media/')` guard in routes/media.ts (zero edits to that shared
 // file) AND gives R2 a distinct prefix for the orphan lifecycle rule (48h).
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/presign-upload', requireAuth, asyncHandler(async (req, res) => {
+router.post('/presign-upload', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   if (!r2Configured()) return res.status(503).json({ error: 'media storage not configured' });
   const { user_id } = (req as any).auth;
   const mime = typeof req.body?.mime === 'string' ? req.body.mime : 'application/octet-stream';
@@ -225,7 +226,7 @@ router.post('/presign-upload', requireAuth, asyncHandler(async (req, res) => {
 //
 // UPHOLDS THE RULE: returns a URL to CIPHERTEXT. The media key is not in this database.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/presign-download', requireAuth, asyncHandler(async (req, res) => {
+router.post('/presign-download', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   if (!r2Configured()) return res.status(503).json({ error: 'media storage not configured' });
   const { user_id } = (req as any).auth;
   const storyId = req.body?.story_id;
@@ -266,7 +267,7 @@ router.post('/presign-download', requireAuth, asyncHandler(async (req, res) => {
 // UPHOLDS THE RULE: `ciphertext` is the per-device blob this server cannot decrypt;
 // `r2_key` addresses ciphertext; `media_mime` is the wrapper type.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
+router.get('/feed', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const deviceId = callerDeviceId(req);
   if (!deviceId || !UUID_RE.test(deviceId)) {
@@ -353,7 +354,7 @@ router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
 // a device fetched it, not that a human opened the story. The client must label them
 // as such — see docs/STORIES_PROTOCOL.md §view receipts.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
+router.get('/mine', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const stories = await query(
     `select s.id as story_id, s.r2_key, s.media_mime, s.byte_size, s.created_at, s.expires_at,
@@ -375,7 +376,7 @@ router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
 // return as the feed. The viewer identity is INSIDE `ciphertext` (only the author's
 // devices can open it) — there is no viewer column to return.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/receipts', requireAuth, asyncHandler(async (req, res) => {
+router.get('/receipts', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const deviceId = callerDeviceId(req);
   if (!deviceId || !UUID_RE.test(deviceId)) {
@@ -420,7 +421,7 @@ router.get('/receipts', requireAuth, asyncHandler(async (req, res) => {
 // plaintext-ish field. There is no field on this endpoint through which a media key
 // could arrive, and the server never fetches the object.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   const { user_id, device_id: authDeviceId } = (req as any).auth;
   const { story_id, r2_key, media_mime, byte_size, sender_device_id, keys } = req.body ?? {};
 
@@ -520,7 +521,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 // their one-time prekeys ran dry, (b) a recipient registering a NEW device inside the
 // 24h window. Same insert + relay + push path as POST /stories.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/keys', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/keys', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const storyId = req.params.id;
   const { keys } = req.body ?? {};
@@ -570,7 +571,7 @@ router.post('/:id/keys', requireAuth, asyncHandler(async (req, res) => {
 //
 // NO PUSH from this endpoint, ever: a view receipt must never wake a device.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/receipt', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/receipt', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const storyId = req.params.id;
   const { receipts } = req.body ?? {};
@@ -651,7 +652,7 @@ router.post('/:id/receipt', requireAuth, asyncHandler(async (req, res) => {
 // already downloaded and decrypted the media keeps it forever. No primitive in
 // e2e-core expires, rotates, or zeroizes a delivered key.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:id', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const storyId = req.params.id;
   if (!UUID_RE.test(storyId)) return res.status(400).json({ error: 'invalid story id' });

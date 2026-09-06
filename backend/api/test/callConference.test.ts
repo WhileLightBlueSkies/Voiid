@@ -556,6 +556,11 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
 (redis as any).get = async (k: string) => (k.startsWith('auth:active:') ? '1' : redisStore.get(k) ?? null);
 (redis as any).set = async (k: string, v: string) => { redisStore.set(k, v); return 'OK'; };
 (redis as any).del = async (k: string) => { redisStore.delete(k); return 1; };
+(redis as any).eval = async (_script: string, _keys: number, key: string, ttl: number) => {
+  const count = Number(redisStore.get(key) ?? 0) + 1;
+  redisStore.set(key, String(count));
+  return [count, ttl];
+};
 
 const app = express();
 app.use(express.json());

@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Creator profiles + the follow graph — the public identity behind Clips.
 //
 // ============================ NOT END-TO-END ENCRYPTED ============================
@@ -101,7 +102,7 @@ async function publicProfile(row: any, viewerId: string) {
 // vast majority of users — they are here to message — and making the client treat it as an
 // error would mean every Clips screen opens by handling a failure.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/me', requireAuth, asyncHandler(async (req, res) => {
+router.get('/me', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query<any>(
     `select * from creator_profiles where user_id = $1`, [user_id]);
@@ -116,7 +117,7 @@ router.get('/me', requireAuth, asyncHandler(async (req, res) => {
 // the create endpoint re-checks under the real constraint — between this call and the insert
 // someone else can take the name, and only the database can settle that race.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/handle-available', requireAuth, asyncHandler(async (req, res) => {
+router.get('/handle-available', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const handle = String(req.query.handle ?? '').toLowerCase();
   if (!HANDLE_RE.test(handle)) {
     return res.json({ available: false, reason: 'format' });
@@ -146,7 +147,7 @@ router.get('/handle-available', requireAuth, asyncHandler(async (req, res) => {
 // manufacturing a public identity for every account is both a privacy and a namespace
 // problem.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const handle = String(req.body?.handle ?? '').trim().toLowerCase();
   if (!HANDLE_RE.test(handle)) {
@@ -183,7 +184,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 // anyone shared. Thirty days is long enough to make that unattractive and short enough to
 // fix a typo you notice next week.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
+router.patch('/me', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const existing = await query<any>(
     `select * from creator_profiles where user_id = $1`, [user_id]);
@@ -261,7 +262,7 @@ router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 /** POST /creators/me/avatar-presign -> a PUT url for the public (plaintext) avatar. */
-router.post('/me/avatar-presign', requireAuth, asyncHandler(async (req, res) => {
+router.post('/me/avatar-presign', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   if (!r2Configured()) return res.status(503).json({ error: 'media storage not configured' });
   const ct = String(req.body?.content_type ?? 'image/jpeg');
@@ -275,7 +276,7 @@ router.post('/me/avatar-presign', requireAuth, asyncHandler(async (req, res) => 
 }));
 
 /** POST /creators/me/avatar { avatar_r2_key } — attach an uploaded avatar. */
-router.post('/me/avatar', requireAuth, asyncHandler(async (req, res) => {
+router.post('/me/avatar', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const key = String(req.body?.avatar_r2_key ?? '');
   if (!key.startsWith(`media/creator-avatars/${user_id}/`)) {
@@ -299,7 +300,7 @@ router.post('/me/avatar', requireAuth, asyncHandler(async (req, res) => {
 // parts of this system authorise against; handing it to anyone who views a profile would
 // hand out the input to every id-keyed endpoint. Follow/unfollow below take the HANDLE.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/:handle', requireAuth, asyncHandler(async (req, res) => {
+router.get('/:handle', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const handle = String(req.params.handle).toLowerCase();
   const rows = await query<any>(
@@ -318,7 +319,7 @@ router.get('/:handle', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 /** GET /creators/:handle/clips — that creator's public grid. */
-router.get('/:handle/clips', requireAuth, asyncHandler(async (req, res) => {
+router.get('/:handle/clips', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const limit = clampLimit(req.query.limit, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX);
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
@@ -381,7 +382,7 @@ router.get('/:handle/clips', requireAuth, asyncHandler(async (req, res) => {
 // The counters are NOT touched here — the trigger in 029 owns them, so every future write
 // path stays consistent without remembering to.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:handle/follow', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:handle/follow', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const target = await query<{ user_id: string; allow_follows: boolean }>(
     `select user_id, allow_follows from creator_profiles
@@ -411,7 +412,7 @@ router.post('/:handle/follow', requireAuth, asyncHandler(async (req, res) => {
   return res.json({ following: true, follower_count: c?.follower_count ?? 0 });
 }));
 
-router.delete('/:handle/follow', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:handle/follow', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const target = await query<{ user_id: string }>(
     `select user_id from creator_profiles where lower(handle) = $1`,
@@ -434,7 +435,7 @@ router.delete('/:handle/follow', requireAuth, asyncHandler(async (req, res) => {
 // (the user's decision) — this endpoint exposes only your OWN following set, which you
 // already know, so it leaks nothing about anyone else's graph.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/feed/following', requireAuth, asyncHandler(async (req, res) => {
+router.get('/feed/following', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const limit = clampLimit(req.query.limit, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX);
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;

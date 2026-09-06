@@ -160,6 +160,24 @@ test('atomic, retry-safe send against PostgreSQL', { skip: !url }, async (t) => 
       assert.equal(await countMessages(), 1);
     });
 
+    await t.test('concurrent reuse with different ciphertext returns a conflict', async () => {
+      await reset();
+      const key = randomUUID();
+      // Delay insertion so both independent requests complete their initial not-found probe.
+      await db.query(`create function delay_send() returns trigger language plpgsql as $$
+        begin perform pg_sleep(0.1); return new; end $$`);
+      await db.query('create trigger delay_send before insert on messages for each row execute function delay_send()');
+      try {
+        const results = await Promise.all([send(fanout(key)), send(fanout(key, Buffer.from('different payload').toString('base64')))]);
+        assert.deepEqual(results.map(r => r.status).sort(), [200, 409]);
+        assert.equal(results.find(r => r.status === 409)?.body.code, 'idempotency_key_reuse');
+        assert.equal(await countMessages(), 1);
+      } finally {
+        await db.query('drop trigger delay_send on messages');
+        await db.query('drop function delay_send()');
+      }
+    });
+
     await t.test('a failure before commit leaves no message, no ciphertext and no notification', async () => {
       await reset();
       await db.query(`create function fail_ct() returns trigger language plpgsql as $$
