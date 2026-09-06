@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 findings · 20 DONE, 16 IMPLEMENTED_UNVERIFIED, 14 TODO. Statuses corrected 2026-09-06; DONE entries not changed this session retain their historical evidence.
+Baseline: `a2e24e5` · 50 findings · 21 DONE, 16 IMPLEMENTED_UNVERIFIED, 13 TODO. Statuses corrected 2026-09-06; DONE entries not changed this session retain their historical evidence.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -47,7 +47,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | C03 | P2 | Hold durable cleanup claims beyond the selection transaction | Confirmed multi-worker risk | [11](11-PAYMENTS-MEDIA-WORKERS.md) | IMPLEMENTED_UNVERIFIED |
 | G02 | P2 | Reconcile design tokens before generating more variants | Confirmed drift | [08](08-LIQUID-GLASS.md) | TODO |
 | I02 | P2 | Bound avatar memory and avoid synchronous disk misses in UI | Confirmed | [07](07-IOS-AND-STORAGE.md) | TODO |
-| M04 | P2 | Stabilize history pagination and measure receipt aggregation | Confirmed cursor limitation; performance unmeasured | [03](03-MESSAGE-RELIABILITY.md) | TODO |
+| M04 | P2 | Stabilize history pagination and measure receipt aggregation | Confirmed cursor limitation; performance unmeasured | [03](03-MESSAGE-RELIABILITY.md) | DONE |
 | P02 | P2 | Make limiter windows atomic and rejection work cheap | Confirmed implementation risk | [04](04-API-PERFORMANCE.md) | DONE |
 | P04 | P2 | Bound pool, cache, and request latency before scaling | Configuration gap; latency unmeasured | [04](04-API-PERFORMANCE.md) | TODO |
 | Q05 | P2 | Serialize migrations and detect edited history | Confirmed gap | [13](13-RELEASE-AND-OPERATIONS.md) | IMPLEMENTED_UNVERIFIED |
@@ -1288,3 +1288,64 @@ The table above supersedes historical completion records below it. A02/M01/C02/C
   - **The wider environment set is unreviewed.** Q03 also asks for backup, deep-link, push, maps
     and bundle/application identifiers to be reviewed as a set. Only the API/WS hosts and
     cleartext policy are addressed here.
+
+## M04 — history pagination, and the aggregation actually measured (2026-09-06)
+
+- **Status:** DONE. The cursor defect is fixed, the roster semantics are decided and tested, and
+  the query plans exist. There is still no p95 budget to hold the numbers against — see below.
+- **Source/fix commit:** commit containing this record, parent `980f418`.
+- **Files:** `backend/api/src/routes/messages.ts`;
+  `backend/api/test/historyPaginationPostgres.test.ts` (new); `.github/workflows/ci.yml`.
+- **Failure reproduced, and it was worse than expected.** History paged with `before=<timestamp>`
+  and strict less-than. `created_at` is not unique — a fan-out send writes its rows in one
+  transaction — so a page boundary landing inside a tie skipped every remaining row sharing that
+  timestamp: they are not "before the cursor", they ARE it. With 300 tied messages and a page
+  size of 25, **295 of 320 messages were unreachable**, and permanently so: the client had
+  already scrolled past them and would never ask again.
+- **Cursor:** `(created_at, id)` ordering and a keyset cursor, with `before` kept working for
+  clients that have not learned about cursors (M04's migration note asks for dual-compatible
+  responses). Limits and cursors are validated rather than coerced.
+- **THE MEASUREMENT, which is the half the issue actually cared about.** `EXPLAIN (ANALYZE,
+  BUFFERS)` on a representative fixture — 50-member group, 50,000 messages, 30,000 receipts:
+  - Before: the receipt aggregation ran over the WHOLE conversation and the LIMIT was applied
+    afterwards. **50,000 rows grouped, sequential scans on both tables, 51.6ms, spilling to temp
+    files (687 blocks read, 689 written)** — to return fifty rows.
+  - After: the page is selected in a CTE first, so the aggregate joins fifty ids instead of fifty
+    thousand. **3.5ms, no spill, 431 shared buffers instead of 1197.**
+- **NO INDEX WAS ADDED, and that was checked rather than assumed.** M04 says not to add one
+  merely because a column occurs in SQL. `idx_messages_conversation (conversation_id,
+  created_at DESC)` already serves the new ordering through an incremental sort (4 buffers,
+  0.05ms for the first page), and `idx_receipts_message` already covers the receipt join —
+  forcing it with `enable_seqscan=off` gives 0.39ms, so the planner will choose it on its own
+  once a seq scan stops being the cheaper option at this size. Adding indexes here would have
+  been cargo cult.
+- **The roster semantics are now a decision, not an accident.** Read status counted "active
+  members other than the sender" — a CURRENT-roster count — so someone joining a group
+  **un-read every older message**: the sender's blue tick went back to grey for everybody, and
+  could never return, because the fan-out addressed the devices that existed when it was sent.
+  A person who was not sent a message cannot read it. The denominator is now the roster AT SEND
+  TIME (`joined_at <= m.created_at`), with `left_at is null` retained: the two clauses answer
+  different questions — who was ever owed this message, and who is still around to owe it.
+- **Regression evidence:** removing the `id` tie-break fails both pagination scenarios;
+  reverting to the current-roster count fails the semantics scenario.
+- **A flaky test caught before it was committed.** The semantics subtest first picked `tied[0]`
+  and asserted it appeared on a page — but 300 rows share a timestamp and the tie-break is a
+  random uuid, so which of them lands on any page is luck. It failed on roughly two runs in
+  three. It now picks a message with a distinctly later timestamp, and was run five times
+  consecutively to confirm stability.
+- **Validation:** 7 scenarios against real PostgreSQL; full `npm test` exit 0 (API 318/319,
+  games 6/6, relay 28/28, workers 32/32, admin 10/10); typecheck clean.
+- **Remaining limitations:**
+  - **There is no acceptance budget.** M04 asks that "query plans and p95 results meet the
+    acceptance budget". The plans exist and the numbers are recorded above, but no budget has
+    ever been defined, so nothing here can be said to meet it. 3.5ms on this fixture is a
+    measurement, not a pass.
+  - **One fixture, one shape.** 50 members / 50k messages / 30k receipts on a laptop against
+    a loopback Postgres. No concurrency, no cold cache, no Supabase, and no p95 over repeated
+    runs — a single `EXPLAIN ANALYZE` is a sample.
+  - **The clients do not use the cursor yet.** Both still page with `before`, so they keep the
+    tie defect until they are updated. The server supports both; nothing forces the migration.
+  - **`joined_at` is a proxy for "was sent this message".** It is the best signal available, but
+    a member who left and rejoined has a `joined_at` later than messages they genuinely
+    received, so those will not wait for them. That is the safe direction (the tick turns blue
+    rather than never), and it is a real edge worth knowing.

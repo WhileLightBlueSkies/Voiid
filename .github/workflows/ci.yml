@@ -224,6 +224,7 @@ jobs:
            .then(()=>c.query('create database voiid_test_linking'))
            .then(()=>c.query('create database voiid_test_reap'))
            .then(()=>c.query('create database voiid_test_conf'))
+           .then(()=>c.query('create database voiid_test_history'))
            .then(()=>c.end())"
 
       # S03. Both suites run HERE rather than in the node job because they need a real
@@ -273,6 +274,12 @@ jobs:
         env:
           CONF_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_conf
         run: npx tsx --test backend/api/test/conferenceCapPostgres.test.ts
+
+      # M04. Several hundred identical timestamps, which is what breaks a timestamp-only cursor.
+      - name: History pagination against PostgreSQL
+        env:
+          HISTORY_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_history
+        run: npx tsx --test backend/api/test/historyPaginationPostgres.test.ts
 
       - name: Outbox sweep against PostgreSQL
         env:

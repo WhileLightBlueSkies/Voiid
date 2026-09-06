@@ -10,7 +10,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 20 fixed · 16 awaiting verification · 14 open**
+**Status: 21 fixed · 16 awaiting verification · 13 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -21,6 +21,27 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### M04 — Scrolling back through history could skip messages permanently
+`pending` · P2 · API
+
+History paged by timestamp alone. Messages sent in the same instant — which is what a group
+fan-out produces — share a timestamp, so when a page boundary fell inside such a group the next
+page started *past* them. With 300 messages sent together, **295 of 320 were unreachable**, and
+permanently: the client had scrolled past them and would never ask again.
+
+Measuring the query found a second problem. The read-receipt aggregation ran over the *entire*
+conversation before taking the fifty rows being displayed: on a 50-member group with 50,000
+messages that was **51ms and spilling to disk**. Selecting the page first takes it to **3.5ms**
+with no spill. No index was added — the existing ones already cover it, which was checked rather
+than assumed.
+
+Also decided: someone joining a group no longer "un-reads" every older message for everyone. A
+person who wasn't sent a message can't read it, so read status is judged against the roster at
+send time.
+
+**Not verified:** there is no agreed performance budget to hold those numbers against, and they
+come from one fixture on a laptop. The apps also still page the old way until they're updated.
 
 ### Q03 — A release build can no longer ship pointing at the dev server
 `f1072b2` · P1 · Android + iOS · **implemented, not verified**

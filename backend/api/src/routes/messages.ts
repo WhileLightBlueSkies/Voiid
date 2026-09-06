@@ -524,6 +524,37 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // GET /messages/conversation/:id?before=&limit=&device_id= — paginated history (ciphertext; client decrypts)
+
+/** One screen of history. Bounded because it arrives from a client. */
+const HISTORY_DEFAULT_LIMIT = 50;
+const HISTORY_MAX_LIMIT = 100;
+
+/** undefined = the client sent something that is not a usable limit. */
+function parseHistoryLimit(raw: unknown): number | undefined {
+  if (raw === undefined) return HISTORY_DEFAULT_LIMIT;
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return undefined;
+  const n = Number(raw);
+  if (n < 1) return undefined;
+  return Math.min(n, HISTORY_MAX_LIMIT);
+}
+
+/** null = newest page. undefined = a cursor this endpoint did not issue. */
+function parseHistoryCursor(raw: unknown): { createdAt: string; id: string } | null | undefined {
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const [createdAt, id] = Buffer.from(raw, 'base64url').toString('utf8').split('|');
+    if (!createdAt || !id || !UUID_RE.test(id) || Number.isNaN(Date.parse(createdAt))) return undefined;
+    return { createdAt, id };
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeHistoryCursor(createdAt: string, id: string): string {
+  return Buffer.from(`${new Date(createdAt).toISOString()}|${id}`, 'utf8').toString('base64url');
+}
+
 router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
   const result = await withTransaction<{ status: number; body: any }>(async (query) => {
     const { user_id } = (req as any).auth;
@@ -537,15 +568,56 @@ router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
     if (!(await isConversationMember(req.params.id, user_id, query))) {
       return { status: 403, body: { error: 'not found' } };
     }
-    const limit = Math.min(Number(req.query.limit) || 50, 100);
-    const before = req.query.before as string | undefined;
+    const limit = parseHistoryLimit(req.query.limit);
+    if (limit === undefined) {
+      return { status: 400, body: { error: `limit must be 1..${HISTORY_MAX_LIMIT}`, code: 'invalid_limit' } };
+    }
+    // Newest-first keyset cursor (M04). `before` alone could not express a tie: it is a bare
+    // timestamp compared with strict less-than, so a page boundary landing inside a group of
+    // messages that share a millisecond skipped every remaining one — they are not "before the
+    // cursor", they ARE the cursor. A fan-out send writes its rows in one transaction, so ties
+    // are the normal case rather than a curiosity, and the skipped messages were unreachable:
+    // the client had already moved its scroll position past them.
+    const cursor = parseHistoryCursor(req.query.cursor);
+    if (cursor === undefined) {
+      return { status: 400, body: { error: 'cursor is not a cursor this endpoint issued', code: 'invalid_cursor' } };
+    }
+    // Kept working for clients that have not learned about cursors yet (M04's migration note
+    // asks for dual-compatible responses). It carries the same tie limitation it always did.
+    const before = cursor ? undefined : (req.query.before as string | undefined);
     const deviceId = await resolveActiveDevice(req, user_id,
       async (sql, params) => ({ rows: await query(sql, params) }), req.query.device_id, true);
     if (deviceId === undefined) return { status: 403, body: { error: 'forbidden' } };
     // Per message, return THIS device's ciphertext (fan-out) or the legacy row ciphertext.
     // The LEFT JOIN is keyed to the caller's device so no other device's blob is ever returned.
     const rows = await query<{ id: string }>(
-      `select m.id, m.sender_id, m.sender_device_id,
+      // PAGE FIRST, AGGREGATE SECOND (M04).
+      //
+      // The receipt aggregation used to run over the WHOLE conversation and the LIMIT was
+      // applied afterwards. Measured on a 50-member group with 50,000 messages and 30,000
+      // receipts: 50,000 rows grouped, sequential scans on both tables, 51ms, and a spill to
+      // temp files — to return fifty rows. Selecting the page in a CTE first takes the same
+      // answer to 3.5ms with no spill, because the aggregate then joins fifty ids instead of
+      // fifty thousand.
+      //
+      // NO NEW INDEX. M04 says not to add one merely because a column appears in SQL, so the
+      // plans were read: `idx_messages_conversation (conversation_id, created_at DESC)` already
+      // serves the new (created_at, id) ordering via an incremental sort, and
+      // `idx_receipts_message` already covers the join — forcing it gives 0.4ms, and the
+      // planner will choose it on its own once the table is large enough for a seq scan to stop
+      // being cheaper. Adding indexes here would have been cargo cult.
+      `with page as (
+         select m.id, m.conversation_id, m.sender_id, m.sender_device_id, m.ciphertext,
+                m.content_type, m.media_url, m.media_mime, m.created_at
+           from messages m
+          where m.conversation_id = $1 ${cursor ? 'and (m.created_at, m.id) < ($4::timestamptz, $5::uuid)' : before ? 'and m.created_at < $4' : ''}
+          -- (created_at, id) DESC, not created_at alone: the second column is what makes a page
+          -- boundary inside a tie expressible. The id is arbitrary but stable, which is all a
+          -- tie-break has to be.
+          order by m.created_at desc, m.id desc
+          limit $2
+       )
+       select m.id, m.sender_id, m.sender_device_id,
               translate(encode(coalesce(mc.ciphertext, m.ciphertext),'base64'), E'\n', '') as ciphertext,
               m.content_type, m.media_url, m.media_mime, m.created_at,
               -- Receipt state for the SENDER's ticks, so they advance Sent→Delivered→Seen on
@@ -575,22 +647,41 @@ router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
                      >= (select count(*) from conversation_members cm
                           where cm.conversation_id = m.conversation_id
                             and cm.left_at is null
-                            and cm.user_id <> m.sender_id)
+                            and cm.user_id <> m.sender_id
+                            -- THE ROSTER AT SEND TIME, not the current one (M04).
+                            --
+                            -- M04 asks for this to be decided rather than inherited, so:
+                            -- someone who joined AFTER a message was sent is not counted.
+                            -- Counting them made a new member un-read every older message —
+                            -- the sender's tick went from blue back to grey for everybody,
+                            -- and it could never return, because the fan-out addressed the
+                            -- devices that existed when it was sent. A person who was not
+                            -- sent a message cannot read it, so waiting for them is waiting
+                            -- forever.
+                            --
+                            -- left_at is null stays, and the two rules answer different
+                            -- questions: joined_at decides who was ever owed this message,
+                            -- left_at decides who is still around to owe it. Someone who was
+                            -- present and has since left is not waited on — that is the
+                            -- existing behaviour receiptStatus.test.ts already pins.
+                            and cm.joined_at <= m.created_at)
                   then 'read'
                 when count(distinct r.user_id) filter (where r.status in ('delivered','read')) > 0
                   then 'delivered'
                 else null
               end as receipt_status
-         from messages m
+         from page m
          left join message_ciphertexts mc on mc.message_id = m.id and mc.recipient_device_id = $3::uuid
          -- Sender's own receipts excluded here rather than in the aggregate, so they never
          -- reach any of the counts above.
          left join message_read_receipts r
                 on r.message_id = m.id and r.user_id <> m.sender_id
-         where m.conversation_id = $1 ${before ? 'and m.created_at < $4' : ''}
-         group by m.id, m.conversation_id, m.sender_id, mc.ciphertext
-         order by m.created_at desc limit $2`,
-      before ? [req.params.id, limit, deviceId, before] : [req.params.id, limit, deviceId]
+         group by m.id, m.conversation_id, m.sender_id, m.sender_device_id, m.ciphertext,
+                  m.content_type, m.media_url, m.media_mime, m.created_at, mc.ciphertext
+         order by m.created_at desc, m.id desc`,
+      cursor
+        ? [req.params.id, limit, deviceId, cursor.createdAt, cursor.id]
+        : before ? [req.params.id, limit, deviceId, before] : [req.params.id, limit, deviceId]
     );
 
     // NOTHING IS MARKED DELIVERED HERE (M02). This used to stamp `delivered_at` for every
@@ -598,7 +689,18 @@ router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
     // the device had not stored — and a history fetch that never arrived acknowledged them
     // anyway. Delivery is reported by POST /messages/ack, by the device, after it has the
     // ciphertext on its own disk.
-    return { status: 200, body: { messages: rows } };
+    // A cursor only when a full page came back: a short page is the end of the conversation,
+    // and handing out a cursor there would make a client fetch one empty page every time.
+    const oldest = rows[rows.length - 1] as { created_at?: string; id?: string } | undefined;
+    return {
+      status: 200,
+      body: {
+        messages: rows,
+        next_cursor: rows.length === limit && oldest?.created_at && oldest.id
+          ? encodeHistoryCursor(oldest.created_at, oldest.id)
+          : null,
+      },
+    };
   });
   res.status(result.status).json(result.body);
 }));
