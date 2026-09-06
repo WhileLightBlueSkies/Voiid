@@ -23,6 +23,7 @@ export type JobResult = Record<string, unknown> | null;
 
 export interface JobHealthInput {
   name: string;
+  bootAt?: number;
   /** How often this job is meant to run, so staleness is relative to its own cadence. */
   intervalMs: number;
   now: number;
@@ -53,7 +54,7 @@ const STALE_INTERVALS = Number(process.env.VOIID_WORKER_STALE_INTERVALS) || 3;
  * Matched by KEY rather than by inspecting values generically, so adding a count to a result
  * cannot silently start or stop affecting health.
  */
-const FAILURE_COUNTS = ['failed', 'abandoned', 'stuck', 'objectsPending', 'objectsQueued'] as const;
+const FAILURE_COUNTS = ['failed', 'abandoned', 'stuck', 'objectsPending', 'drift', 'undeclared', 'backlog'] as const;
 
 const rank: Record<JobStatus, number> = { ok: 0, degraded: 1, stale: 2, failed: 3 };
 
@@ -64,13 +65,14 @@ export function classifyJob(input: JobHealthInput): JobHealth {
 
   if (input.lastError) {
     worsen('failed');
-    reasons.push(`last pass threw: ${input.lastError}`);
+    reasons.push('last pass threw');
   }
 
   // THE C02 CASE. A returned count is the job telling us it could not finish, in the only
   // way it has; treating that as success is choosing not to listen.
   for (const key of FAILURE_COUNTS) {
-    const value = Number((input.lastResult as Record<string, unknown> | null)?.[key] ?? 0);
+    const raw = input.lastResult?.[key];
+    const value = Array.isArray(raw) ? raw.length : Number(raw ?? 0);
     if (Number.isFinite(value) && value > 0) {
       worsen('degraded');
       reasons.push(`${key}=${value}`);
@@ -87,10 +89,9 @@ export function classifyJob(input: JobHealthInput): JobHealth {
     reasons.push(`still running after ${Math.round((input.now - input.startedAt) / 1000)}s`);
   }
 
-  // Never having run is not a failure: the process may have just booted, and the first tick
-  // has not landed. Only a job that HAS run and then stopped succeeding is stale.
-  if (input.lastRunAt !== null) {
-    const age = input.lastOkAt === null ? input.now - input.lastRunAt : input.now - input.lastOkAt;
+  // Startup has a bounded grace period. A job that never runs becomes stale too.
+  if (input.lastRunAt !== null || input.bootAt !== undefined) {
+    const age = input.now - (input.lastOkAt ?? input.bootAt ?? input.lastRunAt!);
     if (age >= staleAfter) {
       worsen('stale');
       reasons.push(`has not succeeded for ${Math.round(age / 1000)}s`);

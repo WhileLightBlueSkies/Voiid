@@ -46,7 +46,7 @@ test('an empty successful sweep is healthy', () => {
 test('a thrown error is a failure, as it always was', () => {
   const v = classifyJob({ ...base, lastError: 'connection refused' });
   assert.equal(v.status, 'failed');
-  assert.match(v.reasons.join(' '), /connection refused/);
+  assert.match(v.reasons.join(' '), /last pass threw/);
 });
 
 // THE BUG: these were all reported as success.
@@ -59,6 +59,10 @@ test('a pass that returned failures is degraded, not healthy', () => {
 test('abandoning rows is degraded even though the pass "succeeded"', () => {
   const v = classifyJob({ ...base, lastResult: { claimed: 5, failed: 0, abandoned: 2 } });
   assert.equal(v.status, 'degraded');
+});
+
+test('successful queue production is healthy when the drain has no pending objects', () => {
+  assert.equal(classifyJob({ ...base, lastResult: { objectsQueued: 5, objectsPending: 0 } }).status, 'ok');
 });
 
 test('a backlog of objects nobody could delete is degraded', () => {
@@ -101,6 +105,18 @@ test('the worst job decides the service, and every reason is named', () => {
   assert.equal(jobs.a.status, 'ok');
   assert.equal(jobs.b.status, 'degraded');
   assert.equal(jobs.c.status, 'failed');
+});
+
+test('retention failure lists and policy drift degrade health', () => {
+  for (const lastResult of [{ failed: ['otp_sessions'] }, { drift: ['users'] }, { undeclared: ['users'] }]) {
+    assert.equal(classifyJob({ ...base, lastResult }).status, 'degraded');
+  }
+});
+
+test('never-started and never-successful jobs age from boot despite repeated ticks', () => {
+  for (const lastRunAt of [null, base.now - 1]) {
+    assert.equal(classifyJob({ ...base, lastRunAt, lastOkAt: null, bootAt: base.now - 900_000 }).status, 'stale');
+  }
 });
 
 // ── C04: the reaper keeps what it could not delete ─────────────────────────────
@@ -169,6 +185,25 @@ test('story reaping against PostgreSQL', { skip: !url }, async (t) => {
       assert.ok((result as any).abandoned >= 1);
     });
 
+    for (const attempts of [0, 99]) {
+      await t.test(`enqueue failure retains metadata (attempts=${attempts})`, async () => {
+        await db.query('delete from stories');
+        await expiredStory('media/stories/rollback.jpg', attempts);
+        await db.query(`create function reject_queue() returns trigger language plpgsql as $$
+          begin raise exception 'synthetic queue outage'; end $$`);
+        await db.query(`create trigger reject_queue before insert on erasure_pending_objects
+          for each row execute function reject_queue()`);
+        try {
+          const { reapStories } = await import('../src/reapStories');
+          await reapStories().catch(() => {});
+          assert.equal(await storyCount(), 1, 'metadata must survive enqueue failure');
+        } finally {
+          await db.query('drop trigger reject_queue on erasure_pending_objects');
+          await db.query('drop function reject_queue()');
+        }
+      });
+    }
+
     await t.test('queueing the same key twice does not raise', async () => {
       await db.query('delete from erasure_pending_objects');
       await db.query('delete from stories');
@@ -177,6 +212,87 @@ test('story reaping against PostgreSQL', { skip: !url }, async (t) => {
       const { reapStories } = await import('../src/reapStories');
       await reapStories();
       assert.deepEqual(await pendingKeys(), ['media/stories/same.jpg']);
+    });
+
+    await t.test('concurrent claims are disjoint and expired owners cannot finalize', async () => {
+      const { claimObjects, completeObject } = await import('../src/cleanup');
+      await db.query('delete from erasure_pending_objects');
+      await db.query("insert into erasure_pending_objects(r2_key) values ('media/a'), ('media/b')");
+      const [a, b] = await Promise.all([claimObjects(1), claimObjects(1)]);
+      assert.equal(a.length, 1);
+      assert.equal(b.length, 1);
+      assert.notEqual(a[0].r2_key, b[0].r2_key);
+      assert.equal((await claimObjects()).length, 0);
+      await db.query("update erasure_pending_objects set lease_until = now() - interval '1 second' where r2_key = $1", [a[0].r2_key]);
+      const recovered = await claimObjects();
+      assert.equal(recovered.length, 1);
+      assert.equal(await completeObject(a[0].r2_key, a[0].claim_token), 0);
+      assert.equal(await completeObject(recovered[0].r2_key, recovered[0].claim_token), 1);
+      assert.equal(await completeObject(b[0].r2_key, b[0].claim_token), 1);
+    });
+
+    await t.test('storage outage stays durable and restored storage drains the backlog', async () => {
+      const { drainObjects } = await import('../src/cleanup');
+      await db.query("insert into erasure_pending_objects(r2_key) values ('media/retry')");
+      const failed = await drainObjects(async () => { throw new Error('synthetic R2 outage'); }, true);
+      assert.equal(failed.failed, 1);
+      assert.equal(failed.objectsPending, 1);
+      assert.equal((await drainObjects(async () => {}, true)).objectsDeleted, 0, 'retry backoff is respected');
+      await db.query('update erasure_pending_objects set next_attempt_at = now()');
+      const restored = await drainObjects(async () => {}, true);
+      assert.equal(restored.objectsDeleted, 1);
+      assert.equal(restored.objectsPending, 0);
+    });
+
+    await t.test('erasure enqueue failure rolls back user and media, then retries successfully', async () => {
+      const { runErasure } = await import('../src/erasure');
+      await db.query('delete from stories');
+      await db.query('delete from erasure_pending_objects');
+      await expiredStory('media/stories/account.jpg');
+      await db.query("update users set deleted_at = now() - interval '31 days' where id = $1", [author]);
+      await db.query(`create function reject_queue() returns trigger language plpgsql as $$
+        begin raise exception 'synthetic queue outage'; end $$`);
+      await db.query(`create trigger reject_queue before insert on erasure_pending_objects
+        for each row execute function reject_queue()`);
+      try {
+        const failed = await runErasure();
+        assert.equal(failed.failed, 1);
+        assert.equal(failed.usersErased, 0);
+        assert.equal(failed.objectsQueued, 0);
+        assert.equal(await storyCount(), 1);
+        assert.equal((await db.query('select id from users where id = $1', [author])).rowCount, 1);
+      } finally {
+        await db.query('drop trigger reject_queue on erasure_pending_objects');
+        await db.query('drop function reject_queue()');
+      }
+      const [first, second] = await Promise.all([runErasure(), runErasure()]);
+      assert.equal(first.usersErased + second.usersErased, 1);
+      assert.equal(first.claimed + second.claimed, 1);
+      assert.deepEqual(await pendingKeys(), ['media/stories/account.jpg']);
+      assert.equal(await storyCount(), 0);
+      await db.query('insert into users(id, phone_number) values($1,$2)', [author, '+19990010001']);
+    });
+
+    await t.test('retention SQL failures and policy drift reach health, and recovery clears them', async () => {
+      const { runRetentionSweep } = await import('../src/retention');
+      await db.query("update data_retention_policy set declared_interval = interval '24 hours' where table_name = 'otp_sessions'");
+      await db.query('alter table otp_sessions rename to otp_sessions_unavailable');
+      try {
+        const result = await runRetentionSweep();
+        assert.ok(result.failed.includes('otp_sessions'));
+        assert.equal(classifyJob({ ...base, lastResult: { ...result } }).status, 'degraded');
+      } finally {
+        await db.query('alter table otp_sessions_unavailable rename to otp_sessions');
+      }
+      await db.query("update data_retention_policy set declared_interval = interval '1 hour' where table_name = 'otp_sessions'");
+      const drift = await runRetentionSweep();
+      assert.ok(drift.drift.includes('otp_sessions'));
+      assert.equal(classifyJob({ ...base, lastResult: { ...drift } }).status, 'degraded');
+      await db.query('update data_retention_policy set declared_interval = enforced_interval where enforced_interval is not null and table_name != \'users\'');
+      const recovered = await runRetentionSweep();
+      assert.deepEqual(recovered.failed, []);
+      assert.deepEqual(recovered.drift, []);
+      assert.equal(classifyJob({ ...base, lastResult: { ...recovered } }).status, 'ok');
     });
 
     await t.test('a story with no object key queues nothing', async () => {

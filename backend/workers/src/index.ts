@@ -83,6 +83,7 @@ interface JobState {
 // leaves expired ciphertext at rest — and, now, the one that silently leaves a phone
 // number in the database after its owner asked to be erased. So /health reports each JOB,
 // not just the process.
+const bootAt = Date.now();
 let running = false;
 const jobs: Record<string, JobState> = Object.fromEntries(
   [...JOBS.map((j) => j.name), 'outbox'].map((name) => [
@@ -102,7 +103,7 @@ async function outboxTick(): Promise<void> {
   try {
     const result = await flushOutbox((channel, payload) => publisher.publish(channel, payload));
     state.lastResult = result;
-    state.lastOkAt = new Date().toISOString();
+    if (classifyJob({ name: '', intervalMs: INTERVAL_MS, now: Date.now(), lastRunAt: null, lastOkAt: null, lastError: null, startedAt: null, lastResult: result as unknown as Record<string, unknown> }).status === 'ok') state.lastOkAt = new Date().toISOString();
     state.lastError = null;
     // Silent when there is nothing owed, which is the normal case — a line every five seconds
     // is a log nobody reads. COUNTS ONLY: never a channel, a user id or a payload.
@@ -136,7 +137,7 @@ async function tick(): Promise<void> {
       try {
         const result = await job.run();
         state.lastResult = result;
-        state.lastOkAt = new Date().toISOString();
+        if (classifyJob({ name: '', intervalMs: INTERVAL_MS, now: Date.now(), lastRunAt: null, lastOkAt: null, lastError: null, startedAt: null, lastResult: result as unknown as Record<string, unknown> }).status === 'ok') state.lastOkAt = new Date().toISOString();
         state.lastError = null;
         logIfInteresting(job.name, result);
       } catch (e) {
@@ -187,6 +188,7 @@ const server = http.createServer(async (req, res) => {
   const now = Date.now();
   const inputs: JobHealthInput[] = Object.entries(jobs).map(([name, state]) => ({
     name,
+    bootAt,
     // The outbox has its own, much faster clock; measuring its staleness against the reaper
     // interval would make a five-minute stall invisible.
     intervalMs: name === 'outbox' ? OUTBOX_INTERVAL_MS : INTERVAL_MS,
@@ -204,7 +206,7 @@ const server = http.createServer(async (req, res) => {
     status: verdict.status,
     interval_ms: INTERVAL_MS,
     outbox_interval_ms: OUTBOX_INTERVAL_MS,
-    jobs,
+    jobs: Object.fromEntries(Object.entries(jobs).map(([name, state]) => [name, { ...state, lastError: state.lastError ? 'job failed' : null }])),
     // Per-job status and the reasons behind it, so an operator is told WHICH job and WHY
     // rather than being handed five raw result objects to compare.
     health: verdict.jobs,
