@@ -8,13 +8,56 @@
 
 import Foundation
 
-/// Backend configuration. Override `baseURL` per environment (dev/staging/prod).
+/// Backend configuration, resolved per build type (Q03).
+///
+/// ── WHAT THIS REPLACES ───────────────────────────────────────────────────────────
+///
+/// Two literals pointing at `https://api-dev.voiid.app`, with nothing anywhere assigning
+/// anything else. There was no environment boundary: a release build would have been compiled
+/// against the development backend, signed and shipped, and the only thing preventing that was
+/// somebody remembering to edit these lines first.
+///
+/// DEBUG keeps the dev host as a working default so local development is unchanged. RELEASE has
+/// no default at all — it reads `VoiidApiBaseURL` / `VoiidWebSocketURL` from Info.plist, which
+/// are populated by the `VOIID_API_BASE_URL` / `VOIID_WS_URL` build settings, and refuses to run
+/// if they are missing, still point at a development host, or are not TLS.
+///
+/// THE PRODUCTION HOSTNAME IS NOT WRITTEN DOWN HERE. This audit does not know it, and guessing
+/// one would replace a visible misconfiguration with an invisible one.
 enum APIConfig {
-    /// Hosted DEV backend (Vultr + Caddy TLS). WebSocket is proxied on the /ws
-    /// path of the same host. For local-only work, swap to http://localhost:4000
-    /// + ws://localhost:4001.
-    static var baseURL = URL(string: "https://api-dev.voiid.app")!
-    static var wsURL = URL(string: "wss://api-dev.voiid.app/ws")!
+    /// Hosts a release must never talk to, however it was configured.
+    private static let developmentHosts = ["api-dev.voiid.app", "localhost", "127.0.0.1"]
+
+    /// Read an endpoint from Info.plist, or fall back in DEBUG only.
+    ///
+    /// An unset build setting leaves the literal `$(VOIID_API_BASE_URL)` in the plist rather
+    /// than an empty string, so the check below has to reject anything that is not a real
+    /// https/wss URL — not merely anything empty.
+    private static func endpoint(_ key: String, debugDefault: String, scheme: String) -> URL {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: key) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let usable = raw.hasPrefix(scheme) && !developmentHosts.contains(where: raw.contains)
+
+        #if DEBUG
+        // Local development is unchanged: an unset or dev-pointing value is expected here.
+        let chosen = usable || raw.hasPrefix("http://") || raw.hasPrefix("ws://") ? raw : debugDefault
+        return URL(string: chosen) ?? URL(string: debugDefault)!
+        #else
+        // A release that cannot say where it is pointing must not start. Crashing at launch is
+        // a bad outcome; silently talking to the development backend from the App Store is a
+        // worse one, and it is the one that goes unnoticed.
+        precondition(
+            usable,
+            "\(key) is missing, points at a development host, or is not \(scheme). Set the " +
+            "VOIID_API_BASE_URL / VOIID_WS_URL build settings for the Release configuration."
+        )
+        return URL(string: raw)!
+        #endif
+    }
+
+    static var baseURL = endpoint("VoiidApiBaseURL", debugDefault: "https://api-dev.voiid.app", scheme: "https://")
+    static var wsURL = endpoint("VoiidWebSocketURL", debugDefault: "wss://api-dev.voiid.app/ws", scheme: "wss://")
     /// API version this build talks (path-versioned: /v1/...). Bumped per major contract.
     static var apiVersion = "v1"
     /// This build's app version (for force-update gating).

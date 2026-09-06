@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DEBUG ONLY (Q03).
+
+    The release manifest permits no cleartext at all. Local development still needs to reach a
+    laptop over http, so that permission is restored here — this file is merged into debug
+    builds and is not part of any release artifact.
+
+    Scoped to loopback and the emulator's host alias rather than re-enabling plaintext globally:
+    the point is to talk to your own machine, not to make every connection downgradable.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:replace="android:networkSecurityConfig"
+        xmlns:tools="http://schemas.android.com/tools" />
+</manifest>

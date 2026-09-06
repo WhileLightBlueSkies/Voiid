@@ -18,11 +18,14 @@ import java.util.concurrent.TimeUnit
  * clean errors. See docs/API_CONTRACT.md.
  */
 object ApiConfig {
-    // Hosted DEV backend (Vultr + Caddy TLS). WebSocket is proxied on the /ws
-    // path of the same host. For local-only work, swap to http://10.0.2.2:4000
-    // + ws://10.0.2.2:4001 (emulator -> host).
-    @Volatile var baseUrl: String = "https://api-dev.voiid.app"
-    @Volatile var wsUrl: String = "wss://api-dev.voiid.app/ws"
+    // FROM BUILD CONFIGURATION, not from a literal here (Q03). These used to be hardcoded to
+    // the dev host, which meant every build type talked to the same backend and a release APK
+    // would have shipped pointing at it. build.gradle.kts supplies debug a working default and
+    // refuses a release that has not been told where to go.
+    //
+    // Still `var`: instrumentation and local experiments override them at runtime.
+    @Volatile var baseUrl: String = com.voiid.app.BuildConfig.VOIID_API_BASE_URL
+    @Volatile var wsUrl: String = com.voiid.app.BuildConfig.VOIID_WS_URL
     // API version this build talks (path-versioned: /v1/...). Bumped per major contract.
     @Volatile var apiVersion: String = "v1"
     // This build's app version (for force-update gating).

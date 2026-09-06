@@ -10,7 +10,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 20 fixed · 15 awaiting verification · 15 open**
+**Status: 20 fixed · 16 awaiting verification · 14 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -21,6 +21,23 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### Q03 — A release build can no longer ship pointing at the dev server
+`pending` · P1 · Android + iOS · **implemented, not verified**
+
+Both apps hardcoded the development backend, and nothing anywhere set anything else. There was
+no separation between a debug build and a release one — a signed release would have talked to
+the dev server, and the only thing preventing that was someone remembering to edit a line first.
+Android also permitted plaintext connections app-wide, which is a local-development convenience
+that had no business shipping.
+
+Endpoints now come from build configuration. Debug keeps working exactly as before; **a release
+build with no endpoint configured refuses to build**, as does one pointing at a dev host or using
+plaintext. All three refusals were executed, not just asserted.
+
+**Not verified:** no release artifact was built or inspected — that needs the real production
+hostname, which this work deliberately does not guess. iOS also needs its build settings adding
+in Xcode; until then a misconfigured release would fail at launch rather than at build.
 
 ### A04 — A forgotten migration can no longer wipe local history
 `2e493ce` · P1 · Android

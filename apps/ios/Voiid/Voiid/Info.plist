@@ -113,5 +113,12 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Backend endpoints, from the VOIID_API_BASE_URL / VOIID_WS_URL build settings (Q03).
+	     Unset in Release on purpose: APIConfig refuses to start rather than defaulting to the
+	     development backend. Debug ignores these and uses its own default. -->
+	<key>VoiidApiBaseURL</key>
+	<string>$(VOIID_API_BASE_URL)</string>
+	<key>VoiidWebSocketURL</key>
+	<string>$(VOIID_WS_URL)</string>
 </dict>
 </plist>

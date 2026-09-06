@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 findings · 20 DONE, 15 IMPLEMENTED_UNVERIFIED, 15 TODO. Statuses corrected 2026-09-06; DONE entries not changed this session retain their historical evidence.
+Baseline: `a2e24e5` · 50 findings · 20 DONE, 16 IMPLEMENTED_UNVERIFIED, 14 TODO. Statuses corrected 2026-09-06; DONE entries not changed this session retain their historical evidence.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -29,7 +29,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | P03 | P1 | Handle every Express 4 async rejection and input error | Confirmed | [04](04-API-PERFORMANCE.md) | DONE |
 | Q01 | P1 | Repair the test baseline without hiding regressions | Observed failures | [13](13-RELEASE-AND-OPERATIONS.md) | DONE |
 | Q02 | P1 | Add quality gates before deployment | Confirmed gap | [13](13-RELEASE-AND-OPERATIONS.md) | IMPLEMENTED_UNVERIFIED |
-| Q03 | P1 | Separate native development and release service configuration | Confirmed configuration gap | [13](13-RELEASE-AND-OPERATIONS.md) | TODO |
+| Q03 | P1 | Separate native development and release service configuration | Confirmed configuration gap | [13](13-RELEASE-AND-OPERATIONS.md) | IMPLEMENTED_UNVERIFIED |
 | Q04 | P1 | Deploy verified artifacts with readiness, draining and rollback | Confirmed gap | [13](13-RELEASE-AND-OPERATIONS.md) | TODO |
 | R01 | P1 | Use the conference grant format in the actual relay | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | IMPLEMENTED_UNVERIFIED |
 | R03 | P1 | Authenticate before registering sockets; handle slow consumers | Confirmed sequence and resource gap | [05](05-REALTIME-CALLS-GAMES.md) | IMPLEMENTED_UNVERIFIED |
@@ -1232,3 +1232,59 @@ The table above supersedes historical completion records below it. A02/M01/C02/C
     quarantined and reported, as SecurePrefs now does for preferences (A02). Not implemented.
   - **Downgrade policy is still unstated.** A04 asks for an explicit supported-or-blocked
     decision; Room's default is to throw, which is a policy by accident rather than by choice.
+
+## Q03 — a release cannot ship pointing at the dev backend (2026-09-06)
+
+- **Status:** IMPLEMENTED_UNVERIFIED. The boundary exists and is enforced at build time on
+  Android and at launch on iOS; **no release artifact was produced or inspected**, which is what
+  Q03's acceptance actually asks for. See limitations.
+- **Source/fix commit:** commit containing this record, parent `8f3467f`.
+- **Files:** Android `app/build.gradle.kts`, `net/ApiClient.kt`, `src/main/AndroidManifest.xml`,
+  `src/debug/AndroidManifest.xml` (new), `src/debug/res/xml/network_security_config.xml` (new),
+  `src/test/java/com/voiid/app/EnvironmentBoundaryTest.kt` (new); iOS
+  `Networking/APIClient.swift`, `Voiid/Info.plist`.
+- **Failure reproduced:** by reading it. Both clients hardcoded `https://api-dev.voiid.app` and
+  nothing anywhere assigned anything else, so there was no environment boundary of any kind — a
+  release APK or IPA would have been built against the development backend, signed and shipped,
+  and the only thing preventing that was somebody remembering to edit a constant. Android also
+  set `usesCleartextTraffic="true"` on the whole application: plumbing for talking to a laptop,
+  shipped to users, permitting plaintext for every connection the app ever makes.
+- **Implementation:** endpoints move to build configuration. Android debug keeps the dev host as
+  a working default (overridable by property or environment variable, so pointing at a laptop
+  needs no source edit); **release has no default at all** and `requireReleaseEndpoint` throws at
+  configuration time if the value is missing, names a development host, or is not TLS. iOS reads
+  the endpoints from Info.plist keys fed by build settings, with a `#if DEBUG` fallback and a
+  release `precondition` that refuses to start otherwise. Application-wide cleartext is gone;
+  a debug-only manifest restores it, scoped to `localhost`, `127.0.0.1` and `10.0.2.2` rather
+  than globally.
+- **The production hostname is deliberately not written down.** The issue says not to guess it,
+  and a guessed host would replace a visible misconfiguration with an invisible one.
+- **Regression evidence:** the three release refusals were executed, not asserted from source —
+  `assembleRelease` with no endpoints, with the dev host, and with `http://` each fail with their
+  own message. Restoring `usesCleartextTraffic="true"` fails its guard. Replacing one endpoint
+  with a hardcoded dev host fails the release guard — that check did NOT bite on first writing,
+  because it looked for the helper's NAME anywhere in the file and the helper survived in the
+  other endpoint; it now asserts that each setting is produced by it.
+- **Two staleness traps hit again.** The unit tests read the manifest and `build.gradle.kts` off
+  disk, which Gradle cannot see, so the task served byte-identical stale results after all three
+  files had changed. Both are declared as test inputs now, as `res/xml` and `schemas` already
+  were.
+- **Validation:** 98 Android unit tests (6 new); `assembleDebug` exit 0; lint holds at its 90
+  baseline; iOS debug simulator build exit 0.
+- **Remaining limitations — WHY THIS IS NOT `DONE`:**
+  - **No release artifact was built or inspected.** Q03's acceptance is "inspect release
+    artifacts to verify the intended hosts, trust policies and identifiers". A release build
+    cannot even be produced here without the real endpoints, and signing config was not
+    exercised. What is proven is that a release WITHOUT them is refused — not what a correct one
+    contains.
+  - **iOS enforces at launch, not at build.** A misconfigured release IPA compiles and then
+    crashes on first run with a precondition message. That is deliberate — silently talking to
+    the dev backend from the App Store is the worse failure — but it is a weaker gate than
+    Android's, and it needs the `VOIID_API_BASE_URL` / `VOIID_WS_URL` build settings adding to
+    the Release configuration in Xcode, which this change does not do (editing `project.pbxproj`
+    programmatically was judged too risky to do blind).
+  - **Sign-in, push registration, deep links and forced-update were not tested against any
+    environment.** All four are named in the acceptance and none was exercised.
+  - **The wider environment set is unreviewed.** Q03 also asks for backup, deep-link, push, maps
+    and bundle/application identifiers to be reviewed as a set. Only the API/WS hosts and
+    cleartext policy are addressed here.
