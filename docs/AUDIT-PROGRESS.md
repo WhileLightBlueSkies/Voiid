@@ -10,11 +10,27 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 21 fixed · 16 awaiting verification · 13 open**
+**Status: 25 fixed · 16 awaiting verification · 9 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
-cryptographic reviewer rather than an implementation.
+cryptographic reviewer rather than an implementation. S04's *code-level* half is now done —
+the false claims are gone, the counters are atomic, and the envelope fetch is metered — but
+the protocol work remains open and this entry makes no cryptographic claim.
+
+### Fixed on 6 September (session 3)
+
+| Issue | What was actually wrong |
+|---|---|
+| **P04** | A group send paid one Redis round-trip *per recipient* on the sender's request path — 1070ms for 50 recipients, measured. Database pools had no acquisition timeout, no statement timeout, and no stated share of Supabase's connection ceiling. |
+| **S04** *(code half)* | The code claimed server-side PIN guess-limiting it does not have: the counter only moves when the client reports its own failure, and the client is the attacker. It could also stay silent, or report success to reset the lock. The counter additionally lost increments — 8 concurrent failures recorded as 4. |
+| **E01** *(clauses 1–3)* | The `cargo audit` step in CI was scanning **nothing**: it pinned a version that cannot parse the current advisory database and fails to load it entirely. `SECURITY.md` pointed at a workflow that does not exist, and the README's "non-negotiable" rule named a crypto library this codebase has never used. |
+| **I02** | One 4000×3000 profile photo occupied **411 MB** of memory, because it was decoded at full size *and* at screen scale to fill a 40pt circle. 600 avatars retained ~12 GB, since nothing was ever evicted. Now 1 MB and ~47 MB. |
+| **U05** | On rapid tab taps, an earlier tap's uncancellable timer fired during a later transition and snapped its indicator back mid-flight. Reduce Motion was not honoured at all by a tab bar whose entire personality is spatial. |
+
+Two of these were found only because a check was run against the *broken* code: E01's
+workflow-existence gate passed against a document deliberately pointing at a missing file, and
+I02's first fix silently **upscaled** small avatars 9×. Both are recorded in the register.
 
 ---
 
