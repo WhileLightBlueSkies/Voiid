@@ -23,7 +23,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### M04 — Scrolling back through history could skip messages permanently
-`pending` · P2 · API
+`441677f` · P2 · API
 
 History paged by timestamp alone. Messages sent in the same instant — which is what a group
 fan-out produces — share a timestamp, so when a page boundary fell inside such a group the next

@@ -1293,7 +1293,7 @@ The table above supersedes historical completion records below it. A02/M01/C02/C
 
 - **Status:** DONE. The cursor defect is fixed, the roster semantics are decided and tested, and
   the query plans exist. There is still no p95 budget to hold the numbers against — see below.
-- **Source/fix commit:** commit containing this record, parent `980f418`.
+- **Source/fix commit:** `441677f`, parent `980f418`.
 - **Files:** `backend/api/src/routes/messages.ts`;
   `backend/api/test/historyPaginationPostgres.test.ts` (new); `.github/workflows/ci.yml`.
 - **Failure reproduced, and it was worse than expected.** History paged with `before=<timestamp>`
