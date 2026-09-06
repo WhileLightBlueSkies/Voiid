@@ -275,7 +275,7 @@ final class ChatEngine {
         if let existing = (store[conversationId] ?? []).first(where: { $0.id == m.id }) {
             guard existing.failed, !m.failed else { return }
             replace(id: m.id, with: m, to: conversationId)
-            persist()
+            persistSoon()
             return
         }
         append(m, to: conversationId)
@@ -333,7 +333,7 @@ final class ChatEngine {
             store[conv] = arr
             markDirty(conv)
         }
-        persist()
+        persistSoon()
     }
 
     /// Queue a text message for sending. Stores it locally as PENDING immediately
@@ -425,7 +425,7 @@ final class ChatEngine {
         arr[i].failed = true
         store[conversationId] = arr
         markDirty(conversationId)
-        persist()
+        persistSoon()
     }
 
     /// Backwards-compatible one-shot send (enqueue + flush).
@@ -443,7 +443,7 @@ final class ChatEngine {
         arr[i].serverId = serverId
         store[conversationId] = arr
         markDirty(conversationId)
-        persist()
+        persistSoon()
     }
 
     /// Encrypt + send a MEDIA message in a direct conversation. The blob is
@@ -603,7 +603,7 @@ final class ChatEngine {
         arr[i].reactions = map.isEmpty ? nil : map
         store[convId] = arr
         markDirty(convId)
-        persist()
+        persistSoon()
     }
 
     /// Tombstone the target message (delete-for-everyone).
@@ -616,7 +616,7 @@ final class ChatEngine {
         arr[i].reactions = nil
         store[convId] = arr
         markDirty(convId)
-        persist()
+        persistSoon()
     }
 
     /// Send a location envelope (pin or live-share CONTROL) in a direct chat over the
@@ -981,7 +981,7 @@ final class ChatEngine {
         // these messages and must not tell the server it has — the server would stop offering
         // them and they would be gone at exit. They stay dirty, stay pending server-side, and
         // arrive again on the next sync.
-        if persist() {
+        if await persist() {
             await acknowledgeStored(stored)
         } else if !stored.isEmpty {
             NSLog("[VOIID] 📂 withholding \(stored.count) acknowledgements — the store did not commit")
@@ -1014,7 +1014,7 @@ final class ChatEngine {
                     }
                     store[cid] = arr
                     markDirty(cid)
-                    persist()
+                    persistSoon()
                 }
                 return cid
             }
@@ -1388,7 +1388,7 @@ final class ChatEngine {
         arr.append(m)
         store[convId] = arr
         markDirty(convId)
-        if doPersist { persist() }
+        if doPersist { persistSoon() }
     }
 
     /// Insert `m`, or REPLACE an existing entry with the same id in place (keeps order).
@@ -1480,10 +1480,18 @@ final class ChatEngine {
         }
 
         // Normal path: load every shard into memory.
+        //
+        // STILL SYNCHRONOUS, deliberately. `ensureLoaded()` is called from a dozen
+        // synchronous read/mutate paths whose whole point is that they never touch an
+        // unloaded store — making this async would make every one of them able to observe
+        // `storeLoaded == false` mid-flight, which is precisely the clobber-on-disk bug the
+        // flag exists to prevent. The cold-launch decode cost is real (130ms for one 50k
+        // conversation, measured) and is called out in the completion record as NOT fixed;
+        // trading it for a chance of overwriting history would be a bad bargain.
         var loaded: [String: [DecryptedMessage]] = [:]
         for url in shardFiles {
             let conv = url.deletingPathExtension().lastPathComponent
-            if let data = try? Data(contentsOf: url),
+            if let data = try? Data(contentsOf: url, options: .mappedIfSafe),
                let msgs = try? JSONDecoder().decode([DecryptedMessage].self, from: data) {
                 loaded[conv] = msgs
             } else {
@@ -1518,28 +1526,71 @@ final class ChatEngine {
     /// the next pass retries; this used to clear the whole set regardless and swallow every
     /// write failure into a log line, so a disk-full or permission error lost the conversation
     /// silently at exit.
+    /// Await the write and report whether every dirty shard committed.
+    ///
+    /// AWAIT, not fire-and-forget: M02/I03 acknowledge to the server only what reached this
+    /// disk, so the caller must know. The encode and the file write happen on
+    /// `ChatShardStore`, off the main actor — that is the 147ms-per-message cost this moves
+    /// (see ChatShardStore's header for the measurements).
     @discardableResult
-    private func persist() -> Bool {
+    private func persist() async -> Bool {
         guard storeLoaded else {
             NSLog("[VOIID] ⚠️ persist skipped — store not loaded (would clobber on-disk history)")
             return false
         }
         let claimed = dirtyConversations
         guard !claimed.isEmpty else { return true }
-        var committed = Set<String>()
-        for conv in claimed where persistShard(conv) { committed.insert(conv) }
-        // Only what reached the disk is forgotten. A conversation touched again while its
-        // write was in flight is re-marked by `markDirty` and survives this subtraction.
-        dirtyConversations.subtract(committed)
+        // Snapshot the payload on the main actor so the writer cannot observe a half-applied
+        // mutation, then hand the whole dirty set over in ONE hop.
+        var batch: [String: [DecryptedMessage]] = [:]
+        for conv in claimed { batch[conv] = store[conv] ?? [] }
+
+        // Clear the marks for what we are about to write BEFORE suspending. Anything that
+        // mutates during the await re-marks itself, and that mark must survive.
+        dirtyConversations.subtract(claimed)
+
+        let committed = await ChatShardStore.shared.write(batch)
+
+        // ── THE SUSPENSION WINDOW, which did not exist before this was async ──────
+        //
+        // `persist()` used to be synchronous, so "a message arrives mid-write" was
+        // impossible on the main actor. It is possible now, and the obvious subtraction
+        // here — `dirtyConversations.subtract(committed)` — is WRONG in a way that loses
+        // messages: `committed` names a CONVERSATION, not the version of it that was
+        // written. A message arriving during the await re-marks the conversation dirty,
+        // and subtracting afterwards eats that mark. The message is then in memory, not on
+        // disk, and nothing is scheduled to retry it — gone at exit.
+        //
+        // Reproduced before fixing (apps/ios/checks/PersistWindowCheck.swift): on disk
+        // ["m1"], in memory ["m1", "m2"], dirty empty.
+        //
+        // So the marks are cleared UP FRONT and only FAILURES are re-marked. A mutation
+        // during the window sets its mark after the clear, and nothing removes it.
+        dirtyConversations.formUnion(claimed.subtracting(committed))
         if committed.count != claimed.count {
             NSLog("[VOIID] ❌ persist INCOMPLETE: \(committed.count)/\(claimed.count) shards committed; the rest stay dirty")
         }
         return committed.count == claimed.count
     }
 
-    /// Atomically write one conversation's shard, with the same file-protection class as the
-    /// keychain items it's kept in step with (readable after first unlock, so the NSE works).
-    /// Returns true ONLY if the bytes reached the disk.
+    /// Persist without making the caller wait — for paths where nothing is acknowledged on
+    /// the strength of the write (a local flag flip, a receipt applied to our own message).
+    ///
+    /// Still goes through the same `persist()`, so a failure still leaves the conversation
+    /// dirty and still gets retried. The ONLY difference is that the UI is not blocked.
+    private func persistSoon() {
+        Task { @MainActor in await persist() }
+    }
+
+    /// Atomically write one conversation's shard, synchronously.
+    ///
+    /// Retained ONLY for the one-time blob→shard migration in `loadStore()`, which runs
+    /// before the store is marked loaded and must complete before anything else reads it.
+    /// Every steady-state write goes through `ChatShardStore` off the main actor; do not
+    /// add callers here.
+    ///
+    /// Same file-protection class as the keychain items it is kept in step with (readable
+    /// after first unlock, so the NSE works). Returns true ONLY if the bytes reached disk.
     private func persistShard(_ convId: String) -> Bool {
         let arr = store[convId] ?? []
         let data: Data

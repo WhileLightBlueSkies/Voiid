@@ -56,3 +56,45 @@ the remaining checks prove nothing.
 Measured 2026-09-06: 90ms after the final tap, the old bar reports
 `isSliding = false` — its stretch was cancelled mid-flight by a stale callback —
 while the new bar reports `true` and releases on its own schedule.
+
+## ChatHistoryCostCheck.swift (I01)
+
+Measures what a long history costs on the path that runs while the user is typing,
+using the real `DecryptedMessage` field shape, and models both the old and new read
+paths.
+
+```sh
+xcrun -sdk macosx swiftc -O -o /tmp/chatcheck apps/ios/checks/ChatHistoryCostCheck.swift
+/tmp/chatcheck
+```
+
+Measured 2026-09-06 on a development Mac (a phone is slower, so these are floors):
+
+| history | encode whole conversation | as frames @60fps |
+|---|---|---|
+| 1,000 | 5.1 ms | 0.3 |
+| 10,000 | 33.7 ms | 2.0 |
+| 50,000 | 147.3 ms | 8.8 |
+
+Cold-launch decode of one 50k shard: 130.7 ms. Taking the newest 50-message page
+instead: 3.2 ms.
+
+It also pins two correctness bugs, not just costs:
+- `ORDER BY created_at ASC LIMIT 500` returns the **oldest** 500 messages, so opening
+  a 10k-message chat showed "Message 0", not "Message 9950".
+- A cursor on `created_at` alone stalls inside a block of tied timestamps: it reached
+  **25 of 320** messages. The `(created_at, id)` keyset reaches all 320.
+
+## PersistWindowCheck.swift (I01)
+
+Guards a bug that making `persist()` async *introduced*, and which the async change
+would otherwise have shipped: a message arriving while the write is suspended had its
+dirty mark eaten by `dirtyConversations.subtract(committed)`, leaving it in memory,
+not on disk, with nothing scheduled to retry — lost at exit.
+
+```sh
+xcrun -sdk macosx swiftc -O -o /tmp/persistcheck apps/ios/checks/PersistWindowCheck.swift
+/tmp/persistcheck
+```
+
+Restore the `subtract(committed)` line and it must FAIL, printing an empty dirty set.
