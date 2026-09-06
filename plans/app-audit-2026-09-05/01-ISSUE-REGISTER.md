@@ -1238,7 +1238,7 @@ The table above supersedes historical completion records below it. A02/M01/C02/C
 - **Status:** IMPLEMENTED_UNVERIFIED. The boundary exists and is enforced at build time on
   Android and at launch on iOS; **no release artifact was produced or inspected**, which is what
   Q03's acceptance actually asks for. See limitations.
-- **Source/fix commit:** commit containing this record, parent `8f3467f`.
+- **Source/fix commit:** `f1072b2`, parent `8f3467f`.
 - **Files:** Android `app/build.gradle.kts`, `net/ApiClient.kt`, `src/main/AndroidManifest.xml`,
   `src/debug/AndroidManifest.xml` (new), `src/debug/res/xml/network_security_config.xml` (new),
   `src/test/java/com/voiid/app/EnvironmentBoundaryTest.kt` (new); iOS

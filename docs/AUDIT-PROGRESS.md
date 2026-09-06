@@ -23,7 +23,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### Q03 — A release build can no longer ship pointing at the dev server
-`pending` · P1 · Android + iOS · **implemented, not verified**
+`f1072b2` · P1 · Android + iOS · **implemented, not verified**
 
 Both apps hardcoded the development backend, and nothing anywhere set anything else. There was
 no separation between a debug build and a release one — a signed release would have talked to
