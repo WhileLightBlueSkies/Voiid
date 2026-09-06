@@ -92,7 +92,8 @@ import com.voiid.app.ui.theme.VoiidFont
  * A bottom-nav destination.
  *
  * ADDING A TAB IS ONE LINE — a new entry here plus its screen in the `when` below. The bar
- * renders `Tab.entries`, so nothing in the layout needs touching.
+ * renders `Tab.visible`, so nothing in the layout needs touching. A tab left out of `visible`
+ * is unreachable by every route.
  *
  * Icons are Material vector icons, OUTLINED when inactive and FILLED when selected. They
  * replaced bundled PNG drawables (tab_ai/chats/stories/map/clips), which is why the bar looked
@@ -112,14 +113,45 @@ private enum class Tab(
     MAP(Icons.Outlined.Map, Icons.Filled.Map, "Map"),                // Feature (B) — docs/LOCATION.md §7
     GAMES(Icons.Outlined.SportsEsports, Icons.Filled.SportsEsports, "Games"),
     CLIPS(Icons.Outlined.PlayCircleOutline, Icons.Filled.PlayCircle, "Clips"),
+    ;
+
+    companion object {
+        /**
+         * The tabs the bar actually shows, and the order it steps through.
+         *
+         * `AI` is HIDDEN, matching iOS `Tab.visible` in RootTabView.swift. Its screen is not
+         * wired to anything: `AIStore.send` waits 1.2s and appends a hardcoded reply, and no
+         * AI route exists on the server. A tab that answers every question with the same
+         * sentence is worse than an absent one — it advertises a feature that does not exist
+         * and cannot be made to work by the user.
+         *
+         * Kept as an entry rather than deleted so `AIChatView` and `AIStore` still compile and
+         * re-enabling it is one line, exactly as on iOS.
+         *
+         * Everything reads this instead of `entries`: the bar renders it, the indicator
+         * measures it, and the default tab is `CHAT` — so a hidden tab cannot be reached by
+         * any route.
+         */
+        val visible: List<Tab> = entries.filter { it != AI }
+    }
+
+    /**
+     * This tab's position in the BAR, which is not its `ordinal` once a tab is hidden.
+     *
+     * The scroll-into-view maths and the indicator both place a tab at `slotWidth * index`.
+     * Using `ordinal` there counts AI, so with AI hidden every tab would be measured one slot
+     * to the right of where it is actually drawn — the indicator would sit under the wrong
+     * label, and the last tab would scroll a slot past the end of the row.
+     */
+    val slot: Int get() = visible.indexOf(this).coerceAtLeast(0)
 }
 
 /** Past this many tabs the bar drops labels and goes icon-only. Mirrors iOS `labelLimit`. */
 private const val TAB_LABEL_LIMIT = 5
 
 /**
- * Main app surface — the custom bottom nav (AI · Chats · Clips) plus the overlays that cover it
- * (chat detail, clip fullscreen). Port of `RootTabView.swift` + iOS navigation behaviour.
+ * Main app surface — the custom bottom nav (Chats · Moments · Communities · Map · Games ·
+ * Clips) plus the overlays that cover it (chat detail, clip fullscreen). Port of `RootTabView.swift` + iOS navigation behaviour.
  */
 @Composable
 fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
@@ -927,7 +959,7 @@ private fun TabBar(
             // which is what a scroll should do — reveal, not rearrange.
             LaunchedEffect(selected) {
                 val slotPx = with(density) { slotW.toPx() }
-                val leading = slotPx * selected.ordinal
+                val leading = slotPx * selected.slot
                 val trailing = leading + slotPx
                 val viewportPx = with(density) { maxWidth.toPx() }
                 val visibleStart = scroll.value.toFloat()
@@ -951,7 +983,7 @@ private fun TabBar(
             }
 
             Box(Modifier.horizontalScroll(scroll)) {
-                Box(Modifier.width(slotW * Tab.entries.size)) {
+                Box(Modifier.width(slotW * Tab.visible.size)) {
                     // ELASTIC indicator — an underline, not a filled pill (the pill covered
                     // the glyph it was meant to highlight). The stretch is preserved: the
                     // LEADING edge springs faster than the trailing one, so the bar elongates
@@ -961,12 +993,12 @@ private fun TabBar(
                     // It lives INSIDE the scrolling content, so it tracks the row rather than
                     // detaching from its tab when the bar is scrolled.
                     val barW = 22.dp
-                    val leftTarget = slotW * selected.ordinal + (slotW - barW) / 2
+                    val leftTarget = slotW * selected.slot + (slotW - barW) / 2
                     val rightTarget = leftTarget + barW
 
-                    var prevIndex by remember { mutableStateOf(selected.ordinal) }
-                    val movingRight = selected.ordinal >= prevIndex
-                    SideEffect { prevIndex = selected.ordinal }
+                    var prevIndex by remember { mutableStateOf(selected.slot) }
+                    val movingRight = selected.slot >= prevIndex
+                    SideEffect { prevIndex = selected.slot }
 
                     val fast = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
                     val slow = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessLow)
@@ -982,7 +1014,7 @@ private fun TabBar(
                     )
 
                     Row {
-                        Tab.entries.forEach { t ->
+                        Tab.visible.forEach { t ->
                             TabItem(
                                 t,
                                 active = selected == t,
