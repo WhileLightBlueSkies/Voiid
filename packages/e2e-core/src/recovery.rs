@@ -26,6 +26,29 @@
 //! applies here. Any change to the KDF parameters, the wrap layout, or the
 //! phrase encoding MUST go through cryptographic review before shipping. Do not
 //! substitute custom primitives.
+//!
+//! ## PIN ENTROPY — the limit that no amount of Argon2id removes (S04)
+//!
+//! The two recovery paths are NOT of equal strength, and the difference is not a
+//! detail of implementation quality — it is arithmetic:
+//!
+//! - The BIP39 phrase carries 256 bits. It is not guessable.
+//! - A 6-digit PIN carries ~20 bits. Argon2id makes each guess expensive, so it
+//!   raises the COST of an offline search; it does not make one infeasible.
+//!
+//! Anyone holding a `PinWrappedSecret` can attempt every PIN offline, at their own
+//! pace, with no server involved and nothing able to observe or stop them. That is
+//! inherent to storing a wrap the client unwraps by itself — it is not a bug in
+//! this module, and it cannot be fixed by tuning parameters here.
+//!
+//! Consequently: server-side attempt counters do NOT bound guessing against a wrap
+//! that has been fetched. `backend/api/src/routes/recovery.ts` carries the full
+//! threat model, including why the client-reported counter there is telemetry
+//! rather than a boundary. Closing this properly needs a different design — a
+//! high-entropy recovery secret, or a server-assisted protocol (OPRF/SVR) that
+//! never hands out an offline verifier — and S04 makes that a release gate
+//! requiring a cryptographic reviewer. Nothing in this module should be read as
+//! having satisfied it.
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};

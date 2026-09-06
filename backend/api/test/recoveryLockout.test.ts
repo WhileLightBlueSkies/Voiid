@@ -1,8 +1,14 @@
-// The online PIN guess-limiting state machine.
+// The client-reported attempt state machine.
 //
-// This is what stands between an attacker holding a stolen JWT and an exhaustive
-// online search of a 6-digit PIN. A regression here is silent (nothing errors; the
-// lock just stops locking), so every transition is asserted explicitly.
+// This header used to say the module "is what stands between an attacker holding a
+// stolen JWT and an exhaustive online search of a 6-digit PIN." It does not, and
+// S04 is the finding that says so: the attacker controls every input to this
+// machine and can decline to report failures or report a success to reset it.
+//
+// These tests still matter — an honest client's backoff must not silently stop
+// working, and the envelope validation must not let unvalidated shapes be stored —
+// but passing them establishes NOTHING about resistance to offline PIN guessing.
+// The server-observable half is tested in recoveryMeteringPostgres.test.ts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
