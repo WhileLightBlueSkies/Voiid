@@ -102,7 +102,7 @@ fun VoiidDialog(
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false,
-            dismissOnBackPress = false, // routed through the animated handler above
+            dismissOnBackPress = backDismissable && !busy,
             dismissOnClickOutside = false,
         ),
     ) {
@@ -243,7 +243,7 @@ fun VoiidDialogCustom(
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false,
-            dismissOnBackPress = false,
+            dismissOnBackPress = backDismissable,
             dismissOnClickOutside = false,
         ),
     ) {

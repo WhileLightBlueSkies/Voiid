@@ -2,6 +2,7 @@ package com.voiid.app.net
 
 import com.voiid.app.BuildConfig
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -115,11 +116,16 @@ class ApiClient(
         }
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         private val defaultClient = OkHttpClient.Builder()
+            .retryOnConnectionFailure(false)
+            .callTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
         // Longer timeouts for raw blob transfers (backup uploads up to 50 MiB).
         private val rawClient = OkHttpClient.Builder()
+            .retryOnConnectionFailure(false)
+            .callTimeout(180, TimeUnit.SECONDS)
             .connectTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
@@ -155,13 +161,17 @@ class ApiClient(
         val reqBody = jsonBody?.toRequestBody(JSON_MEDIA)
         builder.method(method, reqBody ?: if (method == "GET") null else "".toRequestBody(JSON_MEDIA))
 
-        val resp = try {
-            http.newCall(builder.build()).execute()
+        val response = try {
+            http.newCall(builder.build()).consumeCancellable {
+                RawResponse(it.code, it.header("Retry-After"), it.body?.bytes() ?: ByteArray(0))
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw ApiError.Transport(e)
         }
-        resp.use {
-            val text = it.body?.string() ?: ""
+        response.let {
+            val text = it.body.toString(Charsets.UTF_8)
             // 426 → this build is below minSupportedVersion; raise the global gate.
             if (it.code == 426) {
                 val url = runCatching { json.decodeFromString<UpdateBody>(text).update_url }.getOrNull()
@@ -226,15 +236,17 @@ class ApiClient(
         val mediaType = contentType.toMediaType()
         val reqBody = body?.toRequestBody(mediaType)
         builder.method(method, reqBody ?: if (method == "GET") null else ByteArray(0).toRequestBody(mediaType))
-        val resp = try {
-            rawClient.newCall(builder.build()).execute()
+        val response = try {
+            rawClient.newCall(builder.build()).consumeCancellable {
+                RawResponse(it.code, it.header("Retry-After"), it.body?.bytes() ?: ByteArray(0))
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw ApiError.Transport(e)
         }
-        resp.use {
-            if (it.code == 401) tokens.clear()
-            RawResponse(it.code, it.header("Retry-After"), it.body?.bytes() ?: ByteArray(0))
-        }
+        if (response.code == 401) tokens.clear()
+        response
     }
 
     /** Convenience: deserialize the response into [T]. */

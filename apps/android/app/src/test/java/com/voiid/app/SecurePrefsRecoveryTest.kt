@@ -82,8 +82,8 @@ class SecurePrefsRecoveryTest {
     }
 
     @Test
-    fun `corrupted ciphertext is quarantined, and only that store`() {
-        assertEquals(Action.QUARANTINE_AND_REBUILD,
+    fun `corrupted ciphertext remains unavailable until explicit recovery`() {
+        assertEquals(Action.REPORT_UNAVAILABLE,
             SecurePrefsPolicy.decide(Failure.CORRUPTED, attempt = 1))
     }
 
@@ -104,7 +104,7 @@ class SecurePrefsRecoveryTest {
         }
         assertTrue(
             "every action must be retry, quarantine or report — there is no destructive one left",
-            actions.all { it == Action.RETRY || it == Action.QUARANTINE_AND_REBUILD || it == Action.REPORT_UNAVAILABLE }
+            actions.all { it == Action.RETRY || it == Action.REPORT_UNAVAILABLE }
         )
     }
 

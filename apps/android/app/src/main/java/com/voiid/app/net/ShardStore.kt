@@ -1,6 +1,7 @@
 package com.voiid.app.net
 
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Writing a conversation shard, and admitting when it did not happen (I03).
@@ -46,18 +47,23 @@ object ShardStore {
          */
         rename: (File, File) -> Boolean = { from, to -> from.renameTo(to) },
     ): Write {
-        val tmp = File(file.parentFile, "${file.name}.tmp")
+        var tmp: File? = null
         return try {
-            tmp.writeText(text)
-            if (!rename(tmp, file)) {
+            val staging = File.createTempFile("${file.name}.", ".tmp", file.parentFile)
+            tmp = staging
+            FileOutputStream(staging).use { stream ->
+                stream.write(text.toByteArray(Charsets.UTF_8))
+                stream.fd.sync()
+            }
+            if (!rename(staging, file)) {
                 // The previous shard is still intact, and that is the point. Clean up the temp
                 // so a later load cannot mistake it for a real shard, and report the failure.
-                tmp.delete()
+                tmp?.delete()
                 return Write.Failed(IllegalStateException("could not replace ${file.name}"))
             }
             Write.Committed
         } catch (e: Throwable) {
-            runCatching { tmp.delete() }
+            runCatching { tmp?.delete() }
             Write.Failed(e)
         }
     }
@@ -80,10 +86,10 @@ object ShardStore {
         if (!file.exists()) return null
         return runCatching {
             val dir = File(file.parentFile?.parentFile ?: file.parentFile!!, QUARANTINE_DIR).apply { mkdirs() }
-            val target = File(dir, quarantineName(file.name, at))
+            val target = File.createTempFile(quarantineName(file.name, at), ".quarantine", dir)
             if (!file.renameTo(target)) {
-                file.copyTo(target, overwrite = true)
-                file.delete()
+                target.delete()
+                return null
             }
             target
         }.getOrNull()

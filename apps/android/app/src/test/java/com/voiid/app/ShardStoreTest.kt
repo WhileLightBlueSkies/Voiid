@@ -177,4 +177,15 @@ class ShardStoreTest {
         dirty.mark("a"); dirty.mark("a")
         assertEquals(setOf("a"), dirty.claim())
     }
+    @Test
+    fun `same timestamp quarantine never replaces earlier evidence`() {
+        val file = shard()
+        file.writeText("first")
+        val first = ShardStore.quarantine(file, 123)!!
+        file.writeText("second")
+        val second = ShardStore.quarantine(file, 123)!!
+        assertEquals("first", first.readText())
+        assertEquals("second", second.readText())
+        assertNotEquals(first, second)
+    }
 }

@@ -51,7 +51,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.voiid.app.ui.theme.VoiidColor
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ensureActive
+import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -97,7 +98,7 @@ object VoiidSheetTokens {
     const val OVERDRAG_RESISTANCE: Float = 0.30f
     /** Release beyond this fraction of sheet height past the last detent dismisses. */
     const val DISMISS_EXCESS_FRACTION: Float = 0.22f
-    /** Downward fling faster than this (px/s) while past the lowest detent dismisses. */
+    /** Downward fling faster than this (dp/s) while past the lowest detent dismisses. */
     const val DISMISS_FLING_VELOCITY: Float = 1900f
 }
 
@@ -140,19 +141,20 @@ fun VoiidSheet(
     var shown by remember { mutableStateOf(visible) }
     var hiding by remember { mutableStateOf(false) }
 
-    if (visible && !shown) {
-        shown = true
-        hiding = false
+    LaunchedEffect(visible) {
+        if (visible) {
+            shown = true
+            hiding = false
+        } else if (shown) hiding = true
     }
-    if (!visible && shown && !hiding) hiding = true
 
     if (shown) {
         Dialog(
-            onDismissRequest = {},
+            onDismissRequest = { if (dismissOnBack && !hiding) hiding = true },
             properties = DialogProperties(
                 usePlatformDefaultWidth = false,
                 decorFitsSystemWindows = false,
-                dismissOnBackPress = false,
+                dismissOnBackPress = dismissOnBack,
                 dismissOnClickOutside = false,
             ),
         ) {
@@ -191,37 +193,34 @@ private fun SheetBody(
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    // Animated Back dismissal: the dialog's own back handling is disabled so Back plays the
-    // exit instead of tearing the window down.
-    androidx.activity.compose.BackHandler(enabled = !hiding && dismissOnBack) { onRequestHide() }
-
     // Container metrics (px).
     var containerH by remember { mutableIntStateOf(0) }
     var contentH by remember { mutableIntStateOf(0) }
     val imeH = WindowInsets.ime.getBottom(density)
+    val availableH = (containerH - imeH).coerceAtLeast(0)
+    val latestOnHidden by rememberUpdatedState(onHidden)
 
     // Height (px) of each detent, matching [detents] order.
-    val detentHeights = remember(detents, containerH, contentH) {
+    val detentHeights = remember(detents, availableH, contentH, density) {
         detents.map { d ->
             when (d) {
                 is VoiidDetent.Fixed -> with(density) { d.height.toPx() }
-                VoiidDetent.Medium -> containerH * VoiidSheetTokens.MEDIUM_FRACTION
-                VoiidDetent.Large -> containerH - with(density) { VoiidSheetTokens.largeTopGap.toPx() }
+                VoiidDetent.Medium -> availableH * VoiidSheetTokens.MEDIUM_FRACTION
+                VoiidDetent.Large -> availableH - with(density) { VoiidSheetTokens.largeTopGap.toPx() }
                 VoiidDetent.Content -> contentH.toFloat()
-            }.coerceIn(0f, containerH.toFloat())
+            }.coerceIn(0f, availableH.toFloat())
         }
     }
     val largestH = detentHeights.maxOrNull() ?: 0f
     // Translation space: 0 = fully raised at the largest detent; larger = slid further down.
-    val anchors = remember(detentHeights, largestH) {
-        detentHeights.map { largestH - it }.sorted()
-    }
+    val detentAnchors = detentHeights.map { largestH - it }
+    val anchors = detentAnchors.distinct().sorted()
     val minAnchor = anchors.firstOrNull() ?: 0f   // most-raised
     val maxAnchor = anchors.lastOrNull() ?: 0f    // most-lowered
-    val offscreenAnchor = maxAnchor + largestH.coerceAtLeast(1f)
+    val offscreenAnchor = largestH.coerceAtLeast(1f) + imeH
     // When any explicit detent exists the SURFACE pins to the largest one (content lives at its
     // top, like an iOS sheet grown to large); a Content-only sheet hugs its content.
-    val pinnedSurfaceHeight = remember(detents, detentHeights) {
+    val pinnedSurfaceHeight = remember(detents, detentHeights, density) {
         detentHeights
             .filterIndexed { i, _ -> detents[i] !is VoiidDetent.Content }
             .maxOrNull()
@@ -229,7 +228,7 @@ private fun SheetBody(
     }
 
     var settledIndex by remember {
-        mutableIntStateOf(initialDetentIndex.coerceIn(0, (anchors.size - 1).coerceAtLeast(0)))
+        mutableIntStateOf(initialDetentIndex.coerceIn(0, (detents.size - 1).coerceAtLeast(0)))
     }
     // NaN until entrance positions it; guards against drawing at 0 before measurement.
     var rawTranslate by remember { mutableStateOf(Float.NaN) }
@@ -241,7 +240,7 @@ private fun SheetBody(
         when {
             !rawTranslate.isNaN() && !animating -> rawTranslate
             animating -> anim.value
-            else -> maxAnchor // unpositioned: treat as fully lowered (invisible)
+            else -> offscreenAnchor // hidden until measurement and placement
         }
 
     fun beginDirectDrag() {
@@ -253,16 +252,15 @@ private fun SheetBody(
         if (rawTranslate.isNaN()) rawTranslate = minAnchor
     }
 
-    fun animateTo(target: Float, spec: AnimationSpec<Float>, onDone: () -> Unit = {}) {
+    fun animateTo(target: Float, spec: AnimationSpec<Float>, velocity: Float = 0f) {
+        val start = displayTranslate()
         settleJob?.cancel()
-        val start = rawTranslate.takeUnless { it.isNaN() } ?: minAnchor
         settleJob = scope.launch {
             animating = true
             anim.snapTo(start)
-            anim.animateTo(target, spec)
+            anim.animateTo(target, spec, initialVelocity = velocity)
             rawTranslate = target
             animating = false
-            onDone()
         }
     }
 
@@ -271,30 +269,42 @@ private fun SheetBody(
         stiffness = VoiidSheetTokens.settleStiffness,
     )
 
-    // Entrance once the container has been measured.
-    LaunchedEffect(containerH) {
-        if (containerH > 0 && rawTranslate.isNaN()) {
-            val target = anchors.getOrNull(settledIndex) ?: minAnchor
-            if (reduceMotion) rawTranslate = target else animateTo(target, settleSpec)
-        }
+    // Retarget the selected detent on measurement, density, IME or presentation changes.
+    LaunchedEffect(detentHeights, density, imeH, hiding, reduceMotion) {
+        if (largestH <= 0f || hiding) return@LaunchedEffect
+        val target = detentAnchors.getOrNull(settledIndex) ?: minAnchor
+        if (rawTranslate.isNaN()) rawTranslate = offscreenAnchor
+        if (reduceMotion) {
+            settleJob?.cancel()
+            animating = false
+            rawTranslate = target
+        } else animateTo(target, settleSpec)
     }
 
-    // Exit: travel fully offscreen (or fade under reduced motion) BEFORE completing the
-    // callback — callers may safely tear down state in [onHidden].
-    LaunchedEffect(hiding) {
+    // Exit: wait for successful completion. Reopening cancels both this owner and its job.
+    LaunchedEffect(hiding, offscreenAnchor, reduceMotion) {
         if (!hiding) return@LaunchedEffect
-        if (reduceMotion) {
-            kotlinx.coroutines.delay(140)
-        } else {
-            animateTo(offscreenAnchor, tween(durationMillis = 220))
+        try {
+            if (reduceMotion) {
+                settleJob?.cancel()
+                rawTranslate = displayTranslate()
+                animating = false
+                kotlinx.coroutines.delay(140)
+            } else {
+                animateTo(offscreenAnchor, tween(durationMillis = 220))
+                settleJob?.join()
+            }
+            coroutineContext.ensureActive()
+            latestOnHidden()
+        } finally {
+            if (hiding) settleJob?.cancel()
         }
-        onHidden()
     }
 
     fun settleAfterGesture(velocityY: Float) {
         beginDirectDrag()
         val current = rawTranslate
-        val flungDown = velocityY > VoiidSheetTokens.DISMISS_FLING_VELOCITY
+        val flungDown = velocityY > (VoiidSheetTokens.DISMISS_FLING_VELOCITY * density.density)
         val overdrag = current - maxAnchor
         if (overdrag > largestH * VoiidSheetTokens.DISMISS_EXCESS_FRACTION ||
             (flungDown && overdrag > 0f)
@@ -303,22 +313,22 @@ private fun SheetBody(
             return
         }
         val target = when {
-            velocityY < -VoiidSheetTokens.DISMISS_FLING_VELOCITY ->
+            velocityY < -(VoiidSheetTokens.DISMISS_FLING_VELOCITY * density.density) ->
                 anchors.lastOrNull { it < current } ?: minAnchor
             flungDown ->
                 anchors.firstOrNull { it > current } ?: maxAnchor
             else -> anchors.minByOrNull { abs(it - current) } ?: minAnchor
         }
-        settledIndex = anchors.indexOf(target).coerceAtLeast(0)
-        if (reduceMotion) rawTranslate = target else animateTo(target, settleSpec)
+        settledIndex = detentAnchors.indexOf(target).coerceAtLeast(0)
+        if (reduceMotion) rawTranslate = target else animateTo(target, settleSpec, velocityY)
     }
 
     // Nested-scroll handoff: an inner list drags the sheet up as it scrolls past its own top,
     // and hands its leftover downward overscroll to the sheet at its bottom.
-    val nestedHandoff = remember(minAnchor, maxAnchor) {
+    val nestedHandoff = remember(minAnchor, maxAnchor, largestH, density, hiding, reduceMotion) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (available.y < 0 && !animating) {
+                if (!hiding && source == NestedScrollSource.UserInput && available.y < 0) {
                     val current = displayTranslate()
                     val room = current - minAnchor
                     if (room > 0f) {
@@ -332,7 +342,7 @@ private fun SheetBody(
             }
 
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                if (available.y > 0 && !animating) {
+                if (!hiding && source == NestedScrollSource.UserInput && available.y > 0) {
                     beginDirectDrag()
                     rawTranslate = displayTranslate() + available.y
                     return available
@@ -341,7 +351,7 @@ private fun SheetBody(
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                if (abs(available.y) > 100f) settleAfterGesture(available.y)
+                if (!hiding) settleAfterGesture(available.y)
                 return available
             }
         }
@@ -376,7 +386,7 @@ private fun SheetBody(
         Box(
             Modifier
                 .fillMaxSize()
-                .alpha(travel * VoiidSheetTokens.scrimAlpha)
+                .alpha(travel * fadeAlpha * VoiidSheetTokens.scrimAlpha)
                 .background(Color.Black),
         )
 
@@ -395,6 +405,7 @@ private fun SheetBody(
                 // Consume taps landing on the surface so they never reach the scrim detector.
                 .pointerInput(Unit) { detectTapGestures { } }
                 .pointerInput(hiding, minAnchor, maxAnchor) {
+                    if (hiding) return@pointerInput
                     detectVerticalDragGestures(
                         onDragStart = { tracker.resetTracking(); beginDirectDrag() },
                         onDragEnd = { settleAfterGesture(tracker.calculateVelocity().y) },

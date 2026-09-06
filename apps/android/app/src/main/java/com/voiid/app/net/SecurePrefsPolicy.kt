@@ -45,10 +45,6 @@ object SecurePrefsPolicy {
         /** Wait and try again. Costs a moment; costs nothing if wrong. */
         RETRY,
 
-        /** Move this ONE store's file aside and rebuild it empty. Never touches the master key,
-         *  never touches a sibling store, never deletes anything. */
-        QUARANTINE_AND_REBUILD,
-
         /** Say so, and stop. The caller decides; a reset is the user's to authorise. */
         REPORT_UNAVAILABLE,
     }
@@ -121,7 +117,7 @@ object SecurePrefsPolicy {
 
         // The one case a file operation answers, and it is answered by moving the file, not
         // by removing it: the ciphertext might matter later, and the evidence certainly does.
-        Failure.CORRUPTED -> Action.QUARANTINE_AND_REBUILD
+        Failure.CORRUPTED -> Action.REPORT_UNAVAILABLE
 
         // Never guess. Guessing is the bug.
         Failure.UNKNOWN -> Action.REPORT_UNAVAILABLE
