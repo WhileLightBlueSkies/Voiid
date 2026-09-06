@@ -1192,7 +1192,7 @@ The table above supersedes historical completion records below it. A02/M01/C02/C
 - **Status:** DONE for the policy: the destructive fallback is gone, schemas are exported and
   committed, and the build fails on a missing migration. The historical-fixture upgrade test
   A04 asks for is NOT written — see limitations.
-- **Source/fix commit:** commit containing this record, parent `35934d7`.
+- **Source/fix commit:** `2e493ce`, parent `35934d7`.
 - **Files:** `apps/android/app/src/main/java/com/voiid/app/store/VoiidDatabase.kt`,
   `app/build.gradle.kts`, `app/schemas/com.voiid.app.store.VoiidDatabase/4.json` (new, generated
   and committed); `app/src/test/java/com/voiid/app/RoomMigrationPolicyTest.kt` (new).

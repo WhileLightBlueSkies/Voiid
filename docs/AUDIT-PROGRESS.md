@@ -23,7 +23,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### A04 — A forgotten migration can no longer wipe local history
-`pending` · P1 · Android
+`2e493ce` · P1 · Android
 
 The database was configured to **drop and recreate every table** on any version bump that lacked
 a migration. The comment above that setting already described the danger accurately — it takes
