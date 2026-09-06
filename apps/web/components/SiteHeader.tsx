@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { SURFACES, HEADER_NAV } from '../lib/nav';
 import { Wordmark } from './Wordmark';
@@ -62,28 +62,34 @@ export function SiteHeader() {
   const pathname = usePathname() ?? '/';
   const [open, setOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const brandRef = useRef<HTMLAnchorElement>(null);
 
   // Whether the collapsing menu is the one on screen. Read from the SAME query the stylesheet
   // uses, because the two disagreeing is how the desktop navigation would end up inert.
   //
-  // Starts false and is corrected in an effect: the server has no viewport, so assuming mobile
-  // would render an inert navigation into the HTML and hydrate a mismatch.
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
+  // Start collapsed for server rendering; measure before paint during hydration.
+  const [isMobile, setIsMobile] = useState(true);
+  useLayoutEffect(() => {
     const mq = window.matchMedia(MOBILE_QUERY);
-    const sync = () => setIsMobile(mq.matches);
+    let lastFocused: Element | null = document.activeElement;
+    const rememberFocus = (event: FocusEvent) => { lastFocused = event.target as Element; };
+    document.addEventListener('focusin', rememberFocus);
+    const sync = () => {
+      const focused = document.activeElement === document.body ? lastFocused : document.activeElement;
+      if (mq.matches && navRef.current?.contains(focused)) toggleRef.current?.focus();
+      if (!mq.matches && focused === toggleRef.current) brandRef.current?.focus();
+      setIsMobile(mq.matches);
+      setOpen(false);
+    };
     sync();
     mq.addEventListener('change', sync);
-    return () => mq.removeEventListener('change', sync);
+    return () => { mq.removeEventListener('change', sync); document.removeEventListener('focusin', rememberFocus); };
   }, []);
 
   const close = useCallback((restoreFocus: boolean) => {
-    setOpen((wasOpen) => {
-      // Focus is only pulled back if it is still inside the thing being closed — moving it
-      // from wherever the user has since gone is worse than leaving it.
-      if (wasOpen && restoreFocus) toggleRef.current?.focus();
-      return false;
-    });
+    if (restoreFocus && navRef.current?.contains(document.activeElement)) toggleRef.current?.focus();
+    setOpen(false);
   }, []);
 
   // Escape closes and hands focus back to the control that opened it.
@@ -96,7 +102,7 @@ export function SiteHeader() {
 
   // A navigation closes the menu. Without this the panel stays open over the new page, and
   // focus is left inside a menu describing somewhere the user has already left.
-  useEffect(() => { setOpen(false); }, [pathname]);
+  useLayoutEffect(() => { close(true); }, [pathname, close]);
 
   // Growing past the breakpoint with the menu open must not leave the desktop header in a
   // half-open state, or `inert` applied from a mobile flag nobody can see any more.
@@ -112,7 +118,7 @@ export function SiteHeader() {
   return (
     <header className={styles.header} data-nav-open={open ? 'true' : undefined}>
       <div className={styles.bar}>
-        <Link href="/" className={styles.brand} aria-label="Voiid — home">
+        <Link href="/" ref={brandRef} className={styles.brand} aria-label="Voiid — home">
           <Logomark size={23} idPrefix="header" className={styles.mark} />
           <Wordmark size={22} />
         </Link>
@@ -143,7 +149,7 @@ export function SiteHeader() {
           out of the accessibility tree, which `overflow: hidden` never did. Applied only at
           the mobile breakpoint — at desktop this element IS the navigation.
         */}
-        <nav id="site-nav" className={styles.nav} aria-label="Main" inert={collapsed}>
+        <nav ref={navRef} aria-hidden={collapsed || undefined} id="site-nav" className={styles.nav} aria-label="Main" inert={collapsed}>
           {/* The collapsing wrapper: `grid-template-rows` on .nav animates the
               height, and this element is what gets clipped while it does. */}
           <div className={styles.navInner}>
