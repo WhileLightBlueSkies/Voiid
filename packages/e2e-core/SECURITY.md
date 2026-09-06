@@ -70,8 +70,18 @@ All dependencies are permissively licensed. No AGPL, no libsignal code.
 
 ## Dependency advisories (`cargo audit`)
 
-`cargo audit` runs in CI (`.github/workflows/e2e-core-audit.yml`) over the FULL
-transitive tree, weekly and on every change to this crate.
+`cargo audit` runs in CI over the FULL transitive tree: on every change via
+`.github/workflows/ci.yml`, and on a schedule via `.github/workflows/nightly.yml`
+(which also runs the `--ignored` fuzz/soak tests). Both retain the JSON report as
+a build artifact, including when the scan fails.
+
+*(This previously named a workflow `e2e-core-audit.yml` that did not exist — E01
+found the claim, not the file. The audit is real and runs; only the filename was
+wrong.)*
+
+**cargo-audit must be `^0.22` or newer.** 0.21 cannot parse the CVSS 4.0 severity
+strings the advisory database now uses, and fails to load the database *entirely*
+rather than skipping the affected entries — so it audits nothing.
 
 **Why this is not optional:** a by-hand review of the *direct* dependencies on
 2026-08-16 found zero advisories. `cargo audit`, walking all 254 transitive
@@ -82,7 +92,23 @@ Direct-dependency review is not sufficient for a crypto crate.
 Two were fixable immediately and are fixed (`crossbeam-epoch`, `anyhow`). The
 remaining nine are pinned beyond our reach: `hpke-rs 0.6.1` pins the vulnerable
 `libcrux-*` `0.0.x` releases, and because `0.0.x` versions are semver-incompatible
-with each other, Cargo cannot bump them. Upstream fixes exist but are reachable
+with each other, Cargo cannot bump them. **Status as of 2026-09-06 (re-verified, E01):** a fresh scan with cargo-audit
+0.22.2 against 1239 advisories over 254 crates reports **0 vulnerabilities and 0
+warnings** with the current ignore list, and *exactly* the ten known advisories
+without it — nothing stale, nothing new. Reports retained under
+`plans/app-audit-2026-09-05/evidence/`.
+
+**The blocker below has since expired, and that is now the open item.** openmls
+0.9.0, openmls_traits 0.6.0 and openmls_libcrux_crypto 0.4.0 are all STABLE
+releases now, so "we do not ship release-candidate crypto" no longer applies. The
+upgrade was attempted on 2026-09-06 and deliberately not taken: openmls 0.9
+breaks the API (StorageProvider arity, the `Signer` trait, tls_codec 0.5) and
+**removes `MLS_256_XWING_CHACHA20POLY1305_SHA256_Ed25519`**, the ciphersuite this
+crate uses for groups. Taking it changes the group protocol's cryptography and
+its post-quantum posture, which needs the review and mixed-version fixtures E01
+requires — it is not an unreviewed dependency bump. Owner: crypto review.
+
+Upstream fixes exist but are reachable
 only through `openmls_libcrux_crypto 0.4.0-rc`, which drags the whole MLS stack
 (`openmls 0.9-rc`, `openmls_traits 0.6-rc`) onto release candidates. **We do not
 ship release-candidate crypto**, so they are recorded in `.cargo/audit.toml` with

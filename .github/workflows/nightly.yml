@@ -65,8 +65,26 @@ jobs:
       - name: cargo audit
         working-directory: packages/e2e-core
         run: |
-          cargo install cargo-audit --locked --version ^0.21
-          cargo audit --deny warnings
+          # ^0.22, not ^0.21 (E01). cargo-audit 0.21 cannot parse CVSS 4.0 severity
+          # strings, which the advisory database now uses. On 0.21 the WHOLE database
+          # fails to load, so `cargo audit` scans nothing and exits non-zero — a hard
+          # failure rather than a silent pass, but it means this step had stopped
+          # being an audit. Verified 2026-09-06 against RUSTSEC-2026-0073.
+          cargo install cargo-audit --locked --version ^0.22
+          # Keep the report even when it passes: E01 requires retained scan evidence,
+          # and an exception that is never re-examined is how a liability becomes a
+          # silent acceptance.
+          cargo audit --json > cargo-audit-report.json || AUDIT_FAILED=1
+          cargo audit --deny warnings || AUDIT_FAILED=1
+          exit "${AUDIT_FAILED:-0}"
+
+      - name: retain the advisory scan
+        if: always()   # the report of a FAILING scan is the one worth keeping
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-report-${{ github.job }}
+          path: packages/e2e-core/cargo-audit-report.json
+          if-no-files-found: warn
 
       - uses: actions/setup-node@v4
         with:

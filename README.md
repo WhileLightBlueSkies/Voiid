@@ -17,7 +17,12 @@ docs/        PHASE_PLAN.md · CHECKLIST.md
 ## Golden rules (non-negotiable)
 - The **server never sees plaintext** — it stores/relays **ciphertext only**.
 - Server stores **public keys only**; private keys never leave the device.
-- All crypto via **libsignal** (wired in Phase 2, after AGPL licensing is cleared — blocker #1).
+- All crypto lives in **`packages/e2e-core`** (Rust), built on standard reviewed
+  primitives — **vodozemac** (Olm double ratchet) for 1:1, **OpenMLS** for groups,
+  Argon2id + AES-256-GCM for the recovery wrap. No home-grown constructions.
+  *(This line used to say "all crypto via libsignal, after AGPL licensing is
+  cleared". That never happened: choosing vodozemac/OpenMLS is what removed the
+  AGPL blocker. The rule was describing a plan, not the code — see E01.)*
 - **Supabase = Postgres host only** (not Supabase Auth, not Supabase Realtime). **Firebase = OTP sender only**.
 - Every external dependency behind a swappable interface.
 
