@@ -1,3 +1,5 @@
+> Current status: [single audit report](AUDIT-FINAL-REPORT.md). Earlier entries below are historical; the 6 September review supersedes their totals and A02/M01/C02/C04 completion claims.
+
 # Audit progress — what is fixed, and what it means
 
 A running record of the [2026-09-05 app audit](../plans/app-audit-2026-09-05/00-MASTER.md) as it
@@ -308,3 +310,11 @@ Every fix in the register carries the same sections, and two of them matter most
 - **Remaining limitations** — what was *not* proven. Device runs, load tests and production
   measurements are called out as missing rather than implied. Where an item says
   IMPLEMENTED_UNVERIFIED, this section is the reason.
+
+### P01/P02 — Independent request limits and atomic windows
+
+Ordinary community browsing no longer spends host-thread creation allowance. Authenticated route limits follow the account; anonymous traffic retains an IP guard. Redis counts and expiry update atomically, rejection responses include retry timing, and floods no longer produce one SQL write per rejection. Real route-order and Redis concurrency checks passed. See [evidence](audit-evidence/api-throttles.md). Earlier 18 + 4 + 30 totals were incorrect; the register has 50 entries.
+
+## 6 September continuation
+
+Integrated and checked recovered work after agent usage limits. API throttles, message retry race, cleanup queue durability, Android cancellation, admin request races and navigation focus received fixes. Detailed tests and remaining acceptance are in the [continuation evidence](audit-evidence/continuation-2026-09-06.md). The [single report](AUDIT-FINAL-REPORT.md) is the current overview.
