@@ -77,7 +77,7 @@ This matters for both server cost and battery/bandwidth on the client, so it's w
 
 | Game | Network pattern | Why |
 |---|---|---|
-| Snake (`.io` style) | Server tick ~10-15/sec, broadcasts full board diff to all players in the match | Continuous, all-players-see-all-players, matches the genre |
+| Snake (`.io` style) | Server tick 20/sec (shipped; the original 10-15 sketch left interpolation error larger than the kill radius), broadcasts full board diff to all players in the match | Continuous, all-players-see-all-players, matches the genre |
 | Air Hockey, Ping Pong, Pool | Server tick ~20-30/sec for ball physics, client-side interpolation between ticks for smoothness | Fast but only 2 players, physics must be authoritative to prevent phasing/cheating |
 | Archery, Snow Fight | Event-driven (send a "shot fired" with angle/power, server resolves trajectory and broadcasts result) rather than continuous streaming | These are aim-and-release actions, not continuous motion — no need to stream every frame of a bow draw |
 | Chess, Ludo, Sea Battle, Voiid Cards | Pure turn-based: one `game_input` per move, one `game_state` broadcast in response | Lowest bandwidth of all; this is identical in shape to how `typing`/`receipt` frames already work today |

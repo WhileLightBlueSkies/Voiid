@@ -33,6 +33,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'fs';
 import path from 'path';
 import http from 'http';
+import { randomUUID } from 'crypto';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 
@@ -390,7 +391,19 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
     return rows([]);
   }
 
-  // ── calls.ts: upsert invitee as invited
+  // ── calls.ts: upsert invitee as invited, WITH THE CAP IN THE SAME STATEMENT
+  //
+  // ── calls.ts: admission (R05)
+  //
+  // The cap is no longer decided by this INSERT's own WHERE. It could not be: under READ
+  // COMMITTED the count subquery reads the statement's snapshot, so two concurrent
+  // transactions both counted seven and both inserted. `admitParticipant` now locks the call
+  // row and counts inside that lock, which is what conferenceCapPostgres.test.ts verifies
+  // against a real database — the thing a fake cannot settle.
+  //
+  // What is left for the fake to model is the WRITE, unconditionally: the refusal decision has
+  // moved to the count handler below. Returning a row here is correct, because the real
+  // statement is now a plain upsert.
   if (s.startsWith('insert into call_participants (call_id, user_id, state, invited_by, state_changed_at)')) {
     const [callId, userId, invitedBy] = p;
     const cp = db.call_participants.find((r) => r.call_id === callId && r.user_id === userId);
@@ -402,7 +415,28 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
       call_id: callId, user_id: userId, device_id: null, state: 'invited',
       invited_by: invitedBy, joined_at: now(), left_at: null, state_changed_at: now(),
     });
-    return rows([]);
+    return rows([{ user_id: userId }]);
+  }
+
+  // ── calls.ts: the lifecycle re-check taken INSIDE the admission lock.
+  if (s.startsWith('select status from calls where id =')) {
+    const call = db.calls.find((c) => c.id === p[0]);
+    return rows(call ? [{ status: call.status }] : []);
+  }
+
+  // ── calls.ts: "is this invitee already on the roster?" — a re-invite takes no new seat.
+  if (s.startsWith('select 1 as one from call_participants')) {
+    const [callId, userId] = p;
+    const cp = db.call_participants.find(
+      (r) => r.call_id === callId && r.user_id === userId && r.left_at === null
+    );
+    return rows(cp ? [{ one: 1 }] : []);
+  }
+
+  // ── calls.ts: the seat count, now the thing that actually enforces the cap.
+  if (s.startsWith('select count(*)::text as n from call_participants')) {
+    const live = db.call_participants.filter((r) => r.call_id === p[0] && r.left_at === null).length;
+    return rows([{ n: String(live) }]);
   }
 
   // ── calls.ts: join / leave transitions
@@ -545,6 +579,11 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
 (redis as any).get = async (k: string) => (k.startsWith('auth:active:') ? '1' : redisStore.get(k) ?? null);
 (redis as any).set = async (k: string, v: string) => { redisStore.set(k, v); return 'OK'; };
 (redis as any).del = async (k: string) => { redisStore.delete(k); return 1; };
+(redis as any).eval = async (_script: string, _keys: number, key: string, ttl: number) => {
+  const count = Number(redisStore.get(key) ?? 0) + 1;
+  redisStore.set(key, String(count));
+  return [count, ttl];
+};
 
 const app = express();
 app.use(express.json());
@@ -878,6 +917,49 @@ test('re-inviting someone who already joined does not demote them to "Ringing…
   const cara = db.call_participants.find((cp) => cp.user_id === C)!;
   assert.equal(cara.state, 'joined');
   assert.equal(db.call_participants.filter((cp) => cp.call_id === CALL).length, 3, 'no duplicate row');
+});
+
+// The cap is enforced inside the INSERT's own WHERE, and the route turns "no row returned"
+// into the 409. That means an invite-refusal and an invite-success differ ONLY by whether the
+// statement wrote a row — so this asserts both directions against the roster, not just the
+// status code. Before the fake modelled `returning user_id`, every invite looked refused and
+// a cap assertion would have passed for entirely the wrong reason.
+test('the cap refuses the seat past the last one, and only that seat', async () => {
+  await seedScenario();
+  // Fill the room to exactly the cap. Ana and Ben already hold two seats once seeded.
+  await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
+  const filler: string[] = [];
+  while (db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length < MAX_CALL_PARTICIPANTS) {
+    const id = randomUUID();
+    filler.push(id);
+    db.users.push({ id, username: `f${filler.length}`, full_name: 'Filler', deleted_at: null, contact_pin_hash: null, contact_pin_enc: null });
+    db.contact_sync.push({ owner_user_id: A, contact_user_id: id }, { owner_user_id: id, contact_user_id: A });
+    const res = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: id });
+    assert.equal(res.status, 200, `seat ${filler.length} must be admitted: ${JSON.stringify(res.body)}`);
+  }
+  const atCap = db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length;
+  assert.equal(atCap, MAX_CALL_PARTICIPANTS);
+
+  // One past the cap is refused — and writes nothing.
+  const over = randomUUID();
+  db.users.push({ id: over, username: 'over', full_name: 'Over', deleted_at: null, contact_pin_hash: null, contact_pin_enc: null });
+  db.contact_sync.push({ owner_user_id: A, contact_user_id: over }, { owner_user_id: over, contact_user_id: A });
+  const refused = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: over });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.max_participants, MAX_CALL_PARTICIPANTS);
+  assert.equal(db.call_participants.some((cp) => cp.user_id === over), false, 'a refused invite must write no roster row');
+  assert.equal(db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length, MAX_CALL_PARTICIPANTS);
+
+  // A RE-invite of someone already in the full room still succeeds: it adds nobody, and
+  // refusing it would break re-inviting the last participant after a dropped connection.
+  const again = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length, MAX_CALL_PARTICIPANTS);
+
+  // And a seat freed by someone leaving is reusable — the cap counts live seats, not history.
+  await call('POST', `/calls/${CALL}/leave`, { user: filler[0], device: DEV_A });
+  const readmitted = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: over });
+  assert.equal(readmitted.status, 200, JSON.stringify(readmitted.body));
 });
 
 test('a second escalation does not resurrect a participant who left', async () => {

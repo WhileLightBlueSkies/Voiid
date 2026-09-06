@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Location sharing — SESSION lifecycle only (docs/LOCATION.md §9).
 //
 // ============================== THE RULE FOR THIS FILE ==============================
@@ -183,7 +184,7 @@ function rejectNonOpaqueBody(body: unknown): string | null {
 // THE SHARE KEY APPEARS IN NEITHER THE REQUEST NOR THE RESPONSE. Key distribution is
 // entirely client-side, inside an E2EE control message — which is also where the real
 // authorization lives, since only a device holding a live ratchet/MLS session can get it.
-router.post('/shares', requireAuth, asyncHandler(async (req, res) => {
+router.post('/shares', requireAuth, rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const bad = rejectNonOpaqueBody(req.body);
   if (bad) return res.status(400).json({ error: bad });
@@ -296,7 +297,7 @@ router.post('/shares', requireAuth, asyncHandler(async (req, res) => {
 // GET /location/shares -> { outbound: [...], inbound: [...] }
 // Active, unexpired, unrevoked only. This is how a reinstalled or relinked device
 // discovers "you still have a share running" instead of broadcasting silently forever.
-router.get('/shares', requireAuth, asyncHandler(async (req, res) => {
+router.get('/shares', requireAuth, rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
 
   const outbound = await query<ShareRow & { targets: string[] | null }>(
@@ -350,7 +351,7 @@ router.get('/shares', requireAuth, asyncHandler(async (req, res) => {
 
 // POST /location/shares/:id/extend  { duration_seconds } -> { expires_at }
 // Owner only. Extends from NOW, not from the old expiry, so "1 more hour" means an hour.
-router.post('/shares/:id/extend', requireAuth, asyncHandler(async (req, res) => {
+router.post('/shares/:id/extend', requireAuth, rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const bad = rejectNonOpaqueBody(req.body);
   if (bad) return res.status(400).json({ error: bad });
@@ -383,7 +384,7 @@ router.post('/shares/:id/extend', requireAuth, asyncHandler(async (req, res) => 
 // Owner only. The server-side half of "stop sharing": marks the row ended (so a device
 // that reconnects later can't resume it), tells every live recipient, and clears the
 // buffered last fix so the share cannot be resurrected from it.
-router.delete('/shares/:id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/shares/:id', requireAuth, rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const bad = rejectNonOpaqueBody(req.body);
   if (bad) return res.status(400).json({ error: bad });
@@ -409,7 +410,7 @@ router.delete('/shares/:id', requireAuth, asyncHandler(async (req, res) => {
 // everyone else, minting a fresh share key; after the rekey the removed recipient's old
 // key decrypts nothing further. Revocation stops FUTURE fixes — it cannot un-see a past
 // one, and no UI wording may imply otherwise.
-router.delete('/shares/:id/targets/:user_id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/shares/:id/targets/:user_id', requireAuth, rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const bad = rejectNonOpaqueBody(req.body);
   if (bad) return res.status(400).json({ error: bad });
@@ -440,7 +441,7 @@ router.delete('/shares/:id/targets/:user_id', requireAuth, asyncHandler(async (r
 // location without having to ask them to stop sharing. The stop signal goes to the
 // LEAVER's own channel (stamped with the owner as `from_user_id`, so the client's single
 // loc_stop handler reads it identically) so their other devices drop the share too.
-router.post('/shares/:id/leave', requireAuth, asyncHandler(async (req, res) => {
+router.post('/shares/:id/leave', requireAuth, rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const bad = rejectNonOpaqueBody(req.body);
   if (bad) return res.status(400).json({ error: bad });

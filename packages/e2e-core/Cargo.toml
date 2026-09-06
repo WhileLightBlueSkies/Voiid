@@ -63,6 +63,7 @@ pq-1to1-prekeys = ["dep:ml-kem"]
 pq-1to1-activate = ["pq-1to1-prekeys"]
 
 [dev-dependencies]
+regex = "1"
 # Tests only; never shipped in the app.
 
 [[bin]]

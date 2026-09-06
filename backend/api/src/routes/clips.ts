@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Clips backend — short-form public video (grid feed + reels player).
 //
 // ============================ NOT END-TO-END ENCRYPTED ============================
@@ -158,7 +159,7 @@ const CLIP_JOINS = `
 // prefix for the orphan lifecycle rule. The <uid> namespace is what POST /clips
 // checks to prove the caller owns the key it claims.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/presign-upload', requireAuth, asyncHandler(async (req, res) => {
+router.post('/presign-upload', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   if (!r2Configured()) return res.status(503).json({ error: 'media storage not configured' });
   const { user_id } = (req as any).auth;
   const mime = typeof req.body?.mime === 'string' ? req.body.mime : 'video/mp4';
@@ -199,7 +200,7 @@ router.post('/presign-upload', requireAuth, asyncHandler(async (req, res) => {
 // Called only AFTER both R2 PUTs succeed, so the row is born 'ready'. See the
 // migration header for why there is no 'uploading' state.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const {
     clip_id, r2_key, thumb_r2_key, caption, duration_ms, width, height, byte_size,
@@ -323,7 +324,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 // Newest-first over live, ready clips from everybody (an explore-style grid).
 // Thumbnail URLs are signed; video URLs are not (see attachThumbUrls).
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
+router.get('/feed', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const limit = clampLimit(req.query.limit, FEED_LIMIT_DEFAULT, FEED_LIMIT_MAX);
   const cursor = parseCursor(req.query.cursor);
@@ -355,7 +356,7 @@ router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
 // The author's own grid. Includes their soft-hidden-from-feed states so they can
 // see and retry anything that failed.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
+router.get('/mine', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const limit = clampLimit(req.query.limit, FEED_LIMIT_DEFAULT, FEED_LIMIT_MAX);
   const cursor = parseCursor(req.query.cursor);
@@ -392,7 +393,7 @@ router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
 // the always-present baseline `r2_key`. The response reports which rendition was
 // actually served so the client can label the stream honestly instead of assuming.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/:id/playback', requireAuth, asyncHandler(async (req, res) => {
+router.get('/:id/playback', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   if (!r2Configured()) return res.status(503).json({ error: 'media storage not configured' });
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -462,7 +463,7 @@ router.get('/:id/playback', requireAuth, asyncHandler(async (req, res) => {
 // >=2s watch, never on tile appearance — counting scroll-past impressions as views
 // inflates the number the entire grid is built around.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/view', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/view', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -502,7 +503,7 @@ router.post('/:id/view', requireAuth, asyncHandler(async (req, res) => {
 // to become the source of truth, or a rapid double-tap permanently desyncs the
 // displayed count from the table.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/like', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/like', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -531,7 +532,7 @@ router.post('/:id/like', requireAuth, asyncHandler(async (req, res) => {
   return res.json({ liked: true, like_count: rows[0].like_count });
 }));
 
-router.delete('/:id/like', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:id/like', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -563,7 +564,7 @@ router.delete('/:id/like', requireAuth, asyncHandler(async (req, res) => {
 // GET /clips/:id/comments?cursor=&limit= -> { comments: [...], next_cursor }
 // Oldest-first (chat-like reading order), keyset-paginated.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/:id/comments', requireAuth, asyncHandler(async (req, res) => {
+router.get('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
   const limit = clampLimit(req.query.limit, COMMENTS_LIMIT_DEFAULT, COMMENTS_LIMIT_MAX);
@@ -597,7 +598,7 @@ router.get('/:id/comments', requireAuth, asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /clips/:id/comments  { text } -> { comment }
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/comments', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -653,7 +654,7 @@ router.post('/:id/comments', requireAuth, asyncHandler(async (req, res) => {
 // Author of the COMMENT, or author of the CLIP (so a creator can moderate their
 // own post's comments), may delete.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.delete('/:id/comments/:commentId', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:id/comments/:commentId', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { id: clipId, commentId } = req.params;
   if (!UUID_RE.test(clipId) || !UUID_RE.test(commentId)) {
@@ -689,7 +690,7 @@ router.delete('/:id/comments/:commentId', requireAuth, asyncHandler(async (req, 
 // the edit would appear to do nothing for exactly the people who already saw it.
 // The old object is deleted by PATCH once the new key is committed.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/presign-thumb', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/presign-thumb', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   if (!r2Configured()) return res.status(503).json({ error: 'media storage not configured' });
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
@@ -723,7 +724,7 @@ router.post('/:id/presign-thumb', requireAuth, asyncHandler(async (req, res) => 
 // Both fields are optional and independently applied, so the client can change just
 // the caption without re-sending a cover it did not touch.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.patch('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.patch('/:id', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -812,7 +813,7 @@ router.patch('/:id', requireAuth, asyncHandler(async (req, res) => {
 // NOT A SECURITY OPERATION, and the confirm dialog must say so: anyone who already
 // watched or downloaded the video keeps it. Clips were never encrypted (see header).
 // ─────────────────────────────────────────────────────────────────────────────────
-router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:id', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });

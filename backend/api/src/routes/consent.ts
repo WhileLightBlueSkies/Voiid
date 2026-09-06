@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Consent — the record that processing had a lawful basis, and the record of its withdrawal.
 //
 // ── WHY THIS IS A NEW ROUTER AND NOT A LINE IN users.ts ──────────────────────────
@@ -251,6 +252,7 @@ router.get(
 router.get(
   '/me',
   requireAuth,
+  rateLimit({ max: 30, windowSeconds: 60, bucket: 'consent' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const language = typeof req.query.language === 'string' && req.query.language ? req.query.language : 'en';
@@ -291,6 +293,7 @@ router.get(
 router.post(
   '/',
   requireAuth,
+  rateLimit({ max: 30, windowSeconds: 60, bucket: 'consent' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -380,6 +383,7 @@ router.post(
 router.post(
   '/withdraw',
   requireAuth,
+  rateLimit({ max: 30, windowSeconds: 60, bucket: 'consent' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const body = (req.body ?? {}) as Record<string, unknown>;

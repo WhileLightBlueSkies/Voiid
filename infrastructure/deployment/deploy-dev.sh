@@ -17,15 +17,36 @@ set -euo pipefail
 
 APP_DIR="${VOIID_APP_DIR:-/opt/voiid}"
 BRANCH="${VOIID_BRANCH:-dev}"
+# The exact commit CI verified. Set by the deploy workflows; empty for a hand-run deploy,
+# which falls back to the branch tip as before.
+DEPLOY_SHA="${VOIID_DEPLOY_SHA:-}"
 
-echo "==> VOIID dev deploy  (dir=$APP_DIR  branch=$BRANCH)  $(date -u +%FT%TZ)"
+echo "==> VOIID dev deploy  (dir=$APP_DIR  branch=$BRANCH  sha=${DEPLOY_SHA:-<branch tip>})  $(date -u +%FT%TZ)"
 
 cd "$APP_DIR"
 
 echo "==> Fetching latest code"
 git fetch --prune origin
-git checkout "$BRANCH"
-git reset --hard "origin/$BRANCH"     # exact match to remote; no local drift
+
+if [ -n "$DEPLOY_SHA" ]; then
+  # Check out the VERIFIED commit, not the branch tip.
+  #
+  # The tip is a moving target: CI can go green on commit X and, by the time this SSH
+  # session opens, origin/$BRANCH can already point at commit Y that nothing checked.
+  # Deploying the SHA the gate actually ran against is what makes the gate meaningful.
+  #
+  # Verify it is an ancestor of the branch before touching the working tree, so a bad or
+  # unrelated SHA fails here rather than half-deploying.
+  if ! git merge-base --is-ancestor "$DEPLOY_SHA" "origin/$BRANCH" 2>/dev/null; then
+    echo "!! $DEPLOY_SHA is not an ancestor of origin/$BRANCH — refusing to deploy" >&2
+    exit 1
+  fi
+  git checkout --detach "$DEPLOY_SHA"
+  git reset --hard "$DEPLOY_SHA"
+else
+  git checkout "$BRANCH"
+  git reset --hard "origin/$BRANCH"   # exact match to remote; no local drift
+fi
 
 echo "==> Installing workspace deps (npm ci)"
 npm ci

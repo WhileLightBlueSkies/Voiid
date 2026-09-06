@@ -4,85 +4,160 @@
 //
 // Flow:
 //   1. New web device calls POST /linking/request  -> gets { link_token } (encode in a QR).
-//   2. A logged-in device scans the QR and calls POST /linking/approve { link_token, ... } (authed).
-//      The server registers the new device under THAT user and stashes a JWT for the link_token.
-//   3. The web device polls GET /linking/poll/:link_token until it receives its { token, user_id, device_id }.
+//   2. A logged-in device scans the QR and calls POST /linking/approve { link_token } (authed).
+//      The server registers the new device under THAT user and mints its session, atomically.
+//   3. The web device polls GET /linking/poll/:link_token until it receives its { token, ... }.
 //
-// link_token state lives in Redis with a short TTL (Section 4.3: linking is time-bounded).
+// ── WHY THE STATE IS IN POSTGRES AND NOT REDIS (S06) ─────────────────────────────
+//
+// It used to be one JSON blob in Redis, and every transition was read-modify-write across
+// three round trips. Neither approve nor poll was atomic, and both are reachable concurrently
+// by design — the QR is on a screen, and the approving phone and the waiting browser are
+// different clients:
+//
+//   * Two accounts approving at once both read "pending" and both registered a device. One
+//     ended up holding a device row nobody would ever use, and which account the browser was
+//     handed came down to whichever write landed last.
+//   * Two polls both read "approved" before either deleted the key, and the session credential
+//     was handed out twice.
+//   * A crash between the device insert and the cache write left a registered device and a
+//     token stuck on "pending" — the browser polled forever.
+//   * A Redis restart lost every link in flight.
+//
+// A row and `for update` fixes all four in one move, and collapses the pending -> approving ->
+// approved -> consumed machine into two states: the transaction that approves does the device,
+// the session and the state change together, so there is no half-way to be stuck in.
 import { Router } from 'express';
 import { randomBytes } from 'crypto';
-import { redis } from '../redis';
-import { query } from '../db';
-import { requireAuth, issueToken } from '../auth';
+import { query, withTransaction } from '../db';
+import { requireAuth, createDeviceSession } from '../auth';
 import { b64, asyncHandler } from '../util';
 
 const router = Router();
 
 const LINK_TTL_SECONDS = 5 * 60; // QR valid for 5 minutes
-const key = (t: string) => `linking:${t}`;
 
 // POST /linking/request — { platform:'web', registration_id, identity_public_key(b64), device_name? }
 // Unauthenticated: the new device has no session yet. Returns a link_token to render as a QR.
-router.post('/request', async (req, res) => {
+router.post('/request', asyncHandler(async (req, res) => {
   const { platform = 'web', registration_id, identity_public_key, device_name } = req.body ?? {};
   if (registration_id == null || !identity_public_key) {
     return res.status(400).json({ error: 'registration_id and identity_public_key required' });
   }
   const link_token = randomBytes(24).toString('base64url');
-  await redis.set(
-    key(link_token),
-    JSON.stringify({ status: 'pending', platform, registration_id, identity_public_key, device_name: device_name ?? 'Web' }),
-    'EX', LINK_TTL_SECONDS
+  await query(
+    `insert into device_link_requests
+       (token, platform, registration_id, identity_public_key, device_name, expires_at)
+     values ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))`,
+    [link_token, platform, registration_id, b64(identity_public_key), device_name ?? 'Web', LINK_TTL_SECONDS]
   );
   res.json({ link_token, expires_in: LINK_TTL_SECONDS });
-});
+}));
 
 // POST /linking/approve — { link_token }  (authed by an existing trusted device)
-// Registers the pending device under the approving user and mints its session JWT.
+//
+// ONE TRANSACTION. The row is locked first, so a second approval — from this account or any
+// other — waits and then finds the request already approved. The device, its session and the
+// state change commit together, so a failure anywhere leaves the request approvable rather
+// than leaving a registered device attached to nothing.
 router.post('/approve', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { link_token } = req.body ?? {};
-  if (!link_token) return res.status(400).json({ error: 'link_token required' });
+  if (typeof link_token !== 'string' || !link_token) {
+    return res.status(400).json({ error: 'link_token required' });
+  }
 
-  const raw = await redis.get(key(link_token));
-  if (!raw) return res.status(404).json({ error: 'link token expired or invalid' });
-  const pending = JSON.parse(raw);
-  if (pending.status !== 'pending') return res.status(409).json({ error: 'link already used' });
+  const result = await withTransaction<{ status: number; body: any }>(async (execute) => {
+    const pending = (
+      await execute<{
+        status: string; platform: string; registration_id: number;
+        identity_public_key: Buffer; device_name: string | null;
+      }>(
+        `select status, platform, registration_id, identity_public_key, device_name
+           from device_link_requests
+          where token = $1 and expires_at > now()
+          for update`,
+        [link_token]
+      )
+    )[0];
 
-  // Register the companion device under the approving user (public key only).
-  const rows = await query<{ id: string }>(
-    `insert into devices (user_id, platform, registration_id, identity_public_key, device_name)
-       values ($1, $2, $3, $4, $5)
-       on conflict (user_id, registration_id)
-       do update set identity_public_key = excluded.identity_public_key, revoked_at = null, updated_at = now()
-       returning id`,
-    [user_id, pending.platform, pending.registration_id, b64(pending.identity_public_key), pending.device_name]
-  );
-  const device_id = rows[0].id;
-  const token = issueToken({ user_id, device_id });
+    // 404 for expired and unknown alike: whether a token ever existed is not something an
+    // unauthenticated guesser should be able to learn.
+    if (!pending) return { status: 404, body: { error: 'link token expired or invalid' } };
+    if (pending.status !== 'pending') return { status: 409, body: { error: 'link already used' } };
 
-  await redis.set(key(link_token), JSON.stringify({ status: 'approved', user_id, device_id, token }), 'EX', LINK_TTL_SECONDS);
+    // Register the companion device under the approving user (public key only).
+    const rows = await execute<{ id: string }>(
+      `insert into devices (user_id, platform, registration_id, identity_public_key, device_name)
+         values ($1, $2, $3, $4, $5)
+         on conflict (user_id, registration_id)
+         do update set identity_public_key = excluded.identity_public_key,
+                       revoked_at = null, revoked_reason = null, updated_at = now()
+         returning id`,
+      [user_id, pending.platform, pending.registration_id, pending.identity_public_key, pending.device_name]
+    );
+    const device_id = rows[0].id;
 
-  // Audit: device-linking is a tracked security event (Section 4.9).
-  await query(
-    `insert into security_events (event_type, user_id, device_id, metadata)
-       values ('device_link', $1, $2, $3)`,
-    [user_id, device_id, JSON.stringify({ platform: pending.platform })]
-  );
+    // A linked companion gets a real session row like any other device, so the
+    // linked-devices screen can revoke it and have that mean something.
+    const { token } = await createDeviceSession(user_id, device_id, execute);
 
-  res.json({ approved: true, device_id });
+    await execute(
+      `update device_link_requests
+          set status = 'approved', approved_by = $2, device_id = $3, session_token = $4
+        where token = $1`,
+      [link_token, user_id, device_id, token]
+    );
+
+    // Audit: device-linking is a tracked security event (Section 4.9). Inside the transaction
+    // deliberately — an audit line for a link that rolled back is worse than none.
+    await execute(
+      `insert into security_events (event_type, user_id, device_id, metadata)
+         values ('device_link', $1, $2, $3)`,
+      [user_id, device_id, JSON.stringify({ platform: pending.platform })]
+    );
+
+    return { status: 200, body: { approved: true, device_id } };
+  });
+
+  res.status(result.status).json(result.body);
 }));
 
 // GET /linking/poll/:link_token — the web device polls until approved, then receives its JWT.
-router.get('/poll/:link_token', async (req, res) => {
-  const raw = await redis.get(key(req.params.link_token));
-  if (!raw) return res.status(404).json({ error: 'link token expired or invalid' });
-  const state = JSON.parse(raw);
-  if (state.status === 'approved') {
-    await redis.del(key(req.params.link_token)); // one-time consumption
-    return res.json({ status: 'approved', token: state.token, user_id: state.user_id, device_id: state.device_id });
-  }
-  res.json({ status: 'pending' });
-});
+//
+// The row is locked and DELETED in the same transaction that reads the credential out of it,
+// so exactly one poll can ever collect it. Read-check-delete over three round trips could hand
+// the same session to two callers — a duplicate tab, a retry, or anyone who learned the token.
+router.get('/poll/:link_token', asyncHandler(async (req, res) => {
+  const result = await withTransaction<{ status: number; body: any }>(async (execute) => {
+    const row = (
+      await execute<{ status: string; approved_by: string; device_id: string; session_token: string }>(
+        `select status, approved_by, device_id, session_token
+           from device_link_requests
+          where token = $1 and expires_at > now()
+          for update`,
+        [req.params.link_token]
+      )
+    )[0];
+
+    if (!row) return { status: 404, body: { error: 'link token expired or invalid' } };
+    if (row.status !== 'approved') return { status: 200, body: { status: 'pending' } };
+
+    // One-time consumption. Deleting rather than marking consumed also takes the credential
+    // out of the database the moment it is no longer needed.
+    await execute(`delete from device_link_requests where token = $1`, [req.params.link_token]);
+    return {
+      status: 200,
+      body: {
+        status: 'approved',
+        token: row.session_token,
+        user_id: row.approved_by,
+        device_id: row.device_id,
+      },
+    };
+  });
+
+  res.status(result.status).json(result.body);
+}));
 
 export default router;

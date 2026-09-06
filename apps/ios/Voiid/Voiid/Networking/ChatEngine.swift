@@ -275,7 +275,7 @@ final class ChatEngine {
         if let existing = (store[conversationId] ?? []).first(where: { $0.id == m.id }) {
             guard existing.failed, !m.failed else { return }
             replace(id: m.id, with: m, to: conversationId)
-            persist()
+            persistSoon()
             return
         }
         append(m, to: conversationId)
@@ -333,7 +333,7 @@ final class ChatEngine {
             store[conv] = arr
             markDirty(conv)
         }
-        persist()
+        persistSoon()
     }
 
     /// Queue a text message for sending. Stores it locally as PENDING immediately
@@ -384,9 +384,17 @@ final class ChatEngine {
                     "POST", "messages/send",
                     body: SendBundleBody(conversation_id: conversationId,
                                          sender_device_id: E2EManager.shared.deviceId,
-                                         messages: messages, content_type: "text"))
+                                         messages: messages, content_type: "text",
+                                         client_message_id: p.id))
                 markSent(localId: p.id, conversationId: conversationId, serverId: res.message_id)
-                NSLog("[VOIID] ✅ sent text id=\(res.message_id) conv=\(conversationId) devices=\(messages.count)")
+                NSLog("[VOIID] ✅ sent text id=\(res.message_id) conv=\(conversationId) devices=\(messages.count) dup=\(res.duplicate)")
+            } catch APIError.alreadySent(let serverId) {
+                // An earlier attempt of THIS message already landed; this retry only differed
+                // because re-encrypting advanced the ratchet. Reconcile rather than showing a
+                // failure for something the recipient already has.
+                markSent(localId: p.id, conversationId: conversationId, serverId: serverId)
+                NSLog("[VOIID] ✅ send reconciled as already-delivered id=\(serverId) conv=\(conversationId)")
+                continue
             } catch {
                 // "peer has no available prekeys" means the recipient hasn't published keys
                 // yet (not registered / logged out / momentary race). Olm REQUIRES a
@@ -417,7 +425,7 @@ final class ChatEngine {
         arr[i].failed = true
         store[conversationId] = arr
         markDirty(conversationId)
-        persist()
+        persistSoon()
     }
 
     /// Backwards-compatible one-shot send (enqueue + flush).
@@ -435,7 +443,7 @@ final class ChatEngine {
         arr[i].serverId = serverId
         store[conversationId] = arr
         markDirty(conversationId)
-        persist()
+        persistSoon()
     }
 
     /// Encrypt + send a MEDIA message in a direct conversation. The blob is
@@ -595,7 +603,7 @@ final class ChatEngine {
         arr[i].reactions = map.isEmpty ? nil : map
         store[convId] = arr
         markDirty(convId)
-        persist()
+        persistSoon()
     }
 
     /// Tombstone the target message (delete-for-everyone).
@@ -608,7 +616,7 @@ final class ChatEngine {
         arr[i].reactions = nil
         store[convId] = arr
         markDirty(convId)
-        persist()
+        persistSoon()
     }
 
     /// Send a location envelope (pin or live-share CONTROL) in a direct chat over the
@@ -827,6 +835,12 @@ final class ChatEngine {
         // ("no matching session" cascade). So tombstone once, never retry.
         let seen = Set((store[conversationId] ?? []).map { $0.id })
         var newlyReceived: [String] = []
+        // Every id this device DURABLY RECORDED this pass, decrypted or tombstoned. This is
+        // what gets acknowledged (M02) — deliberately a superset of newlyReceived, because a
+        // tombstone is also a durable outcome: the client never retries that id (Olm messages
+        // decrypt once; recovery is the peer re-sending), so leaving it unacknowledged would
+        // make the server hold it forever and hand it back on every sync.
+        var stored: [String] = []
         for m in env.messages.reversed() {   // server DESC → process ASC
             // Our OWN sent message: we can't decrypt our ratchet output, but the server
             // tells us the recipient's receipt state — advance Sent→Delivered→Seen even
@@ -890,6 +904,7 @@ final class ChatEngine {
                     append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: "",
                                             createdAt: parseDate(m.created_at), isMine: false,
                                             control: true), to: conversationId)
+                    stored.append(m.id)
                     continue
                 }
                 // A reply is a real bubble that also carries a quote.
@@ -944,6 +959,7 @@ final class ChatEngine {
                     inbound.storyQuoteCreatedAt = q.storyCreatedAt
                 }
                 replace(id: m.id, with: inbound, to: conversationId)
+                stored.append(m.id)
             } catch {
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
                 // Tombstone it (failed==true) so the chat shows a placeholder, asks the
@@ -956,10 +972,20 @@ final class ChatEngine {
                                              createdAt: parseDate(m.created_at), isMine: false,
                                              failed: true),
                            to: conversationId)
+                    stored.append(m.id)
                 }
             }
         }
-        persist()
+        // ACKNOWLEDGE ONLY WHAT WAS ACTUALLY WRITTEN (M02 + I03). persist() reports whether
+        // every claimed shard reached the disk; when it did not, this device has NOT stored
+        // these messages and must not tell the server it has — the server would stop offering
+        // them and they would be gone at exit. They stay dirty, stay pending server-side, and
+        // arrive again on the next sync.
+        if await persist() {
+            await acknowledgeStored(stored)
+        } else if !stored.isEmpty {
+            NSLog("[VOIID] 📂 withholding \(stored.count) acknowledgements — the store did not commit")
+        }
         // Mark just-received messages DELIVERED (double-grey tick on the sender) —
         // even if the chat isn't open. Read is marked separately when it's opened.
         if !newlyReceived.isEmpty { await markReceipts(newlyReceived, status: "delivered") }
@@ -988,7 +1014,7 @@ final class ChatEngine {
                     }
                     store[cid] = arr
                     markDirty(cid)
-                    persist()
+                    persistSoon()
                 }
                 return cid
             }
@@ -996,49 +1022,77 @@ final class ChatEngine {
         return nil
     }
 
-    private func markReceipts(_ ids: [String], status: String) async {
-        guard !ids.isEmpty else { return }
-        NSLog("[VOIID] 📤 receipt \(status) x\(ids.count)")
-        // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
-        // issues no device claim), so without this the server records every receipt against a
-        // NULL device — see the callerDeviceId note in routes/receipts.ts.
-        struct Body: Encodable {
-            let message_ids: [String]
-            let status: String
-            let device_id: String?
-        }
-        // DETACHED, not awaited on the caller's task. `markRead` is called from the chat
-        // screen's 4-second polling Task, which is cancelled the moment the user navigates
-        // away — that cancellation propagated into this request and killed it mid-flight.
-        // The catch then released the ids, but nothing retried them, because the thing that
-        // would have retried was the task that just died. Opening a chat and backing out
-        // promptly meant the read receipt was never delivered at all.
-        //
-        // A detached task outlives the screen, so a receipt that has STARTED will finish.
-        let body = Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
-        let api = self.api
-        Task.detached {
-        do {
-            _ = try await api.request("POST", "receipts/mark", body: body) as EmptyResponse
-        } catch {
-            // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
-            // dropped request would otherwise strand it forever — the sender stuck on
-            // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
-            // never re-marking is unrecoverable.
-            if status == "read" {
-                await MainActor.run {
-                    Self.readReported.subtract(ids)
-                    // AND QUEUE THEM FOR RETRY. Releasing the ids only helps if something
-                    // calls `markRead` again — and the only caller is gated on the chat
-                    // being open. A user who reads a message, loses signal for a moment and
-                    // then leaves the chat had their receipt dropped with nothing to
-                    // re-send it, so the sender sat on Delivered until they happened to
-                    // re-open that conversation. `flushPendingReceipts` drains this.
-                    Self.pendingReadReceipts.formUnion(ids)
-                }
+    /// Tell the server this device has the ciphertext on disk, so it stops handing it back.
+    ///
+    /// SEPARATE FROM A RECEIPT, and the distinction is the point of M02. A receipt is a
+    /// statement about the USER ("delivered", "read") that drives the sender's ticks. This is
+    /// a statement about STORAGE, and until it arrives the server keeps the message queued.
+    ///
+    /// Best-effort and idempotent: a lost ack costs one redundant re-fetch that the store
+    /// already dedupes by id, so it is never worth failing a sync over.
+    private func acknowledgeStored(_ messageIds: [String]) async {
+        guard !messageIds.isEmpty, let device = E2EManager.shared.deviceId else { return }
+        struct Body: Encodable { let message_ids: [String]; let device_id: String }
+        for start in stride(from: 0, to: messageIds.count, by: 500) {
+            let ids = Array(messageIds[start..<min(start + 500, messageIds.count)])
+            do {
+                _ = try await api.request("POST", "messages/ack",
+                                          body: Body(message_ids: ids, device_id: device),
+                                          as: EmptyResponse.self)
+            } catch {
+                // The message stays queued and comes back on the next sync. That is the
+                // designed failure mode, not an error worth surfacing.
+                NSLog("[VOIID] ⚠️ ack failed for \(ids.count) ids: \(error)")
             }
-            NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
         }
+    }
+
+    private func markReceipts(_ messageIds: [String], status: String) async {
+        guard !messageIds.isEmpty else { return }
+        for start in stride(from: 0, to: messageIds.count, by: 500) {
+            let ids = Array(messageIds[start..<min(start + 500, messageIds.count)])
+            NSLog("[VOIID] 📤 receipt \(status) x\(ids.count)")
+            // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
+            // issues no device claim), so without this the server records every receipt against a
+            // NULL device — see the callerDeviceId note in routes/receipts.ts.
+            struct Body: Encodable {
+                let message_ids: [String]
+                let status: String
+                let device_id: String?
+            }
+            // DETACHED, not awaited on the caller's task. `markRead` is called from the chat
+            // screen's 4-second polling Task, which is cancelled the moment the user navigates
+            // away — that cancellation propagated into this request and killed it mid-flight.
+            // The catch then released the ids, but nothing retried them, because the thing that
+            // would have retried was the task that just died. Opening a chat and backing out
+            // promptly meant the read receipt was never delivered at all.
+            //
+            // A detached task outlives the screen, so a receipt that has STARTED will finish.
+            let body = Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
+            let api = self.api
+            Task.detached {
+            do {
+                _ = try await api.request("POST", "receipts/mark", body: body) as EmptyResponse
+            } catch {
+                // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
+                // dropped request would otherwise strand it forever — the sender stuck on
+                // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
+                // never re-marking is unrecoverable.
+                if status == "read" {
+                    await MainActor.run {
+                        Self.readReported.subtract(ids)
+                        // AND QUEUE THEM FOR RETRY. Releasing the ids only helps if something
+                        // calls `markRead` again — and the only caller is gated on the chat
+                        // being open. A user who reads a message, loses signal for a moment and
+                        // then leaves the chat had their receipt dropped with nothing to
+                        // re-send it, so the sender sat on Delivered until they happened to
+                        // re-open that conversation. `flushPendingReceipts` drains this.
+                        Self.pendingReadReceipts.formUnion(ids)
+                    }
+                }
+                NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
+            }
+            }
         }
     }
 
@@ -1334,7 +1388,7 @@ final class ChatEngine {
         arr.append(m)
         store[convId] = arr
         markDirty(convId)
-        if doPersist { persist() }
+        if doPersist { persistSoon() }
     }
 
     /// Insert `m`, or REPLACE an existing entry with the same id in place (keeps order).
@@ -1426,12 +1480,24 @@ final class ChatEngine {
         }
 
         // Normal path: load every shard into memory.
+        //
+        // STILL SYNCHRONOUS, deliberately. `ensureLoaded()` is called from a dozen
+        // synchronous read/mutate paths whose whole point is that they never touch an
+        // unloaded store — making this async would make every one of them able to observe
+        // `storeLoaded == false` mid-flight, which is precisely the clobber-on-disk bug the
+        // flag exists to prevent. The cold-launch decode cost is real (130ms for one 50k
+        // conversation, measured) and is called out in the completion record as NOT fixed;
+        // trading it for a chance of overwriting history would be a bad bargain.
         var loaded: [String: [DecryptedMessage]] = [:]
         for url in shardFiles {
             let conv = url.deletingPathExtension().lastPathComponent
-            if let data = try? Data(contentsOf: url),
+            if let data = try? Data(contentsOf: url, options: .mappedIfSafe),
                let msgs = try? JSONDecoder().decode([DecryptedMessage].self, from: data) {
                 loaded[conv] = msgs
+            } else {
+                // QUARANTINE, do not skip — see quarantineShard. Skipping left the conversation
+                // empty in memory and let the next persist overwrite the file with nothing.
+                quarantineShard(url)
             }
         }
         store = loaded
@@ -1452,26 +1518,122 @@ final class ChatEngine {
         }
     }
 
-    private func persist() {
+    /// Write the conversations changed this turn, and report whether they all landed.
+    ///
+    /// RETURNS A RESULT because the caller cannot otherwise tell an in-memory update from a
+    /// durable one — and since M02 it must, or it acknowledges to the server messages that
+    /// were never written to this disk. The dirty markers of anything that failed are KEPT so
+    /// the next pass retries; this used to clear the whole set regardless and swallow every
+    /// write failure into a log line, so a disk-full or permission error lost the conversation
+    /// silently at exit.
+    /// Await the write and report whether every dirty shard committed.
+    ///
+    /// AWAIT, not fire-and-forget: M02/I03 acknowledge to the server only what reached this
+    /// disk, so the caller must know. The encode and the file write happen on
+    /// `ChatShardStore`, off the main actor — that is the 147ms-per-message cost this moves
+    /// (see ChatShardStore's header for the measurements).
+    @discardableResult
+    private func persist() async -> Bool {
         guard storeLoaded else {
             NSLog("[VOIID] ⚠️ persist skipped — store not loaded (would clobber on-disk history)")
-            return
+            return false
         }
-        // Write ONLY the conversations changed this turn.
-        for conv in dirtyConversations { persistShard(conv) }
-        dirtyConversations.removeAll()
+        let claimed = dirtyConversations
+        guard !claimed.isEmpty else { return true }
+        // Snapshot the payload on the main actor so the writer cannot observe a half-applied
+        // mutation, then hand the whole dirty set over in ONE hop.
+        var batch: [String: [DecryptedMessage]] = [:]
+        for conv in claimed { batch[conv] = store[conv] ?? [] }
+
+        // Clear the marks for what we are about to write BEFORE suspending. Anything that
+        // mutates during the await re-marks itself, and that mark must survive.
+        dirtyConversations.subtract(claimed)
+
+        let committed = await ChatShardStore.shared.write(batch)
+
+        // ── THE SUSPENSION WINDOW, which did not exist before this was async ──────
+        //
+        // `persist()` used to be synchronous, so "a message arrives mid-write" was
+        // impossible on the main actor. It is possible now, and the obvious subtraction
+        // here — `dirtyConversations.subtract(committed)` — is WRONG in a way that loses
+        // messages: `committed` names a CONVERSATION, not the version of it that was
+        // written. A message arriving during the await re-marks the conversation dirty,
+        // and subtracting afterwards eats that mark. The message is then in memory, not on
+        // disk, and nothing is scheduled to retry it — gone at exit.
+        //
+        // Reproduced before fixing (apps/ios/checks/PersistWindowCheck.swift): on disk
+        // ["m1"], in memory ["m1", "m2"], dirty empty.
+        //
+        // So the marks are cleared UP FRONT and only FAILURES are re-marked. A mutation
+        // during the window sets its mark after the clear, and nothing removes it.
+        dirtyConversations.formUnion(claimed.subtracting(committed))
+        if committed.count != claimed.count {
+            NSLog("[VOIID] ❌ persist INCOMPLETE: \(committed.count)/\(claimed.count) shards committed; the rest stay dirty")
+        }
+        return committed.count == claimed.count
     }
 
-    /// Atomically write one conversation's shard, with the same file-protection class as the
-    /// keychain items it's kept in step with (readable after first unlock, so the NSE works).
-    private func persistShard(_ convId: String) {
+    /// Persist without making the caller wait — for paths where nothing is acknowledged on
+    /// the strength of the write (a local flag flip, a receipt applied to our own message).
+    ///
+    /// Still goes through the same `persist()`, so a failure still leaves the conversation
+    /// dirty and still gets retried. The ONLY difference is that the UI is not blocked.
+    private func persistSoon() {
+        Task { @MainActor in await persist() }
+    }
+
+    /// Atomically write one conversation's shard, synchronously.
+    ///
+    /// Retained ONLY for the one-time blob→shard migration in `loadStore()`, which runs
+    /// before the store is marked loaded and must complete before anything else reads it.
+    /// Every steady-state write goes through `ChatShardStore` off the main actor; do not
+    /// add callers here.
+    ///
+    /// Same file-protection class as the keychain items it is kept in step with (readable
+    /// after first unlock, so the NSE works). Returns true ONLY if the bytes reached disk.
+    private func persistShard(_ convId: String) -> Bool {
         let arr = store[convId] ?? []
-        guard let data = try? JSONEncoder().encode(arr) else { return }
+        let data: Data
         do {
+            data = try JSONEncoder().encode(arr)
+        } catch {
+            // Nothing to write. Reported rather than silently skipped: the conversation stays
+            // dirty and nothing claims it was stored.
+            NSLog("[VOIID] ❌ shard ENCODE FAILED conv=\(convId): \(error)")
+            return false
+        }
+        do {
+            // `.atomic` writes to a temporary and replaces — there is no in-place fallback, so
+            // a failure here leaves the previous shard exactly as it was.
             try data.write(to: shardURL(convId),
                            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return true
         } catch {
             NSLog("[VOIID] ❌ shard WRITE FAILED conv=\(convId): \(error)")
+            return false
+        }
+    }
+
+    /// Move an unreadable shard aside, preserving it, and free the path for a fresh one.
+    ///
+    /// WHY: an undecodable shard used to be skipped on load, so the conversation came back
+    /// EMPTY — and the next persist wrote that emptiness over the file. One bad shard silently
+    /// replaced a whole conversation's history, with nothing left to recover from.
+    @discardableResult
+    private func quarantineShard(_ url: URL) -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        let dir = messagesDir.deletingLastPathComponent().appendingPathComponent("messages-quarantine")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = url.deletingPathExtension().lastPathComponent
+        let target = dir.appendingPathComponent("\(name).corrupt-\(Int(Date().timeIntervalSince1970 * 1000)).json")
+        do {
+            try fm.moveItem(at: url, to: target)
+            NSLog("[VOIID] 📂 quarantined unreadable shard \(name) → \(target.lastPathComponent)")
+            return target
+        } catch {
+            NSLog("[VOIID] ⚠️ could not quarantine shard \(name): \(error)")
+            return nil
         }
     }
 
@@ -1623,12 +1785,22 @@ final class ChatEngine {
         var content_type: String? = nil
         var media_url: String? = nil
         var media_mime: String? = nil
+        /// THE LOCAL MESSAGE ID, unchanged across every retry of this message (M01).
+        ///
+        /// Without it a retry was a NEW message: the client cannot tell "not delivered" from
+        /// "delivered, reply lost", so it retries, and the recipient sees the same thing twice.
+        /// This is the local row's own UUID — minted once at enqueue, persisted with it, and
+        /// never reused for different content.
+        var client_message_id: String? = nil
     }
     private struct SendResponse: Decodable {
         let message_id: String
         var created_at: String? = nil
         var delivered_devices: Int = 0
+        /// True when the server recognised this as a retry of a send it already accepted.
+        var duplicate: Bool = false
     }
+
     private struct MessageDTO: Decodable {
         let id: String; let sender_id: String; let ciphertext: String?; let created_at: String
         var sender_device_id: String? = nil   // which of the SENDER's devices encrypted it

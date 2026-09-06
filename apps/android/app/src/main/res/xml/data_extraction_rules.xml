@@ -1,24 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Data extraction rules (API 31+). Exclude EncryptedSharedPreferences-backed
-   files from both cloud backup and device transfer: the Android Keystore master
-   key never leaves the device, so restoring this ciphertext onto a new install
-   yields an undecryptable keyset and a launch crash. See TokenStore.kt.
+   Data extraction rules (API 31+). ALLOWLIST, NOT DENYLIST — see backup_rules.xml for the
+   full argument and the inventory of what is deliberately not portable.
+
+   BOTH SECTIONS ARE ALLOWLISTED. The previous version listed exclusions under
+   <device-transfer> as well as <cloud-backup>, which meant a store nobody remembered was
+   copied to the new phone even when cloud backup was off. Device transfer is not a lesser
+   channel: it moves the same bytes to the same place, just over a cable.
+
+   Restoring an EncryptedSharedPreferences file without its Keystore key is the specific
+   hazard this closes. The key is hardware-bound and never travels, so the restored ciphertext
+   is unreadable — the app then wipes and rebuilds it (SecurePrefs), which is exactly the
+   silent local-data loss A02 is about. Not copying it in the first place is the fix.
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <exclude domain="sharedpref" path="voiid_auth.xml"/>
-        <exclude domain="sharedpref" path="voiid_e2e.xml"/>
-        <exclude domain="sharedpref" path="voiid_chat.xml"/>
-        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml"/>
-        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml"/>
-        <exclude domain="file" path="voiid_messages.json"/>
+        <include domain="sharedpref" path="voiid_appearance.xml"/>
+        <include domain="sharedpref" path="voiid_prefs.xml"/>
+        <include domain="sharedpref" path="voiid_game_settings.xml"/>
+        <include domain="sharedpref" path="voiid_game_audio.xml"/>
     </cloud-backup>
     <device-transfer>
-        <exclude domain="sharedpref" path="voiid_auth.xml"/>
-        <exclude domain="sharedpref" path="voiid_e2e.xml"/>
-        <exclude domain="sharedpref" path="voiid_chat.xml"/>
-        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml"/>
-        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml"/>
-        <exclude domain="file" path="voiid_messages.json"/>
+        <include domain="sharedpref" path="voiid_appearance.xml"/>
+        <include domain="sharedpref" path="voiid_prefs.xml"/>
+        <include domain="sharedpref" path="voiid_game_settings.xml"/>
+        <include domain="sharedpref" path="voiid_game_audio.xml"/>
     </device-transfer>
 </data-extraction-rules>

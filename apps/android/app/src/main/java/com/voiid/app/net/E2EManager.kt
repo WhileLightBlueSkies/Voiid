@@ -215,7 +215,16 @@ class E2EManager private constructor(context: Context) {
         // Push routing: attached to the SAME device row (upsert keys on
         // (user_id, registration_id)) so the backend can send the wake push here.
         val push_token: String? = null, val push_provider: String? = null)
-    @Serializable private data class DeviceResp(val device_id: String)
+    /**
+     * [token] is the DEVICE-BOUND session minted by POST /devices/register (S03). The
+     * credential used to make that call — the bootstrap token from /auth/firebase, or a
+     * previous session being replaced by a reinstall — stops working at the server's
+     * migration cutoff, so it must be stored the moment it arrives.
+     *
+     * Nullable so this build still runs against a backend deployed before S03, which
+     * answers with `device_id` alone.
+     */
+    @Serializable private data class DeviceResp(val device_id: String, val token: String? = null)
     @Serializable private data class Otk(val key_id: Int, val public_key: String)
 
     /**
@@ -263,6 +272,9 @@ class E2EManager private constructor(context: Context) {
                 push_token = fcm, push_provider = fcm?.let { "fcm" }))
         val dev: DeviceResp = api.requestAs("POST", "devices/register", jsonBody = regBody)
         prefs.edit().putString("device_id", dev.device_id).apply()
+        // Swap the credential BEFORE anything else runs: ensurePrekeys() is next in
+        // bootstrap(), and past the cutoff it would be refused on the old one.
+        dev.token?.let { TokenStore.get(appContext).jwt = it }
         return dev.device_id
     }
 

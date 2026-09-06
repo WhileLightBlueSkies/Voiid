@@ -9,6 +9,42 @@ plugins {
     alias(libs.plugins.ksp)          // Room’s annotation processor
 }
 
+
+// ── ENVIRONMENT BOUNDARY (Q03) ────────────────────────────────────────────────────
+//
+// Both clients used to hardcode `https://api-dev.voiid.app`, with nothing anywhere assigning
+// anything else. A release APK would have been built against the development backend, signed and
+// shipped, and the only thing preventing that was somebody remembering to edit a constant.
+//
+// The endpoints are build configuration now. Debug keeps a working default so local development
+// is unchanged; RELEASE HAS NO DEFAULT AT ALL and fails the build if it is not supplied. The
+// production hostname is deliberately not written down here — this audit does not know it, and
+// guessing one would replace a visible misconfiguration with an invisible one.
+//
+// Supply it per build:  ./gradlew assembleRelease -PVOIID_API_BASE_URL=https://… -PVOIID_WS_URL=wss://…
+// or via the VOIID_API_BASE_URL / VOIID_WS_URL environment variables.
+fun requireReleaseEndpoint(name: String, wsScheme: Boolean): String {
+    val value = (project.findProperty(name) as String?) ?: System.getenv(name)
+    if (value.isNullOrBlank()) {
+        throw GradleException(
+            "$name is not set. A release build must be told which backend it talks to; there is " +
+            "no default, because the only safe default would be the development host. Pass " +
+            "-P$name=… or set it in the environment."
+        )
+    }
+    // A release pointing at the dev box or a laptop is the exact failure this exists to stop,
+    // and it is worth catching at build time rather than in a store review.
+    val forbidden = listOf("api-dev.voiid.app", "localhost", "127.0.0.1", "10.0.2.2")
+    if (forbidden.any { value.contains(it) }) {
+        throw GradleException("$name points at a development host ($value); a release must not.")
+    }
+    val required = if (wsScheme) "wss://" else "https://"
+    if (!value.startsWith(required)) {
+        throw GradleException("$name must use $required (got $value): a release never talks in plaintext.")
+    }
+    return value
+}
+
 android {
     namespace = "com.voiid.app"
     compileSdk = 36
@@ -48,12 +84,29 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Local development, unchanged. Overridable the same way release is, so pointing a
+            // debug build at a laptop or a staging box needs no source edit.
+            val debugApi = (project.findProperty("VOIID_API_BASE_URL") as String?)
+                ?: System.getenv("VOIID_API_BASE_URL") ?: "https://api-dev.voiid.app"
+            val debugWs = (project.findProperty("VOIID_WS_URL") as String?)
+                ?: System.getenv("VOIID_WS_URL") ?: "wss://api-dev.voiid.app/ws"
+            buildConfigField("String", "VOIID_API_BASE_URL", "\"$debugApi\"")
+            buildConfigField("String", "VOIID_WS_URL", "\"$debugWs\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Evaluated lazily: reading these at configuration time would make EVERY gradle
+            // invocation — including `testDebugUnitTest` — fail when the release endpoints are
+            // unset, which would make local development impossible.
+            buildConfigField("String", "VOIID_API_BASE_URL",
+                "\"${if (gradle.startParameter.taskNames.any { it.contains("elease", true) }) requireReleaseEndpoint("VOIID_API_BASE_URL", false) else ""}\"")
+            buildConfigField("String", "VOIID_WS_URL",
+                "\"${if (gradle.startParameter.taskNames.any { it.contains("elease", true) }) requireReleaseEndpoint("VOIID_WS_URL", true) else ""}\"")
         }
     }
 
@@ -78,6 +131,11 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // minSdk is 24 and the app uses java.time, which arrived in API 26 (A03). Without this
+        // every java.time call throws NoClassDefFoundError on API 24/25 — and because the call
+        // sites wrapped it in runCatching, the error was swallowed and every timestamp silently
+        // became the current time. Lint had been reporting 37 of these to nobody.
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions {
         jvmTarget = "17"
@@ -113,7 +171,45 @@ androidComponents {
     }
 }
 
+// BackupRulesTest reads the SHIPPED res/xml rules and the SHIPPED sources off disk, because
+// the thing it is checking is the policy that actually ships, not a copy of it in a fixture.
+// Gradle cannot see those reads, so without declaring them the task stays UP-TO-DATE when the
+// rules change — the guard would pass forever while the policy rotted underneath it. This was
+// caught by changing a rule and watching the test not run.
+// Where Room writes the exported schema JSON (A04). Committed under app/schemas so an upgrade
+// path has a record of what actually shipped to migrate from — without it, a migration can only
+// be checked against the current code's idea of the old schema.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
+tasks.withType<Test>().configureEach {
+    inputs.dir("src/main/res/xml")
+        .withPropertyName("backupRuleFiles")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    // RoomMigrationPolicyTest reads the exported schemas off disk, and Gradle cannot see that.
+    // Without declaring it the task stays UP-TO-DATE when a schema changes and the guard rots.
+    inputs.dir("schemas")
+        .withPropertyName("roomSchemas")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .optional()
+    // Same reason, for the guards that read the manifest and this build file (Q03). Caught by
+    // changing all three and watching the tests report byte-identical stale results.
+    inputs.file("src/main/AndroidManifest.xml")
+        .withPropertyName("appManifest")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file("build.gradle.kts")
+        .withPropertyName("appBuildScript")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/debug")
+        .withPropertyName("debugSourceSet")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .optional()
+}
+
 dependencies {
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)

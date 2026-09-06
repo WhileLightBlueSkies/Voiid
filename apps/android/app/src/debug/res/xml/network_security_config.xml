@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DEBUG ONLY. Cleartext for the three hosts that mean "my own machine" and nothing else:
+    localhost, the loopback address, and 10.0.2.2 (the Android emulator's alias for the host).
+    Everything else, in every build, is https.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

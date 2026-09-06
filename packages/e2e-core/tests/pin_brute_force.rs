@@ -35,7 +35,10 @@ fn pin_keyspace_is_offline_crackable_at_shipped_cost() {
     let per_try = start.elapsed() / n;
     let tries_per_sec = 1.0f64 / per_try.as_secs_f64();
 
-    assert!(found.is_none(), "no collision expected inside first 20 guesses");
+    assert!(
+        found.is_none(),
+        "no collision expected inside first 20 guesses"
+    );
 
     let k4 = 10_000.0f64;
     let k6 = 1_000_000.0f64;

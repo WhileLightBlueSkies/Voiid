@@ -222,10 +222,18 @@ class ChatEngine private constructor(context: Context) {
 
                 val body = ApiClient.json.encodeToString(
                     SendBundleBody.serializer(),
-                    SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "text"))
+                    SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "text",
+                                   client_message_id = p.id))
                 val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
                 markSent(p.id, conversationId, res.message_id)
-                android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId devices=${messages.size}")
+                android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId devices=${messages.size} dup=${res.duplicate}")
+            } catch (e: ApiError.AlreadySent) {
+                // An earlier attempt of THIS message already landed; this retry only differed
+                // because re-encrypting advanced the ratchet. Reconcile rather than showing a
+                // failure for something the recipient already has.
+                markSent(p.id, conversationId, e.messageId)
+                android.util.Log.i("VOIID", "✅ send reconciled as already-delivered id=${e.messageId} conv=$conversationId")
+                continue
             } catch (e: Exception) {
                 // "peer has no available prekeys" means the recipient hasn't published
                 // keys yet (not registered / logged out / momentary race). Olm REQUIRES
@@ -326,6 +334,12 @@ class ChatEngine private constructor(context: Context) {
         // ("no matching session" cascade). So tombstone once, never retry.
         val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet().apply { addAll(controlSeenIds()) }
         val newlyReceived = mutableListOf<String>()
+        // Every id this device DURABLY RECORDED this pass, decrypted or tombstoned. This is
+        // what gets acknowledged (M02) — deliberately a superset of newlyReceived, because a
+        // tombstone is also a durable outcome: the client never retries that id (Olm messages
+        // decrypt once; recovery is the peer re-sending), so leaving it unacknowledged would
+        // make the server hold it forever and hand it back on every sync.
+        val stored = mutableListOf<String>()
         for (m in env.messages.asReversed()) {        // server DESC -> process ASC
             // Our OWN sent message: can't decrypt our ratchet output, but the server
             // reports the recipient's receipt state — advance Sent→Delivered→Seen even
@@ -410,7 +424,7 @@ class ChatEngine private constructor(context: Context) {
                 val (caption, ref) = decodeEnvelope(plain, m.content_type)
                 replace(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref))
                 newlyReceived.add(m.id)
-            }.onFailure {
+            }.onSuccess { stored.add(m.id) }.onFailure {
                 android.util.Log.e("VOIID", "❌ inbound decrypt FAILED id=${m.id} senderDev=${m.sender_device_id}", it)
                 // Tombstone it (failed==true) so the chat shows a placeholder, asks the
                 // sender to re-establish the session, and RETRIES on the next sync.
@@ -418,10 +432,20 @@ class ChatEngine private constructor(context: Context) {
                     lastSyncHadDecryptFailure = true
                     replace(conversationId, DecryptedMessage(m.id, m.sender_id,
                         "🔒 Message couldn’t be decrypted", parseIso(m.created_at), false, failed = true))
+                    stored.add(m.id)
                 }
             }
         }
-        persist()
+        // ACKNOWLEDGE ONLY WHAT WAS ACTUALLY WRITTEN (M02 + I03). persist() reports whether
+        // every claimed shard reached the disk; when it did not, this device has NOT stored
+        // these messages and must not tell the server it has — the server would stop offering
+        // them and they would be gone at exit. They stay dirty, stay pending server-side, and
+        // arrive again on the next sync.
+        if (persist()) {
+            acknowledgeStored(stored)
+        } else if (stored.isNotEmpty()) {
+            android.util.Log.w("VOIID", "📂 withholding ${stored.size} acknowledgements — the store did not commit")
+        }
         // Mark just-received messages DELIVERED (double-grey tick on the sender) —
         // even if the chat isn't open. Read is marked separately when it's opened.
         if (newlyReceived.isNotEmpty()) markReceipts(newlyReceived, "delivered")
@@ -470,35 +494,64 @@ class ChatEngine private constructor(context: Context) {
         if (ids.isNotEmpty()) markReceipts(ids, "delivered")
     }
 
-    private suspend fun markReceipts(ids: List<String>, status: String) {
-        if (ids.isEmpty()) return
-        android.util.Log.i("VOIID", "📤 receipt $status x${ids.size}")
-        // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
-        // issues no device claim), so without this the server records every receipt against a
-        // NULL device — see the callerDeviceId note in routes/receipts.ts.
-        val body = ApiClient.json.encodeToString(
-            MarkReadBody.serializer(), MarkReadBody(ids, status, e2e.deviceId),
-        )
-        android.util.Log.i("VOIIDReceipt", "POST receipts/mark status=$status n=${ids.size} device=${e2e.deviceId}")
-        // NOT the caller's coroutine. The 4-second poll that calls markRead lives on the CHAT
-        // SCREEN's scope, so navigating away — or that loop being cancelled — killed the POST
-        // mid-flight. `runCatching` then caught the CancellationException, released the ids,
-        // and nothing retried them, because the thing that would have retried was the
-        // coroutine that just died. Opening a chat and backing out promptly meant the read
-        // receipt was never delivered at all.
-        //
-        // `receiptScope` outlives the screen, so a receipt that has STARTED will finish.
-        receiptScope.launch {
-            runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
-                .onSuccess { android.util.Log.i("VOIIDReceipt", "receipt $status OK for ${ids.size}") }
-                .onFailure {
-                    // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so
-                    // a dropped request would otherwise strand it forever — the sender stuck
-                    // on Delivered with nothing to retry it. Re-marking on the next sync is
-                    // cheap; never re-marking is unrecoverable.
-                    if (status == "read") readReported.removeAll(ids.toSet())
-                    android.util.Log.w("VOIIDReceipt", "receipt $status failed, will retry", it)
-                }
+    /**
+     * Tell the server this device has the ciphertext on disk, so it stops handing it back.
+     *
+     * SEPARATE FROM A RECEIPT, and the distinction is the point of M02. A receipt is a
+     * statement about the USER ("delivered", "read") that drives the sender's ticks. This is
+     * a statement about STORAGE, and until it arrives the server keeps the message queued.
+     *
+     * Best-effort and idempotent: a lost ack costs one redundant re-fetch that the store
+     * already dedupes by id, so it is never worth failing a sync over.
+     */
+    @Serializable private data class AckBody(val message_ids: List<String>, val device_id: String)
+
+    private suspend fun acknowledgeStored(messageIds: List<String>) {
+        val device = e2e.deviceId ?: return
+        if (messageIds.isEmpty()) return
+        for (chunk in messageIds.chunked(500)) {
+            runCatching {
+                api.request("POST", "messages/ack",
+                    jsonBody = ApiClient.json.encodeToString(AckBody.serializer(), AckBody(chunk, device)))
+            }.onFailure {
+                // The message stays queued and comes back on the next sync. That is the
+                // designed failure mode, not an error worth surfacing.
+                android.util.Log.w("VOIID", "⚠️ ack failed for ${chunk.size} ids", it)
+            }
+        }
+    }
+
+    private suspend fun markReceipts(messageIds: List<String>, status: String) {
+        if (messageIds.isEmpty()) return
+        for (ids in messageIds.chunked(500)) {
+            android.util.Log.i("VOIID", "📤 receipt $status x${ids.size}")
+            // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
+            // issues no device claim), so without this the server records every receipt against a
+            // NULL device — see the callerDeviceId note in routes/receipts.ts.
+            val body = ApiClient.json.encodeToString(
+                MarkReadBody.serializer(), MarkReadBody(ids, status, e2e.deviceId),
+            )
+            android.util.Log.i("VOIIDReceipt", "POST receipts/mark status=$status n=${ids.size} device=${e2e.deviceId}")
+            // NOT the caller's coroutine. The 4-second poll that calls markRead lives on the CHAT
+            // SCREEN's scope, so navigating away — or that loop being cancelled — killed the POST
+            // mid-flight. `runCatching` then caught the CancellationException, released the ids,
+            // and nothing retried them, because the thing that would have retried was the
+            // coroutine that just died. Opening a chat and backing out promptly meant the read
+            // receipt was never delivered at all.
+            //
+            // `receiptScope` outlives the screen, so a receipt that has STARTED will finish.
+            receiptScope.launch {
+                runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
+                    .onSuccess { android.util.Log.i("VOIIDReceipt", "receipt $status OK for ${ids.size}") }
+                    .onFailure {
+                        // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so
+                        // a dropped request would otherwise strand it forever — the sender stuck
+                        // on Delivered with nothing to retry it. Re-marking on the next sync is
+                        // cheap; never re-marking is unrecoverable.
+                        if (status == "read") readReported.removeAll(ids.toSet())
+                        android.util.Log.w("VOIIDReceipt", "receipt $status failed, will retry", it)
+                    }
+            }
         }
     }
 
@@ -1273,8 +1326,8 @@ class ChatEngine private constructor(context: Context) {
     private val shardSerializer = ListSerializer(DecryptedMessage.serializer())
     private val messagesDir = java.io.File(appContext.filesDir, "messages").apply { mkdirs() }
     private fun shardFile(convId: String) = java.io.File(messagesDir, "$convId.json")
-    private val dirtyConversations = java.util.Collections.synchronizedSet(mutableSetOf<String>())
-    private fun markDirty(convId: String) { dirtyConversations.add(convId) }
+    private val dirtyConversations = DirtyConversations()
+    private fun markDirty(convId: String) { dirtyConversations.mark(convId) }
 
     private fun loadStore() {
         val shards = messagesDir.listFiles { f -> f.extension == "json" }?.toList() ?: emptyList()
@@ -1306,32 +1359,67 @@ class ChatEngine private constructor(context: Context) {
             val conv = f.nameWithoutExtension
             runCatching { ApiClient.json.decodeFromString(shardSerializer, f.readText()) }
                 .onSuccess { store[conv] = it.toMutableList() }
-                .onFailure { android.util.Log.e("VOIID", "📂 shard parse FAILED conv=$conv", it) }
+                .onFailure {
+                    // QUARANTINE, do not skip. Skipping left the conversation EMPTY in memory,
+                    // and the next persist wrote that emptiness over the file — one unreadable
+                    // shard silently replaced a whole conversation's history with nothing.
+                    // Moving it aside frees the path and keeps the bytes.
+                    val moved = ShardStore.quarantine(f, System.currentTimeMillis())
+                    android.util.Log.e(
+                        "VOIID",
+                        "📂 shard parse FAILED conv=$conv — quarantined to ${moved?.name ?: "(nothing to move)"}", it
+                    )
+                }
         }
         storeLoaded = true
         android.util.Log.i("VOIID", "📂 loadStore (sharded): ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
     }
 
-    private fun persist() {
+    /**
+     * Write the conversations changed this turn, and report whether they all landed.
+     *
+     * RETURNS A RESULT because the caller cannot otherwise tell an in-memory update from a
+     * durable one — and since M02 it must, or it acknowledges to the server messages that were
+     * never written to this disk. The dirty markers of anything that failed are KEPT, so the
+     * next pass retries; the old code cleared them before writing and swallowed every failure,
+     * so a disk-full or permission error lost the conversation silently at exit.
+     */
+    private fun persist(): Boolean {
         if (!storeLoaded) {   // never let an unloaded store overwrite good on-disk history
             android.util.Log.w("VOIID", "📂 persist skipped — store not loaded")
-            return
+            return false
         }
-        // Write ONLY the conversations changed this turn.
-        val snapshot = synchronized(dirtyConversations) { dirtyConversations.toList().also { dirtyConversations.clear() } }
-        for (conv in snapshot) persistShard(conv)
+        val claimed = dirtyConversations.claim()
+        if (claimed.isEmpty()) return true
+        val committed = mutableSetOf<String>()
+        for (conv in claimed) if (persistShard(conv)) committed += conv
+        dirtyConversations.settle(committed)
+        if (committed.size != claimed.size) {
+            android.util.Log.e(
+                "VOIID",
+                "📂 persist INCOMPLETE: ${committed.size}/${claimed.size} shards committed; " +
+                    "the rest stay dirty and will be retried"
+            )
+        }
+        return committed.size == claimed.size
     }
 
-    /** Atomically write one conversation's shard (tmp + rename). */
-    private fun persistShard(convId: String) {
+    /** Atomically write one conversation's shard. True only if it reached the disk. */
+    private fun persistShard(convId: String): Boolean {
         val arr = store[convId]?.toList() ?: emptyList()
-        val raw = ApiClient.json.encodeToString(shardSerializer, arr)
-        runCatching {
-            val tmp = java.io.File(messagesDir, "$convId.json.tmp")
-            tmp.writeText(raw)
-            if (!tmp.renameTo(shardFile(convId))) { shardFile(convId).writeText(raw); tmp.delete() }
-        }.onFailure {
-            android.util.Log.e("VOIID", "📂 shard WRITE FAILED conv=$convId", it)
+        val raw = runCatching { ApiClient.json.encodeToString(shardSerializer, arr) }
+            .getOrElse {
+                // Encoding failed, so there is nothing to write. Reported rather than silently
+                // skipped: the conversation stays dirty and nothing claims it was stored.
+                android.util.Log.e("VOIID", "📂 shard ENCODE FAILED conv=$convId", it)
+                return false
+            }
+        return when (val result = ShardStore.write(shardFile(convId), raw)) {
+            is ShardStore.Write.Committed -> true
+            is ShardStore.Write.Failed -> {
+                android.util.Log.e("VOIID", "📂 shard WRITE FAILED conv=$convId", result.error)
+                false
+            }
         }
     }
 
@@ -1427,8 +1515,24 @@ class ChatEngine private constructor(context: Context) {
         WireMessage(p.t.toULong(), p.b)
     }.getOrNull()
 
+    /**
+     * A server timestamp, or 0 if it cannot be read (A03).
+     *
+     * NOT System.currentTimeMillis(). That was the old fallback and it is the worst possible
+     * one: it is indistinguishable from a correct date, so an unreadable timestamp silently
+     * became "just now" and corrupted ordering with nothing to notice it by. On API 24/25 that
+     * was EVERY timestamp, because java.time threw NoClassDefFoundError and runCatching
+     * swallowed it.
+     *
+     * 0 is deliberately implausible: it sorts to 1970 where somebody will see it, and for an
+     * expiry it means "already expired", which is the safe direction. Either way the log line
+     * below is the thing that gets this diagnosed rather than lived with.
+     */
     private fun parseIso(s: String): Long =
-        runCatching { java.time.Instant.parse(s).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+        com.voiid.app.util.IsoTime.parseOrNull(s) ?: run {
+            android.util.Log.e("VOIID", "unreadable message timestamp from the server: '$s'")
+            0L
+        }
 
     // MARK: - DTOs
 
@@ -1458,11 +1562,22 @@ class ChatEngine private constructor(context: Context) {
         val content_type: String? = null,
         val media_url: String? = null,
         val media_mime: String? = null,
+        /**
+         * THE LOCAL MESSAGE ID, unchanged across every retry of this message (M01).
+         *
+         * Without it a retry was a NEW message: the client cannot tell "not delivered" from
+         * "delivered, reply lost", so it retries, and the recipient sees the same thing
+         * twice. This is the local row's own id — minted once at enqueue, persisted with it,
+         * and never reused for different content.
+         */
+        val client_message_id: String? = null,
     )
     @Serializable private data class SendResponse(
         val message_id: String,
         val created_at: String? = null,
         val delivered_devices: Int = 0,
+        /** True when the server recognised this as a retry of a send it already accepted. */
+        val duplicate: Boolean = false,
     )
     @Serializable private data class MessageDTO(
         val id: String,

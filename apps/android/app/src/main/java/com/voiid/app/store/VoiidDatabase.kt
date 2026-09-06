@@ -42,7 +42,11 @@ import androidx.room.Transaction
         StoryRow::class, StoryAudienceRow::class, StoryViewRow::class,
     ],
     version = 4,
-    exportSchema = false,
+    // EXPORTED (A04). Room writes schemas/<db>/<version>.json at build time, and it is the only
+    // record of what actually shipped. Without it a migration can only be checked against the
+    // current code's idea of the old schema — which is the one thing guaranteed to agree with
+    // itself. The files are committed so an upgrade path has something real to migrate from.
+    exportSchema = true,
 )
 abstract class VoiidDatabase : RoomDatabase() {
 
@@ -84,7 +88,24 @@ abstract class VoiidDatabase : RoomDatabase() {
                     // (see MIGRATION_1_2). The fallback stays only as the last-resort guard for
                     // a genuinely corrupt file.
                     .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
-                    .fallbackToDestructiveMigration()
+                    // NO DESTRUCTIVE FALLBACK (A04).
+                    //
+                    // It used to be here, next to a comment that already described exactly why
+                    // it was dangerous: it drops and recreates EVERY table on any version bump
+                    // lacking a Migration, including `call_history` and the address-book
+                    // `saved_name`/`phone_e164` columns on `users`, which exist on this device
+                    // and nowhere else. The failure it produces is not a crash — it is an
+                    // upgrade that succeeds while the user's call history quietly disappears.
+                    //
+                    // Removing it means a forgotten migration now throws on open instead. That
+                    // is the correct failure: loud, at development time, and impossible to ship
+                    // past. RoomMigrationPolicyTest fails the build for a missing migration
+                    // before anyone gets that far.
+                    //
+                    // A corrupt database file — the one case the fallback was also covering —
+                    // is a different problem and needs a different answer: it should be
+                    // quarantined and reported, not silently recreated. That is not implemented
+                    // here and is recorded as a limitation rather than left to the fallback.
                     .build()
                     .also { instance = it }
             }

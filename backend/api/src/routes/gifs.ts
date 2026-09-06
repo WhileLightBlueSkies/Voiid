@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // GIF search — a thin proxy in front of Tenor.
 //
 // WHY PROXY instead of calling Tenor from the app:
@@ -83,7 +84,7 @@ async function tenor(path: string, params: Record<string, string>): Promise<Gif[
 //
 // Auth-gated: this costs us quota, so it is not an open endpoint.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/search', requireAuth, asyncHandler(async (req, res) => {
+router.get('/search', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'gifs' }), asyncHandler(async (req, res) => {
   if (!TENOR_KEY) {
     // Degrade HONESTLY. A build with no key returns empty plus a flag, so the client can say
     // "GIFs aren't set up" instead of showing an endless spinner.
@@ -102,7 +103,7 @@ router.get('/search', requireAuth, asyncHandler(async (req, res) => {
   }
 }));
 
-router.get('/trending', requireAuth, asyncHandler(async (_req, res) => {
+router.get('/trending', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'gifs' }), asyncHandler(async (_req, res) => {
   if (!TENOR_KEY) return res.json({ gifs: [], configured: false });
   try {
     res.json({ gifs: await tenor('featured', {}), configured: true });

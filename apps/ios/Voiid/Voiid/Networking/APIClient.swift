@@ -8,13 +8,56 @@
 
 import Foundation
 
-/// Backend configuration. Override `baseURL` per environment (dev/staging/prod).
+/// Backend configuration, resolved per build type (Q03).
+///
+/// ── WHAT THIS REPLACES ───────────────────────────────────────────────────────────
+///
+/// Two literals pointing at `https://api-dev.voiid.app`, with nothing anywhere assigning
+/// anything else. There was no environment boundary: a release build would have been compiled
+/// against the development backend, signed and shipped, and the only thing preventing that was
+/// somebody remembering to edit these lines first.
+///
+/// DEBUG keeps the dev host as a working default so local development is unchanged. RELEASE has
+/// no default at all — it reads `VoiidApiBaseURL` / `VoiidWebSocketURL` from Info.plist, which
+/// are populated by the `VOIID_API_BASE_URL` / `VOIID_WS_URL` build settings, and refuses to run
+/// if they are missing, still point at a development host, or are not TLS.
+///
+/// THE PRODUCTION HOSTNAME IS NOT WRITTEN DOWN HERE. This audit does not know it, and guessing
+/// one would replace a visible misconfiguration with an invisible one.
 enum APIConfig {
-    /// Hosted DEV backend (Vultr + Caddy TLS). WebSocket is proxied on the /ws
-    /// path of the same host. For local-only work, swap to http://localhost:4000
-    /// + ws://localhost:4001.
-    static var baseURL = URL(string: "https://api-dev.voiid.app")!
-    static var wsURL = URL(string: "wss://api-dev.voiid.app/ws")!
+    /// Hosts a release must never talk to, however it was configured.
+    private static let developmentHosts = ["api-dev.voiid.app", "localhost", "127.0.0.1"]
+
+    /// Read an endpoint from Info.plist, or fall back in DEBUG only.
+    ///
+    /// An unset build setting leaves the literal `$(VOIID_API_BASE_URL)` in the plist rather
+    /// than an empty string, so the check below has to reject anything that is not a real
+    /// https/wss URL — not merely anything empty.
+    private static func endpoint(_ key: String, debugDefault: String, scheme: String) -> URL {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: key) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let usable = raw.hasPrefix(scheme) && !developmentHosts.contains(where: raw.contains)
+
+        #if DEBUG
+        // Local development is unchanged: an unset or dev-pointing value is expected here.
+        let chosen = usable || raw.hasPrefix("http://") || raw.hasPrefix("ws://") ? raw : debugDefault
+        return URL(string: chosen) ?? URL(string: debugDefault)!
+        #else
+        // A release that cannot say where it is pointing must not start. Crashing at launch is
+        // a bad outcome; silently talking to the development backend from the App Store is a
+        // worse one, and it is the one that goes unnoticed.
+        precondition(
+            usable,
+            "\(key) is missing, points at a development host, or is not \(scheme). Set the " +
+            "VOIID_API_BASE_URL / VOIID_WS_URL build settings for the Release configuration."
+        )
+        return URL(string: raw)!
+        #endif
+    }
+
+    static var baseURL = endpoint("VoiidApiBaseURL", debugDefault: "https://api-dev.voiid.app", scheme: "https://")
+    static var wsURL = endpoint("VoiidWebSocketURL", debugDefault: "wss://api-dev.voiid.app/ws", scheme: "wss://")
     /// API version this build talks (path-versioned: /v1/...). Bumped per major contract.
     static var apiVersion = "v1"
     /// This build's app version (for force-update gating).
@@ -31,6 +74,13 @@ enum APIError: Error, LocalizedError {
     /// generic "precondition required" that any future endpoint may reuse, so a client keying
     /// off the status alone would fire the handle picker for an unrelated precondition.
     case http(status: Int, message: String, code: String? = nil)
+    /// A 409 the caller can RESOLVE rather than report.
+    ///
+    /// Sent by POST /messages/send when a `client_message_id` already produced a message with
+    /// different bytes — which is what a legitimate retry looks like, because re-encrypting
+    /// advances the Olm ratchet. Carries the message the key already produced, so the caller
+    /// can reconcile instead of showing a failure for something the recipient already has.
+    case alreadySent(messageId: String)
     case transport(Error)
     case decoding(Error)
     case notAuthenticated
@@ -90,6 +140,9 @@ enum APIError: Error, LocalizedError {
             return "Something went wrong. Please try again."
             #endif
         case .notAuthenticated: return "Please sign in again."
+        // Not a user-facing failure: the caller resolves it. If it ever reaches a screen,
+        // saying "sent" is the truthful thing, because it was.
+        case .alreadySent: return "Already sent."
         }
     }
 
@@ -107,12 +160,16 @@ struct APIClient {
 
     /// GET/POST/etc. returning a decoded `Response`. `auth` controls whether the
     /// bearer token is attached (false for /auth/firebase).
+    /// `bearer` overrides the stored token. Exactly one caller needs this: logout revokes
+    /// the session server-side while the local token is being cleared, so the credential has
+    /// to be carried by value rather than read back from a store that is already empty.
     func request<Response: Decodable>(
         _ method: String,
         _ path: String,
         body: Encodable? = nil,
         auth: Bool = true,
         versioned: Bool = true,
+        bearer: String? = nil,
         as: Response.Type = Response.self
     ) async throws -> Response {
         // Build the URL from a string so query strings (e.g. "?username=foo")
@@ -137,7 +194,7 @@ struct APIClient {
         req.setValue(APIConfig.apiVersion, forHTTPHeaderField: "X-Voiid-Api-Version")
 
         if auth {
-            guard let token = tokenStore.jwt else { throw APIError.notAuthenticated }
+            guard let token = bearer ?? tokenStore.jwt else { throw APIError.notAuthenticated }
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         if let body {
@@ -165,7 +222,13 @@ struct APIClient {
         guard (200..<300).contains(status) else {
             let parsed = try? JSONDecoder().decode(ErrorBody.self, from: data)
             let message = parsed?.error ?? "Request failed (\(status))."
-            if status == 401 { tokenStore.clear() }
+            // A 401 normally means the credential is finished — clear it and the app returns
+            // to sign-in. `device_session_required` is the one exception: the token is a
+            // VALID bootstrap credential that simply has not been traded for a device
+            // session yet, and POST /devices/register still accepts it. Clearing here would
+            // destroy the only credential that can complete registration, turning a
+            // recoverable state into a forced re-verification of the phone number.
+            if status == 401, parsed?.code != "device_session_required" { tokenStore.clear() }
             throw APIError.http(status: status, message: message, code: parsed?.code)
         }
 
@@ -184,8 +247,10 @@ struct APIClient {
     private struct ErrorBody: Decodable {
         let error: String
         var code: String?
+        /// Present on the send conflict above; absent everywhere else.
+        var messageId: String?
 
-        private enum CodingKeys: String, CodingKey { case error, reason, code }
+        private enum CodingKeys: String, CodingKey { case error, reason, code, message_id }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -197,6 +262,7 @@ struct APIClient {
             }
             error = message
             code = try c.decodeIfPresent(String.self, forKey: .code)
+            messageId = try c.decodeIfPresent(String.self, forKey: .message_id)
         }
     }
     private struct UpdateBody: Decodable { let update_url: String? }

@@ -1,0 +1,124 @@
+name: Nightly (expensive checks)
+
+# The checks that are too slow or too flaky-by-nature to gate every pull request, but which
+# still have to run somewhere. Keeping them here is what lets ci.yml stay fast enough that
+# nobody is tempted to bypass it.
+#
+# Nothing in this file blocks a deploy. It exists to tell us a slow-moving regression has
+# started, which is a different job from gating a commit.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC daily
+  workflow_dispatch: {}
+
+env:
+  RUST_TOOLCHAIN: '1.96.0'
+  NODE_VERSION: '20.18.1'
+
+jobs:
+  # The crypto soak tests are #[ignore]d by default precisely because they are long-running;
+  # `--ignored` is the only way they ever execute. Before this workflow they never did.
+  soak:
+    name: Encryption core soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: packages/e2e-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/e2e-core
+
+      # Release mode: a soak test in debug measures the debug build, which is not the thing
+      # that ships and is slow enough to distort what the test is looking for.
+      - name: Soak (ignored tests, release)
+        run: cargo test --locked --release -- --ignored --nocapture
+
+  # Advisory databases change without any commit of ours, so a daily run is what actually
+  # surfaces a newly published vulnerability. The same check gates PRs in ci.yml; here it is
+  # a monitor, not a gate.
+  advisories:
+    name: Dependency advisories (daily)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/e2e-core
+
+      - name: cargo audit
+        working-directory: packages/e2e-core
+        run: |
+          # ^0.22, not ^0.21 (E01). cargo-audit 0.21 cannot parse CVSS 4.0 severity
+          # strings, which the advisory database now uses. On 0.21 the WHOLE database
+          # fails to load, so `cargo audit` scans nothing and exits non-zero — a hard
+          # failure rather than a silent pass, but it means this step had stopped
+          # being an audit. Verified 2026-09-06 against RUSTSEC-2026-0073.
+          cargo install cargo-audit --locked --version ^0.22
+          # Keep the report even when it passes: E01 requires retained scan evidence,
+          # and an exception that is never re-examined is how a liability becomes a
+          # silent acceptance.
+          cargo audit --json > cargo-audit-report.json || AUDIT_FAILED=1
+          cargo audit --deny warnings || AUDIT_FAILED=1
+          exit "${AUDIT_FAILED:-0}"
+
+      - name: retain the advisory scan
+        if: always()   # the report of a FAILING scan is the one worth keeping
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-report-${{ github.job }}
+          path: packages/e2e-core/cargo-audit-report.json
+          if-no-files-found: warn
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: npm audit (high and above)
+        run: npm audit --audit-level=high
+
+  # An unsigned release COMPILE — not a shippable artifact. It catches the class of breakage
+  # that only appears under the release toolchain (R8 rules, resource shrinking) and that a
+  # debug build in ci.yml cannot see.
+  android-release-compile:
+    name: Android release compile (unsigned)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble release (unsigned)
+        working-directory: apps/android
+        run: ./gradlew assembleRelease --stacktrace
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-reports
+          path: apps/android/app/build/reports/**
+          if-no-files-found: ignore
+          retention-days: 14

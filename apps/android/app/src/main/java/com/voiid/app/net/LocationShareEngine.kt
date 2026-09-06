@@ -460,8 +460,24 @@ object LocationShareEngine {
 
     private fun round5(d: Double): Double = Math.round(d * 1e5) / 1e5
     private fun nowSec(): Long = System.currentTimeMillis() / 1000
+    /**
+     * A server timestamp, or 0 if it cannot be read (A03).
+     *
+     * NOT System.currentTimeMillis(). That was the old fallback and it is the worst possible
+     * one: it is indistinguishable from a correct date, so an unreadable timestamp silently
+     * became "just now" and corrupted ordering with nothing to notice it by. On API 24/25 that
+     * was EVERY timestamp, because java.time threw NoClassDefFoundError and runCatching
+     * swallowed it.
+     *
+     * 0 is deliberately implausible: it sorts to 1970 where somebody will see it, and for an
+     * expiry it means "already expired", which is the safe direction. Either way the log line
+     * below is the thing that gets this diagnosed rather than lived with.
+     */
     private fun parseIso(s: String): Long =
-        runCatching { java.time.Instant.parse(s).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+        com.voiid.app.util.IsoTime.parseOrNull(s) ?: run {
+            android.util.Log.e("VOIID", "unreadable location share timestamp from the server: '$s'")
+            0L
+        }
 }
 
 /** Where a share is directed: a 1:1 peer or a group conversation. */

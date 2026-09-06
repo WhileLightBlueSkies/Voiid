@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Profile-key routes — ENCRYPTED PROFILE PHOTOS (see 021_profile_keys.sql).
 //
 // Avatars were the one media surface stored in the CLEAR: a raw JPEG on R2 that anyone with
@@ -47,7 +48,7 @@ function scheduleWakePush(deviceIds: string[]): void {
 // Called after minting or rotating a profile key: one wrapped copy per recipient device.
 // Idempotent per (owner, device) so a partially-delivered fan-out is safe to retry.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/publish', requireAuth, asyncHandler(async (req, res) => {
+router.post('/publish', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'profile-keys' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const keyVersion = Number(req.body?.key_version);
   const entries = req.body?.entries;
@@ -124,7 +125,7 @@ router.post('/publish', requireAuth, asyncHandler(async (req, res) => {
 // Every wrapped key addressed to this device that it has not yet fetched. Marks them delivered
 // atomically, exactly like GET /stories/feed, so two concurrent syncs cannot double-deliver.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/pending', requireAuth, asyncHandler(async (req, res) => {
+router.get('/pending', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'profile-keys' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const deviceId = String(req.query.device_id ?? '');
   if (!deviceId) return res.status(400).json({ error: 'device_id required' });
@@ -157,7 +158,7 @@ router.get('/pending', requireAuth, asyncHandler(async (req, res) => {
 // an avatar (stale key after a rotation, or a lost local store). Does not clear delivered_at,
 // so it is safe to call repeatedly.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/for/:userId', requireAuth, asyncHandler(async (req, res) => {
+router.get('/for/:userId', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'profile-keys' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const deviceId = String(req.query.device_id ?? '');
   if (!deviceId) return res.status(400).json({ error: 'device_id required' });
@@ -191,7 +192,7 @@ router.get('/for/:userId', requireAuth, asyncHandler(async (req, res) => {
 // while clients are mixed-version, and it is what makes migration state legible —
 // photo_url set + encrypted_photo_url null means "not yet migrated".
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/photo', requireAuth, asyncHandler(async (req, res) => {
+router.post('/photo', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'profile-keys' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const key = req.body?.encrypted_photo_url;
   if (typeof key !== 'string' || !key) {

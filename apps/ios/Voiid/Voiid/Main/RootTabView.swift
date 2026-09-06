@@ -64,6 +64,18 @@ struct RootTabView: View {
     /// How far the indicator stretches on the current move — proportional to the number of
     /// tabs crossed, so a neighbouring hop and a jump across the bar do not look identical.
     @State private var slideStretch: CGFloat = 1.9
+    /// The in-flight "release the stretch" task, owned so a NEW tap cancels the OLD one
+    /// and so nothing delayed survives the bar disappearing (U05).
+    ///
+    /// This used to be a bare `DispatchQueue.main.asyncAfter`, which cannot be cancelled.
+    /// On rapid A→B→C taps, B's callback fired during C's transition and set
+    /// `isSliding = false` mid-flight, snapping C's indicator back — an earlier tap
+    /// reaching forward to break a later one.
+    @State private var slideRelease: Task<Void, Never>?
+    /// Reduce Motion. The bar's whole personality is spatial — a stretching indicator, an
+    /// icon overshoot, a travelling underline — and every one of those is what this
+    /// setting exists to turn off.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// How far the tab row is scrolled, in points, measured from the scroll view itself.
     @State private var scrollX: CGFloat = 0
 
@@ -391,6 +403,14 @@ struct RootTabView: View {
         // it, which is what makes an iOS tab bar feel native instead of pasted on.
         .background(.bar)
         .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
+        // Nothing delayed outlives the bar (U05). An uncancelled timer firing after the
+        // view is gone touches @State that no longer drives anything, and on the way back
+        // it can land mid-transition.
+        .onDisappear {
+            slideRelease?.cancel()
+            slideRelease = nil
+            isSliding = false
+        }
     }
 
     /// Whether `t` sits outside the visible window right now.
@@ -436,14 +456,37 @@ struct RootTabView: View {
             let from = order.firstIndex(of: tab) ?? 0
             let to = order.firstIndex(of: t) ?? 0
             let distance = abs(to - from)
+
+            // REDUCE MOTION: change selection immediately, with a short opacity/colour
+            // response and NO spatial effect. There is no stretch to release, so no
+            // delayed work is scheduled at all — the whole class of stale-callback bug
+            // cannot occur on this path.
+            guard !reduceMotion else {
+                slideRelease?.cancel()
+                slideRelease = nil
+                isSliding = false
+                slideStretch = 1
+                withAnimation(.easeOut(duration: 0.14)) { tab = t }
+                return
+            }
+
             slideStretch = min(1.25 + CGFloat(distance) * 0.28, 2.2)
             isSliding = true
             withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) { tab = t }
+
             // Release the stretch when the indicator has actually arrived, not on a fixed
             // timer: the spring's settle time depends on the distance, so a hardcoded 160ms
             // snapped the stretch back mid-flight on a long jump and left it hanging after a
             // short one.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.10 + Double(distance) * 0.02) {
+            //
+            // CANCELLABLE, and owned. Cancelling the previous task is what makes rapid
+            // A→B→C→A correct: only the newest transition can end its own stretch. A
+            // `Task.sleep` that is cancelled throws rather than running its body, so a
+            // superseded release simply never happens.
+            slideRelease?.cancel()
+            slideRelease = Task { @MainActor in
+                let ns = UInt64((0.10 + Double(distance) * 0.02) * 1_000_000_000)
+                guard (try? await Task.sleep(nanoseconds: ns)) != nil else { return }
                 isSliding = false
             }
         } label: {
@@ -462,8 +505,12 @@ struct RootTabView: View {
                             // 1 — the squash-and-stretch that made the old pill feel alive,
                             // without the wobble that came from under-damping it.
                             .frame(width: 22, height: 3)
-                            .scaleEffect(x: isSliding ? slideStretch : 1, y: 1, anchor: .center)
-                            .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isSliding)
+                            // No stretch under Reduce Motion — the squash is the effect this
+                            // setting is about.
+                            .scaleEffect(x: (isSliding && !reduceMotion) ? slideStretch : 1, y: 1, anchor: .center)
+                            .animation(reduceMotion ? .easeOut(duration: 0.14)
+                                                    : .spring(response: 0.3, dampingFraction: 0.75),
+                                       value: isSliding)
                             .offset(y: 17)
                     }
                     Image(systemName: active ? t.iconFilled : t.icon)
@@ -486,8 +533,13 @@ struct RootTabView: View {
                         // still in the comment above and it is right, so this stays under it:
                         // slightly smaller, and damped at 0.85 so it settles rather than
                         // oscillates. The reaction is felt, not watched.
-                        .scaleEffect(active && isSliding ? 1.10 : 1)
-                        .animation(.spring(response: 0.28, dampingFraction: 0.85), value: isSliding)
+                        // No overshoot under Reduce Motion: an icon that grows past its
+                        // size and comes back is exactly the "spatial effect" the setting
+                        // asks to be removed.
+                        .scaleEffect((active && isSliding && !reduceMotion) ? 1.10 : 1)
+                        .animation(reduceMotion ? .easeOut(duration: 0.14)
+                                                : .spring(response: 0.28, dampingFraction: 0.85),
+                                   value: isSliding)
                         // The outline→filled swap is a DIFFERENT view, so SwiftUI cross-fades
                         // it rather than morphing. `.contentTransition` makes SF Symbols
                         // interpolate between the two variants instead — the fill grows out of
@@ -556,9 +608,16 @@ struct RootTabView: View {
 /// Deliberately subtle: 0.92 and a fast spring. A tab bar is pressed constantly, so a large
 /// or slow press animation stops reading as responsiveness and starts reading as lag.
 private struct TabPressStyle: ButtonStyle {
+    /// Under Reduce Motion the press feedback becomes opacity rather than scale — the
+    /// press must still be FELT, so it is replaced, not deleted.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
-            .animation(.spring(response: 0.22, dampingFraction: 0.7), value: configuration.isPressed)
+            .scaleEffect((configuration.isPressed && !reduceMotion) ? 0.92 : 1)
+            .opacity(reduceMotion && configuration.isPressed ? 0.7 : 1)
+            .animation(reduceMotion ? .easeOut(duration: 0.14)
+                                    : .spring(response: 0.22, dampingFraction: 0.7),
+                       value: configuration.isPressed)
     }
 }

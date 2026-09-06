@@ -8,7 +8,12 @@
 //     sender's own linked devices) receives a blob it can actually decrypt with its own session.
 import { Router } from 'express';
 import { assertOpaque } from '@voiid/common-utils';
-import { query } from '../db';
+import { query, withTransaction } from '../db';
+import { resolveActiveDevice, UUID_RE } from '../deviceAuthorization';
+import {
+  MAX_CLIENT_MESSAGE_ID, PG_UNIQUE_VIOLATION, findByClientId, payloadFingerprint, samePayload,
+} from '../messageIdempotency';
+import { enqueueOutbox, publishOutbox, type OutboxEntry } from '../messageOutbox';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
 import { announcementPostDeniedReason } from '../communityGuard';
@@ -17,6 +22,10 @@ import { blockedCounterpartForSend, hasBlocked } from '../blocking';
 import { sendWakePush, PushMeta } from '../push';
 
 const router = Router();
+
+/** One reconnect's worth of acknowledgements. Bounded because it arrives from a client and
+ *  becomes an array parameter; the clients already page their fetches. */
+const ACK_MAX_BATCH = 500;
 
 // Content-free wake push to a set of devices (Section 4.14): the Redis relay only reaches
 // devices holding a live socket; a silent, data-only push nudges the rest to fetch pending +
@@ -109,11 +118,12 @@ function scheduleWakePush(
 // each reach `insert into messages` by their own route, and guarding only one leaves
 // the other as a way in.
 // ─────────────────────────────────────────────────────────────────────────────────
-async function isConversationMember(conversationId: string, userId: string): Promise<boolean> {
-  const rows = await query<{ one: number }>(
+async function isConversationMember(conversationId: string, userId: string, execute = query): Promise<boolean> {
+  if (!UUID_RE.test(conversationId)) return false;
+  const rows = await execute<{ one: number }>(
     `select 1 as one from conversation_members
       where conversation_id = $1 and user_id = $2 and left_at is null
-      limit 1`,
+      limit 1 for share`,
     [conversationId, userId]
   );
   return rows.length > 0;
@@ -155,376 +165,783 @@ async function blockGuardForSend(
 }
 
 router.post('/send', requireAuth, asyncHandler(async (req, res) => {
-  const { user_id, device_id: authDeviceId } = (req as any).auth;
+  const { user_id } = (req as any).auth;
   const {
     conversation_id, ciphertext, content_type, media_url, media_mime,
-    messages, sender_device_id, device_id: bodyDeviceId,
+    messages, sender_device_id, device_id: bodyDeviceId, client_message_id,
   } = req.body ?? {};
+
+  // The client's stable id for this message, minted before transmission and reused by every
+  // retry of it. Optional: clients that predate M01 send none and keep their old behaviour,
+  // which is a duplicate on retry rather than a rejection.
+  if (client_message_id != null &&
+      (typeof client_message_id !== 'string' || !client_message_id ||
+       client_message_id.length > MAX_CLIENT_MESSAGE_ID)) {
+    return res.status(400).json({ error: 'client_message_id must be a short non-empty string' });
+  }
 
   // Golden rule (Section 4.14): the server only ever relays opaque ciphertext — reject plaintext-ish payloads.
   try { assertOpaque(req.body ?? {}); } catch (e) {
     return res.status(400).json({ error: (e as Error).message });
   }
 
-  // ── Fan-out path: one opaque ciphertext per target device ──────────────────
-  // PRESENCE, not non-emptiness. A single-device NOTE TO SELF legitimately produces an
-  // EMPTY bundle — encryptFanout returns [] by design, because there is genuinely no other
-  // device to encrypt to. Gating on length sent that legitimate case down the legacy
-  // single-ciphertext path, which then 400s for want of a top-level `ciphertext` field. Only
-  // the text path short-circuits on an empty bundle, so media, reactions, replies, forwards,
-  // delete-for-everyone and location all failed — and on iOS a 400 is not retryable, so the
-  // user got a red failed bubble.
-  //
-  // The body below is already correct for an empty array: the metadata insert writes
-  // ciphertext = null unconditionally, the per-device loop is a no-op, no Redis publish
-  // fires, and the wake push is guarded by deviceIds.length. It returns delivered_devices: 0,
-  // which is the honest answer.
-  if (Array.isArray(messages)) {
-    if (!conversation_id) {
-      return res.status(400).json({ error: 'conversation_id required' });
-    }
-    // See isConversationMember above. 403 without saying whether the conversation exists —
-    // distinguishing "no such conversation" from "not your conversation" turns this endpoint
-    // into an oracle for probing which conversation ids are real.
-    if (!(await isConversationMember(conversation_id, user_id))) {
-      return res.status(403).json({ error: 'not a member of this conversation' });
-    }
-    // An ANNOUNCEMENT channel is readable by every member and writable only by the owner and
-    // admins. Enforced here rather than only in the client, because a client-side restriction
-    // is not a restriction — the guard was written but nothing called it, so until now any
-    // member could post to an announcement channel with curl.
-    const announceDenied = await announcementPostDeniedReason(conversation_id, user_id);
-    if (announceDenied) return res.status(403).json({ error: announceDenied });
-    // Blocking (043). See blockGuardForSend: the blocker is told, the blocked is not.
-    const fanBlocked = await blockGuardForSend(conversation_id, user_id);
-    if (fanBlocked) return res.status(fanBlocked.status).json(fanBlocked.body);
-    for (const entry of messages) {
-      if (!entry?.recipient_device_id || !entry?.ciphertext) {
-        return res.status(400).json({ error: 'each messages[] entry requires recipient_device_id and ciphertext' });
+  const postCommit: (() => Promise<unknown> | void)[] = [];
+  // Announcements owed by this message. Written inside the transaction, published straight
+  // after it — see messageOutbox.ts for why both halves exist.
+  let owed: { id: string; channel: string; payload: unknown }[] = [];
+  const send = () => withTransaction<{ status: number; body: any }>(async (query) => {
+    const device_id = await resolveActiveDevice(req, user_id,
+      async (sql, params) => ({ rows: await query(sql, params) }),
+      sender_device_id ?? bodyDeviceId, true);
+    if (device_id === undefined) return { status: 403, body: { error: 'forbidden' } };
+
+    /**
+     * Has this exact send already been accepted?
+     *
+     * Checked BEFORE doing the work, so an ordinary retry costs one indexed lookup instead of
+     * re-validating a whole fan-out. The insert below still carries the unique index, which is
+     * what makes two SIMULTANEOUS retries safe — this probe is the fast path, not the guarantee.
+     */
+    const already = client_message_id
+      ? await findByClientId(query, user_id, device_id, client_message_id)
+      : undefined;
+    if (already) {
+      const fingerprint = payloadFingerprint({
+        conversationId: String(conversation_id ?? ''), contentType: content_type,
+        mediaUrl: media_url, mediaMime: media_mime, ciphertext,
+        fanout: Array.isArray(messages) ? messages : undefined,
+      });
+      if (!samePayload(already, fingerprint)) {
+        // SAME KEY, DIFFERENT BYTES. Refused rather than absorbed: silently storing nothing
+        // and reporting success would be a worse and quieter failure than the duplicate this
+        // mechanism prevents.
+        //
+        // But it is NOT necessarily an error, and the client needs to be able to tell. A
+        // client mints one id per logical message and never reuses it, and it re-encrypts
+        // when it retries — Olm advances its ratchet, so the ciphertext differs even though
+        // the message does not. That legitimate retry lands here. So the conflict carries the
+        // message the key already produced, which is what the client is actually asking for:
+        // "did my send land?" A client that gets this marks the message sent against
+        // `message_id`. A client that reuses ids for genuinely different content gets a
+        // conflict instead of a silent swallow, which is the case worth being loud about.
+        return { status: 409, body: {
+          error: 'client_message_id already used for a different payload',
+          code: 'idempotency_key_reuse',
+          message_id: already.id,
+          created_at: already.created_at,
+          delivered_devices: already.delivered_devices,
+        } };
       }
-      // Per-entry golden-rule check: no plaintext-ish fields alongside the ciphertext.
-      try { assertOpaque(entry); } catch (e) {
-        return res.status(400).json({ error: (e as Error).message });
+      return { status: 200, body: {
+        message_id: already.id, created_at: already.created_at,
+        delivered_devices: already.delivered_devices, duplicate: true,
+      } };
+    }
+
+    // ── Fan-out path: one opaque ciphertext per target device ──────────────────
+    // PRESENCE, not non-emptiness. A single-device NOTE TO SELF legitimately produces an
+    // EMPTY bundle — encryptFanout returns [] by design, because there is genuinely no other
+    // device to encrypt to. Gating on length sent that legitimate case down the legacy
+    // single-ciphertext path, which then 400s for want of a top-level `ciphertext` field. Only
+    // the text path short-circuits on an empty bundle, so media, reactions, replies, forwards,
+    // delete-for-everyone and location all failed — and on iOS a 400 is not retryable, so the
+    // user got a red failed bubble.
+    //
+    // The body below is already correct for an empty array: the metadata insert writes
+    // ciphertext = null unconditionally, the per-device loop is a no-op, no Redis publish
+    // fires, and the wake push is guarded by deviceIds.length. It returns delivered_devices: 0,
+    // which is the honest answer.
+    if (Array.isArray(messages)) {
+      if (!conversation_id) {
+        return { status: 400, body: { error: 'conversation_id required' } };
       }
-    }
-    // Which of OUR devices encrypted this — so a multi-device recipient resolves the
-    // correct sender identity key on acceptSession (else decrypt fails).
-    const device_id = sender_device_id ?? bodyDeviceId ?? authDeviceId ?? null;
+      // See isConversationMember above. 403 without saying whether the conversation exists —
+      // distinguishing "no such conversation" from "not your conversation" turns this endpoint
+      // into an oracle for probing which conversation ids are real.
+      if (!(await isConversationMember(conversation_id, user_id, query))) {
+        return { status: 403, body: { error: 'not a member of this conversation' } };
+      }
+      // An ANNOUNCEMENT channel is readable by every member and writable only by the owner and
+      // admins. Enforced here rather than only in the client, because a client-side restriction
+      // is not a restriction — the guard was written but nothing called it, so until now any
+      // member could post to an announcement channel with curl.
+      const announceDenied = await announcementPostDeniedReason(conversation_id, user_id);
+      if (announceDenied) return { status: 403, body: { error: announceDenied } };
+      // Blocking (043). See blockGuardForSend: the blocker is told, the blocked is not.
+      const fanBlocked = await blockGuardForSend(conversation_id, user_id);
+      if (fanBlocked) return fanBlocked;
+      for (const entry of messages) {
+        if (typeof entry?.recipient_device_id !== 'string' || !UUID_RE.test(entry.recipient_device_id) || typeof entry?.ciphertext !== 'string' || !entry.ciphertext) {
+          return { status: 400, body: { error: 'each messages[] entry requires recipient_device_id and ciphertext' } };
+        }
+        // Per-entry golden-rule check: no plaintext-ish fields alongside the ciphertext.
+        try { assertOpaque(entry); } catch (e) {
+          return { status: 400, body: { error: (e as Error).message } };
+        }
+      }
+      const requestedIds = [...new Set<string>(messages.map((entry: any) => entry.recipient_device_id.toLowerCase()))].sort();
+      if (requestedIds.length) {
+        const targets = await query<{ id: string }>(
+          `select d.id from devices d
+             join conversation_members cm on cm.user_id = d.user_id
+            where d.id = any($1::uuid[]) and d.revoked_at is null
+              and cm.conversation_id = $2 and cm.left_at is null
+            order by d.id for share of d, cm`,
+          [requestedIds, conversation_id],
+        );
+        if (targets.length !== requestedIds.length) return { status: 403, body: { error: 'forbidden' } };
+      }
 
-    // ONE canonical metadata row; ciphertext is NULL (the per-device blobs live below).
-    const rows = await query<{ id: string; created_at: string }>(
-      `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext, content_type, media_url, media_mime)
-         values ($1, $2, $3, null, coalesce($4,'text'), $5, $6)
-         returning id, created_at`,
-      [conversation_id, user_id, device_id, content_type, media_url, media_mime]
-    );
-    const message = rows[0];
+      // ONE canonical metadata row; ciphertext is NULL (the per-device blobs live below).
+      //
+      // The unique index on (sender, device, client_message_id) is what makes two retries
+      // arriving at once safe: one wins the insert, the other raises and is answered with the
+      // winner below. The probe above only saves the losing retry from doing the work twice.
+      let message: { id: string; created_at: string };
+      try {
+        const rows = await query<{ id: string; created_at: string }>(
+          `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext,
+                                 content_type, media_url, media_mime,
+                                 client_message_id, payload_fingerprint)
+             values ($1, $2, $3, null, coalesce($4,'text'), $5, $6, $7, $8)
+             returning id, created_at`,
+          [conversation_id, user_id, device_id, content_type, media_url, media_mime,
+           client_message_id ?? null,
+           client_message_id
+             ? payloadFingerprint({ conversationId: conversation_id, contentType: content_type,
+                                    mediaUrl: media_url, mediaMime: media_mime, fanout: messages })
+             : null]
+        );
+        message = rows[0];
+      } catch (e) {
+        if ((e as { code?: string }).code !== PG_UNIQUE_VIOLATION || !client_message_id) throw e;
+        // Lost the race to a concurrent retry of the same send. The transaction is now
+        // aborted, so the winner cannot be read here — rethrow a marker the caller retries
+        // outside this transaction.
+        throw Object.assign(new Error('idempotent retry raced'), { voiidIdempotentRace: true });
+      }
 
-    // One opaque ciphertext per target device, inserted in ONE statement.
-    //
-    // This was a loop doing one round trip per device. A 1000-member group where everyone
-    // has two devices is 2000 sequential inserts for a single message — the send latency
-    // becomes 2000 × RTT, and it is the dominant cost of the whole path at that size.
-    // unnest sends the same rows as three arrays and lets Postgres do the expansion.
-    //
-    // `do nothing` still guards a client that repeats a device in its bundle (the PK is
-    // (message_id, recipient_device_id)).
-    const seen = new Set<string>();
-    const targetIds: string[] = [];
-    const blobs: Buffer[] = [];
-    for (const entry of messages) {
-      // A Set rather than array.includes(): the old membership test was O(n) per entry, so
-      // building the list was itself quadratic — 2 million comparisons at the size above,
-      // before a single row was written.
-      if (seen.has(entry.recipient_device_id)) continue;
-      seen.add(entry.recipient_device_id);
-      // b64 returns null for a null input. The per-entry validation above already rejects
-      // a missing ciphertext, so this cannot be null in practice — but skipping rather than
-      // pushing null keeps a future validation change from silently writing an empty row.
-      const blob = b64(entry.ciphertext);
-      if (!blob) continue;
-      targetIds.push(entry.recipient_device_id);
-      blobs.push(blob);
-    }
-    const deviceIds = targetIds;
+      // One opaque ciphertext per target device, inserted in ONE statement.
+      //
+      // This was a loop doing one round trip per device. A 1000-member group where everyone
+      // has two devices is 2000 sequential inserts for a single message — the send latency
+      // becomes 2000 × RTT, and it is the dominant cost of the whole path at that size.
+      // unnest sends the same rows as three arrays and lets Postgres do the expansion.
+      //
+      // `do nothing` still guards a client that repeats a device in its bundle (the PK is
+      // (message_id, recipient_device_id)).
+      const seen = new Set<string>();
+      const targetIds: string[] = [];
+      const blobs: Buffer[] = [];
+      for (const entry of messages) {
+        // A Set rather than array.includes(): the old membership test was O(n) per entry, so
+        // building the list was itself quadratic — 2 million comparisons at the size above,
+        // before a single row was written.
+        if (seen.has(entry.recipient_device_id.toLowerCase())) continue;
+        seen.add(entry.recipient_device_id.toLowerCase());
+        // b64 returns null for a null input. The per-entry validation above already rejects
+        // a missing ciphertext, so this cannot be null in practice — but skipping rather than
+        // pushing null keeps a future validation change from silently writing an empty row.
+        const blob = b64(entry.ciphertext);
+        if (!blob) continue;
+        targetIds.push(entry.recipient_device_id.toLowerCase());
+        blobs.push(blob);
+      }
+      const deviceIds = targetIds;
 
-    if (targetIds.length) {
-      await query(
-        `insert into message_ciphertexts (message_id, recipient_device_id, ciphertext)
-         select $1, t.device_id, t.ciphertext
-           from unnest($2::uuid[], $3::bytea[]) as t(device_id, ciphertext)
-         on conflict (message_id, recipient_device_id) do nothing`,
-        [message.id, targetIds, blobs]
+      if (targetIds.length) {
+        await query(
+          `insert into message_ciphertexts (message_id, recipient_device_id, ciphertext)
+           select $1, t.device_id, t.ciphertext
+             from unnest($2::uuid[], $3::bytea[]) as t(device_id, ciphertext)
+           on conflict (message_id, recipient_device_id) do nothing`,
+          [message.id, targetIds, blobs]
+        );
+      }
+
+      // Relay: signal-and-fetch on the EXISTING per-user channel (see note below). Resolve each
+      // target device to its owning user and wake that user's live sockets once; every connected
+      // device then calls GET /messages/pending to pull ITS OWN ciphertext. We never place a
+      // device's ciphertext on the shared user channel — only a routing signal (message_id +
+      // the device ids targeted for that user, which are non-secret metadata).
+      //
+      // Blocking (043): a device whose owner has a block with the sender is dropped here, so
+      // it is neither relayed to nor (via the same exclusion in scheduleWakePush) pushed to.
+      //
+      // The RECIPIENT LIST COMES FROM THE CLIENT — it is whoever the sender's app chose to
+      // encrypt to — so this is the server's own check rather than trust in a well-behaved
+      // client. A modified client that fans out to someone who blocked them still gets its
+      // ciphertext stored (there is nothing secret in that; the row is opaque and the reader
+      // must already hold the key), but no device is ever told it is there.
+      const owners = await query<{ id: string; user_id: string }>(
+        `select id, user_id from devices
+          where id = any($1::uuid[]) and revoked_at is null
+            and not exists (
+              select 1 from user_blocks b
+               where (b.blocker_user_id = devices.user_id and b.blocked_user_id = $2)
+                  or (b.blocked_user_id = devices.user_id and b.blocker_user_id = $2)
+            )`,
+        [deviceIds, user_id]
       );
-    }
-
-    // Relay: signal-and-fetch on the EXISTING per-user channel (see note below). Resolve each
-    // target device to its owning user and wake that user's live sockets once; every connected
-    // device then calls GET /messages/pending to pull ITS OWN ciphertext. We never place a
-    // device's ciphertext on the shared user channel — only a routing signal (message_id +
-    // the device ids targeted for that user, which are non-secret metadata).
-    //
-    // Blocking (043): a device whose owner has a block with the sender is dropped here, so
-    // it is neither relayed to nor (via the same exclusion in scheduleWakePush) pushed to.
-    //
-    // The RECIPIENT LIST COMES FROM THE CLIENT — it is whoever the sender's app chose to
-    // encrypt to — so this is the server's own check rather than trust in a well-behaved
-    // client. A modified client that fans out to someone who blocked them still gets its
-    // ciphertext stored (there is nothing secret in that; the row is opaque and the reader
-    // must already hold the key), but no device is ever told it is there.
-    const owners = await query<{ id: string; user_id: string }>(
-      `select id, user_id from devices
-        where id = any($1::uuid[]) and revoked_at is null
-          and not exists (
-            select 1 from user_blocks b
-             where (b.blocker_user_id = devices.user_id and b.blocked_user_id = $2)
-                or (b.blocked_user_id = devices.user_id and b.blocker_user_id = $2)
-          )`,
-      [deviceIds, user_id]
-    );
-    const byUser = new Map<string, string[]>();
-    for (const o of owners) {
-      const list = byUser.get(o.user_id) ?? [];
-      list.push(o.id);
-      byUser.set(o.user_id, list);
-    }
-    for (const [uid, devIds] of byUser) {
-      await publisher.publish(`channel:user:${uid}`, JSON.stringify({
-        type: 'message',
-        message_id: message.id,
-        conversation_id,
-        recipient_device_ids: devIds,
+      const byUser = new Map<string, string[]>();
+      for (const o of owners) {
+        const list = byUser.get(o.user_id) ?? [];
+        list.push(o.id);
+        byUser.set(o.user_id, list);
+      }
+      // The announcement is written down before it is attempted. A publish that fails after
+      // this transaction commits leaves a row the sweep will keep, instead of a stored message
+      // nobody was ever told about.
+      const entries: OutboxEntry[] = [...byUser].map(([uid, devIds]) => ({
+        channel: `channel:user:${uid}`,
+        payload: {
+          type: 'message',
+          message_id: message.id,
+          conversation_id,
+          recipient_device_ids: devIds,
+        },
       }));
+      const ids = await enqueueOutbox(query, message.id, entries);
+      owed = entries.map((entry, i) => ({ id: ids[i], ...entry }));
+
+      // Wake offline/backgrounded TARGET devices (content-free push + non-secret routing).
+      if (deviceIds.length) {
+        postCommit.push(() => scheduleWakePush('id = any($1::uuid[])', [deviceIds], {
+          message_id: message.id,
+          conversation_id,
+          silent: isControlContentType(content_type),
+        }, user_id));
+      }
+
+      return { status: 200, body: { message_id: message.id, delivered_devices: deviceIds.length } };
     }
 
-    // Wake offline/backgrounded TARGET devices (content-free push + non-secret routing).
-    if (deviceIds.length) {
-      scheduleWakePush('id = any($1::uuid[])', [deviceIds], {
+    // ── Legacy path: single ciphertext stored on the message row, relayed per-user ──
+    if (!conversation_id || !ciphertext) {
+      return { status: 400, body: { error: 'conversation_id and ciphertext required' } };
+    }
+    if (!(await isConversationMember(conversation_id, user_id, query))) {
+      return { status: 403, body: { error: 'not a member of this conversation' } };
+    }
+    // Same announcement-channel restriction as the fan-out path above. Guarding only one path
+    // leaves the other as a way in.
+    const legacyAnnounceDenied = await announcementPostDeniedReason(conversation_id, user_id);
+    if (legacyAnnounceDenied) return { status: 403, body: { error: legacyAnnounceDenied } };
+    // Blocking (043) — same guard as the fan-out path, for the same reason as the line above.
+    const legacyBlocked = await blockGuardForSend(conversation_id, user_id);
+    if (legacyBlocked) return legacyBlocked;
+    let message: { id: string; created_at: string };
+    try {
+      const rows = await query<{ id: string; created_at: string }>(
+        `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext,
+                               content_type, media_url, media_mime,
+                               client_message_id, payload_fingerprint)
+           values ($1, $2, $3, $4, coalesce($5,'text'), $6, $7, $8, $9)
+           returning id, created_at`,
+        [conversation_id, user_id, device_id, b64(ciphertext), content_type, media_url, media_mime,
+         client_message_id ?? null,
+         client_message_id
+           ? payloadFingerprint({ conversationId: conversation_id, contentType: content_type,
+                                  mediaUrl: media_url, mediaMime: media_mime, ciphertext })
+           : null]
+      );
+      message = rows[0];
+    } catch (e) {
+      if ((e as { code?: string }).code !== PG_UNIQUE_VIOLATION || !client_message_id) throw e;
+      throw Object.assign(new Error('idempotent retry raced'), { voiidIdempotentRace: true });
+    }
+
+    // Route to each active member's user channel; WS instance with the live socket delivers it.
+    //
+    // Blocking (043) is filtered in the SQL rather than after the fact, so the same list
+    // drives both the live relay below and the wake push further down. A group send is
+    // deliberately never rejected for one blocked pair — that would let one member silence a
+    // room — so suppression happens per RECIPIENT here instead.
+    const members = await query<{ user_id: string }>(
+      `select cm.user_id from conversation_members cm
+         where cm.conversation_id = $1 and cm.left_at is null and cm.user_id <> $2
+           and not exists (
+             select 1 from user_blocks b
+              where (b.blocker_user_id = cm.user_id and b.blocked_user_id = $2)
+                 or (b.blocked_user_id = cm.user_id and b.blocker_user_id = $2)
+           )`,
+      [conversation_id, user_id]
+    );
+    const legacyEntries: OutboxEntry[] = members.map((m) => ({
+      channel: `channel:user:${m.user_id}`,
+      payload: { type: 'message', message_id: message.id, conversation_id },
+    }));
+    const legacyIds = await enqueueOutbox(query, message.id, legacyEntries);
+    owed = legacyEntries.map((entry, i) => ({ id: legacyIds[i], ...entry }));
+
+    // Wake offline/backgrounded recipient devices with a CONTENT-FREE push. The Redis
+    // relay above only reaches devices holding a live socket; a silent, data-only "wake"
+    // push nudges the rest to fetch pending messages + decrypt locally (no ciphertext or
+    // content ever leaves in the push — Section 4.14).
+    if (members.length) {
+      postCommit.push(() => scheduleWakePush('user_id = any($1::uuid[])', [members.map((m) => m.user_id)], {
         message_id: message.id,
         conversation_id,
         silent: isControlContentType(content_type),
-      }, user_id);
+      }, user_id));
     }
 
-    return res.json({ message_id: message.id, delivered_devices: deviceIds.length });
-  }
-
-  // ── Legacy path: single ciphertext stored on the message row, relayed per-user ──
-  if (!conversation_id || !ciphertext) {
-    return res.status(400).json({ error: 'conversation_id and ciphertext required' });
-  }
-  if (!(await isConversationMember(conversation_id, user_id))) {
-    return res.status(403).json({ error: 'not a member of this conversation' });
-  }
-  // Same announcement-channel restriction as the fan-out path above. Guarding only one path
-  // leaves the other as a way in.
-  const legacyAnnounceDenied = await announcementPostDeniedReason(conversation_id, user_id);
-  if (legacyAnnounceDenied) return res.status(403).json({ error: legacyAnnounceDenied });
-  // Blocking (043) — same guard as the fan-out path, for the same reason as the line above.
-  const legacyBlocked = await blockGuardForSend(conversation_id, user_id);
-  if (legacyBlocked) return res.status(legacyBlocked.status).json(legacyBlocked.body);
-  // Which of OUR devices encrypted this — so a multi-device recipient resolves the
-  // correct sender identity key on acceptSession (else decrypt fails). The JWT may
-  // not carry a device id, so the client sends it in the body.
-  const device_id = bodyDeviceId ?? authDeviceId ?? null;
-
-  const rows = await query<{ id: string; created_at: string }>(
-    `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext, content_type, media_url, media_mime)
-       values ($1, $2, $3, $4, coalesce($5,'text'), $6, $7)
-       returning id, created_at`,
-    [conversation_id, user_id, device_id, b64(ciphertext), content_type, media_url, media_mime]
-  );
-  const message = rows[0];
-
-  // Route to each active member's user channel; WS instance with the live socket delivers it.
-  //
-  // Blocking (043) is filtered in the SQL rather than after the fact, so the same list
-  // drives both the live relay below and the wake push further down. A group send is
-  // deliberately never rejected for one blocked pair — that would let one member silence a
-  // room — so suppression happens per RECIPIENT here instead.
-  const members = await query<{ user_id: string }>(
-    `select cm.user_id from conversation_members cm
-       where cm.conversation_id = $1 and cm.left_at is null and cm.user_id <> $2
-         and not exists (
-           select 1 from user_blocks b
-            where (b.blocker_user_id = cm.user_id and b.blocked_user_id = $2)
-               or (b.blocked_user_id = cm.user_id and b.blocker_user_id = $2)
-         )`,
-    [conversation_id, user_id]
-  );
-  for (const m of members) {
-    await publisher.publish(`channel:user:${m.user_id}`, JSON.stringify({
-      type: 'message',
-      message_id: message.id,
-      conversation_id,
+    return { status: 200, body: { message_id: message.id, created_at: message.created_at } };
+  });
+  let result: { status: number; body: any };
+  try {
+    result = await send();
+  } catch (e) {
+    // Two retries of the same send reached the insert together. The loser's transaction is
+    // aborted, so the winner could not be read from inside it; read it now that the winner has
+    // committed and answer with the same message, which is what the client is asking for.
+    if (!(e as { voiidIdempotentRace?: boolean }).voiidIdempotentRace || !client_message_id) throw e;
+    const device_id = await resolveActiveDevice(req, user_id,
+      async (sql, params) => ({ rows: await query(sql, params) }), sender_device_id ?? bodyDeviceId);
+    const winner = device_id === undefined
+      ? undefined
+      : await findByClientId(query, user_id, device_id, client_message_id);
+    if (!winner) throw e;
+    const identical = samePayload(winner, payloadFingerprint({
+      conversationId: String(conversation_id ?? ''), contentType: content_type,
+      mediaUrl: media_url, mediaMime: media_mime, ciphertext,
+      fanout: Array.isArray(messages) ? messages : undefined,
     }));
+    result = { status: identical ? 200 : 409, body: {
+      message_id: winner.id, created_at: winner.created_at,
+      delivered_devices: winner.delivered_devices,
+      ...(identical ? { duplicate: true } : {
+        error: 'client_message_id already used for a different payload', code: 'idempotency_key_reuse',
+      }),
+    } };
   }
 
-  // Wake offline/backgrounded recipient devices with a CONTENT-FREE push. The Redis
-  // relay above only reaches devices holding a live socket; a silent, data-only "wake"
-  // push nudges the rest to fetch pending messages + decrypt locally (no ciphertext or
-  // content ever leaves in the push — Section 4.14).
-  if (members.length) {
-    scheduleWakePush('user_id = any($1::uuid[])', [members.map((m) => m.user_id)], {
-      message_id: message.id,
-      conversation_id,
-      silent: isControlContentType(content_type),
-    }, user_id);
-  }
-
-  res.json({ message_id: message.id, created_at: message.created_at });
+  // AFTER COMMIT, and never fatal: the message is stored and its announcements are durable, so
+  // a Redis outage here must not turn a successful send into a 500 the client would retry.
+  await publishOutbox(query, owed);
+  for (const notify of postCommit) await notify();
+  res.status(result.status).json(result.body);
 }));
 
-// Resolve the caller's device id: JWT claim first, else `?device_id=` (matches prekeys.ts).
-function callerDeviceId(req: any): string | null {
-  const fromAuth = req.auth?.device_id;
-  if (typeof fromAuth === 'string' && fromAuth) return fromAuth;
-  const fromQuery = req.query?.device_id;
-  return typeof fromQuery === 'string' && fromQuery ? fromQuery : null;
+// GET /messages/conversation/:id?before=&limit=&device_id= — paginated history (ciphertext; client decrypts)
+
+/** One screen of history. Bounded because it arrives from a client. */
+const HISTORY_DEFAULT_LIMIT = 50;
+const HISTORY_MAX_LIMIT = 100;
+
+/** undefined = the client sent something that is not a usable limit. */
+function parseHistoryLimit(raw: unknown): number | undefined {
+  if (raw === undefined) return HISTORY_DEFAULT_LIMIT;
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return undefined;
+  const n = Number(raw);
+  if (n < 1) return undefined;
+  return Math.min(n, HISTORY_MAX_LIMIT);
 }
 
-// GET /messages/conversation/:id?before=&limit=&device_id= — paginated history (ciphertext; client decrypts)
-router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
-  const { user_id } = (req as any).auth;
-  // MEMBERSHIP, before anything else reads a row. This endpoint used to filter only
-  // on conversation_id, so ANY authenticated caller holding a conversation UUID —
-  // and ids travel: they appear in group rosters and shared links — could read the
-  // whole timeline: senders, timestamps, content types, media references, receipt
-  // aggregates, and legacy-path ciphertext. POST /send has required membership since
-  // it shipped (see isConversationMember above); the read path simply never got the
-  // same guard. 403 without saying whether the conversation exists, mirroring :187.
-  if (!(await isConversationMember(req.params.id, user_id))) {
-    return res.status(403).json({ error: 'not found' });
+/** null = newest page. undefined = a cursor this endpoint did not issue. */
+function parseHistoryCursor(raw: unknown): { createdAt: string; id: string } | null | undefined {
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const [createdAt, id] = Buffer.from(raw, 'base64url').toString('utf8').split('|');
+    if (!createdAt || !id || !UUID_RE.test(id) || Number.isNaN(Date.parse(createdAt))) return undefined;
+    return { createdAt, id };
+  } catch {
+    return undefined;
   }
-  const limit = Math.min(Number(req.query.limit) || 50, 100);
-  const before = req.query.before as string | undefined;
-  const deviceId = callerDeviceId(req);
-  // Per message, return THIS device's ciphertext (fan-out) or the legacy row ciphertext.
-  // The LEFT JOIN is keyed to the caller's device so no other device's blob is ever returned.
-  const rows = await query<{ id: string }>(
-    `select m.id, m.sender_id, m.sender_device_id,
-            translate(encode(coalesce(mc.ciphertext, m.ciphertext),'base64'), E'\n', '') as ciphertext,
-            m.content_type, m.media_url, m.media_mime, m.created_at,
-            -- Receipt state for the SENDER's ticks, so they advance Sent→Delivered→Seen on
-            -- poll even when the live WS receipt push was missed (mirrors Signal's receipt
-            -- sync). Two rules this MUST get right, both of which it used to get wrong:
-            --
-            --  1. ONLY OTHER PEOPLE'S RECEIPTS COUNT. The join used to be unfiltered, so a
-            --     receipt written by the sender's OWN linked device (fan-out marks inbound
-            --     copies delivered) satisfied bool_or and reported Delivered/Seen for a
-            --     message no recipient had touched. Worst in Note to Self, where every
-            --     receipt is your own. iOS happens to filter !isMine client-side, but the
-            --     server must not depend on a client behaving — Android or a replayed
-            --     request would still forge the tick.
-            --
-            --  2. 'read' MEANS EVERY ACTIVE RECIPIENT READ IT. bool_or turned the tick blue
-            --     as soon as ONE group member read, which is not what a blue tick promises
-            --     and not what WhatsApp/Signal do. We now compare the count of distinct
-            --     recipients who reached 'read' against the number of active members other
-            --     than the sender. 'delivered' stays ANY-recipient: it answers "did this
-            --     leave the building", which is true as soon as one device has it.
-            --
-            -- Direct chats fall out of the same expression — one other member means
-            -- all-read and any-read coincide.
-            case
-              when count(distinct r.user_id) filter (where r.status = 'read') > 0
-               and count(distinct r.user_id) filter (where r.status = 'read')
-                   >= (select count(*) from conversation_members cm
-                        where cm.conversation_id = m.conversation_id
-                          and cm.left_at is null
-                          and cm.user_id <> m.sender_id)
-                then 'read'
-              when count(distinct r.user_id) filter (where r.status in ('delivered','read')) > 0
-                then 'delivered'
-              else null
-            end as receipt_status
-       from messages m
-       left join message_ciphertexts mc on mc.message_id = m.id and mc.recipient_device_id = $3::uuid
-       -- Sender's own receipts excluded here rather than in the aggregate, so they never
-       -- reach any of the counts above.
-       left join message_read_receipts r
-              on r.message_id = m.id and r.user_id <> m.sender_id
-       where m.conversation_id = $1 ${before ? 'and m.created_at < $4' : ''}
-       group by m.id, m.conversation_id, m.sender_id, mc.ciphertext
-       order by m.created_at desc limit $2`,
-    before ? [req.params.id, limit, deviceId, before] : [req.params.id, limit, deviceId]
-  );
+}
 
-  // Mark this device's fan-out ciphertexts delivered as we serve them.
-  if (deviceId && rows.length) {
-    await query(
-      `update message_ciphertexts set delivered_at = now()
-         where recipient_device_id = $1::uuid and delivered_at is null
-           and message_id = any($2::uuid[])`,
-      [deviceId, rows.map((m) => m.id)]
+function encodeHistoryCursor(createdAt: string, id: string): string {
+  return Buffer.from(`${new Date(createdAt).toISOString()}|${id}`, 'utf8').toString('base64url');
+}
+
+router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
+  const result = await withTransaction<{ status: number; body: any }>(async (query) => {
+    const { user_id } = (req as any).auth;
+    // MEMBERSHIP, before anything else reads a row. This endpoint used to filter only
+    // on conversation_id, so ANY authenticated caller holding a conversation UUID —
+    // and ids travel: they appear in group rosters and shared links — could read the
+    // whole timeline: senders, timestamps, content types, media references, receipt
+    // aggregates, and legacy-path ciphertext. POST /send has required membership since
+    // it shipped (see isConversationMember above); the read path simply never got the
+    // same guard. 403 without saying whether the conversation exists, mirroring :187.
+    if (!(await isConversationMember(req.params.id, user_id, query))) {
+      return { status: 403, body: { error: 'not found' } };
+    }
+    const limit = parseHistoryLimit(req.query.limit);
+    if (limit === undefined) {
+      return { status: 400, body: { error: `limit must be 1..${HISTORY_MAX_LIMIT}`, code: 'invalid_limit' } };
+    }
+    // Newest-first keyset cursor (M04). `before` alone could not express a tie: it is a bare
+    // timestamp compared with strict less-than, so a page boundary landing inside a group of
+    // messages that share a millisecond skipped every remaining one — they are not "before the
+    // cursor", they ARE the cursor. A fan-out send writes its rows in one transaction, so ties
+    // are the normal case rather than a curiosity, and the skipped messages were unreachable:
+    // the client had already moved its scroll position past them.
+    const cursor = parseHistoryCursor(req.query.cursor);
+    if (cursor === undefined) {
+      return { status: 400, body: { error: 'cursor is not a cursor this endpoint issued', code: 'invalid_cursor' } };
+    }
+    // Kept working for clients that have not learned about cursors yet (M04's migration note
+    // asks for dual-compatible responses). It carries the same tie limitation it always did.
+    const before = cursor ? undefined : (req.query.before as string | undefined);
+    const deviceId = await resolveActiveDevice(req, user_id,
+      async (sql, params) => ({ rows: await query(sql, params) }), req.query.device_id, true);
+    if (deviceId === undefined) return { status: 403, body: { error: 'forbidden' } };
+    // Per message, return THIS device's ciphertext (fan-out) or the legacy row ciphertext.
+    // The LEFT JOIN is keyed to the caller's device so no other device's blob is ever returned.
+    const rows = await query<{ id: string }>(
+      // PAGE FIRST, AGGREGATE SECOND (M04).
+      //
+      // The receipt aggregation used to run over the WHOLE conversation and the LIMIT was
+      // applied afterwards. Measured on a 50-member group with 50,000 messages and 30,000
+      // receipts: 50,000 rows grouped, sequential scans on both tables, 51ms, and a spill to
+      // temp files — to return fifty rows. Selecting the page in a CTE first takes the same
+      // answer to 3.5ms with no spill, because the aggregate then joins fifty ids instead of
+      // fifty thousand.
+      //
+      // NO NEW INDEX. M04 says not to add one merely because a column appears in SQL, so the
+      // plans were read: `idx_messages_conversation (conversation_id, created_at DESC)` already
+      // serves the new (created_at, id) ordering via an incremental sort, and
+      // `idx_receipts_message` already covers the join — forcing it gives 0.4ms, and the
+      // planner will choose it on its own once the table is large enough for a seq scan to stop
+      // being cheaper. Adding indexes here would have been cargo cult.
+      `with page as (
+         select m.id, m.conversation_id, m.sender_id, m.sender_device_id, m.ciphertext,
+                m.content_type, m.media_url, m.media_mime, m.created_at
+           from messages m
+          where m.conversation_id = $1 ${cursor ? 'and (m.created_at, m.id) < ($4::timestamptz, $5::uuid)' : before ? 'and m.created_at < $4' : ''}
+          -- (created_at, id) DESC, not created_at alone: the second column is what makes a page
+          -- boundary inside a tie expressible. The id is arbitrary but stable, which is all a
+          -- tie-break has to be.
+          order by m.created_at desc, m.id desc
+          limit $2
+       )
+       select m.id, m.sender_id, m.sender_device_id,
+              translate(encode(coalesce(mc.ciphertext, m.ciphertext),'base64'), E'\n', '') as ciphertext,
+              m.content_type, m.media_url, m.media_mime, m.created_at,
+              -- Receipt state for the SENDER's ticks, so they advance Sent→Delivered→Seen on
+              -- poll even when the live WS receipt push was missed (mirrors Signal's receipt
+              -- sync). Two rules this MUST get right, both of which it used to get wrong:
+              --
+              --  1. ONLY OTHER PEOPLE'S RECEIPTS COUNT. The join used to be unfiltered, so a
+              --     receipt written by the sender's OWN linked device (fan-out marks inbound
+              --     copies delivered) satisfied bool_or and reported Delivered/Seen for a
+              --     message no recipient had touched. Worst in Note to Self, where every
+              --     receipt is your own. iOS happens to filter !isMine client-side, but the
+              --     server must not depend on a client behaving — Android or a replayed
+              --     request would still forge the tick.
+              --
+              --  2. 'read' MEANS EVERY ACTIVE RECIPIENT READ IT. bool_or turned the tick blue
+              --     as soon as ONE group member read, which is not what a blue tick promises
+              --     and not what WhatsApp/Signal do. We now compare the count of distinct
+              --     recipients who reached 'read' against the number of active members other
+              --     than the sender. 'delivered' stays ANY-recipient: it answers "did this
+              --     leave the building", which is true as soon as one device has it.
+              --
+              -- Direct chats fall out of the same expression — one other member means
+              -- all-read and any-read coincide.
+              case
+                when count(distinct r.user_id) filter (where r.status = 'read') > 0
+                 and count(distinct r.user_id) filter (where r.status = 'read')
+                     >= (select count(*) from conversation_members cm
+                          where cm.conversation_id = m.conversation_id
+                            and cm.left_at is null
+                            and cm.user_id <> m.sender_id
+                            -- THE ROSTER AT SEND TIME, not the current one (M04).
+                            --
+                            -- M04 asks for this to be decided rather than inherited, so:
+                            -- someone who joined AFTER a message was sent is not counted.
+                            -- Counting them made a new member un-read every older message —
+                            -- the sender's tick went from blue back to grey for everybody,
+                            -- and it could never return, because the fan-out addressed the
+                            -- devices that existed when it was sent. A person who was not
+                            -- sent a message cannot read it, so waiting for them is waiting
+                            -- forever.
+                            --
+                            -- left_at is null stays, and the two rules answer different
+                            -- questions: joined_at decides who was ever owed this message,
+                            -- left_at decides who is still around to owe it. Someone who was
+                            -- present and has since left is not waited on — that is the
+                            -- existing behaviour receiptStatus.test.ts already pins.
+                            and cm.joined_at <= m.created_at)
+                  then 'read'
+                when count(distinct r.user_id) filter (where r.status in ('delivered','read')) > 0
+                  then 'delivered'
+                else null
+              end as receipt_status
+         from page m
+         left join message_ciphertexts mc on mc.message_id = m.id and mc.recipient_device_id = $3::uuid
+         -- Sender's own receipts excluded here rather than in the aggregate, so they never
+         -- reach any of the counts above.
+         left join message_read_receipts r
+                on r.message_id = m.id and r.user_id <> m.sender_id
+         group by m.id, m.conversation_id, m.sender_id, m.sender_device_id, m.ciphertext,
+                  m.content_type, m.media_url, m.media_mime, m.created_at, mc.ciphertext
+         order by m.created_at desc, m.id desc`,
+      cursor
+        ? [req.params.id, limit, deviceId, cursor.createdAt, cursor.id]
+        : before ? [req.params.id, limit, deviceId, before] : [req.params.id, limit, deviceId]
     );
-  }
-  res.json({ messages: rows });
+
+    // NOTHING IS MARKED DELIVERED HERE (M02). This used to stamp `delivered_at` for every
+    // row it served, so scrolling back through a conversation silently acknowledged messages
+    // the device had not stored — and a history fetch that never arrived acknowledged them
+    // anyway. Delivery is reported by POST /messages/ack, by the device, after it has the
+    // ciphertext on its own disk.
+    // A cursor only when a full page came back: a short page is the end of the conversation,
+    // and handing out a cursor there would make a client fetch one empty page every time.
+    const oldest = rows[rows.length - 1] as { created_at?: string; id?: string } | undefined;
+    return {
+      status: 200,
+      body: {
+        messages: rows,
+        next_cursor: rows.length === limit && oldest?.created_at && oldest.id
+          ? encodeHistoryCursor(oldest.created_at, oldest.id)
+          : null,
+      },
+    };
+  });
+  res.status(result.status).json(result.body);
 }));
 
 // GET /messages/pending/:user_id?device_id= — offline fetch on reconnect.
 // Returns ONLY the caller device's ciphertext for fan-out messages, plus legacy pending
 // (single-ciphertext) rows for the user's conversations. Marks fan-out rows delivered.
+
+/** One page of a reconnect backlog. Bounded so a fortnight offline is not one response. */
+const PENDING_DEFAULT_LIMIT = 200;
+const PENDING_MAX_LIMIT = 500;
+/** Roughly 4 MB of base64 ciphertext per page — see the trim in the handler for why rows alone
+ *  are not enough of a bound. */
+const PENDING_MAX_BYTES = Number(process.env.VOIID_PENDING_MAX_BYTES) || 4 * 1024 * 1024;
+
+interface PendingRow {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  sender_device_id: string | null;
+  ciphertext: string;
+  content_type: string | null;
+  media_url: string | null;
+  media_mime: string | null;
+  created_at: string;
+}
+
+/** undefined = the client sent something that is not a usable limit. */
+function parsePendingLimit(raw: unknown): number | undefined {
+  if (raw === undefined) return PENDING_DEFAULT_LIMIT;
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return undefined;
+  const n = Number(raw);
+  if (n < 1) return undefined;
+  // A client asking for more than the cap gets the cap rather than an error: it is not wrong
+  // to want everything, and the cursor tells it how to get the rest.
+  return Math.min(n, PENDING_MAX_LIMIT);
+}
+
+/** null = start of the backlog. undefined = the client sent a cursor we did not issue. */
+function parsePendingCursor(raw: unknown): { createdAt: string; id: string } | null | undefined {
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const [createdAt, id] = Buffer.from(raw, 'base64url').toString('utf8').split('|');
+    if (!createdAt || !id || !UUID_RE.test(id) || Number.isNaN(Date.parse(createdAt))) return undefined;
+    return { createdAt, id };
+  } catch {
+    return undefined;
+  }
+}
+
+function encodePendingCursor(row: PendingRow): string {
+  return Buffer.from(`${new Date(row.created_at).toISOString()}|${row.id}`, 'utf8').toString('base64url');
+}
+
 router.get('/pending/:user_id', requireAuth, asyncHandler(async (req, res) => {
-  // IDENTITY, before anything reads or mutates a row. The path parameter used to flow
-  // straight into both queries below with no comparison to the authenticated caller,
-  // so any signed-in user could harvest another user's undelivered queue — and the
-  // legacy branch marks nothing delivered, so the harvest was repeatable forever.
+  // IDENTITY, before anything reads a row. The path parameter used to flow straight into both
+  // queries with no comparison to the authenticated caller, so any signed-in user could
+  // harvest another user's undelivered queue.
   const callerId: string = (req as any).auth.user_id;
   if (req.params.user_id !== callerId) {
     return res.status(403).json({ error: 'forbidden' });
   }
-  // If a device id arrives (header/normal auth path or query fallback), it must belong
-  // to the caller too — otherwise "scoped to a device that belongs to :user_id" was
-  // only as strong as whatever value the client typed into the query string.
-  const deviceId = callerDeviceId(req);
-  const tokenDeviceId: string | null = (req as any).auth.device_id ?? null;
-  if (deviceId && deviceId !== tokenDeviceId) {
-    const owned = await query<{ one: number }>(
-      `select 1 as one from devices where id = $1 and user_id = $2 limit 1`,
-      [deviceId, callerId]
-    );
-    if (owned.length === 0) {
-      return res.status(403).json({ error: 'forbidden' });
+
+  const limit = parsePendingLimit(req.query.limit);
+  if (limit === undefined) {
+    return res.status(400).json({ error: `limit must be 1..${PENDING_MAX_LIMIT}`, code: 'invalid_limit' });
+  }
+  const cursor = parsePendingCursor(req.query.cursor);
+  if (cursor === undefined) {
+    return res.status(400).json({ error: 'cursor is not a cursor this endpoint issued', code: 'invalid_cursor' });
+  }
+
+  // NO TRANSACTION AND NO ROW LOCK ANY MORE. Both existed to hold membership stable while this
+  // endpoint STAMPED delivery; since M02 it stamps nothing, so a share lock over every
+  // conversation the caller belongs to would be contention bought for a mutation that no
+  // longer happens. This is a read.
+  const deviceId = await resolveActiveDevice(req, callerId,
+    async (sql, params) => ({ rows: await query(sql, params) }), req.query.device_id);
+  if (deviceId === undefined) return res.status(403).json({ error: 'forbidden' });
+
+  // ONE STATEMENT, KEYSET-PAGINATED. The two branches used to be separate queries merged and
+  // sorted in application memory, with no limit on either — so a device returning after a
+  // fortnight asked this process to load, sort and serialise its entire backlog at once. Since
+  // M02 made the fetch non-destructive, it did that on EVERY poll until the device
+  // acknowledged, rather than once.
+  //
+  // Ordered and paged by (created_at, id): created_at alone is not unique, and a page boundary
+  // falling inside a group of messages sharing a timestamp would drop or repeat them.
+  const rows = await query<PendingRow>(
+    `with fanout as (
+       select m.id, m.conversation_id, m.sender_id, m.sender_device_id,
+              mc.ciphertext as blob, m.content_type, m.media_url, m.media_mime, m.created_at
+         from message_ciphertexts mc
+         join messages m on mc.message_id = m.id
+         join devices d on d.id = mc.recipient_device_id
+         join conversation_members cm
+           on cm.conversation_id = m.conversation_id and cm.user_id = $2::uuid
+        where d.id = $1::uuid and d.user_id = $2::uuid and d.revoked_at is null
+          and cm.left_at is null
+          and mc.delivered_at is null
+          and not exists (select 1 from user_blocks b
+            where (b.blocker_user_id = m.sender_id and b.blocked_user_id = $2)
+               or (b.blocked_user_id = m.sender_id and b.blocker_user_id = $2))
+     ),
+     legacy as (
+       select m.id, m.conversation_id, m.sender_id, m.sender_device_id,
+              m.ciphertext as blob, m.content_type, m.media_url, m.media_mime, m.created_at
+         from messages m
+         join conversation_members cm on cm.conversation_id = m.conversation_id
+        where cm.user_id = $2::uuid and cm.left_at is null
+          and m.is_pending = true and m.ciphertext is not null
+          and not exists (select 1 from user_blocks b
+            where (b.blocker_user_id = m.sender_id and b.blocked_user_id = $2)
+               or (b.blocked_user_id = m.sender_id and b.blocker_user_id = $2))
+          and not exists (
+            select 1 from message_deliveries dl
+             where dl.message_id = m.id and dl.user_id = $2::uuid
+               and coalesce(dl.device_id, '00000000-0000-0000-0000-000000000000'::uuid)
+                   = coalesce($1::uuid, '00000000-0000-0000-0000-000000000000'::uuid))
+     )
+     select q.id, q.conversation_id, q.sender_id, q.sender_device_id,
+            translate(encode(q.blob,'base64'), E'\n', '') as ciphertext,
+            q.content_type, q.media_url, q.media_mime, q.created_at
+       from (select * from fanout union all select * from legacy) q
+      where $3::timestamptz is null
+         or (q.created_at, q.id) > ($3::timestamptz, $4::uuid)
+      order by q.created_at, q.id
+      limit $5`,
+    [deviceId, callerId, cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1]
+  );
+
+  // One row past the page tells us whether there is more without a second count query.
+  let page = rows.slice(0, limit);
+  let more = rows.length > limit;
+
+  // A ROW CAP IS NOT A MEMORY CAP. 500 media envelopes are a different size from 500 short
+  // texts, so the page is also trimmed by total ciphertext bytes — the response, not the row
+  // count, is what a phone on a bad connection has to receive.
+  let bytes = 0;
+  for (let i = 0; i < page.length; i++) {
+    bytes += page[i].ciphertext?.length ?? 0;
+    if (bytes > PENDING_MAX_BYTES && i > 0) {
+      page = page.slice(0, i);
+      more = true;
+      break;
     }
   }
 
-  // Fan-out: the caller device's undelivered blobs. UPDATE…RETURNING both marks
-  // delivered_at and returns exactly the rows that were still pending — atomic, no
-  // double-delivery, no race. Scoped to a device that belongs to :user_id.
-  const perDevice = deviceId
-    ? await query(
-        `update message_ciphertexts mc set delivered_at = now()
-           from messages m, devices d
-          where mc.message_id = m.id
-            and mc.recipient_device_id = d.id
-            and d.id = $1::uuid and d.user_id = $2::uuid
-            and mc.delivered_at is null
-          returning m.id, m.conversation_id, m.sender_id, m.sender_device_id,
-                    translate(encode(mc.ciphertext,'base64'), E'\n', '') as ciphertext,
-                    m.content_type, m.media_url, m.media_mime, m.created_at`,
-        [deviceId, req.params.user_id]
-      )
-    : [];
+  const last = page[page.length - 1];
+  return res.json({
+    messages: page,
+    // Null means drained. A client follows this until it is null; it never has to guess.
+    next_cursor: more && last ? encodePendingCursor(last) : null,
+  });
+}));
 
-  // Legacy: single-ciphertext rows still living on the message. `m.ciphertext is not null`
-  // excludes fan-out rows (whose canonical ciphertext is NULL) so they aren't leaked here.
-  const legacy = await query(
-    `select m.id, m.conversation_id, m.sender_id, m.sender_device_id,
-            translate(encode(m.ciphertext,'base64'), E'\n', '') as ciphertext,
-            m.content_type, m.media_url, m.media_mime, m.created_at
-       from messages m
-       join conversation_members cm on cm.conversation_id = m.conversation_id
-       where cm.user_id = $1 and cm.left_at is null
-         and m.is_pending = true and m.ciphertext is not null
-       order by m.created_at asc`,
-    [req.params.user_id]
-  );
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /messages/ack  { device_id?, message_ids: [uuid, ...] }
+//
+// THE OTHER HALF OF DELIVERY (M02). Fetching used to mark a message delivered, which meant
+// the server was asserting something it could not know: that bytes it had written to a socket
+// reached a device AND were written to that device's disk. Everything between those points —
+// a dropped connection, an app killed on the walk to the platform, a failed write — silently
+// destroyed the message, because the next fetch skipped it and nothing raised an error.
+//
+// A device sends this only after the ciphertext is durably stored. Until then, every fetch
+// keeps returning it. That is the correct trade: a duplicate the client dedupes by id costs
+// nothing, and a lost message cannot be recovered by anyone.
+//
+// IDEMPOTENT, because it is retried. `delivered_at is null` and `on conflict do nothing` mean
+// a replayed batch is a no-op rather than a moved timestamp.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post('/ack', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const { message_ids, device_id: bodyDeviceId } = req.body ?? {};
 
-  const merged = [...perDevice, ...legacy].sort(
-    (a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-  );
-  res.json({ messages: merged });
+  // The whole batch is validated before anything is written: a partly-applied
+  // acknowledgement would leave the client believing it had settled messages it had not.
+  if (!Array.isArray(message_ids) || message_ids.length === 0 || message_ids.length > ACK_MAX_BATCH) {
+    return res.status(400).json({ error: `message_ids must be 1..${ACK_MAX_BATCH} ids` });
+  }
+  if (!message_ids.every((id: unknown) => typeof id === 'string' && UUID_RE.test(id))) {
+    return res.status(400).json({ error: 'message_ids must all be uuids' });
+  }
+  const ids = [...new Set<string>(message_ids.map((id: string) => id.toLowerCase()))];
+
+  // A body that names a DIFFERENT device than the token is refused rather than quietly
+  // resolved to the token's. The signed claim would win either way, so nothing unsafe could
+  // happen — but the caller would be told "acknowledged" for a device it did not name, and a
+  // client that believes it settled its tablet's queue from its phone will stop retrying.
+  const claimedDevice = (req as any).auth?.device_id;
+  if (typeof bodyDeviceId === 'string' && typeof claimedDevice === 'string' &&
+      bodyDeviceId.toLowerCase() !== claimedDevice.toLowerCase()) {
+    return res.status(403).json({ error: 'a device can only acknowledge its own messages' });
+  }
+
+  const result = await withTransaction<{ status: number; body: any }>(async (query) => {
+    // The acknowledging device is resolved the same way every other write path resolves it:
+    // a signed claim beats the body, and either way it must be a live device this account
+    // owns. Acknowledging on behalf of another device would let one device empty another
+    // device's queue — the shared-bit bug, re-created through the front door.
+    const deviceId = await resolveActiveDevice(req, user_id,
+      async (sql, params) => ({ rows: await query(sql, params) }), bodyDeviceId, true);
+    if (deviceId === undefined) return { status: 403, body: { error: 'forbidden' } };
+
+    // Fan-out: this device's own envelope, and only if it is still owed.
+    const fanout = deviceId
+      ? await query<{ message_id: string }>(
+          `update message_ciphertexts mc set delivered_at = now()
+             from devices d
+            where mc.recipient_device_id = d.id
+              and d.id = $1::uuid and d.user_id = $2::uuid and d.revoked_at is null
+              and mc.message_id = any($3::uuid[])
+              and mc.delivered_at is null
+            returning mc.message_id`,
+          [deviceId, user_id, ids]
+        )
+      : [];
+
+    // Legacy: one shared ciphertext, so delivery is recorded per (message, user, device).
+    // Membership is checked in the statement — an id the caller was never sent simply
+    // matches nothing rather than being reported as an error, because a client replaying a
+    // batch after being removed from a group is ordinary, not hostile.
+    const legacy = await query<{ message_id: string }>(
+      `insert into message_deliveries (message_id, user_id, device_id)
+       select m.id, $2::uuid, $1::uuid
+         from messages m
+         join conversation_members cm
+           on cm.conversation_id = m.conversation_id and cm.user_id = $2::uuid and cm.left_at is null
+        where m.id = any($3::uuid[]) and m.ciphertext is not null
+       on conflict do nothing
+       returning message_id`,
+      [deviceId, user_id, ids]
+    );
+
+    return { status: 200, body: {
+      acknowledged: new Set([...fanout, ...legacy].map((r) => r.message_id)).size,
+    } };
+  });
+  res.status(result.status).json(result.body);
 }));
 
 export default router;

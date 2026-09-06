@@ -89,8 +89,12 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Voiid"
-        android:usesCleartextTraffic="true"
         tools:targetApi="31">
+        <!-- NO APPLICATION-WIDE CLEARTEXT (Q03). android:usesCleartextTraffic used to be "true"
+             here, which permits plaintext for every connection the app ever makes, in every
+             build type — plumbing for talking to a laptop, shipped to users. Local http
+             development is restored by src/debug/AndroidManifest.xml, which is merged into
+             debug builds only and scopes it to localhost / 127.0.0.1 / 10.0.2.2. -->
 
         <activity
             android:name=".MainActivity"

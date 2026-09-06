@@ -671,7 +671,12 @@ class GroupEngine private constructor(context: Context) {
     }
 
     private fun parseIso(s: String): Long =
-        runCatching { java.time.Instant.parse(s).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+        com.voiid.app.util.IsoTime.parseOrNull(s) ?: run {
+            // See IsoTime: never the current time. An unreadable date that looks like "just
+            // now" corrupts ordering invisibly; 1970 is wrong somewhere somebody will see it.
+            android.util.Log.e("VOIID", "unreadable group message timestamp from the server: '$s'")
+            0L
+        }
 
     // MARK: - DTOs
 

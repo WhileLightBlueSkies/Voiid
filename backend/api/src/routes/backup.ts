@@ -7,6 +7,7 @@
 // is accepted THROUGH the API as raw bytes and written to R2 server-side, then
 // served back on GET as a short-lived presigned R2 download URL.
 import express, { Router } from 'express';
+import { asyncHandler } from '../util';
 import { requireAuth } from '../auth';
 import { query } from '../db';
 import { putObject, presignGet, r2Configured } from '../r2';
@@ -36,7 +37,7 @@ router.put(
     next();
   },
   rawBackup,
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     if (!r2Configured()) return res.status(503).json({ error: 'backup storage not configured' });
     const { user_id } = (req as any).auth;
     const body = req.body;
@@ -60,12 +61,11 @@ router.put(
       [user_id, key, body.length]
     );
     res.json({ stored: true, size_bytes: body.length });
-  }
-);
+  }));
 
 // GET /backup — return a short-lived presigned R2 download URL for the caller's
 // encrypted backup blob (+ size/updated_at metadata). 404 if none.
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query<{ r2_object_key: string; size_bytes: string; updated_at: Date }>(
     `select r2_object_key, size_bytes, updated_at from backups where user_id = $1`,
@@ -81,6 +81,6 @@ router.get('/', requireAuth, async (req, res) => {
   } catch (e) {
     return res.status(500).json({ error: (e as Error).message });
   }
-});
+}));
 
 export default router;

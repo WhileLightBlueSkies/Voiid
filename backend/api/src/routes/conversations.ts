@@ -78,7 +78,7 @@ async function emitSystemEvent(
   }
 }
 
-router.post('/create', requireAuth, async (req, res) => {
+router.post('/create', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { type = 'direct', member_id, name, photo_url, member_ids } = req.body ?? {};
 
@@ -214,13 +214,13 @@ router.post('/create', requireAuth, async (req, res) => {
   }
 
   return res.status(400).json({ error: "type must be 'direct', 'group', or 'self'" });
-});
+}));
 
 // GET /conversations?device_id= — list the caller's active conversations with last-message
 // preview (ciphertext) + unread count. The preview coalesces to THIS device's fan-out ciphertext
 // (message_ciphertexts) so multi-device previews decrypt; legacy single-ciphertext rows fall
 // through unchanged. device_id comes from the JWT claim or ?device_id= (matches prekeys.ts).
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const { user_id, device_id: authDeviceId } = (req as any).auth;
   const deviceId = (typeof authDeviceId === 'string' && authDeviceId)
     ? authDeviceId
@@ -256,10 +256,10 @@ router.get('/', requireAuth, async (req, res) => {
     [user_id, deviceId]
   );
   res.json({ conversations: rows });
-});
+}));
 
 // GET /conversations/:id — detail + active members (caller must be a member).
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const isMember = await query(
     `select 1 from conversation_members where conversation_id = $1 and user_id = $2 and left_at is null`,
@@ -281,14 +281,14 @@ router.get('/:id', requireAuth, async (req, res) => {
     [req.params.id]
   );
   res.json({ conversation: conv, members });
-});
+}));
 
 // POST /:id/members — add members to a group conversation (admin only). This
 // updates the server-side membership used for message fan-out; the MLS Welcome/
 // Commit that actually lets the new member decrypt is distributed separately by
 // the client via /mls/group-events. Idempotent: re-adding an active member is a
 // no-op; a previously-removed member (left_at set) is reinstated.
-router.post('/:id/members', requireAuth, async (req, res) => {
+router.post('/:id/members', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const convId = req.params.id;
   const userIds: unknown = req.body?.user_ids;
@@ -380,7 +380,7 @@ router.post('/:id/members', requireAuth, async (req, res) => {
   } finally {
     addClient.release();
   }
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // PATCH /:id/members/:userId/role  { role: 'admin' | 'member' }
@@ -546,7 +546,7 @@ router.post('/:id/transfer-ownership', requireAuth, asyncHandler(async (req, res
 // anyone; a member may remove themselves to leave). Sets left_at so fan-out stops
 // reaching them; the MLS rekey/Commit that cryptographically removes them is
 // distributed separately by the client.
-router.delete('/:id/members/:userId', requireAuth, async (req, res) => {
+router.delete('/:id/members/:userId', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const convId = req.params.id;
   const target = req.params.userId;
@@ -566,6 +566,6 @@ router.delete('/:id/members/:userId', requireAuth, async (req, res) => {
     [convId, target]
   );
   res.json({ removed: true });
-});
+}));
 
 export default router;

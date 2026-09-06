@@ -136,6 +136,7 @@ export interface RetentionResult {
   drift: string[];
   /** Tables whose delete threw. */
   failed: string[];
+  backlog: string[];
 }
 
 /**
@@ -145,7 +146,7 @@ export interface RetentionResult {
  * yesterday's rows today.
  */
 export async function runRetentionSweep(): Promise<RetentionResult> {
-  const result: RetentionResult = { deleted: {}, undeclared: [], drift: [], failed: [] };
+  const result: RetentionResult = { deleted: {}, undeclared: [], drift: [], failed: [], backlog: [] };
 
   // A table with no row in data_retention_policy is a table nobody declared a period for,
   // and a background job is not the place that decision gets made. The foreign key on
@@ -168,7 +169,7 @@ export async function runRetentionSweep(): Promise<RetentionResult> {
     }
     try {
       const startedAt = Date.now();
-      const deleted = await sweepTable(spec);
+      const deleted = await sweepTable(spec, result.backlog);
       const durationMs = Date.now() - startedAt;
       if (deleted) result.deleted[spec.table] = deleted;
       const drifted = await recordSweep(spec, deleted, durationMs);
@@ -193,7 +194,7 @@ export async function runRetentionSweep(): Promise<RetentionResult> {
 }
 
 /** Delete in bounded batches until the table is clean or the per-pass ceiling is hit. */
-async function sweepTable(spec: SweepSpec): Promise<number> {
+async function sweepTable(spec: SweepSpec, backlog: string[]): Promise<number> {
   const predicate = spec.interval
     ? `${spec.timeColumn} < now() - $1::interval`
     : `${spec.timeColumn} < now()`;
@@ -214,6 +215,8 @@ async function sweepTable(spec: SweepSpec): Promise<number> {
     deleted += n;
     if (n < DELETE_BATCH) break; // the table is clean; stop before an empty round-trip
     if (i === MAX_BATCHES_PER_TABLE - 1) {
+      const remaining = await pool.query(`select 1 from ${spec.table} where ${predicate} limit 1`, params);
+      if (remaining.rowCount) backlog.push(spec.table);
       console.warn(
         `[workers] retention: ${spec.table} still has rows past its period after ` +
           `${MAX_BATCHES_PER_TABLE} batches; the backlog will drain over the next passes`

@@ -1,15 +1,20 @@
-// Online PIN guess-limiting state machine + recovery envelope validation.
+// Client-reported attempt counting + recovery envelope validation.
 //
-// Extracted from routes/recovery.ts because this is the control that stands between
-// an attacker with a stolen JWT and an ONLINE brute-force of a 6-digit PIN. It is
-// pure (no db, no clock coupling — `now` is injectable) so every transition can be
+// NOT A SECURITY BOUNDARY. This module used to describe itself as "the control that
+// stands between an attacker with a stolen JWT and an ONLINE brute-force of a
+// 6-digit PIN". That was false (S04): every transition here is driven by the
+// client's own report of how its unwrap went, and in this threat model the client
+// is the attacker. It can withhold failures, or report a success to reset the
+// counter and clear the lock. See the threat model at the top of
+// routes/recovery.ts for what does and does not defend the secret.
+//
+// What this IS: an escalating cooldown that makes an HONEST client back off, and
+// telemetry that makes a misbehaving one visible. That is worth having. It is not
+// worth relying on, and code that treats a lock here as protection is wrong.
+//
+// Pure (no db, no clock coupling — `now` is injectable) so every transition can be
 // asserted directly.
 
-/**
- * After this many CONSECUTIVE failed online attempts, lock with an escalating
- * cooldown. (On-device offline attempts against a cached wrap are throttled by the
- * client; this is the online limit for recovering on a NEW device.)
- */
 export const LOCK_THRESHOLD = 10;
 
 /**

@@ -13,8 +13,12 @@ const PK: [u8; 32] = [7u8; 32];
 #[test]
 fn restart_without_fallback_restore_rotates_the_served_key() {
     // --- first launch: identity created, bundle uploaded to the server ------
-    let mut bob = IdentityKeys::generate();    let first_bundle = e2e::publish_bundle(&mut bob, 10);
-    let served_by_server = first_bundle.fallback_key.clone().expect("bundle has a fallback key");
+    let mut bob = IdentityKeys::generate();
+    let first_bundle = e2e::publish_bundle(&mut bob, 10);
+    let served_by_server = first_bundle
+        .fallback_key
+        .clone()
+        .expect("bundle has a fallback key");
 
     // --- app restart: pickle round-trip exactly as the iOS app does ---------
     let pickle = bob.to_pickle(&PK);
@@ -80,13 +84,12 @@ fn restore_then_publish_keeps_the_served_key_stable() {
     // THE INVARIANT: no replenish may ever publish a fallback key DIFFERENT
     // from the one the server already serves. (It comes back as None here —
     // nothing new was minted — which is exactly the stable outcome.)
-    assert_ne!(
-        second_bundle
+    assert!(
+        !second_bundle
             .fallback_key
             .as_deref()
             .map(|k| k != served.as_str())
             .unwrap_or(false),
-        true,
         "a different fallback key must never be published after a proper restore"
     );
 }

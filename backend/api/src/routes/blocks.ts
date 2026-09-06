@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // User blocking — block, unblock, and list.
 //
 // The iOS Block button has been raising "Blocking isn't available yet" beneath a dialog
@@ -63,7 +64,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // IDEMPOTENT. Pressing Block twice, or on two devices, must not 409: the caller's intent
 // is "this person is blocked", and that is already true. `on conflict do nothing` keeps the
 // original created_at, so the timestamp reflects when the block actually began.
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAuth, rateLimit({ max: 30, windowSeconds: 60, bucket: 'blocks' }), asyncHandler(async (req, res) => {
   const blockerId = (req as any).auth.user_id;
   const targetId = req.body?.user_id;
 
@@ -99,7 +100,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 // Also idempotent, and for the same reason: `blocked: false` is the caller's intent whether
 // or not a row was there to remove. Reporting 404 for an already-unblocked user would make
 // clients handle an error that means "you already got what you wanted".
-router.delete('/:user_id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:user_id', requireAuth, rateLimit({ max: 30, windowSeconds: 60, bucket: 'blocks' }), asyncHandler(async (req, res) => {
   const blockerId = (req as any).auth.user_id;
   const targetId = req.params.user_id;
 
@@ -129,7 +130,7 @@ router.delete('/:user_id', requireAuth, asyncHandler(async (req, res) => {
 //
 // OUTGOING ONLY. This never reveals who has blocked the caller; see the header note.
 // Joins users for display, and skips erased accounts so the list does not show ghosts.
-router.get('/', requireAuth, asyncHandler(async (req, res) => {
+router.get('/', requireAuth, rateLimit({ max: 30, windowSeconds: 60, bucket: 'blocks' }), asyncHandler(async (req, res) => {
   const blockerId = (req as any).auth.user_id;
   const rows = await query(
     `select u.id, u.username, u.full_name, u.photo_url, b.created_at as blocked_at

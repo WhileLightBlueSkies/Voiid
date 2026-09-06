@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { SURFACES, HEADER_NAV } from '../lib/nav';
 import { Wordmark } from './Wordmark';
@@ -24,7 +25,19 @@ import styles from './SiteHeader.module.css';
  *
  * The Features menu is CSS-only — a focusable summary/details pair — so it works
  * without JavaScript and needs no state, no outside-click handler and no portal.
- * The mobile menu is likewise a checkbox and a label.
+ *
+ * THE MOBILE MENU IS NOT (W03). It used to be a checkbox and a label, collapsed with
+ * `grid-template-rows: 0fr` and clipped by overflow — which hides it from SIGHT and from
+ * nothing else. Its links stayed in the focus order, so a keyboard user tabbing across the
+ * header fell into a menu they could not see and could not tell they were in, and a screen
+ * reader was never told the control was a disclosure at all, because a checkbox is not a
+ * button and has no expanded state to announce.
+ *
+ * A real button with aria-expanded needs state, so this part is no longer CSS-only. The
+ * collapsed menu is `inert`, which removes it from focus AND from the accessibility tree in
+ * one attribute — but ONLY at the mobile breakpoint, because at desktop the same element is
+ * the visible navigation and marking it inert from stale mobile state would disable the
+ * header outright.
  */
 
 /**
@@ -42,8 +55,60 @@ const SURFACE_GLYPH: Record<string, GlyphName> = {
   '/games': 'games',
 };
 
+/** Matches the `max-width: 1020px` breakpoint in SiteHeader.module.css. */
+const MOBILE_QUERY = '(max-width: 1020px)';
+
 export function SiteHeader() {
   const pathname = usePathname() ?? '/';
+  const [open, setOpen] = useState(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const brandRef = useRef<HTMLAnchorElement>(null);
+
+  // Whether the collapsing menu is the one on screen. Read from the SAME query the stylesheet
+  // uses, because the two disagreeing is how the desktop navigation would end up inert.
+  //
+  // Start collapsed for server rendering; measure before paint during hydration.
+  const [isMobile, setIsMobile] = useState(true);
+  useLayoutEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY);
+    let lastFocused: Element | null = document.activeElement;
+    const rememberFocus = (event: FocusEvent) => { lastFocused = event.target as Element; };
+    document.addEventListener('focusin', rememberFocus);
+    const sync = () => {
+      const focused = document.activeElement === document.body ? lastFocused : document.activeElement;
+      if (mq.matches && navRef.current?.contains(focused)) toggleRef.current?.focus();
+      if (!mq.matches && focused === toggleRef.current) brandRef.current?.focus();
+      setIsMobile(mq.matches);
+      setOpen(false);
+    };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => { mq.removeEventListener('change', sync); document.removeEventListener('focusin', rememberFocus); };
+  }, []);
+
+  const close = useCallback((restoreFocus: boolean) => {
+    if (restoreFocus && navRef.current?.contains(document.activeElement)) toggleRef.current?.focus();
+    setOpen(false);
+  }, []);
+
+  // Escape closes and hands focus back to the control that opened it.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(true); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, close]);
+
+  // A navigation closes the menu. Without this the panel stays open over the new page, and
+  // focus is left inside a menu describing somewhere the user has already left.
+  useLayoutEffect(() => { close(true); }, [pathname, close]);
+
+  // Growing past the breakpoint with the menu open must not leave the desktop header in a
+  // half-open state, or `inert` applied from a mobile flag nobody can see any more.
+  useEffect(() => { if (!isMobile) setOpen(false); }, [isMobile]);
+
+  const collapsed = isMobile && !open;
 
   const isCurrent = (href: string) =>
     href === '/' ? pathname === '/' : pathname.startsWith(href);
@@ -51,34 +116,40 @@ export function SiteHeader() {
   const inFeatures = SURFACES.some((s) => isCurrent(s.href));
 
   return (
-    <header className={styles.header}>
+    <header className={styles.header} data-nav-open={open ? 'true' : undefined}>
       <div className={styles.bar}>
-        <Link href="/" className={styles.brand} aria-label="Voiid — home">
+        <Link href="/" ref={brandRef} className={styles.brand} aria-label="Voiid — home">
           <Logomark size={23} idPrefix="header" className={styles.mark} />
           <Wordmark size={22} />
         </Link>
 
         {/*
-          The toggle input sits before the nav so the CSS sibling selector can open
-          it. It is visually hidden, not display:none — a hidden input is not
-          focusable, which would strand keyboard users on a phone.
+          A BUTTON, not a checkbox. A checkbox has a checked state, which assistive technology
+          announces as "checked" rather than "expanded", and it cannot carry aria-expanded at
+          all. This is the control the disclosure pattern actually asks for.
         */}
-        <input
-          type="checkbox"
-          id="nav-toggle"
-          className={styles.toggleInput}
+        <button
+          type="button"
+          ref={toggleRef}
+          className={styles.toggle}
+          aria-expanded={open}
           aria-controls="site-nav"
-        />
-        <label htmlFor="nav-toggle" className={styles.toggle}>
+          onClick={() => setOpen((o) => !o)}
+        >
           <span className={styles.bars} aria-hidden="true">
             <span />
             <span />
             <span />
           </span>
-          <span className="srOnly">Menu</span>
-        </label>
+          <span className="srOnly">{open ? 'Close menu' : 'Menu'}</span>
+        </button>
 
-        <nav id="site-nav" className={styles.nav} aria-label="Main">
+        {/*
+          `inert` when collapsed: one attribute that takes the links out of the focus order AND
+          out of the accessibility tree, which `overflow: hidden` never did. Applied only at
+          the mobile breakpoint — at desktop this element IS the navigation.
+        */}
+        <nav ref={navRef} aria-hidden={collapsed || undefined} id="site-nav" className={styles.nav} aria-label="Main" inert={collapsed}>
           {/* The collapsing wrapper: `grid-template-rows` on .nav animates the
               height, and this element is what gets clipped while it does. */}
           <div className={styles.navInner}>

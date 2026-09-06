@@ -26,19 +26,26 @@ const router = Router();
  * the one file over where it survived.
  */
 async function ownsDevice(deviceId: string, userId: string): Promise<boolean> {
-  // NOT filtered on `revoked_at is null`, deliberately.
+  // NOT filtered on `revoked_at is null`, deliberately — but NOT unfiltered either.
   //
   // Registering a device revokes its same-platform siblings (routes/devices.ts). A device
   // whose prekey upload was still in flight when a sibling registered would then fail this
   // check, 404, and never land its keys — leaving it listed but unreachable, so every send
-  // to it parked at 409 "peer has no available prekeys" forever.
+  // to it parked at 409 "peer has no available prekeys" forever. That is why a merely
+  // SUPERSEDED device may still write: uploading keys for one's own device is exactly how
+  // it recovers, and revocation does not change who owns a device.
   //
-  // Ownership is the question this function actually answers, and revocation does not
-  // change who owns a device. The caller proved possession of the account via requireAuth;
-  // uploading keys for one's own device is exactly how a superseded device recovers.
+  // A device the USER revoked is the opposite case and was indistinguishable before 057.
+  // Since the upload path below clears `revoked_at`, accepting the write here made prekey
+  // upload a self-service un-revoke: a device that had been explicitly signed out could
+  // reinstate itself and start receiving again. Ownership still holds, so this is not a
+  // cross-account hole — it defeated the user's own decision, which is the point of the
+  // linked-devices screen. 'user_revoked' is final; only a fresh registration (which needs
+  // a credential the revoked device no longer has) brings such a device back.
   const rows = await query<{ one: number }>(
     `select 1 as one from devices
       where id = $1 and user_id = $2
+        and revoked_reason is distinct from 'user_revoked'
       limit 1`,
     [deviceId, userId]
   );
@@ -100,9 +107,13 @@ router.post('/upload', requireAuth, asyncHandler(async (req, res) => {
   // otherwise a device superseded by a sibling's registration stays hidden from
   // GET /devices/:user_id and never receives again, despite holding usable keys.
   // Scoped to the caller's own device (ownership was checked above).
+  // The 'user_revoked' guard is redundant with ownsDevice above and kept deliberately: this
+  // is the statement that actually undoes a revocation, so the condition that makes it safe
+  // belongs in it rather than only in a caller that a later edit could bypass.
   await query(
-    `update devices set revoked_at = null, updated_at = now()
-      where id = $1 and user_id = $2 and revoked_at is not null`,
+    `update devices set revoked_at = null, revoked_reason = null, updated_at = now()
+      where id = $1 and user_id = $2 and revoked_at is not null
+        and revoked_reason is distinct from 'user_revoked'`,
     [device_id, user_id]
   );
 
@@ -133,7 +144,7 @@ router.get('/count', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // GET /prekeys/:user_id — returns a bundle per active device, consuming one one-time prekey transactionally.
-router.get('/:user_id', requireAuth, async (req, res) => {
+router.get('/:user_id', requireAuth, asyncHandler(async (req, res) => {
   // Fetch guard (see security.ts guardKeyMaterialFetch): every call CONSUMES one
   // one-time prekey per device, so an unthrottled loop from any authenticated
   // account could keep a victim permanently unable to receive new-session mail.
@@ -214,7 +225,7 @@ router.get('/:user_id', requireAuth, async (req, res) => {
     }
   }
   res.json({ bundles });
-});
+}));
 
 // POST /prekeys/refresh — client replenishes one-time prekeys (same shape as upload's one_time_prekeys)
 router.post('/refresh', requireAuth, asyncHandler(async (req, res) => {

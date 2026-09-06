@@ -341,6 +341,7 @@ async function channelsOf(communityId: string) {
 router.post(
   '/',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   // Tighter than the router-wide ceiling: one create is three INSERTs, two new conversations
   // and a permanent claim on a name in a namespace shared with every username on the platform.
   // Handle-squatting at scale is the abuse this stops.
@@ -542,6 +543,7 @@ router.post(
 router.get(
   '/search',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const q = String(req.query.q ?? '').trim();
     // Two characters minimum. A one-character query returns most of the directory sorted by
@@ -600,6 +602,7 @@ router.get(
 router.get(
   '/mine',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const rows = await query<CommunityRow & { my_role: string; my_state: string }>(
@@ -635,6 +638,7 @@ router.get(
 router.get(
   '/invites/:token',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const token = String(req.params.token ?? '');
     const row = (
@@ -684,6 +688,7 @@ router.get(
 router.get(
   '/:handle',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const community = await findCommunity(String(req.params.handle ?? ''));
@@ -729,6 +734,7 @@ router.get(
 router.post(
   '/:id/join',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -901,6 +907,7 @@ router.post(
 router.post(
   '/:id/leave',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -970,6 +977,7 @@ router.post(
 router.get(
   '/:id/members',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -1133,6 +1141,7 @@ async function setMemberState(
 router.post(
   '/:id/members/:userId/approve',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1151,6 +1160,7 @@ router.post(
 router.post(
   '/:id/members/:userId/remove',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1168,6 +1178,7 @@ router.post(
 router.post(
   '/:id/members/:userId/ban',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1196,6 +1207,7 @@ router.post(
 router.post(
   '/:id/members/:userId/unban',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1222,6 +1234,7 @@ router.post(
 router.post(
   '/:id/members/:userId/role',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1279,6 +1292,7 @@ router.post(
 router.patch(
   '/:id',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1361,6 +1375,7 @@ router.patch(
 router.get(
   '/:id/channels',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -1395,6 +1410,7 @@ router.get(
 router.post(
   '/:id/channels',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1461,6 +1477,7 @@ router.post(
 router.patch(
   '/:id/channels/:conversationId',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1510,6 +1527,7 @@ router.patch(
 router.delete(
   '/:id/channels/:conversationId',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1556,6 +1574,7 @@ router.delete(
 router.post(
   '/:id/invites',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   // A bearer capability, so minting is throttled: a script that can produce unlimited live
   // tokens turns "revocable" into a formality, because there is always another link.
   rateLimit({ max: 30, windowSeconds: 3600, bucket: 'community-invite-mint' }),
@@ -1603,6 +1622,7 @@ router.post(
 router.get(
   '/:id/invites',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1632,6 +1652,7 @@ router.get(
 router.delete(
   '/:id/invites/:token',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -1786,6 +1807,7 @@ function postShape(r: any) {
 router.get(
   '/:id/posts',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await readGate(String(req.params.id ?? ''), user_id);
@@ -1833,6 +1855,7 @@ router.get(
 router.post(
   '/:id/posts',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   // Tighter than the router-wide ceiling. A feed is the surface where a script does the most
   // damage per request, and 30/hour is far above any human posting rate.
   rateLimit({ max: 30, windowSeconds: 3600, bucket: 'community-post' }),
@@ -1889,6 +1912,7 @@ router.post(
 router.delete(
   '/:id/posts/:postId',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -1937,6 +1961,7 @@ router.delete(
 router.post(
   '/:id/posts/:postId/like',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -1999,6 +2024,7 @@ router.post(
 router.delete(
   '/:id/posts/:postId/like',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
@@ -2092,6 +2118,7 @@ function announcementShape(r: any) {
 router.get(
   '/:id/announcements',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await readGate(String(req.params.id ?? ''), user_id);
@@ -2147,6 +2174,7 @@ router.get(
 router.post(
   '/:id/announcements',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -2209,6 +2237,7 @@ router.post(
 router.delete(
   '/:id/announcements/:annId',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -2251,6 +2280,7 @@ function linkShape(r: any) {
 router.get(
   '/:id/links',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await readGate(String(req.params.id ?? ''), user_id);
@@ -2274,6 +2304,7 @@ router.get(
 router.post(
   '/:id/links',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -2322,6 +2353,7 @@ router.post(
 router.delete(
   '/:id/links/:linkId',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -2384,6 +2416,7 @@ function ruleShape(r: any) {
 router.get(
   '/:id/rules',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await readGate(String(req.params.id ?? ''), user_id);
@@ -2410,6 +2443,7 @@ router.get(
 router.post(
   '/:id/rules',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -2456,6 +2490,7 @@ router.post(
 router.patch(
   '/:id/rules/:ruleId',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -2517,6 +2552,7 @@ router.patch(
 router.delete(
   '/:id/rules/:ruleId',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -2563,6 +2599,7 @@ router.delete(
 router.get(
   '/:id/stats',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);
@@ -2651,6 +2688,7 @@ const MODERATION_QUEUE_LIMIT = 50;
 router.get(
   '/:id/moderation-queue',
   requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireManager(String(req.params.id ?? ''), user_id);

@@ -1,3 +1,4 @@
+import { rateLimit } from '../security';
 // Creator story highlights — the curated shelves on a public creator profile.
 //
 // ============================ NOT END-TO-END ENCRYPTED ============================
@@ -177,6 +178,7 @@ async function requireOwnHighlight(highlightId: string, userId: string): Promise
 router.get(
   '/creators/:handle/highlights',
   requireAuth,
+  rateLimit({ max: 180, windowSeconds: 60, bucket: 'highlights' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const handle = String(req.params.handle ?? '').toLowerCase();
@@ -223,6 +225,7 @@ router.get(
 router.post(
   '/highlights',
   requireAuth,
+  rateLimit({ max: 180, windowSeconds: 60, bucket: 'highlights' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
 
@@ -281,6 +284,7 @@ router.post(
 router.patch(
   '/highlights/:id',
   requireAuth,
+  rateLimit({ max: 180, windowSeconds: 60, bucket: 'highlights' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireOwnHighlight(String(req.params.id ?? ''), user_id);
@@ -332,6 +336,7 @@ router.patch(
 router.delete(
   '/highlights/:id',
   requireAuth,
+  rateLimit({ max: 180, windowSeconds: 60, bucket: 'highlights' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireOwnHighlight(String(req.params.id ?? ''), user_id);
@@ -366,6 +371,7 @@ router.delete(
 router.post(
   '/highlights/:id/items',
   requireAuth,
+  rateLimit({ max: 180, windowSeconds: 60, bucket: 'highlights' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireOwnHighlight(String(req.params.id ?? ''), user_id);
@@ -442,6 +448,7 @@ router.post(
 router.delete(
   '/highlights/:id/items/:clipId',
   requireAuth,
+  rateLimit({ max: 180, windowSeconds: 60, bucket: 'highlights' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const gate = await requireOwnHighlight(String(req.params.id ?? ''), user_id);

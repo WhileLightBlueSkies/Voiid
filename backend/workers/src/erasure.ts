@@ -21,9 +21,8 @@
 // ORDERING IS LOAD-BEARING. Two rules, both of which exist because of what a crash in the
 // middle would leave behind:
 //
-//   1. R2 OBJECTS BEFORE THE ROWS THAT NAME THEM — the same rule admin.ts's clip purge
-//      follows. The keys live only in the rows; delete the rows first and the objects are
-//      orphaned with nothing left to enumerate them by, paid for forever.
+//   1. QUEUE OBJECT KEYS IN THE SAME TRANSACTION AS METADATA DELETION.
+//      External deletion runs separately with durable leases and fenced completion.
 //
 //   2. PHONE-KEYED DELETES BEFORE THE users ROW. `otp_sessions` and `security_events`
 //      hold the phone number as a plain column with no foreign key, so they are reachable
@@ -49,7 +48,7 @@
 //
 // THE GRACE PERIOD IS AN ENGINEERING PLACEHOLDER (see ERASURE_GRACE_DAYS below).
 import { pool, query } from './db';
-import { deleteObject, r2Configured } from './r2';
+import { drainObjects } from './cleanup';
 
 // ── The retention policy, as constants, because that is the whole reason this process
 //    exists rather than a pg_cron job: the period must be reviewable in a diff.
@@ -66,9 +65,6 @@ const ERASURE_GRACE_DAYS = 30;
 /** Users per pass. Each one is several statements plus network I/O; bounded so one pass
  *  cannot hold a connection for minutes or stampede R2. */
 const BATCH = 25;
-
-/** Queued object deletes retried per pass. Bounded for the same reason. */
-const OBJECT_RETRY_BATCH = 100;
 
 /** Failed erasures before a user row is parked and reported on /health instead of
  *  re-failing at the head of the queue forever. Parked means SOMEBODY ASKED TO BE ERASED
@@ -95,74 +91,8 @@ export interface ErasureResult {
   stuck: number;
 }
 
-/** R2 keys are only ever minted by the server with this prefix. `users.photo_url` is
- *  client-supplied through the profile update endpoint and may hold an absolute URL from
- *  an older client rather than an object key — handing that to DeleteObject would at best
- *  do nothing and at worst name a key we do not own, so it is filtered out here. */
-function isOwnObjectKey(key: string | null): key is string {
-  return typeof key === 'string' && key.startsWith('media/');
-}
-
-/** Delete one object, queueing the key for a later pass if the bucket refuses. Never
- *  throws: a broken bucket must not stop the row deletion that follows it. */
-async function deleteObjectOrQueue(key: string, result: ErasureResult): Promise<void> {
-  // No R2 configured is a normal dev state. Erasure must still purge the database —
-  // retaining a phone number because a dev box has no bucket would be the wrong failure.
-  if (!r2Configured()) return;
-  try {
-    await deleteObject(key);
-    result.objectsDeleted++;
-  } catch (e) {
-    result.objectsQueued++;
-    // ON CONFLICT so a key that fails on two boxes at once, or across passes, does not
-    // raise on the primary key and abort the erasure it is attached to.
-    await query(
-      `insert into erasure_pending_objects (r2_key, attempts, last_attempt_at, last_error)
-       values ($1, 1, now(), $2)
-       on conflict (r2_key) do update
-          set attempts = erasure_pending_objects.attempts + 1,
-              last_attempt_at = now(),
-              last_error = excluded.last_error`,
-      [key, (e as Error).message.slice(0, 500)]
-    ).catch(() => { /* the pass must not die because the retry queue is unwritable */ });
-  }
-}
-
-/** Retry keys whose delete failed on an earlier pass. Runs first so a recovered bucket
- *  drains the backlog even when nothing new is due for erasure. */
-async function retryPendingObjects(result: ErasureResult): Promise<void> {
-  if (!r2Configured()) return;
-  const pending = await query<{ r2_key: string }>(
-    `select r2_key from erasure_pending_objects order by queued_at limit $1`,
-    [OBJECT_RETRY_BATCH]
-  );
-  for (const row of pending) {
-    try {
-      await deleteObject(row.r2_key);
-      result.objectsDeleted++;
-      // The row exists only to chase the object; it dies with it.
-      await query(`delete from erasure_pending_objects where r2_key = $1`, [row.r2_key]);
-    } catch (e) {
-      await query(
-        `update erasure_pending_objects
-            set attempts = attempts + 1, last_attempt_at = now(), last_error = $2
-          where r2_key = $1`,
-        [row.r2_key, (e as Error).message.slice(0, 500)]
-      ).catch(() => {});
-    }
-  }
-}
-
-/**
- * One erasure pass.
- *
- * Claim -> commit -> slow network I/O -> a second short transaction for the deletes.
- * `for update skip locked` stops two workers claiming the same batch in one transaction;
- * committing before the R2 round-trips stops a slow bucket holding row locks on live
- * user rows. The residual race — two boxes claiming the same user in successive
- * transactions — is harmless: DeleteObject is idempotent, and the deleting transaction
- * re-checks `deleted_at ... for update`, so the loser finds no row and does nothing.
- */
+/** SQL-only cleanup holds selection locks until commit. The durable object queue
+ * owns external IO, so a process death rolls back metadata or leaves retryable keys. */
 export async function runErasure(): Promise<ErasureResult> {
   const startedAt = Date.now();
   const result: ErasureResult = {
@@ -176,7 +106,7 @@ export async function runErasure(): Promise<ErasureResult> {
     stuck: 0,
   };
 
-  await retryPendingObjects(result);
+  Object.assign(result, await drainObjects());
 
   // ── Claim ────────────────────────────────────────────────────────────────────────
   const claimClient = await pool.connect();
@@ -194,27 +124,38 @@ export async function runErasure(): Promise<ErasureResult> {
       [ERASURE_GRACE_DAYS, MAX_ERASURE_ATTEMPTS, BATCH]
     );
     batch = claimed.rows;
+    // Selection locks stay held through SQL-only cleanup; no external IO here.
+  } catch (e) {
+    await claimClient.query('rollback').catch(() => {});
+    claimClient.release();
+    throw e;
+  }
+  result.claimed = batch.length;
+
+  try {
+    for (const user of batch) {
+      try {
+        await claimClient.query('savepoint erase_one');
+        await eraseUser(claimClient, user.id, user.phone_number, result);
+        await claimClient.query('release savepoint erase_one');
+      } catch (e) {
+        await claimClient.query('rollback to savepoint erase_one');
+        result.failed++;
+        await claimClient.query(`update users set erasure_attempts = erasure_attempts + 1 where id = $1`, [
+          user.id,
+        ]);
+        // No user id, no phone number in the log line: this process must not become the
+        // place a deleted identity survives in a log file.
+        console.error('[workers] erasure failed for one user');
+      }
+    }
+
     await claimClient.query('commit');
   } catch (e) {
     await claimClient.query('rollback').catch(() => {});
     throw e;
   } finally {
     claimClient.release();
-  }
-  result.claimed = batch.length;
-
-  for (const user of batch) {
-    try {
-      await eraseUser(user.id, user.phone_number, result);
-    } catch (e) {
-      result.failed++;
-      await query(`update users set erasure_attempts = erasure_attempts + 1 where id = $1`, [
-        user.id,
-      ]).catch(() => {});
-      // No user id, no phone number in the log line: this process must not become the
-      // place a deleted identity survives in a log file.
-      console.error(`[workers] erasure failed for one user: ${(e as Error).message}`);
-    }
   }
 
   // Parked rows are a standing alarm, so they are counted every pass and not only on the
@@ -245,53 +186,18 @@ export async function runErasure(): Promise<ErasureResult> {
 
 /** Erase one account. Idempotent: every step is safe to repeat, and the transaction
  *  re-checks the claim so a reinstated account is never erased by a stale one. */
-async function eraseUser(userId: string, phone: string, result: ErasureResult): Promise<void> {
-  // ── 1. Objects first ───────────────────────────────────────────────────────────
-  // One query rather than four round-trips, and `like 'media/%'` inside SQL so a stray
-  // absolute URL in photo_url never reaches the bucket client.
-  const keyRows = await query<{ key: string }>(
-    `select key from (
+async function eraseUser(client: import('pg').PoolClient, userId: string, phone: string, result: ErasureResult): Promise<void> {
+    const queued = await client.query(`insert into erasure_pending_objects(r2_key)
+      select distinct key from (
         select r2_key as key from stories where author_id = $1
-        union all
-        select unnest(array[r2_key, thumb_r2_key, r2_key_sd, r2_key_hd, r2_key_fhd])
-          from clips where author_id = $1
-        union all
-        select avatar_r2_key from creator_profiles where user_id = $1
-        union all
-        select unnest(array[photo_url, encrypted_photo_url]) from users where id = $1
-     ) k
-      where key is not null and key like 'media/%'`,
-    [userId]
-  );
-  // De-duplicated: the same key can legitimately appear twice (photo_url never migrated
-  // to encrypted_photo_url), and paying for two DeleteObject calls is pointless.
-  for (const key of new Set(keyRows.map((r) => r.key).filter(isOwnObjectKey))) {
-    await deleteObjectOrQueue(key, result);
-  }
-
-  // ── 2. Rows, in one transaction ────────────────────────────────────────────────
-  const client = await pool.connect();
-  try {
-    await client.query('begin');
-
-    // Re-check the claim under a row lock. A second worker that claimed the same user
-    // finds nothing here and does nothing; a reinstated account (deleted_at cleared)
-    // drops out of the erasure set at exactly this point, which is what makes
-    // reinstatement implementable later as a single UPDATE.
-    const live = await client.query<{ id: string }>(
-      `select id from users
-        where id = $1 and deleted_at is not null
-          and deleted_at < now() - make_interval(days => $2)
-        for update`,
-      [userId, ERASURE_GRACE_DAYS]
-    );
-    if (!live.rows[0]) {
-      await client.query('rollback');
-      return;
-    }
-
+        union all select unnest(array[r2_key, thumb_r2_key, r2_key_sd, r2_key_hd, r2_key_fhd]) from clips where author_id = $1
+        union all select avatar_r2_key from creator_profiles where user_id = $1
+        union all select unnest(array[photo_url, encrypted_photo_url]) from users where id = $1
+      ) k where key is not null and key like 'media/%'
+      on conflict (r2_key) do nothing`, [userId]);
+    const affected: Record<string, number> = {};
     const count = (table: string, n: number | null) => {
-      if (n) result.rowsAffected[table] = (result.rowsAffected[table] ?? 0) + n;
+      if (n) affected[table] = (affected[table] ?? 0) + n;
     };
 
     // Denormalised counters on OTHER people's clips. clips.comment_count / like_count /
@@ -380,13 +286,8 @@ async function eraseUser(userId: string, phone: string, result: ErasureResult): 
       count('users', gone.rowCount);
     }
 
-    await client.query('commit');
-  } catch (e) {
-    await client.query('rollback').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+    result.objectsQueued += queued.rowCount ?? 0;
+    for (const [table, n] of Object.entries(affected)) result.rowsAffected[table] = (result.rowsAffected[table] ?? 0) + n;
 }
 
 /** Evidence that the pass ran. COUNTS ONLY — no user id, no phone number, no object key
@@ -409,7 +310,8 @@ async function recordPass(result: ErasureResult, durationMs: number): Promise<vo
   ).catch((e) => {
     // Losing the evidence row must not undo the erasure — the deletion already committed
     // and re-running would be a no-op anyway.
-    console.error(`[workers] erasure ran but could not be logged: ${(e as Error).message}`);
+    result.failed++;
+    console.error('[workers] erasure ran but could not be logged');
   });
 
   // Keep the declared policy honest about what is actually enforced. 030_dpdp.sql's
@@ -423,5 +325,5 @@ async function recordPass(result: ErasureResult, durationMs: number): Promise<vo
             last_sweep_deleted = $2
       where table_name = 'users'`,
     [ERASURE_GRACE_DAYS, result.usersErased]
-  ).catch(() => {});
+  ).catch(() => { result.failed++; });
 }

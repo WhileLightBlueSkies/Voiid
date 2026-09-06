@@ -169,12 +169,60 @@ enum LocalStore {
 
     // MARK: - Messages
 
+    /// The NEWEST page of a conversation, returned oldest-first for rendering (I01).
+    ///
+    /// THE BUG THIS FIXES: this was `ORDER BY created_at ASC LIMIT 500`, which takes the
+    /// 500 **oldest** messages. On a 10,000-message history that returns the beginning of
+    /// the conversation and never the recent part — the user opens a chat and sees messages
+    /// from months ago, with no way to page forward to the present.
+    ///
+    /// The fix orders DESC to select the newest page, then reverses for display. Note the
+    /// ordering is on `(created_at, id)`, not `created_at` alone: a fan-out send writes its
+    /// rows in one transaction and a burst lands inside the same second, so `created_at` is
+    /// not unique and a page boundary falling inside such a group would otherwise skip or
+    /// repeat rows — the same defect M04 fixed on the server.
+    static func latestMessages(conversationId: String, limit: Int = 50) -> [DecryptedMessage] {
+        db.read { database -> [DecryptedMessage] in
+            let rows = try Row.fetchAll(database, sql: """
+                SELECT * FROM messages
+                 WHERE conversation_id = ?
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?
+                """, arguments: [conversationId, limit])
+            return rows.compactMap(decode).reversed()
+        } ?? []
+    }
+
+    /// The page of messages immediately OLDER than `before` — scrolling up.
+    ///
+    /// A keyset cursor on the `(created_at, id)` tuple rather than an OFFSET: an offset
+    /// walks and discards every row it skips, so page N costs O(N × pageSize), and it
+    /// silently shifts when a message arrives while the user is reading.
+    static func messagesBefore(conversationId: String,
+                               createdAt: Date,
+                               id: String,
+                               limit: Int = 50) -> [DecryptedMessage] {
+        let ts = Int64(createdAt.timeIntervalSince1970)
+        return db.read { database -> [DecryptedMessage] in
+            let rows = try Row.fetchAll(database, sql: """
+                SELECT * FROM messages
+                 WHERE conversation_id = ?
+                   AND (created_at < ? OR (created_at = ? AND id < ?))
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?
+                """, arguments: [conversationId, ts, ts, id, limit])
+            return rows.compactMap(decode).reversed()
+        } ?? []
+    }
+
+    /// Oldest-first read, retained for callers that genuinely want the whole thread
+    /// (export/backup). NOT for the chat UI — see `latestMessages`.
     static func messages(conversationId: String, limit: Int = 500) -> [DecryptedMessage] {
         db.read { database -> [DecryptedMessage] in
             let rows = try Row.fetchAll(database, sql: """
                 SELECT * FROM messages
                  WHERE conversation_id = ?
-                 ORDER BY created_at ASC
+                 ORDER BY created_at ASC, id ASC
                  LIMIT ?
                 """, arguments: [conversationId, limit])
             return rows.compactMap(decode)

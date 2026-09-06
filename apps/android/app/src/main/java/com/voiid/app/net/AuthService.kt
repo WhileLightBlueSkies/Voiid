@@ -1,6 +1,9 @@
 package com.voiid.app.net
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
 /**
@@ -38,7 +41,29 @@ class AuthService(context: Context) {
      *  Returns profile_complete (true = returning user; skip Signup/Profile). */
     suspend fun devLogin(phoneE164: String): Boolean = loginWithFirebase("dev:$phoneE164")
 
-    fun logout() = tokens.clear()
+    /**
+     * End the session on the SERVER, then locally.
+     *
+     * Clearing local storage alone left the JWT valid for the rest of its 30 days: anyone
+     * who recovered it could still send, fetch and upload keys as this device. The server
+     * now revokes the device session, drops its prekeys and closes its socket.
+     *
+     * Local state is cleared FIRST and synchronously, so the UI can route to onboarding
+     * immediately and a user with no network still ends up logged out. The revoke is
+     * therefore fired with the credential captured by value — reading it back from the
+     * store would find nothing, and the session would live out its full 30 days.
+     *
+     * Best-effort by design: if it never lands, the device remains revocable from the
+     * linked-devices screen on another device.
+     */
+    fun logout() {
+        val credential = tokens.jwt
+        tokens.clear()
+        if (credential == null) return
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { api.request("POST", "auth/logout", bearer = credential) }
+        }
+    }
 }
 
 @Serializable

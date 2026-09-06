@@ -2,6 +2,7 @@ package com.voiid.app.net
 
 import com.voiid.app.BuildConfig
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -17,11 +18,14 @@ import java.util.concurrent.TimeUnit
  * clean errors. See docs/API_CONTRACT.md.
  */
 object ApiConfig {
-    // Hosted DEV backend (Vultr + Caddy TLS). WebSocket is proxied on the /ws
-    // path of the same host. For local-only work, swap to http://10.0.2.2:4000
-    // + ws://10.0.2.2:4001 (emulator -> host).
-    @Volatile var baseUrl: String = "https://api-dev.voiid.app"
-    @Volatile var wsUrl: String = "wss://api-dev.voiid.app/ws"
+    // FROM BUILD CONFIGURATION, not from a literal here (Q03). These used to be hardcoded to
+    // the dev host, which meant every build type talked to the same backend and a release APK
+    // would have shipped pointing at it. build.gradle.kts supplies debug a working default and
+    // refuses a release that has not been told where to go.
+    //
+    // Still `var`: instrumentation and local experiments override them at runtime.
+    @Volatile var baseUrl: String = com.voiid.app.BuildConfig.VOIID_API_BASE_URL
+    @Volatile var wsUrl: String = com.voiid.app.BuildConfig.VOIID_WS_URL
     // API version this build talks (path-versioned: /v1/...). Bumped per major contract.
     @Volatile var apiVersion: String = "v1"
     // This build's app version (for force-update gating).
@@ -45,6 +49,16 @@ sealed class ApiError(message: String) : Exception(message) {
      * off the status alone would fire the handle picker for an unrelated precondition.
      */
     class Http(val status: Int, message: String, val code: String? = null) : ApiError(message)
+
+    /**
+     * A 409 the caller can RESOLVE rather than report.
+     *
+     * Sent by POST /messages/send when a `client_message_id` already produced a message with
+     * different bytes — which is what a legitimate retry looks like, because re-encrypting
+     * advances the Olm ratchet. Carries the message the key already produced, so the caller
+     * can reconcile instead of showing a failure for something the recipient already has.
+     */
+    class AlreadySent(val messageId: String) : ApiError("Already sent.")
     class Transport(val underlying: Throwable) : ApiError(underlying.message ?: "Network error")
     object NotAuthenticated : ApiError("Please sign in again.")
 
@@ -82,6 +96,9 @@ sealed class ApiError(message: String) : Exception(message) {
                     else -> "Something went wrong. Please try again."
                 }
                 is NotAuthenticated -> "Please sign in again."
+                // Not a user-facing failure: the caller resolves it. If it ever reaches a
+                // screen, saying "sent" is the truthful thing, because it was.
+                is AlreadySent -> "Already sent."
             }
         }
 }
@@ -102,11 +119,16 @@ class ApiClient(
         }
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         private val defaultClient = OkHttpClient.Builder()
+            .retryOnConnectionFailure(false)
+            .callTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
         // Longer timeouts for raw blob transfers (backup uploads up to 50 MiB).
         private val rawClient = OkHttpClient.Builder()
+            .retryOnConnectionFailure(false)
+            .callTimeout(180, TimeUnit.SECONDS)
             .connectTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
@@ -114,12 +136,18 @@ class ApiClient(
     }
 
     /** Perform a request and return the raw JSON body string (caller deserializes). */
+    /**
+     * [bearer] overrides the stored token. Exactly one caller needs it: logout revokes the
+     * session server-side while the local token is being cleared, so the credential has to
+     * be carried by value rather than read back from a store that is already empty.
+     */
     suspend fun request(
         method: String,
         path: String,
         jsonBody: String? = null,
         auth: Boolean = true,
         versioned: Boolean = true,
+        bearer: String? = null,
     ): String = withContext(Dispatchers.IO) {
         // Versioned calls go under /v1; pass versioned=false for /config etc.
         val prefix = if (versioned) ApiConfig.apiVersion + "/" else ""
@@ -130,19 +158,23 @@ class ApiClient(
             .header("X-Voiid-Api-Version", ApiConfig.apiVersion)
 
         if (auth) {
-            val token = tokens.jwt ?: throw ApiError.NotAuthenticated
+            val token = bearer ?: tokens.jwt ?: throw ApiError.NotAuthenticated
             builder.header("Authorization", "Bearer $token")
         }
         val reqBody = jsonBody?.toRequestBody(JSON_MEDIA)
         builder.method(method, reqBody ?: if (method == "GET") null else "".toRequestBody(JSON_MEDIA))
 
-        val resp = try {
-            http.newCall(builder.build()).execute()
+        val response = try {
+            http.newCall(builder.build()).consumeCancellable {
+                RawResponse(it.code, it.header("Retry-After"), it.body?.bytes() ?: ByteArray(0))
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw ApiError.Transport(e)
         }
-        resp.use {
-            val text = it.body?.string() ?: ""
+        response.let {
+            val text = it.body.toString(Charsets.UTF_8)
             // 426 → this build is below minSupportedVersion; raise the global gate.
             if (it.code == 426) {
                 val url = runCatching { json.decodeFromString<UpdateBody>(text).update_url }.getOrNull()
@@ -150,7 +182,15 @@ class ApiClient(
                 throw ApiError.Http(426, "update required")
             }
             if (!it.isSuccessful) {
-                if (it.code == 401) tokens.clear()
+                // Parsed BEFORE the token is cleared: the decision depends on the body.
+                val parsed = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
+                // A 401 normally means the credential is finished, so drop it and the app
+                // returns to sign-in. `device_session_required` is the one exception: the
+                // token is a VALID bootstrap credential that has not been traded for a
+                // device session yet, and POST /devices/register still accepts it. Clearing
+                // here would destroy the only credential able to finish registration and
+                // force the user through phone verification again.
+                if (it.code == 401 && parsed?.code != "device_session_required") tokens.clear()
                 // Log the WHOLE body on a server error. Only the `error` field survives into the
                 // exception, so any diagnostic the server adds alongside it (a pg code, a hint)
                 // was being thrown away at exactly the moment it was needed. 5xx only: a 401 body
@@ -158,8 +198,13 @@ class ApiClient(
                 if (it.code >= 500) {
                     android.util.Log.w("ApiClient", "HTTP ${it.code} on $path: ${text.take(600)}")
                 }
-                val parsed = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
                 val msg = parsed?.error ?: "Request failed (${it.code})."
+                // Raised as its own type so the send path can reconcile it without matching on
+                // an error string. Only when the server named the message — a conflict with
+                // nothing to point at is an ordinary error.
+                if (it.code == 409 && parsed?.code == "idempotency_key_reuse" && parsed.message_id != null) {
+                    throw ApiError.AlreadySent(parsed.message_id)
+                }
                 throw ApiError.Http(it.code, msg, parsed?.code)
             }
             text
@@ -194,15 +239,17 @@ class ApiClient(
         val mediaType = contentType.toMediaType()
         val reqBody = body?.toRequestBody(mediaType)
         builder.method(method, reqBody ?: if (method == "GET") null else ByteArray(0).toRequestBody(mediaType))
-        val resp = try {
-            rawClient.newCall(builder.build()).execute()
+        val response = try {
+            rawClient.newCall(builder.build()).consumeCancellable {
+                RawResponse(it.code, it.header("Retry-After"), it.body?.bytes() ?: ByteArray(0))
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw ApiError.Transport(e)
         }
-        resp.use {
-            if (it.code == 401) tokens.clear()
-            RawResponse(it.code, it.header("Retry-After"), it.body?.bytes() ?: ByteArray(0))
-        }
+        if (response.code == 401) tokens.clear()
+        response
     }
 
     /** Convenience: deserialize the response into [T]. */
@@ -224,7 +271,12 @@ data class RawResponse(val code: Int, val retryAfter: String?, val body: ByteArr
 
 /** `code` is optional — most endpoints send only `error`. */
 @kotlinx.serialization.Serializable
-private data class ErrorBody(val error: String = "error", val code: String? = null)
+private data class ErrorBody(
+    val error: String = "error",
+    val code: String? = null,
+    /** Present on the send conflict above; absent everywhere else. */
+    val message_id: String? = null,
+)
 
 @kotlinx.serialization.Serializable
 data class UpdateBody(val update_url: String? = null)
