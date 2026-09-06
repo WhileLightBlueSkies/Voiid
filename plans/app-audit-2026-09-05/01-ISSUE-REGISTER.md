@@ -1135,7 +1135,7 @@ The table above supersedes historical completion records below it. A02/M01/C02/C
 ## R05 — the conference cap is serialized, and now proven (2026-09-06)
 
 - **Status:** DONE. This closes the guarantee Q01's record explicitly left open.
-- **Source/fix commit:** commit containing this record, parent `1a09ad1`.
+- **Source/fix commit:** `c17feb8`, parent `1a09ad1`.
 - **Files:** `backend/api/src/routes/calls.ts`;
   `backend/api/test/conferenceCapPostgres.test.ts` (new);
   `backend/api/test/callConference.test.ts` (fake updated to the new shape);

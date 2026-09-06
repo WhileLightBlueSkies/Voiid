@@ -23,7 +23,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### R05 — Two people adding to a full call can no longer both succeed
-`pending` · P1 · API
+`c17feb8` · P1 · API
 
 A conference holds eight. The cap was enforced inside the insert statement itself, on the
 reasoning that the database evaluates the count and the write together. It does — but two
