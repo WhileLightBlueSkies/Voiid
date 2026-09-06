@@ -49,9 +49,9 @@ const AUDIENCE_TTL_SECONDS = 10;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function resolve(key: string, sql: string, params: unknown[]): Promise<string[]> {
+async function resolve(key: string, sql: string, params: unknown[], cacheable = true): Promise<string[]> {
   try {
-    const cached = await cache?.get(key);
+    const cached = cacheable ? await cache?.get(key) : null;
     if (cached != null) return cached ? cached.split(',') : [];
   } catch { /* the database is the authority; a cache outage costs a round-trip */ }
 
@@ -65,7 +65,7 @@ async function resolve(key: string, sql: string, params: unknown[]): Promise<str
     return [];
   }
 
-  try { await cache?.set(key, ids.join(','), 'EX', AUDIENCE_TTL_SECONDS); } catch { /* best effort */ }
+  try { if (cacheable) await cache?.set(key, ids.join(','), 'EX', AUDIENCE_TTL_SECONDS); } catch { /* best effort */ }
   return ids;
 }
 
@@ -122,7 +122,7 @@ export async function shareRecipients(userId: string, shareId: unknown): Promise
               select 1 from user_blocks b
                where (b.blocker_user_id = t.target_user_id and b.blocked_user_id = $2)
                   or (b.blocker_user_id = $2 and b.blocked_user_id = t.target_user_id))`,
-    [shareId, userId]
+    [shareId, userId], false
   );
 }
 
@@ -135,10 +135,10 @@ export async function shareRecipients(userId: string, shareId: unknown): Promise
  * collapse, so a frame naming the same id a thousand times costs one publish.
  */
 export function narrow(audience: string[], requested: unknown): string[] {
-  if (!Array.isArray(requested) || requested.length === 0) return audience;
+  if (!Array.isArray(requested) || requested.length === 0) return [...new Set(audience)].slice(0, 512);
   const asked = new Set(requested.filter((id): id is string => typeof id === 'string'));
   const kept = audience.filter((id) => asked.has(id));
   // A list that intersects nothing is a client naming only people it may not address. Falling
   // back to the whole audience there would turn a rejected frame into a broadcast.
-  return kept;
+  return [...new Set(kept)].slice(0, 512);
 }

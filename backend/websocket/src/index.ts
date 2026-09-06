@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { boundedSend, PRESENCE_SCRIPT, FRAME_BUDGET_SCRIPT } from './transport';
+import { callGrantAllows } from '@voiid/common-utils';
 // VOIID WebSocket relay (Phase 0 realtime flow, Section 10).
 // Connect with JWT -> SUBSCRIBE channel:user:{id} -> in-memory socket_map.
 // On Redis message for a user, push the wake/ciphertext-ref down their live socket.
@@ -102,16 +105,8 @@ const ringGrantKey = (callId: string) => `callgrant:${callId}`;
 
 /** True when `from`/`to` are exactly the pair the API authorized for this call. */
 async function callPairAuthorized(callId: string, from: string, to: string): Promise<boolean> {
-  const raw = await pub.get(ringGrantKey(callId));
-  if (!raw) return false;
-  try {
-    const { a, b } = JSON.parse(raw) as { a: string; b: string };
-    // Direction-agnostic: the grant is written by the caller's ring, but the callee's answer,
-    // ICE and hangup travel the other way over the same authorized pair.
-    return (a === from && b === to) || (a === to && b === from);
-  } catch {
-    return false;
-  }
+  try { return callGrantAllows(await pub.get(ringGrantKey(callId)), from, to); }
+  catch { return false; }
 }
 // Per-user buffer of "this call was taken on another of your devices" verdicts. Same
 // lifetime as the offer buffer, and cleared the same two ways (the offer's resolution
@@ -244,7 +239,9 @@ async function flushPendingLocation(userId: string, ws: WebSocket): Promise<void
   try {
     const buffered = await pub.hgetall(lastFixKey(userId));
     for (const frame of Object.values(buffered ?? {})) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+      const parsed = JSON.parse(frame);
+      if (!(await shareRecipients(parsed.from_user_id, parsed.share_id)).includes(userId)) continue;
+      if (ws.readyState === WebSocket.OPEN) boundedSend(ws, frame);
     }
   } catch {
     // A missed flush degrades to "the marker updates on the next fix", not a dropped socket.
@@ -271,7 +268,9 @@ async function flushPendingOffers(userId: string, ws: WebSocket): Promise<void> 
     // answer/hangup/decline/busy) or by TTL. Re-delivery is safe: clients ignore a
     // duplicate offer for a call they have already attached (iOS: handleIncomingOffer).
     for (const frame of frames) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+      const parsed = JSON.parse(frame);
+      if (parsed.type !== 'call_taken' && !(await callPairAuthorized(parsed.call_id, parsed.from_user_id, userId))) continue;
+      if (ws.readyState === WebSocket.OPEN) boundedSend(ws, frame);
     }
     // The offer alone is not enough to connect — it is trickle, so it names no candidates.
     // The hash FIELDS are the call ids, which is exactly the set of calls this device can
@@ -300,7 +299,9 @@ async function flushPendingIce(userId: string, callIds: string[], ws: WebSocket)
     try {
       const frames = await pub.lrange(iceKey(userId, callId), 0, -1);
       for (const frame of frames) {
-        if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+        const parsed = JSON.parse(frame);
+        if (!(await callPairAuthorized(callId, parsed.from_user_id, userId))) continue;
+        if (ws.readyState === WebSocket.OPEN) boundedSend(ws, frame);
       }
     } catch {
       // Degrades to peer-reflexive discovery — where this call was before the buffer
@@ -320,7 +321,9 @@ async function flushPendingTaken(userId: string, ws: WebSocket): Promise<void> {
     const pending = await pub.hgetall(takenKey(userId));
     const frames = Object.values(pending ?? {});
     for (const frame of frames) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+      const parsed = JSON.parse(frame);
+      if (parsed.type !== 'call_taken' && !(await callPairAuthorized(parsed.call_id, parsed.from_user_id, userId))) continue;
+      if (ws.readyState === WebSocket.OPEN) boundedSend(ws, frame);
     }
   } catch {
     // A missed flush degrades to the pre-existing behaviour (a possible spurious
@@ -356,7 +359,7 @@ sub.on('pmessage', (_pattern, channel, payload) => {
     : [...sockets];
 
   for (const ws of affected) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+    if (ws.readyState === WebSocket.OPEN) boundedSend(ws, payload);
   }
   if (signout) {
     for (const ws of affected) {
@@ -397,18 +400,24 @@ wss.on('connection', async (ws, req) => {
   // at the end of this handler, by which time every listener is registered. The previous
   // code needed none of this because it attached listeners in the same tick.
   ws.pause();
+  ws.on('error', () => ws.terminate());
+  const authDeadline = setTimeout(() => ws.terminate(), 10_000);
+  ws.once('close', () => clearTimeout(authDeadline));
 
   // JWT via ?token=; reject if absent, unverifiable, or naming a revoked session.
   const url = new URL(req.url ?? '', 'http://localhost');
-  const token = url.searchParams.get('token');
+  const token = req.headers.authorization?.replace(/^Bearer /i, '') ?? url.searchParams.get('token');
+  req.url = url.pathname; // Do not retain URL credentials for service access logging.
 
   // AWAITED BEFORE THE SOCKET IS REGISTERED. The previous check was a floating promise: the
   // socket joined socketMap and began receiving traffic immediately, and the close (if any)
   // landed a round-trip later. A revoked client got a window of live relay access on every
   // connect, which is exactly the access this is meant to deny.
   const auth = await authorizeConnection(token);
+  clearTimeout(authDeadline);
   if (!auth.ok) {
     ws.close(auth.code, auth.reason);
+    ws.resume();
     return;
   }
   const userId = auth.userId;
@@ -416,6 +425,36 @@ wss.on('connection', async (ws, req) => {
   // The client may have closed or the server shut down during the round-trip above.
   if (ws.readyState !== WebSocket.OPEN) return;
 
+  const leaseId = randomUUID();
+  const lease = (action: string) => presence.eval(PRESENCE_SCRIPT, 3,
+    `user:${userId}:leases`, `user:${userId}:online`, `user:${userId}:last_seen`,
+    leaseId, action, 60_000, MAX_SOCKETS_PER_USER);
+  try {
+    if (await lease('add') !== 1) { ws.close(4429, 'too many connections'); ws.resume(); return; }
+  } catch { ws.close(4503, 'service unavailable'); ws.resume(); return; }
+  if (ws.readyState !== WebSocket.OPEN) { await lease('remove').catch(() => {}); return; }
+  let alive = true;
+  let checking = false;
+  ws.on('pong', () => { alive = true; });
+  const heartbeat = setInterval(async () => {
+    if (checking) return;
+    if (!alive || Date.now() >= auth.expiresAt) { ws.terminate(); return; }
+    alive = false;
+    ws.ping();
+    checking = true;
+    try {
+      const current = await authorizeConnection(token);
+      if (!current.ok || ws.readyState !== WebSocket.OPEN) { ws.terminate(); return; }
+      if (await lease('renew') !== 1) ws.terminate();
+    } catch { ws.terminate(); }
+    finally { checking = false; }
+  }, 20_000);
+  const expire = setTimeout(() => ws.terminate(), Math.min(2_147_483_647, Math.max(1, auth.expiresAt - Date.now())));
+  ws.once('close', () => {
+    clearInterval(heartbeat);
+    clearTimeout(expire);
+    void lease('remove').catch(() => {});
+  });
   socketDevice.set(ws, auth.deviceId);
   if (!socketMap.has(userId)) socketMap.set(userId, new Set());
   const userSockets = socketMap.get(userId)!;
@@ -434,8 +473,7 @@ wss.on('connection', async (ws, req) => {
   // presence: user online with heartbeat TTL. Also stamp last_seen now, and on
   // every heartbeat, so "last seen" stays fresh even on an UNCLEAN disconnect
   // (app killed / network drop) — the close handler can't be relied on for that.
-  presence.set(`user:${userId}:online`, '1', 'EX', 60);
-  presence.set(`user:${userId}:last_seen`, Date.now().toString());
+
 
   // A socket attaching is the ONLY moment a push-woken callee can receive the offer it
   // slept through. Do it before anything else so the answer path isn't left waiting.
@@ -482,15 +520,18 @@ wss.on('connection', async (ws, req) => {
     const size = Buffer.isBuffer(raw) ? raw.length
       : Array.isArray(raw) ? raw.reduce((n, part) => n + part.length, 0)
       : Buffer.byteLength(String(raw));
-    if (!socketBudget.admit(size)) return;
+    if (!socketBudget.admit(size) || ws.readyState !== WebSocket.OPEN || Date.now() >= auth.expiresAt) return;
+    try {
+      if (await presence.eval(FRAME_BUDGET_SCRIPT, 1, `relay:budget:${userId}`, size,
+          SOCKET_MAX_FRAMES_PER_WINDOW, SOCKET_MAX_BYTES_PER_WINDOW, SOCKET_RATE_WINDOW_MS) !== 1) return;
+    } catch { ws.terminate(); return; }
 
     // Realtime control frames: heartbeat (presence) and typing (Section 10 Redis keys).
     try {
       const msg = JSON.parse(raw.toString());
 
       if (msg.type === 'heartbeat') {
-        presence.set(`user:${userId}:online`, '1', 'EX', 60);
-        presence.set(`user:${userId}:last_seen`, Date.now().toString());
+        // Server ping/pong owns the lease; client heartbeats cannot keep a stale session alive.
         return;
       }
 
@@ -792,8 +833,8 @@ wss.on('connection', async (ws, req) => {
           // handler async (which would change frame ordering for every other message type).
           // Frames for one call still land in order because they await the same key.
           const toUserId = msg.to_user_id as string;
-          void callPairAuthorized(msg.call_id as string, userId, toUserId).then((allowed) => {
-            if (!allowed) {
+          await callPairAuthorized(msg.call_id as string, userId, toUserId).then((allowed) => {
+            if (!allowed || ws.readyState !== WebSocket.OPEN || Date.now() >= auth.expiresAt) {
               // Fail closed and say nothing useful back: a caller probing which user_ids are
               // reachable must not learn the difference between "not authorized" and
               // "authorized but offline".
@@ -924,12 +965,11 @@ wss.on('connection', async (ws, req) => {
     set?.delete(ws);
     if (set && set.size === 0) {
       socketMap.delete(userId);
-      presence.set(`user:${userId}:last_seen`, Date.now().toString());
-      presence.del(`user:${userId}:online`);
+
     }
   });
 
-  ws.send(JSON.stringify({ type: 'connected', user_id: userId }));
+  boundedSend(ws, JSON.stringify({ type: 'connected', user_id: userId }));
 
   // Every listener is attached; release anything the client sent while we were checking.
   ws.resume();

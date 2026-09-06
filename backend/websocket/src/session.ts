@@ -29,7 +29,7 @@ export const WS_CLOSE_REVOKED = 4403;
 export const WS_CLOSE_UNAVAILABLE = 4503;
 
 export type Authorization =
-  | { ok: true; userId: string; deviceId?: string; sid?: string }
+  | { ok: true; userId: string; deviceId?: string; sid?: string; expiresAt: number }
   | { ok: false; code: number; reason: string };
 
 let pool: Pool | null = null;
@@ -134,12 +134,16 @@ async function accountIsLive(userId: string): Promise<boolean> {
 }
 
 export async function authorizeConnection(token: string | null | undefined): Promise<Authorization> {
-  let claims: { user_id?: string; device_id?: string; sid?: string; scope?: string };
+  let claims: { user_id?: string; device_id?: string; sid?: string; scope?: string; exp?: number };
   try {
     claims = jwt.verify(token ?? '', process.env.JWT_SECRET ?? 'dev-only-change-me') as typeof claims;
   } catch {
     return { ok: false, code: WS_CLOSE_UNAUTHORIZED, reason: 'unauthorized' };
   }
+  if (!claims || typeof claims !== 'object' || claims.scope && claims.scope !== 'session' || typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) {
+    return { ok: false, code: WS_CLOSE_UNAUTHORIZED, reason: 'unauthorized' };
+  }
+  const expiresAt = claims.exp * 1000;
   const userId = claims.user_id;
   if (!userId || !UUID_RE.test(userId)) {
     return { ok: false, code: WS_CLOSE_UNAUTHORIZED, reason: 'unauthorized' };
@@ -153,7 +157,7 @@ export async function authorizeConnection(token: string | null | undefined): Pro
       if (!(await sessionIsActive(claims.sid, userId, claims.device_id!))) {
         return { ok: false, code: WS_CLOSE_REVOKED, reason: 'session revoked' };
       }
-      return { ok: true, userId, deviceId: claims.device_id, sid: claims.sid };
+      return { ok: true, userId, deviceId: claims.device_id, sid: claims.sid, expiresAt };
     }
 
     if (sessionCutoffPassed()) {
@@ -164,7 +168,7 @@ export async function authorizeConnection(token: string | null | undefined): Pro
     }
     // Legacy, unbound, inside the migration window. Its device is unknown, so a
     // device-targeted sign-out cannot single it out — one more reason to close the window.
-    return { ok: true, userId, deviceId: claims.device_id };
+    return { ok: true, userId, deviceId: claims.device_id, expiresAt };
   } catch (error) {
     // Unknown, not denied. Signing every user out because a database blipped would be a far
     // worse outage than the one that caused it, and the API still fails closed on its side.
