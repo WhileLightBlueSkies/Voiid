@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 findings · 19 DONE, 15 IMPLEMENTED_UNVERIFIED, 16 TODO. Statuses corrected 2026-09-06; DONE entries not changed this session retain their historical evidence.
+Baseline: `a2e24e5` · 50 findings · 20 DONE, 15 IMPLEMENTED_UNVERIFIED, 15 TODO. Statuses corrected 2026-09-06; DONE entries not changed this session retain their historical evidence.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -18,7 +18,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | S03 | P0 | Make revocation persistent and device-bound | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S04 | P0 | Replace the false recovery lockout security boundary | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
 | A03 | P1 | Support java.time on API 24/25 | Confirmed configuration gap | [06](06-ANDROID-DURABILITY.md) | DONE |
-| A04 | P1 | Remove destructive Room upgrade fallback | Confirmed policy risk | [06](06-ANDROID-DURABILITY.md) | TODO |
+| A04 | P1 | Remove destructive Room upgrade fallback | Confirmed policy risk | [06](06-ANDROID-DURABILITY.md) | DONE |
 | C02 | P1 | Make worker health reflect returned failures and staleness | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | IMPLEMENTED_UNVERIFIED |
 | C04 | P1 | Keep a durable record of story objects still requiring deletion | Confirmed dependency risk | [11](11-PAYMENTS-MEDIA-WORKERS.md) | IMPLEMENTED_UNVERIFIED |
 | E01 | P1 | Reconcile crypto assurances with current code and executable gates | Confirmed assurance gap; exploitability unverified | [12](12-CRYPTO-ASSURANCE.md) | TODO |
@@ -1186,3 +1186,49 @@ The table above supersedes historical completion records below it. A02/M01/C02/C
     roster and a stale grant. R05 mentions this and it is not addressed here.
   - No load or latency measurement: the lock serializes admissions to one call, and no figure was
     taken for how that behaves under a busy conference.
+
+## A04 — a forgotten migration can no longer erase local history (2026-09-06)
+
+- **Status:** DONE for the policy: the destructive fallback is gone, schemas are exported and
+  committed, and the build fails on a missing migration. The historical-fixture upgrade test
+  A04 asks for is NOT written — see limitations.
+- **Source/fix commit:** commit containing this record, parent `35934d7`.
+- **Files:** `apps/android/app/src/main/java/com/voiid/app/store/VoiidDatabase.kt`,
+  `app/build.gradle.kts`, `app/schemas/com.voiid.app.store.VoiidDatabase/4.json` (new, generated
+  and committed); `app/src/test/java/com/voiid/app/RoomMigrationPolicyTest.kt` (new).
+- **Failure reproduced:** by reading it. `fallbackToDestructiveMigration()` sat alongside three
+  explicit migrations, under a comment that already described the danger correctly: it drops and
+  recreates EVERY table on any version bump lacking a Migration, including `call_history` and the
+  address-book `saved_name`/`phone_e164` columns on `users`, which exist on the device and
+  nowhere else. The failure it produces is not a crash — it is an upgrade that SUCCEEDS while the
+  user's call history quietly disappears. This is a policy risk rather than a live defect:
+  versions 1→4 all have migrations today, and it becomes a defect the first time somebody bumps
+  the version and forgets, which is exactly the mistake a destructive fallback exists to hide.
+- **Implementation:** the fallback is removed, so a missing migration now throws on open — loud,
+  at development time, impossible to ship past. `exportSchema = true` with a
+  `room.schemaLocation` KSP argument, and `4.json` committed, so an upgrade path finally has a
+  record of what shipped to migrate FROM rather than only the current code's idea of the old
+  schema. `RoomMigrationPolicyTest` fails the build if the fallback returns, if export is turned
+  off, if any version in 1..current lacks a migration, if the exported schema for the current
+  version is missing, or if the irrecoverable columns disappear from it. `schemas/` is declared
+  as a test input so Gradle re-runs the guard when a schema changes — the same staleness trap
+  that would have silently disabled the backup-rules guard.
+- **Regression evidence:** restoring `fallbackToDestructiveMigration()` fails that guard by name;
+  bumping the version to 5 without adding `MIGRATION_4_5` fails the migration-coverage guard.
+- **Validation:** 92 Android unit tests pass (7 new); `assembleDebug` exit 0; lint holds at its
+  90 baseline.
+- **Remaining limitations:**
+  - **No upgrade was executed against a real historical database.** A04's acceptance asks that
+    versions 1/2/3 upgrade to current "without losing conversations, calls, locations, or
+    stories", tested from real fixtures. That needs `MigrationTestHelper`, an instrumented test
+    and an emulator; none of it exists here. What is proven is that the destructive path is gone
+    and that every version is covered — not that each migration is CORRECT.
+  - **Only schema 4 is exported.** Versions 1–3 shipped without export, so there is no recorded
+    schema to migrate from for those, and the fixtures the acceptance wants cannot be
+    reconstructed from this repository. Export helps from here forward only.
+  - **A corrupt database file now has no handler.** The fallback was also covering that case.
+    Removing it means a genuinely corrupt file throws on open instead of being silently
+    recreated. That is the safer failure but it is not a recovery path: the file should be
+    quarantined and reported, as SecurePrefs now does for preferences (A02). Not implemented.
+  - **Downgrade policy is still unstated.** A04 asks for an explicit supported-or-blocked
+    decision; Room's default is to throw, which is a policy by accident rather than by choice.

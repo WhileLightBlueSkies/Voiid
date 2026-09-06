@@ -10,7 +10,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 19 fixed · 15 awaiting verification · 16 open**
+**Status: 20 fixed · 15 awaiting verification · 15 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -21,6 +21,23 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### A04 — A forgotten migration can no longer wipe local history
+`pending` · P1 · Android
+
+The database was configured to **drop and recreate every table** on any version bump that lacked
+a migration. The comment above that setting already described the danger accurately — it takes
+`call_history` and the address-book names with it, which live on the device and nowhere else. The
+failure it produces isn't a crash: it's an upgrade that *succeeds* while the user's call history
+quietly disappears.
+
+Nothing is broken today — versions 1 to 4 all have migrations. It becomes broken the first time
+someone bumps the version and forgets, which is precisely the mistake that setting exists to
+hide. It's removed, schemas are now exported and committed, and the build fails if a version is
+ever left without a migration.
+
+**Not verified:** no upgrade was run against a real old database. What's proven is that the
+destructive path is gone and every version is covered — not that each migration is correct.
 
 ### R05 — Two people adding to a full call can no longer both succeed
 `c17feb8` · P1 · API

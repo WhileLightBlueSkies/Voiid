@@ -123,10 +123,23 @@ androidComponents {
 // Gradle cannot see those reads, so without declaring them the task stays UP-TO-DATE when the
 // rules change — the guard would pass forever while the policy rotted underneath it. This was
 // caught by changing a rule and watching the test not run.
+// Where Room writes the exported schema JSON (A04). Committed under app/schemas so an upgrade
+// path has a record of what actually shipped to migrate from — without it, a migration can only
+// be checked against the current code's idea of the old schema.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 tasks.withType<Test>().configureEach {
     inputs.dir("src/main/res/xml")
         .withPropertyName("backupRuleFiles")
         .withPathSensitivity(PathSensitivity.RELATIVE)
+    // RoomMigrationPolicyTest reads the exported schemas off disk, and Gradle cannot see that.
+    // Without declaring it the task stays UP-TO-DATE when a schema changes and the guard rots.
+    inputs.dir("schemas")
+        .withPropertyName("roomSchemas")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .optional()
 }
 
 dependencies {
