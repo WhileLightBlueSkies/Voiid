@@ -237,22 +237,6 @@ struct AccountScreen: View {
 /// Reference name for chat appearance settings. Voiid's two chat-appearance controls — chat
 /// list layout and app theme — are on the settings root under Display, where they are inline
 /// and take effect instantly. What is missing is everything else this screen implies.
-struct ChatSettingsScreen: View {
-    var body: some View {
-        PreviewScaffold(title: "Chats",
-                        missing: "Chat list layout and appearance are on the settings root, "
-                               + "under Display, and both work. Wallpaper, font size and "
-                               + "chat backup-to-cloud have no implementation.") {
-            PreviewCard(rows: [
-                ("Wallpaper", "photo"),
-                ("Font size", "textformat.size"),
-                ("Enter is send", "return"),
-                ("Media auto-download", "arrow.down.circle"),
-            ])
-        }
-    }
-}
-
 // MARK: - Voiid One
 
 struct VoiidOneScreen: View {
@@ -287,19 +271,3 @@ struct PaymentsScreen: View {
     }
 }
 
-// MARK: - Help & support
-
-struct HelpAndSupportScreen: View {
-    var body: some View {
-        PreviewScaffold(title: "Help & Support",
-                        missing: "No support URL, FAQ or contact address exists anywhere in "
-                               + "the repo to link to.") {
-            PreviewCard(rows: [
-                ("FAQ", "questionmark.circle"),
-                ("Contact us", "envelope"),
-                ("Report a problem", "exclamationmark.bubble"),
-                ("Terms & privacy policy", "doc.text"),
-            ])
-        }
-    }
-}

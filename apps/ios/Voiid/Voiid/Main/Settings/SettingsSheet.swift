@@ -16,12 +16,24 @@
 //
 //  What is deliberately absent, and why
 //  ------------------------------------
-//  Clips settings, a "Chats" screen and Help have no rows here — not disabled, not
-//  greyed, not "coming soon". None of them exist in this app (Clips is DummyData
-//  end-to-end and the server reports feature_flags.clips = false; no support URL exists
-//  anywhere in the repo). A top-level row for a feature that does not exist has no peers,
-//  no precondition and no path to resolution; it is an unactionable control that also
-//  advertises the feature as if it shipped. Absent features get no pixels.
+//  A top-level row for a feature that does not exist has no peers, no precondition and no
+//  path to resolution; it is an unactionable control that also advertises the feature as
+//  if it shipped. ABSENT FEATURES GET NO PIXELS. That rule now applies to:
+//
+//    * "Voiid One" — not a product. No subscription, no storage tier, no backend. The one
+//      thing its screen described, encrypted backup & restore, IS real and is the Backup &
+//      Recovery row directly above where it used to sit.
+//    * "Payments" — Razorpay is wired on the SERVER (backend/api/src/payments), but no
+//      client surface consumes it: no wallet, no saved card, no transaction list. The row
+//      promised "UPI, cards, transactions" and opened a screen with none of them.
+//
+//  Clips settings likewise has no row (Clips settings do not exist; the feed itself is now
+//  real and server-backed, which the old wording here got wrong).
+//
+//  "Chats" and "Help & support" WERE on this list. Both now exist for real — see
+//  ChatSettingsView and HelpAndSupportView — so both are wired rows. Chats carries the two
+//  working chat preferences that used to sit under a separate "Display" group, and Help is
+//  built from what the app can actually do rather than from links that go nowhere.
 //
 //  Privacy & Legal used to be on that list for the same reason — there was no privacy
 //  policy anywhere in the repo to link to. There is now: the notice and the terms are
@@ -205,8 +217,13 @@ enum SettingsRoute: Hashable {
         switch self {
         case .editProfile, .linkedDevices, .backup, .privacy, .storage, .about, .legal:
             return true
+        case .chatSettings, .help:
+            return true
+        // Still declared so the preview screens compile and re-adding a row is one line.
+        // `voiidOne` and `payments` have NO row on the root any more — see the ecosystem
+        // group — so these two are unreachable rather than merely unwired.
         case .qrCode, .shareProfile, .accountCenter, .encryption, .account,
-             .chatSettings, .voiidOne, .payments, .help:
+             .voiidOne, .payments:
             return false
         }
     }
@@ -262,8 +279,12 @@ struct SettingsSheet: View {
                     ])
 
                     group("Chats & notifications", rows: [
+                        // Subtitle names what is ACTUALLY behind the row. It used to promise
+                        // "Theme, wallpaper, chat settings" and open an unwired preview,
+                        // while the two working chat preferences sat under "Display" on this
+                        // root. They now live on this screen — see ChatSettingsView.
                         .init(.chatSettings, "bubble.left", "Chats",
-                              "Theme, wallpaper, chat settings"),
+                              "Chat list layout, appearance"),
                         // Notifications is NOT a route: iOS owns Voiid's notification
                         // behaviour entirely, so the row leaves the app. It is rendered
                         // separately below the group for exactly that reason.
@@ -276,16 +297,27 @@ struct SettingsSheet: View {
                         // backup screen, and it is the thing "Voiid One" describes.
                         .init(.backup, "checkmark.shield", "Backup & Recovery",
                               backupDetail),
-                        .init(.voiidOne, "cloud", "Voiid One", "Encrypted backup & restore"),
-                        .init(.payments, "creditcard", "Payments",
-                              "UPI, cards, transactions"),
+                        // NO "Voiid One" ROW. It is not a product — it has no subscription,
+                        // no storage tier and no backend — and the one thing its preview
+                        // screen described (encrypted backup & restore) is the row directly
+                        // above, which is real. Two rows for one feature, where only the
+                        // unbuilt one carries the brand name, teaches the user that Backup &
+                        // Recovery is the lesser of the two.
+                        //
+                        // NO "Payments" ROW. Razorpay is wired on the SERVER
+                        // (backend/api/src/payments, docs/RAZORPAY-SETUP.md) but no client
+                        // surface consumes it: there is no wallet, no saved card, no
+                        // transaction list to show. A row promising "UPI, cards,
+                        // transactions" opens a screen that has none of them.
+                        //
+                        // Both follow the rule this file already states at the top: absent
+                        // features get no pixels. Re-adding either is a row plus a case in
+                        // `SettingsRoute`; the screens are still in PreviewSettingsScreens.
                         .init(.linkedDevices, "laptopcomputer.and.iphone", "Devices",
                               "Linked devices, sessions"),
                         // NO "Games" ROW. See `SettingsRoute` — game settings are reached
                         // from the Games tab's own header and from nowhere else.
                     ])
-
-                    displayGroup
 
                     group("Support & more", rows: [
                         .init(.help, "questionmark.circle", "Help & support", "FAQ, contact us"),
@@ -325,10 +357,10 @@ struct SettingsSheet: View {
                 case .accountCenter: AccountCenterScreen()
                 case .encryption:    EncryptionStatusScreen()
                 case .account:       AccountScreen()
-                case .chatSettings:  ChatSettingsScreen()
+                case .chatSettings:  ChatSettingsView()
                 case .voiidOne:      VoiidOneScreen()
                 case .payments:      PaymentsScreen()
-                case .help:          HelpAndSupportScreen()
+                case .help:          HelpAndSupportView()
                 }
             }
             .toolbar {
@@ -743,76 +775,6 @@ struct SettingsSheet: View {
     /// groups: every other card here is a list of doors, and dropping two segmented controls
     /// among them breaks that rhythm twice. Apple's own Settings does the same — Display &
     /// Brightness is its own section, not a picker buried among links.
-    private var displayGroup: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Display")
-                .font(VoiidFont.rounded(13))
-                .foregroundColor(VoiidColor.textSecondary)
-                .padding(.leading, 4)
-
-            VStack(spacing: 0) {
-                settingsPicker("Chat list", icon: "rectangle.grid.2x2") {
-                    Picker("Chat list", selection: Binding(
-                        get: { chatLayout.layout },
-                        set: { Haptics.selection(); chatLayout.layout = $0 }
-                    )) {
-                        ForEach(ChatLayoutPreference.Layout.allCases) { l in
-                            Text(l.label).tag(l)
-                        }
-                    }
-                }
-
-                rowDivider
-
-                // INLINE, not a pushed screen: the result is visible the instant you tap, so
-                // navigating away to choose and back to see the effect would be worse.
-                settingsPicker("Appearance", icon: "circle.lefthalf.filled") {
-                    Picker("Appearance", selection: Binding(
-                        get: { theme.mode },
-                        set: { Haptics.selection(); theme.mode = $0 }
-                    )) {
-                        ForEach(ThemePreference.Mode.allCases) { m in
-                            Text(m.label).tag(m)
-                        }
-                    }
-                }
-            }
-            .background(VoiidColor.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
-                .stroke(VoiidColor.divider, lineWidth: 1))
-        }
-    }
-
-    /// Label above, control beneath, so the icon column still reads as a column instead of
-    /// the control colliding with it.
-    private func settingsPicker<P: View>(_ title: String, icon: String,
-                                         @ViewBuilder _ picker: () -> P) -> some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            HStack(spacing: VoiidSpacing.md) {
-                Circle()
-                    .stroke(VoiidColor.accent.opacity(0.5), lineWidth: 1)
-                    .frame(width: 34, height: 34)
-                    .overlay {
-                        Image(systemName: icon)
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundColor(VoiidColor.accentInk)
-                    }
-
-                Text(title)
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-
-                Spacer(minLength: 0)
-            }
-
-            picker()
-                .pickerStyle(.segmented)
-                .labelsHidden()
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.vertical, 11)
-    }
 
     private var chevron: some View {
         Image(systemName: "chevron.right")
