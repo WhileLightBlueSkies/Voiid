@@ -4,9 +4,24 @@
 //
 //  Transport for the PIN-wrapped backup master secret. The wrap itself is opaque
 //  to the server — it's produced by `wrapMasterSecretWithPin` (e2e-core) and only
-//  ever unwrapped on-device with the user's PIN. This service just stores/fetches
-//  that opaque blob and reports every unwrap attempt so the server can enforce
-//  online guess-limiting (locks after 10 consecutive failures → 429 on GET).
+//  ever unwrapped on-device with the user's PIN. This service stores/fetches that
+//  opaque blob and reports each unwrap attempt.
+//
+//  ── WHAT THE ATTEMPT REPORT IS, AND IS NOT (S04) ───────────────────────────────
+//  This header used to say the report let the server "enforce online guess-limiting".
+//  It does not, and the backend retracted the same claim in `routes/recovery.ts` —
+//  read the threat model there before relying on anything here.
+//
+//  The counter moves only when a client chooses to POST `success:false`. An attacker
+//  holding the wrap can fetch once and guess OFFLINE forever, report nothing, or POST
+//  `success:true` to clear an active lock. A control the attacker can decline to
+//  trigger and can reset at will is not a security boundary; it is abuse telemetry
+//  about HONEST clients. Keep reporting attempts — that telemetry is still worth
+//  having — but do not present the 429 to the user as protection it is not.
+//
+//  What actually defends the secret is the BIP39 phrase (high entropy, never sent)
+//  and, weakly, Argon2id raising the cost per guess on a ~20-bit PIN. Replacing this
+//  with a real boundary is S04, and it needs a cryptographic reviewer.
 //
 //    PUT  /v1/recovery/key             { version, salt, nonce, ciphertext }  → { stored }
 //    GET  /v1/recovery/key             → { wrapped_key: {…} }  | 404 never-set | 429 locked

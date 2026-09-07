@@ -8,8 +8,22 @@ import uniffi.voiid.PinWrappedSecret
  * PIN-wrapped master-secret transport (recovery key). Mirrors the backend contract:
  *   - PUT  /recovery/key            store the PIN-wrapped secret ({version,salt,nonce,ciphertext})
  *   - GET  /recovery/key            fetch it; 404 = never set, 429 = locked (Retry-After)
- *   - POST /recovery/attempt-result report every PIN unwrap attempt so the server can
- *                                    lock the key after 10 consecutive failures.
+ *   - POST /recovery/attempt-result report each PIN unwrap attempt
+ *
+ * ── WHAT THE ATTEMPT REPORT IS, AND IS NOT (S04) ──────────────────────────────────
+ * This comment used to say the report lets the server "lock the key after 10 consecutive
+ * failures", as though that were a security boundary. It is not, and the backend retracted
+ * the same claim in `routes/recovery.ts` — read the threat model there first.
+ *
+ * The counter moves only when a client chooses to POST `success:false`. An attacker holding
+ * the wrap can fetch once and guess OFFLINE forever, report nothing, or POST `success:true`
+ * to clear an active lock. A control the attacker can decline to trigger and can reset at
+ * will is abuse telemetry about HONEST clients, not protection. Keep reporting — the
+ * telemetry is worth having — but never present the 429 to the user as a guarantee.
+ *
+ * What actually defends the secret is the BIP39 phrase (high entropy, never sent) and,
+ * weakly, Argon2id raising the cost per guess on a ~20-bit PIN. Replacing this with a real
+ * boundary is S04, and it needs a cryptographic reviewer.
  *
  * `version` travels as a JSON number; the FFI [PinWrappedSecret] carries it as a UByte,
  * so we convert on the boundary.
