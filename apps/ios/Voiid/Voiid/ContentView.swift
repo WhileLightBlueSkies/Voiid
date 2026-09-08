@@ -27,6 +27,9 @@ struct ContentView: View {
     @State private var restoreCallUIRequested = false
     /// A community invite link the user tapped (see `CommunityLink`).
     @ObservedObject private var communityLinks = CommunityLinkRouter.shared
+    /// A personal profile link — a scanned QR, or voiid.app/u/<username> opened from
+    /// anywhere (see `ProfileLink`).
+    @ObservedObject private var profileLinks = ProfileLinkRouter.shared
 
     var body: some View {
         Group {
@@ -85,6 +88,22 @@ struct ContentView: View {
         .sheet(item: communityInvite) { link in
             CommunityJoinSheet(link: link)
         }
+        // A scanned or tapped profile link lands in the SAME flow a typed handle uses:
+        // look the person up, enter their Contact PIN, send a request they must accept.
+        // The link supplies the handle and nothing else — see `ProfileLink`.
+        .sheet(item: profileInvite) { link in
+            FindByUsernameView(
+                prefilledHandle: link.username,
+                onOpen: { _, _ in
+                    // Dismiss and let the chat list surface it. A request is PENDING until
+                    // the other side accepts, so pushing straight into a conversation would
+                    // present an empty thread as though it were live — and `ChatStore.open`
+                    // needs a VConversation the list has not fetched yet.
+                    profileLinks.consume()
+                    Task { await chat.loadConversations() }
+                }
+            )
+        }
         // Tapping the PiP window asks the app to bring the call UI back. Usually
         // the call screen is still presented underneath (backgrounding does not
         // dismiss it) and this is a no-op; it matters when the call screen was
@@ -107,6 +126,16 @@ struct ContentView: View {
         Binding(
             get: { session.route == .main ? communityLinks.pending : nil },
             set: { if $0 == nil { communityLinks.consume() } }
+        )
+    }
+
+    /// Gated on `.main` for the same reason as the community binding: a link can arrive
+    /// during a cold launch, before there is a session to look a handle up with. It waits
+    /// in the router until there is.
+    private var profileInvite: Binding<ProfileLink?> {
+        Binding(
+            get: { session.route == .main ? profileLinks.pending : nil },
+            set: { if $0 == nil { profileLinks.consume() } }
         )
     }
 

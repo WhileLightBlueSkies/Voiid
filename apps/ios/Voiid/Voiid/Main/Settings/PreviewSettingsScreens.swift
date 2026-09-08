@@ -97,64 +97,14 @@ private struct PreviewCard: View {
 /// The one screen here that could be built today — `session.profile.username` is enough to
 /// encode. It is left as a preview because a QR code that scans to a link nothing handles is
 /// worse than one that admits it is coming.
-struct MyQRCodeScreen: View {
-    @EnvironmentObject var session: AppSession
-
-    var body: some View {
-        PreviewScaffold(title: "My QR Code",
-                        missing: "No deep-link route handles a scanned Voiid code yet, so the "
-                               + "code would encode a link the app cannot open.") {
-            VStack(spacing: VoiidSpacing.md) {
-                RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
-                    .fill(VoiidColor.surfaceCard)
-                    .frame(height: 260)
-                    .overlay {
-                        Image(systemName: "qrcode")
-                            .font(.system(size: 120))
-                            .foregroundColor(VoiidColor.placeholder)
-                    }
-                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
-                        .stroke(VoiidColor.divider, lineWidth: 1))
-
-                if let handle = session.profile.username, !handle.isEmpty {
-                    Text("@\(handle)")
-                        .font(VoiidFont.rounded(16, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                }
-
-                Text("People can scan this to find you on Voiid.")
-                    .font(VoiidFont.rounded(13))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
-}
-
-// MARK: - Share profile
-
-struct ShareProfileScreen: View {
-    var body: some View {
-        PreviewScaffold(title: "Share Profile",
-                        missing: "There is no public profile URL to share — Voiid has no web "
-                               + "profile route, and no universal link is registered.") {
-            PreviewCard(rows: [
-                ("Copy link", "link"),
-                ("Share via…", "square.and.arrow.up"),
-                ("Show QR code", "qrcode"),
-            ])
-        }
-    }
-}
-
 // MARK: - Account center
 
 struct AccountCenterScreen: View {
     var body: some View {
         PreviewScaffold(title: "Account Center",
-                        missing: "Voiid has one account per device and no cross-app identity "
-                               + "to centre. This screen is the reference's shape only.") {
+                        missing: "Voiid has one account per device and nothing to centre yet. "
+                               + "The rows below are the shape this screen would take — see "
+                               + "the note in source for what each one needs first.") {
             PreviewCard(rows: [
                 ("Profiles", "person.2"),
                 ("Password & security", "key"),
@@ -164,6 +114,49 @@ struct AccountCenterScreen: View {
         }
     }
 }
+
+// ── ACCOUNT CENTER: WHAT IT WOULD TAKE ──────────────────────────────────────────────
+//
+// Kept deliberately, unlike Voiid One and Payments which lost their rows entirely. Those
+// two describe features that do not exist and have no path to existing; this one describes
+// a REAL future shape — it is the roof over surfaces Voiid already half-owns — so the row
+// stays and this note records the thinking rather than making it twice.
+//
+// Meta's Accounts Center, which the reference is quoting, exists to span MULTIPLE apps and
+// MULTIPLE profiles under one login. Voiid has one account, on one device, in one app. Ported
+// literally it would be a screen whose entire purpose is a relationship the product does not
+// have — four rows deep and every one of them a lie.
+//
+// So the question is not "when do we build these four rows", it is "what does a single-app
+// account centre legitimately hold". Three candidates, and what each needs first:
+//
+//   * PROFILES — the honest version of the reference's row. Voiid genuinely HAS two
+//     identities today: the account (phone, username, photo — Edit Profile) and the creator
+//     profile (handle, bio, clips — CreatorProfileView). They are separate on purpose and a
+//     user has no single place that says so. This is the strongest candidate and needs
+//     nothing new server-side: `CreatorEngine.me` already resolves the second one. It does
+//     need `CreatorEngine` lifted from a per-view @StateObject in ClipsFeedView to something
+//     Settings can reach, which is the one real blocker.
+//
+//   * SECURITY — "Password & security" cannot port: Voiid has no password. What it DOES have
+//     is scattered — linked devices (Devices), the safety number (per-conversation), the
+//     backup PIN (Backup & Recovery), the Contact PIN (Privacy & security). A screen that
+//     shows those four states in one place, without duplicating their controls, is a genuine
+//     improvement. Needs no backend; needs a decision about whether summarising security
+//     state in one screen makes it easier to audit or easier to attack.
+//
+//   * DATA & PERMISSIONS — the DPDP surface. Consent state, data export, deletion. Two of
+//     those already exist (Privacy & Legal withdraws consent; Edit Profile deletes the
+//     account) and export does not. If export is ever built, this is where it belongs.
+//
+// NOT candidates, and why: "Ad preferences" — Voiid has no advertising and building the row
+// would be an announcement that it will. "Connected experiences" — no cross-app surface
+// exists to connect.
+//
+// WHEN TO BUILD IT: when a second one of those three has real content. One populated section
+// under a heading called "Account Center" is a screen pretending to be a hub; two is a hub.
+// Profiles alone would be better placed as a row on the settings root than as a lone
+// inhabitant of a centre.
 
 // MARK: - Encryption status
 

@@ -9,6 +9,10 @@
             "comment": "Community invite links (https://voiid.app/c/<handle>?i=<token>). This is the ONLY path the app claims: everything else on voiid.app stays in the browser, so a future marketing page or help article never gets swallowed by the app."
           },
           {
+            "/": "/u/*",
+            "comment": "Personal profile links (https://voiid.app/u/<username>) — the QR code in Settings. Carries a username and nothing else; the Contact PIN is never in the link, so a scanned code still lands on the PIN step and then a request the owner must accept."
+          },
+          {
             "/": "*",
             "exclude": true,
             "comment": "Explicit deny for the rest of the domain. iOS matches components in order and takes the first hit, so this must stay last."

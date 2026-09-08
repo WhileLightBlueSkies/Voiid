@@ -21,11 +21,20 @@
 import SwiftUI
 
 struct FindByUsernameView: View {
+    /// A handle to resolve on appear, from a scanned QR or an opened voiid.app/u/<handle>
+    /// link. The SCAN REPLACES TYPING AND NOTHING ELSE: the PIN step and the request still
+    /// happen exactly as they do for a typed handle, because a QR proves someone showed you
+    /// a code, not that its owner agreed to hear from you.
+    var prefilledHandle: String? = nil
+
     /// Called with the conversation id once a chat is opened, so the caller can navigate.
+    /// Declared last so a trailing closure reads naturally at both call sites.
     var onOpen: (String, Bool) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var handle = ""
+    /// Guards the prefill so re-rendering cannot re-run the lookup underneath the user.
+    @State private var didPrefill = false
     @State private var profile: ContactPinService.PublicProfile?
     @State private var pin = ""
     @State private var looking = false
@@ -58,6 +67,17 @@ struct FindByUsernameView: View {
 
                 if let p = profile {
                     resultSection(p)
+                        // The person RESOLVES INTO PLACE rather than appearing. Arriving here
+                        // from a scan, this card is the answer to "who did I just scan" — a
+                        // hard cut makes the two screens feel unrelated, and the PIN field
+                        // inside it is a demand that lands better after a beat of arrival.
+                        //
+                        // Damped, no bounce: the celebration already happened on the scanner.
+                        // This is a result settling, not a reward.
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 8)),
+                            removal: .opacity
+                        ))
                 }
 
                 if let error {
@@ -81,7 +101,17 @@ struct FindByUsernameView: View {
                         .foregroundStyle(VoiidColor.primary)
                 }
             }
-            .onAppear { handleFocused = true }
+            .onAppear {
+                // A scanned handle resolves itself and leaves the keyboard down — the user
+                // has nothing left to type at this step. A typed handle focuses the field.
+                if let scanned = prefilledHandle, !didPrefill {
+                    didPrefill = true
+                    handle = scanned
+                    lookup()
+                } else if !didPrefill {
+                    handleFocused = true
+                }
+            }
         }
         .tint(VoiidColor.primary)
     }
@@ -164,7 +194,8 @@ struct FindByUsernameView: View {
         profile = nil
         Task {
             do {
-                profile = try await ContactPinService.shared.lookup(username: h)
+                let found = try await ContactPinService.shared.lookup(username: h)
+                withAnimation(.spring(duration: 0.34, bounce: 0)) { profile = found }
             } catch {
                 // Do not distinguish "no such handle" from other failures any more than the
                 // server already does — a precise message here would help someone enumerate

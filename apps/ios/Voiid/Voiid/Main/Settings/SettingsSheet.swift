@@ -217,12 +217,12 @@ enum SettingsRoute: Hashable {
         switch self {
         case .editProfile, .linkedDevices, .backup, .privacy, .storage, .about, .legal:
             return true
-        case .chatSettings, .help:
+        case .chatSettings, .help, .qrCode, .shareProfile:
             return true
         // Still declared so the preview screens compile and re-adding a row is one line.
         // `voiidOne` and `payments` have NO row on the root any more — see the ecosystem
         // group — so these two are unreachable rather than merely unwired.
-        case .qrCode, .shareProfile, .accountCenter, .encryption, .account,
+        case .accountCenter, .encryption, .account,
              .voiidOne, .payments:
             return false
         }
@@ -352,8 +352,8 @@ struct SettingsSheet: View {
                 case .about:         AboutView()
                 case .legal:         LegalView()
                 // Preview only — each says so on the screen.
-                case .qrCode:        MyQRCodeScreen()
-                case .shareProfile:  ShareProfileScreen()
+                case .qrCode:        MyQRCodeView()
+                case .shareProfile:  ShareProfileView()
                 case .accountCenter: AccountCenterScreen()
                 case .encryption:    EncryptionStatusScreen()
                 case .account:       AccountScreen()
@@ -522,11 +522,25 @@ struct SettingsSheet: View {
 
     // MARK: Quick actions
 
+    /// THREE, not four, and no "My QR code" among them.
+    ///
+    /// The QR had a control HERE and a second one in the identity block directly above,
+    /// both pushing the same screen — two affordances for one destination, stacked one on
+    /// top of the other, so neither read as the canonical way in.
+    ///
+    /// The identity block's icon is the one that survives: it sits beside Edit profile on
+    /// the row that carries your photo, name and handle, and a personal QR code is an
+    /// attribute of that identity — the same reason a QR appears next to your handle in
+    /// every app that has one. This strip is a rank of equal-weight DESTINATIONS, and
+    /// spending one of its slots on a door that is already open six points above it made
+    /// the strip look padded and the icon look redundant.
+    ///
+    /// Share profile stays, because sharing a link and showing a code are genuinely
+    /// different acts — one hands the link to an app, the other to a camera — even though
+    /// both end at the same URL.
     private var quickActions: some View {
         HStack(spacing: 0) {
             quickAction(.editProfile, "person.crop.circle", "Edit profile")
-            quickDivider
-            quickAction(.qrCode, "qrcode", "My QR code")
             quickDivider
             quickAction(.shareProfile, "square.and.arrow.up", "Share profile")
             quickDivider

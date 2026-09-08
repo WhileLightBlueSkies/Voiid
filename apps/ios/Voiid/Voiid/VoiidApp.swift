@@ -217,7 +217,10 @@ struct VoiidApp: App {
                 // decoded, and no request is made until a view with a signed-in session
                 // asks the server what this handle actually is.
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    // Both routers see the URL; each ignores what is not its own shape, so
+                    // order does not matter and neither can swallow the other's link.
                     CommunityLinkRouter.shared.handle(activity.webpageURL)
+                    ProfileLinkRouter.shared.handle(activity.webpageURL)
                 }
         }
     }

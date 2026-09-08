@@ -28,6 +28,9 @@ struct ChatsHomeView: View {
     /// see `referenceHeader`.
     @State private var searching = false
     @State private var showFindByUsername = false
+    @State private var showScanner = false
+    /// A handle from a scanned code, handed to FindByUsernameView when it opens.
+    @State private var scannedHandle: String?
     @State private var showRequests = false
     /// Inbound requests waiting to be accepted. Drives the banner below the header; a count of
     /// zero hides it entirely rather than showing an empty affordance.
@@ -236,8 +239,19 @@ struct ChatsHomeView: View {
                 SettingsSheet()
                     .preferredColorScheme(theme.mode.colorScheme)
             }
-            .sheet(isPresented: $showFindByUsername) {
-                FindByUsernameView { conversationId, pending in
+            .sheet(isPresented: $showScanner, onDismiss: {
+                // Present only once the camera sheet has finished dismissing.
+                // Competing sheet presentations can otherwise lose the scanned handle.
+                if scannedHandle != nil { showFindByUsername = true }
+            }) {
+                ScanQRCodeView { link in
+                    // Hand off rather than act: the scanner knows a handle, and every gate
+                    // after that belongs to the flow below.
+                    scannedHandle = link.username
+                }
+            }
+            .sheet(isPresented: $showFindByUsername, onDismiss: { scannedHandle = nil }) {
+                FindByUsernameView(prefilledHandle: scannedHandle) { conversationId, pending in
                     // A PENDING request has no chat to open yet — the recipient has not
                     // accepted, so navigating into it would show an empty transcript that
                     // looks broken. Refresh the list instead; it appears once accepted.
@@ -528,6 +542,12 @@ struct ChatsHomeView: View {
             // the same action and make neither feel canonical.
             Button { Haptics.tap(); showFindByUsername = true } label: {
                 Label("Find by username", systemImage: "at")
+            }
+            // Directly beneath Find by username, because it IS find-by-username with the
+            // typing removed: a scan supplies the handle and then hands over to the same
+            // screen, PIN step and request included.
+            Button { Haptics.tap(); showScanner = true } label: {
+                Label("Scan code", systemImage: "qrcode.viewfinder")
             }
             Button { Haptics.tap(); showNewGroup = true } label: {
                 Label("New group", systemImage: "person.3")
