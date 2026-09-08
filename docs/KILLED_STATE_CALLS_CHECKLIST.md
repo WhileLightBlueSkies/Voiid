@@ -149,3 +149,24 @@ merely backgrounded:
   needs a persistent contact-name store the app does not yet have. Tracked separately.
 - **Group calls** need `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` on the API
   server or `/calls/group/token` returns 503. See [LIVEKIT_SETUP.md](LIVEKIT_SETUP.md).
+
+---
+
+## KNOWN DEBT — database TLS verification is OFF on the dev box (2026-09-08)
+
+`VOIID_DB_TLS_INSECURE=1` is set in `/opt/voiid/.env`. That turns encryption ON and
+certificate verification OFF, which is precisely the state S05 was written to eliminate:
+any machine able to sit between the box and Supabase can present its own certificate and
+read or alter every query, invisibly.
+
+It was set to unblock TestFlight. The correct fix is the CA:
+
+  1. Supabase Dashboard -> Settings -> Database -> SSL Configuration -> download the cert
+     (the `prod-ca-2021.crt` download URL is stale and produces
+     "self-signed certificate in certificate chain")
+  2. put it at /etc/voiid/supabase-ca.crt, chmod 644
+  3. replace VOIID_DB_TLS_INSECURE=1 with VOIID_DB_CA_CERT_PATH=/etc/voiid/supabase-ca.crt
+  4. redeploy; the boot log should read `database TLS: verified (explicit CA)`
+
+MUST BE DONE BEFORE THIS BOX SERVES ANYONE BUT US. It currently backs TestFlight, so real
+testers' messages already flow through it.
