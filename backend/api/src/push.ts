@@ -484,3 +484,184 @@ function voipSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
     req.end(JSON.stringify(buildVoipPayload(meta)));
   });
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════
+//  ADMIN BROADCAST
+// ═════════════════════════════════════════════════════════════════════════════════
+//
+// ── WHY THIS IS A SEPARATE PATH, AND MUST STAY ONE ────────────────────────────────
+// Everything above is CONTENT-FREE by design: a wake push carries opaque routing ids and
+// the client fetches and decrypts the real thing. That rule protects message content, and
+// §4.14 states it plainly — no plaintext, no sender name, no body, ever.
+//
+// An operator announcement is the opposite by nature. Its text IS the payload: there is no
+// ciphertext on the server for a client to fetch, and nothing to decrypt. That is legitimate
+// — an announcement is not a private message and carries no E2E promise — but it must never
+// be reached by widening `sendWakePush`, or the next person to read this file will conclude
+// that message pushes may carry text too.
+//
+// So: one function, one door, and the distinction stated where both are visible.
+//
+// ── WHAT MUST NEVER RIDE HERE ─────────────────────────────────────────────────────
+// Operator-authored copy only. Never a message body, a sender's name, a conversation
+// subject, or anything derived from user content — the fact that this path CAN carry text
+// is exactly why it must not be fed from anything private.
+
+export interface BroadcastTarget {
+  push_token: string;
+  push_provider: string; // 'apns' | 'fcm'
+}
+
+export interface BroadcastResult {
+  attempted: number;
+  apns: number;
+  fcm: number;
+  skipped: number;
+}
+
+/**
+ * Fan an operator announcement out to the given devices.
+ *
+ * Never rejects: a broadcast that throws halfway has already delivered to some unknown
+ * prefix of the audience, and an exception makes that worse rather than recoverable. The
+ * result reports what was attempted so the caller can record it.
+ */
+export async function sendAdminBroadcast(
+  devices: BroadcastTarget[],
+  title: string,
+  body: string,
+): Promise<BroadcastResult> {
+  const result: BroadcastResult = { attempted: 0, apns: 0, fcm: 0, skipped: 0 };
+  if (!devices?.length) return result;
+
+  const apnsTokens: string[] = [];
+  const fcmTokens: string[] = [];
+  for (const d of devices) {
+    if (!d?.push_token || !d?.push_provider) { result.skipped++; continue; }
+    if (d.push_provider === 'apns') apnsTokens.push(d.push_token);
+    else if (d.push_provider === 'fcm') fcmTokens.push(d.push_token);
+    else result.skipped++;
+  }
+  result.attempted = apnsTokens.length + fcmTokens.length;
+
+  await Promise.allSettled([
+    apnsTokens.length ? broadcastApns(apnsTokens, title, body).then((n) => { result.apns = n; })
+                      : Promise.resolve(),
+    fcmTokens.length ? broadcastFcm(fcmTokens, title, body).then((n) => { result.fcm = n; })
+                     : Promise.resolve(),
+  ]);
+  return result;
+}
+
+/**
+ * VISIBLE alert, and deliberately WITHOUT `mutable-content`.
+ *
+ * The message path sets it so the Notification Service Extension can replace a placeholder
+ * with decrypted content. There is nothing to decrypt here, and an NSE that runs anyway
+ * would try to fetch a message id this payload does not have. So the banner ships as-is.
+ */
+async function broadcastApns(tokens: string[], title: string, body: string): Promise<number> {
+  if (!apnsConfigured()) {
+    console.warn('[push] APNs not configured; skipping broadcast');
+    return 0;
+  }
+  let auth: string;
+  try {
+    auth = apnsAuthToken();
+  } catch (e) {
+    console.warn('[push] apns auth failed for broadcast:', (e as Error).message);
+    return 0;
+  }
+
+  const payload = JSON.stringify({
+    aps: {
+      alert: { title, body },
+      sound: 'default',
+      // Announcements are not per-conversation, so they collapse into one thread rather
+      // than stacking under whatever chat happened to be last.
+      'thread-id': 'voiid.announcement',
+    },
+    // Lets the client tell an announcement from a message wake without inspecting the
+    // alert — the same non-secret routing discipline the rest of this file uses.
+    type: 'announcement',
+  });
+
+  let sent = 0;
+  // Serial in bounded chunks rather than all at once: a broadcast is the one push path
+  // that can address every device at the same instant, and an unbounded fan-out is how a
+  // send takes the API process down with it.
+  const CHUNK = 100;
+  for (let i = 0; i < tokens.length; i += CHUNK) {
+    const slice = tokens.slice(i, i + CHUNK);
+    const results = await Promise.allSettled(
+      slice.map((token) => broadcastApnsOne(token, auth, payload))
+    );
+    sent += results.filter((r) => r.status === 'fulfilled' && r.value).length;
+  }
+  return sent;
+}
+
+function broadcastApnsOne(token: string, auth: string, payload: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let req: http2.ClientHttp2Stream;
+    try {
+      const session = getApnsSession();
+      req = session.request({
+        ':method': 'POST',
+        ':path': `/3/device/${token}`,
+        authorization: `bearer ${auth}`,
+        'apns-topic': APNS_BUNDLE_ID as string,
+        'apns-push-type': 'alert',
+        'apns-priority': '10',
+        // An announcement older than a day is noise. Unlike a message, nobody is waiting
+        // for it and it cannot be caught up on.
+        'apns-expiration': String(Math.floor(Date.now() / 1000) + 24 * 3600),
+      });
+    } catch (e) {
+      console.warn('[push] broadcast request setup failed:', (e as Error).message);
+      return resolve(false);
+    }
+    let status = 0;
+    req.on('response', (h) => { status = Number(h[':status']) || 0; });
+    req.on('error', () => resolve(false));
+    req.on('end', () => resolve(status === 200));
+    req.setEncoding('utf8');
+    req.on('data', () => { /* drain */ });
+    req.write(payload);
+    req.end();
+  });
+}
+
+/**
+ * FCM with a `notification` block — the one place this file uses one.
+ *
+ * Every other Android push is DATA-ONLY so the client builds the notification itself after
+ * decrypting. An announcement has nothing to decrypt, so the OS draws it directly, which
+ * also means it still appears if the app is force-stopped.
+ */
+async function broadcastFcm(tokens: string[], title: string, body: string): Promise<number> {
+  const app = getFirebaseAdminApp();
+  if (!app) {
+    console.warn('[push] Firebase Admin not configured; skipping broadcast');
+    return 0;
+  }
+  try {
+    const { getMessaging } =
+      require('firebase-admin/messaging') as typeof import('firebase-admin/messaging');
+    let sent = 0;
+    const CHUNK = 500; // sendEachForMulticast's documented ceiling
+    for (let i = 0; i < tokens.length; i += CHUNK) {
+      const res = await getMessaging(app).sendEachForMulticast({
+        tokens: tokens.slice(i, i + CHUNK),
+        notification: { title, body },
+        data: { type: 'announcement' },
+        android: { priority: 'high', notification: { channelId: 'voiid_announcements' } },
+      });
+      sent += res.successCount;
+    }
+    return sent;
+  } catch (e) {
+    console.warn('[push] fcm broadcast failed:', (e as Error).message);
+    return 0;
+  }
+}

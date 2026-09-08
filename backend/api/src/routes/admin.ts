@@ -27,6 +27,7 @@
 // route definition is visible in review in a way a missing branch is not.
 import { Router } from 'express';
 import { asyncHandler } from '../util';
+import { sendAdminBroadcast } from '../push';
 import type { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
@@ -2085,6 +2086,130 @@ router.patch('/games/:slug', requireAdmin, requireRole('admin'), asyncHandler(as
   await audit(a.adminId, 'game.release', 'game', slug,
               { before: before[0], after: rows[0] });
   res.json({ ok: true, game: rows[0] });
+}));
+
+// ═════════════════════════════════════════════════════════════════════════════════
+//  PUSH BROADCAST
+// ═════════════════════════════════════════════════════════════════════════════════
+//
+// ── AN UNRECALLABLE ACTION, TREATED AS ONE ────────────────────────────────────────
+// This reaches every phone at once and there is no undo: no edit, no delete, no "sorry,
+// ignore that". The two endpoints below are therefore split into PREVIEW and SEND, and the
+// panel is required to call them in that order. A single endpoint that both counted and
+// delivered would put a typo one click from every user.
+//
+// Preview answers "who exactly, and how many" from the same query the send uses, so the
+// number shown is the number reached rather than an estimate computed a different way.
+//
+// ── WHAT MAY BE SENT ──────────────────────────────────────────────────────────────
+// Operator-authored copy only. `sendAdminBroadcast` is the one push path in this codebase
+// permitted to carry visible text, and it must never be fed from user content — see the
+// note above it in push.ts.
+
+type BroadcastAudience = { kind: 'all' } | { kind: 'platform'; platform: 'ios' | 'android' }
+                       | { kind: 'user'; user_id: string };
+
+/** Parse and validate an audience from a request body, or return null with a reason. */
+function readAudience(body: any): { audience: BroadcastAudience } | { error: string } {
+  const kind = String(body?.audience ?? 'all');
+  if (kind === 'all') return { audience: { kind: 'all' } };
+  if (kind === 'platform') {
+    const p = String(body?.platform ?? '');
+    if (p !== 'ios' && p !== 'android') return { error: "platform must be ios or android" };
+    return { audience: { kind: 'platform', platform: p } };
+  }
+  if (kind === 'user') {
+    const id = String(body?.user_id ?? '');
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return { error: 'user_id must be a uuid' };
+    return { audience: { kind: 'user', user_id: id } };
+  }
+  return { error: 'audience must be all | platform | user' };
+}
+
+/**
+ * The devices an audience resolves to.
+ *
+ * One query, used by BOTH preview and send, so the count the operator confirmed is the
+ * audience that receives it. A device with no push token is excluded here rather than
+ * skipped later, so the preview count does not overstate reach.
+ */
+async function audienceDevices(a: BroadcastAudience) {
+  if (a.kind === 'user') {
+    return query<{ push_token: string; push_provider: string }>(
+      `select push_token, push_provider from devices
+        where user_id = $1 and push_token is not null and push_provider is not null`,
+      [a.user_id]
+    );
+  }
+  if (a.kind === 'platform') {
+    return query<{ push_token: string; push_provider: string }>(
+      `select push_token, push_provider from devices
+        where push_provider = $1 and push_token is not null`,
+      [a.platform === 'ios' ? 'apns' : 'fcm']
+    );
+  }
+  return query<{ push_token: string; push_provider: string }>(
+    `select push_token, push_provider from devices
+      where push_token is not null and push_provider is not null`
+  );
+}
+
+/** Title and body limits, kept where both endpoints can enforce them identically. */
+function readCopy(body: any): { title: string; text: string } | { error: string } {
+  const title = String(body?.title ?? '').trim();
+  const text = String(body?.body ?? '').trim();
+  if (!title || title.length > 64) return { error: 'title is required, 64 chars or fewer' };
+  if (!text || text.length > 240) return { error: 'body is required, 240 chars or fewer' };
+  return { title, text };
+}
+
+/** POST /admin/push/preview — who this would reach. Sends nothing. */
+router.post('/push/preview', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const copy = readCopy(req.body);
+  if ('error' in copy) return res.status(400).json({ error: copy.error });
+  const aud = readAudience(req.body);
+  if ('error' in aud) return res.status(400).json({ error: aud.error });
+
+  const devices = await audienceDevices(aud.audience);
+  const apns = devices.filter((d) => d.push_provider === 'apns').length;
+  res.json({
+    recipients: devices.length,
+    ios: apns,
+    android: devices.length - apns,
+    title: copy.title,
+    body: copy.text,
+  });
+}));
+
+/**
+ * POST /admin/push/send — deliver it.
+ *
+ * `confirm: true` is required in the body. Not ceremony: it means a client that replays a
+ * preview request against this path by mistake cannot send, and the panel has to say
+ * explicitly that a human pressed the second button.
+ */
+router.post('/push/send', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const copy = readCopy(req.body);
+  if ('error' in copy) return res.status(400).json({ error: copy.error });
+  const aud = readAudience(req.body);
+  if ('error' in aud) return res.status(400).json({ error: aud.error });
+  if (req.body?.confirm !== true) {
+    return res.status(400).json({ error: 'confirm must be true to send' });
+  }
+
+  const devices = await audienceDevices(aud.audience);
+  if (!devices.length) return res.status(409).json({ error: 'that audience has no devices' });
+
+  // Audited BEFORE the send, with the full text. If the process dies mid-fan-out the record
+  // of what was attempted still exists — which is the question asked after an incident, and
+  // it cannot be answered by a log written only on success.
+  await audit(a.adminId, 'push.broadcast', 'push', aud.audience.kind,
+              { audience: aud.audience, title: copy.title, body: copy.text,
+                recipients: devices.length });
+
+  const result = await sendAdminBroadcast(devices, copy.title, copy.text);
+  res.json({ ok: true, ...result });
 }));
 
 export default router;
