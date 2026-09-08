@@ -11,7 +11,7 @@
 -->
 <sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
     android:contentAuthority="com.android.contacts"
-    android:accountType="com.voiid.app"
+    android:accountType="in.voiid.app"
     android:supportsUploading="false"
     android:isAlwaysSyncable="true"
     android:userVisible="true" />

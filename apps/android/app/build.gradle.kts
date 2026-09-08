@@ -50,7 +50,13 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.voiid.app"
+        // PUBLISHED IDENTITY, matched to iOS on purpose.
+        //
+        // `namespace` above stays `com.voiid.app` — that is the Kotlin package, and moving
+        // it would mean rewriting every source file's package declaration and import for a
+        // string no user sees. Gradle allows the two to differ precisely so an app can be
+        // republished under a new id without touching its source tree.
+        applicationId = "in.voiid.app"
         minSdk = 24          // Android 7.0+ — broad device coverage (older-OS fallbacks below)
         targetSdk = 36
         versionCode = 1

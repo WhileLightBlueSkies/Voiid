@@ -43,7 +43,7 @@ report to CallKit. A normal alert push cannot do this.
 
 ```bash
 APNS_KEY_ID=ABCD123456
-APNS_TEAM_ID=CV7L84G776          # must match DEVELOPMENT_TEAM in the Xcode project
+APNS_TEAM_ID=ZX246KFTQD          # must match DEVELOPMENT_TEAM in the Xcode project
 APNS_BUNDLE_ID=com.voiid.app     # plain bundle id; ".voip" is appended automatically
 APNS_KEY_P8="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
 # ...or point at a file instead of inlining:
@@ -56,7 +56,7 @@ APNS_ENV=sandbox                 # development builds; 'production' for TestFlig
       host (and vice versa) with `BadDeviceToken`. This is the single most common
       "it works on my machine" failure.
 - [ ] **`APNS_TEAM_ID` matches the team the app is signed with.** Currently
-      `CV7L84G776`. If the app is signed by team X and the `.p8` belongs to team Y,
+      `ZX246KFTQD`. If the app is signed by team X and the `.p8` belongs to team Y,
       every push is rejected with `InvalidProviderToken` (403).
 
 ### 1b. Google: FCM (Android)

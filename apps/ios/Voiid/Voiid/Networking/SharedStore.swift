@@ -11,7 +11,7 @@
 //
 //   * AppGroup          — the shared on-disk container (decrypted-message store,
 //                         the cross-process lock file). Both targets carry the
-//                         `group.com.voiid.app` App Groups entitlement.
+//                         `group.voiid.app` App Groups entitlement.
 //   * SharedKeychain    — the shared keychain ACCESS GROUP that both targets can
 //                         read (identity pickle, session pickles, pickle keys,
 //                         auth JWT). The app's PRIVATE keychain items are migrated
@@ -33,7 +33,7 @@ import Security
 enum AppGroup {
     /// Shared App Group id — declared in BOTH targets' entitlements. Files written
     /// here are visible to the main app and the NSE.
-    static let identifier = "group.com.voiid.app"
+    static let identifier = "group.voiid.app"
 
     /// The shared container URL, or nil if the entitlement is missing (which should
     /// never happen in a correctly-provisioned build; callers fall back gracefully).
@@ -130,7 +130,7 @@ enum SharedDirectory {
 
 /// Resolves the fully-qualified shared keychain access group at runtime WITHOUT
 /// hardcoding the 10-char Team ID. The group string stored in the keychain is
-/// `<AppIdentifierPrefix>com.voiid.shared` (e.g. `CV7L84G776.com.voiid.shared`);
+/// `<AppIdentifierPrefix>com.voiid.shared` (e.g. `ZX246KFTQD.com.voiid.shared`);
 /// the prefix is discovered with the standard "probe" trick (Apple's GenericKeychain
 /// sample): add a throwaway item with no access group, read back its resolved
 /// `kSecAttrAccessGroup`, and take everything up to and including the first dot.

@@ -174,6 +174,7 @@
 				AA00000000000000000000F1 /* GroupEngine.swift */,
 				AA00000000000000000000F3 /* MessageActionWire.swift */,
 				AA00000000000000000000F5 /* GameInvite.swift */,
+				AA00000000000000000000F7 /* ChatShardStore.swift */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";
@@ -359,7 +360,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = CV7L84G776;
+				DEVELOPMENT_TEAM = ZX246KFTQD;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -421,7 +422,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = CV7L84G776;
+				DEVELOPMENT_TEAM = ZX246KFTQD;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -448,7 +449,7 @@
 				CODE_SIGN_ENTITLEMENTS = Voiid/Voiid.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = CV7L84G776;
+				DEVELOPMENT_TEAM = ZX246KFTQD;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -461,7 +462,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Voiid/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Voiid uses the camera to take photos and videos for your chats and clips.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Voiid uses the camera to scan QR codes and take photos and videos for your chats and clips.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Voiid matches your contacts locally to help you find friends. Your contact book is never uploaded.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voiid uses the microphone to record voice messages and clips.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save photos and videos from Voiid to your library.";
@@ -482,7 +483,9 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.voiid.app;
+				PRODUCT_BUNDLE_IDENTIFIER = in.voiid.app;
+				VOIID_API_BASE_URL = "https://api-dev.voiid.app";
+				VOIID_WS_URL = "wss://api-dev.voiid.app/ws";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -505,7 +508,7 @@
 				CODE_SIGN_ENTITLEMENTS = Voiid/Voiid.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = CV7L84G776;
+				DEVELOPMENT_TEAM = ZX246KFTQD;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -518,7 +521,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Voiid/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Voiid uses the camera to take photos and videos for your chats and clips.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Voiid uses the camera to scan QR codes and take photos and videos for your chats and clips.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Voiid matches your contacts locally to help you find friends. Your contact book is never uploaded.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voiid uses the microphone to record voice messages and clips.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save photos and videos from Voiid to your library.";
@@ -539,7 +542,9 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.voiid.app;
+				PRODUCT_BUNDLE_IDENTIFIER = in.voiid.app;
+				VOIID_API_BASE_URL = "https://api-dev.voiid.app";
+				VOIID_WS_URL = "wss://api-dev.voiid.app/ws";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -560,7 +565,7 @@
 				CODE_SIGN_ENTITLEMENTS = VoiidNSE/VoiidNSE.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = CV7L84G776;
+				DEVELOPMENT_TEAM = ZX246KFTQD;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
@@ -575,7 +580,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.voiid.app.VoiidNSE;
+				PRODUCT_BUNDLE_IDENTIFIER = in.voiid.app.VoiidNSE;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -595,7 +600,7 @@
 				CODE_SIGN_ENTITLEMENTS = VoiidNSE/VoiidNSE.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = CV7L84G776;
+				DEVELOPMENT_TEAM = ZX246KFTQD;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
@@ -610,7 +615,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.voiid.app.VoiidNSE;
+				PRODUCT_BUNDLE_IDENTIFIER = in.voiid.app.VoiidNSE;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;

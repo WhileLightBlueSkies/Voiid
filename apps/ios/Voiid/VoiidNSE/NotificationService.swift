@@ -91,7 +91,11 @@ final class NotificationService: UNNotificationServiceExtension {
     /// an extension that writes shared state while the app may also be running is a race
     /// for no benefit, and an expired entry simply reads as not-muted here.
     private static func isMuted(_ conversationId: String) -> Bool {
-        guard let store = UserDefaults(suiteName: "group.com.voiid.app"),
+        // Literal, not AppGroup.identifier: the NSE is a separate target and does not
+        // compile SharedStore.swift. It MUST match `AppGroup.identifier` there and both
+        // entitlements — all four move together or the extension silently reads an empty
+        // container and every push stays a generic "New message".
+        guard let store = UserDefaults(suiteName: "group.voiid.app"),
               let table = store.dictionary(forKey: "voiid.muted.conversations") as? [String: Double],
               let until = table[conversationId]
         else { return false }

@@ -13,7 +13,7 @@ package com.voiid.app.contacts
 object VoiidContacts {
 
     /** Must match `android:accountType` in authenticator.xml and contacts_sync_adapter.xml. */
-    const val ACCOUNT_TYPE = "com.voiid.app"
+    const val ACCOUNT_TYPE = "in.voiid.app"
 
     /**
      * The single account we create. Stable on purpose: deriving it from the signed-in user
@@ -22,8 +22,8 @@ object VoiidContacts {
     const val ACCOUNT_NAME = "Voiid"
 
     /** Must match the `<data android:mimeType>` filters in the manifest and contacts.xml. */
-    const val MIME_VOICE_CALL = "vnd.android.cursor.item/vnd.com.voiid.app.call"
-    const val MIME_VIDEO_CALL = "vnd.android.cursor.item/vnd.com.voiid.app.video"
+    const val MIME_VOICE_CALL = "vnd.android.cursor.item/vnd.in.voiid.app.call"
+    const val MIME_VIDEO_CALL = "vnd.android.cursor.item/vnd.in.voiid.app.video"
 
     /**
      * DATA2 is the row's first line (`summaryColumn` in contacts.xml). The "(Voiid)" is

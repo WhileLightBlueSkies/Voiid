@@ -16,7 +16,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>Take photos and videos to send in your chats, and to set your Voiid profile picture.</string>
+	<string>Scan Voiid QR codes, take photos and videos for your chats, and set your profile picture.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Find friends already on Voiid. Your contacts are matched privately on your device and are never uploaded.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

@@ -10,7 +10,7 @@
   android:label is what the user sees in Settings > Accounts.
 -->
 <account-authenticator xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accountType="com.voiid.app"
+    android:accountType="in.voiid.app"
     android:icon="@mipmap/ic_launcher"
     android:smallIcon="@mipmap/ic_launcher"
     android:label="@string/app_name" />

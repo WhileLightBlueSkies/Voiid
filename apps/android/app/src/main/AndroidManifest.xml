@@ -290,8 +290,8 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="vnd.android.cursor.item/vnd.com.voiid.app.call" />
-                <data android:mimeType="vnd.android.cursor.item/vnd.com.voiid.app.video" />
+                <data android:mimeType="vnd.android.cursor.item/vnd.in.voiid.app.call" />
+                <data android:mimeType="vnd.android.cursor.item/vnd.in.voiid.app.video" />
             </intent-filter>
         </activity>
 

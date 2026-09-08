@@ -18,13 +18,13 @@
 <ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android">
 
     <ContactsDataKind
-        android:mimeType="vnd.android.cursor.item/vnd.com.voiid.app.call"
+        android:mimeType="vnd.android.cursor.item/vnd.in.voiid.app.call"
         android:icon="@drawable/ic_voiid_voice_call"
         android:summaryColumn="data2"
         android:detailColumn="data3" />
 
     <ContactsDataKind
-        android:mimeType="vnd.android.cursor.item/vnd.com.voiid.app.video"
+        android:mimeType="vnd.android.cursor.item/vnd.in.voiid.app.video"
         android:icon="@drawable/ic_voiid_video_call"
         android:summaryColumn="data2"
         android:detailColumn="data3" />

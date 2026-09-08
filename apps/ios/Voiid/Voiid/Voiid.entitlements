@@ -2,11 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- PRODUCTION, and it must stay production for anything that leaves this machine.
+	     A build signed with `development` registers a SANDBOX device token, and the
+	     production APNs gateway rejects sandbox tokens with BadDeviceToken — silently, per
+	     device, with no error the app can see. That is the single most common "push worked
+	     locally and not in TestFlight" failure.
+	     TestFlight and the App Store both use the production gateway, so this value is right
+	     for both. Xcode still uses the sandbox gateway for debug builds run from the IDE,
+	     which is why local development is unaffected by this.
+	     The server's APNS_ENV must agree: 'production' here, 'production' there. -->
 	<key>aps-environment</key>
-	<string>development</string>
+	<string>production</string>
 	<!-- Universal Links for community invites: https://voiid.app/c/<handle>?i=<token>.
 	     iOS fetches https://<domain>/.well-known/apple-app-site-association at install and
-	     only routes those URLs here if the file names CV7L84G776.com.voiid.app (see
+	     only routes those URLs here if the file names ZX246KFTQD.in.voiid.app (see
 	     infrastructure/deployment/well-known/). www is listed separately because the AASA
 	     lookup is per-domain and a link copied out of a desktop browser is routinely the www
 	     form. Without the served file the entitlement is inert: links open Safari.
@@ -19,7 +28,7 @@
 	</array>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
-		<string>iCloud.com.voiid.app</string>
+		<string>iCloud.voiid.app</string>
 	</array>
 	<key>com.apple.developer.icloud-services</key>
 	<array>
@@ -27,15 +36,15 @@
 	</array>
 	<key>com.apple.developer.ubiquity-container-identifiers</key>
 	<array>
-		<string>iCloud.com.voiid.app</string>
+		<string>iCloud.voiid.app</string>
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.voiid.app</string>
+		<string>group.voiid.app</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.voiid.app</string>
+		<string>$(AppIdentifierPrefix)in.voiid.app</string>
 		<string>$(AppIdentifierPrefix)com.voiid.shared</string>
 	</array>
 </dict>
