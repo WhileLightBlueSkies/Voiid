@@ -1987,5 +1987,105 @@ router.post('/events/:id/restore', requireAdmin, requireRole('admin'), asyncHand
   res.json({ ok: true, event: r[0] });
 }));
 
+// ═════════════════════════════════════════════════════════════════════════════════
+//  GAME RELEASE CONTROL
+// ═════════════════════════════════════════════════════════════════════════════════
+//
+// Every game ships inside the app — native code cannot be delivered out of band on iOS
+// (App Store Guideline 2.5.2) — so releasing one is a server decision, not a build. These
+// two endpoints are the whole control surface: read the shelf, change a row.
+//
+// ── WHY THIS IS ADMIN-ONLY ─────────────────────────────────────────────────────────
+// Turning a game live changes what every user of every build sees, immediately and without
+// review. That is a release action with no rollback window other than turning it off again,
+// which puts it in the same class as the moderation endpoints above rather than with the
+// read-only dashboards. `requireRole('admin')` accordingly, and every change is audited with
+// its before-and-after so "who turned Snake on" is answerable.
+
+/** GET /admin/games — every game, including hidden ones. The panel's source of truth. */
+router.get('/games', requireAdmin, asyncHandler(async (_req, res) => {
+  const games = await query<any>(
+    `select id, slug, name, category, icon_key, enabled,
+            release_state, min_app, teaser, game_version,
+            min_players, max_players, created_at
+       from games order by name`
+  );
+  res.json({ games });
+}));
+
+/**
+ * PATCH /admin/games/:slug — change one game's release state.
+ *
+ * Every field is optional and only what is sent is written, so the panel can flip one switch
+ * without resending a whole row it may have fetched before somebody else's change.
+ *
+ * VALIDATION IS STRICT AND HAPPENS HERE, not in the panel: this endpoint is reachable
+ * without the UI, and a bad min_app would be a version nobody can ever satisfy — a game
+ * permanently stuck behind "Update to play" with no error anywhere.
+ */
+router.patch('/games/:slug', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const slug = String(req.params.slug);
+  const { release_state, min_app, teaser, game_version, enabled } = req.body ?? {};
+
+  const before = await query<any>(
+    `select slug, name, enabled, release_state, min_app, teaser, game_version
+       from games where slug = $1`, [slug]
+  );
+  if (!before[0]) return res.status(404).json({ error: 'unknown game' });
+
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  const add = (col: string, v: unknown) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
+
+  if (release_state !== undefined) {
+    if (!['hidden', 'announced', 'live'].includes(String(release_state))) {
+      return res.status(400).json({ error: "release_state must be hidden | announced | live" });
+    }
+    add('release_state', release_state);
+  }
+  if (min_app !== undefined) {
+    // Null CLEARS the floor — an explicit "every build that has it may play it", which is
+    // different from omitting the field and must stay expressible.
+    if (min_app !== null && !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(String(min_app))) {
+      return res.status(400).json({ error: 'min_app must be X.Y.Z or null' });
+    }
+    add('min_app', min_app);
+  }
+  if (game_version !== undefined) {
+    if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(String(game_version))) {
+      return res.status(400).json({ error: 'game_version must be X.Y.Z' });
+    }
+    add('game_version', game_version);
+  }
+  if (teaser !== undefined) {
+    if (teaser !== null && (typeof teaser !== 'string' || teaser.length > 120)) {
+      return res.status(400).json({ error: 'teaser must be a string of 120 chars or fewer, or null' });
+    }
+    add('teaser', teaser);
+  }
+  if (enabled !== undefined) {
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be a boolean' });
+    }
+    add('enabled', enabled);
+  }
+
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+
+  vals.push(slug);
+  const rows = await query<any>(
+    `update games set ${sets.join(', ')} where slug = $${vals.length}
+      returning slug, name, enabled, release_state, min_app, teaser, game_version`,
+    vals
+  );
+
+  // Before AND after, because "set release_state to live" is not answerable on its own —
+  // whether that was a launch or a re-enable depends entirely on what it was before.
+  await audit(a.adminId, 'game.release', 'game', slug,
+              { before: before[0], after: rows[0] });
+  res.json({ ok: true, game: rows[0] });
+}));
+
 export default router;
 export { requireAdmin, requireRole };

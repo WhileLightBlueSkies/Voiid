@@ -120,6 +120,21 @@ struct Game: Identifiable, Hashable {
     /// already handle with a tinted glyph fallback.
     let iconKey: String?
 
+    /// What this build may DO with this game, decided by the server.
+    ///
+    /// Every game ships inside the app — native code cannot be delivered out of band on iOS
+    /// — so the shelf is server-driven: a game is released hidden, polished, then turned on
+    /// from the admin panel with no App Store submission. The client does no version
+    /// arithmetic; it renders the answer it was given.
+    let availability: GamesAPI.CatalogGame.Availability
+
+    /// Shown under an announced game. Nil elsewhere.
+    let teaser: String?
+
+    /// True when tapping this card can start a match. An announced game has no engine in any
+    /// build, and an out-of-date one has an engine we decided not to show — neither opens.
+    var isPlayable: Bool { availability == .playable }
+
     // NO `progress` AND NO `isResuming`, BY DECISION. Both existed only to drive the Continue
     // Playing cards, and nothing on the server can populate either: a match row carries a
     // status ('waiting' | 'active' | 'finished' | 'abandoned') and timestamps, never a
@@ -483,7 +498,9 @@ final class GamesStore {
                      category: GameCategory(raw: $0.category),
                      minPlayers: $0.min_players,
                      maxPlayers: $0.max_players,
-                     iconKey: $0.icon_key)
+                     iconKey: $0.icon_key,
+                     availability: $0.state,
+                     teaser: $0.teaser)
             }
             // If the active filter's category vanished from the catalog, clear it rather than
             // leaving the screen filtered to an empty set with no way to tell why.

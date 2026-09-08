@@ -26,6 +26,37 @@ struct GamesAPI {
         let min_players: Int
         let max_players: Int
         var icon_key: String?
+
+        /// What THIS BUILD may do with this game. Decided by the server, never here.
+        ///
+        /// Native game code cannot be delivered out of band on iOS (App Store Guideline
+        /// 2.5.2), so every game ships inside the app and the server decides which of them
+        /// this build may show. The comparison lives on the server so the two platforms
+        /// cannot drift into disagreeing about who may play what — this client renders what
+        /// it is told and does no version arithmetic of its own.
+        enum Availability: String, Decodable {
+            /// Draw normally; tapping starts a match.
+            case playable
+            /// Draw with "Update to play". Either this build predates the game, or it holds
+            /// a copy we have since decided is not good enough (see the server's min_app).
+            case update
+            /// A teaser. Dimmed, badged, and NOT tappable — there may be no engine behind it
+            /// in any build, which is why `name` and `teaser` travel in this row.
+            case announced
+        }
+
+        /// Absent on responses from a server older than the release-state work. Treated as
+        /// `playable`, which is what every game was before the field existed.
+        private let availability: Availability?
+        var state: Availability { availability ?? .playable }
+
+        /// Only meaningful for `.announced`. Nil elsewhere.
+        var teaser: String?
+
+        /// The GAME's own version, not the app's — games iterate on their own clock. Shown
+        /// in diagnostics so a bug report can name which iteration it is about. Never gated
+        /// on: gating is the server's `availability`.
+        var game_version: String?
     }
     struct CatalogResponse: Decodable { let games: [CatalogGame] }
 

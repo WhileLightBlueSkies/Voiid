@@ -1,5 +1,6 @@
 package com.voiid.app.net
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -21,6 +22,36 @@ class GamesService(private val api: ApiClient) {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * What THIS BUILD may do with a game, decided by the server.
+     *
+     * Every game ships inside the app — native code cannot be delivered out of band on iOS,
+     * and shipping the two platforms differently would double the surface — so the shelf is
+     * server-driven: a game is released hidden, polished, then turned on from the admin
+     * panel with no store submission. The comparison against the caller's app version lives
+     * on the SERVER so iOS and Android cannot drift into disagreeing about who may play
+     * what; this client renders the answer and does no version arithmetic of its own.
+     *
+     * Mirrors iOS `GamesAPI.CatalogGame.Availability`.
+     */
+    @Serializable
+    enum class Availability {
+        /** Draw normally; tapping starts a match. */
+        @SerialName("playable") PLAYABLE,
+
+        /**
+         * Draw with "Update to play". Either this build predates the game, or it holds a
+         * copy the server has since decided is not good enough (its `min_app`).
+         */
+        @SerialName("update") UPDATE,
+
+        /**
+         * A teaser. Dimmed, badged and NOT tappable — there may be no engine behind it in
+         * any build, which is why `name` and `teaser` travel in the catalog row.
+         */
+        @SerialName("announced") ANNOUNCED,
+    }
+
     @Serializable
     data class CatalogGame(
         val id: String,
@@ -30,6 +61,19 @@ class GamesService(private val api: ApiClient) {
         val min_players: Int,
         val max_players: Int,
         val icon_key: String? = null,
+        /**
+         * Defaults to PLAYABLE for a server older than the release-state work — which is
+         * what every game was before the field existed.
+         */
+        val availability: Availability = Availability.PLAYABLE,
+        /** Only meaningful for [Availability.ANNOUNCED]. */
+        val teaser: String? = null,
+        /**
+         * The GAME's own version, not the app's — games iterate on their own clock. Carried
+         * for diagnostics so a bug report can name which iteration it is about; never gated
+         * on, because gating is [availability].
+         */
+        val game_version: String? = null,
     )
 
     @Serializable

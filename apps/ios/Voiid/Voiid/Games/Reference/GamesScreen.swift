@@ -1262,42 +1262,102 @@ private struct GameTile: View {
     var action: () -> Void = {}
 
     var body: some View {
-        Button {
-            Haptics.tap()
-            action()
-        } label: {
-            VStack(alignment: .leading, spacing: 0) {
+        // ── AN UNPLAYABLE TILE IS NOT A DISABLED BUTTON ─────────────────────────────
+        // `.disabled` still leaves a tap target that eats the gesture and explains nothing.
+        // A tile that was never a control cannot fail, and the badge is the whole
+        // explanation — the same call CommunitySettingsView makes for unavailable join
+        // tiers, and for the same reason.
+        //
+        // An ANNOUNCED game has no engine in any build; an OUT-OF-DATE one has an engine we
+        // decided not to show. Neither can open anything, so neither is a button.
+        if game.isPlayable {
+            Button {
+                Haptics.tap()
+                action()
+            } label: { tile }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(game.title)
+        } else {
+            tile
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(game.title)
+                .accessibilityValue(game.availability == .announced
+                                    ? "Coming soon" : "Requires an app update")
+                // Says out loud what the badge says visually: this is not a thing that can
+                // be chosen, so it must not read as a button.
+                .accessibilityRemoveTraits(.isButton)
+        }
+    }
+
+    private var tile: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .topLeading) {
                 GameArtwork(game: game)
                     // 4:3 — the aspect the shipped artwork is authored at.
                     .aspectRatio(4.0 / 3.0, contentMode: .fill)
                     .frame(height: 104)
                     .clipped()
+                    // Dimmed rather than greyscaled: the art still has to read as this
+                    // game's art, and a desaturated tile beside five colour ones looks
+                    // broken rather than pending.
+                    .opacity(game.isPlayable ? 1 : 0.42)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(game.title)
-                        .font(VoiidFont.rounded(14.5, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .lineLimit(1)
-
-                    // The seat count, straight off the catalog row — the one fact that
-                    // changes what you have to arrange before you can play.
-                    Text(game.maxPlayers > 2 ? "Up to \(game.maxPlayers) players" : "2 players")
-                        .font(VoiidFont.rounded(11.5))
-                        .foregroundColor(VoiidColor.textSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(VoiidSpacing.sm + 2)
+                if !game.isPlayable { badge }
             }
-            .background(VoiidColor.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(VoiidColor.divider, lineWidth: 1)
-            )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(game.title)
+                    .font(VoiidFont.rounded(14.5, .semibold))
+                    .foregroundColor(game.isPlayable
+                                     ? VoiidColor.textPrimary
+                                     : VoiidColor.textSecondary)
+                    .lineLimit(1)
+
+                // For a playable game: the seat count, the one fact that changes what you
+                // must arrange before playing. For a pending one: why it is pending, which
+                // is the more useful thing to spend the line on.
+                Text(subtitle)
+                    .font(VoiidFont.rounded(11.5))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(VoiidSpacing.sm + 2)
         }
-        .buttonStyle(PressableButtonStyle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(game.title)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1)
+        )
+    }
+
+    private var subtitle: String {
+        switch game.availability {
+        case .playable:
+            return game.maxPlayers > 2 ? "Up to \(game.maxPlayers) players" : "2 players"
+        case .announced:
+            // The server's own line when it has one — "Coming in October" beats an undated
+            // card, which reads as abandoned the longer it sits there.
+            return game.teaser ?? "Coming soon"
+        case .update:
+            return "Update Voiid to play"
+        }
+    }
+
+    private var badge: some View {
+        Text(game.availability == .announced ? "SOON" : "UPDATE")
+            .font(VoiidFont.rounded(9.5, .bold))
+            // Tracking is size-specific, and all-caps at 9.5 reads cramped without a
+            // positive bump.
+            .tracking(0.6)
+            .foregroundColor(VoiidColor.textPrimary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(VoiidColor.surfaceRaised.opacity(0.92)))
+            .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
+            .padding(VoiidSpacing.sm)
     }
 }
 

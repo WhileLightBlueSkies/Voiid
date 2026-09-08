@@ -23,6 +23,10 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.EmojiEvents
@@ -266,14 +270,29 @@ fun GamesHomeScreen(
     }
 }
 
+/**
+ * One catalog row.
+ *
+ * ── AN UNPLAYABLE CARD IS NOT A DISABLED BUTTON ──────────────────────────────────
+ * A disabled clickable still takes the tap, gives no reason, and leaves the user pressing
+ * it again. A card that was never clickable cannot fail, and the badge is the whole
+ * explanation — the same call `CommunitySettingsScreen` makes for unavailable join tiers.
+ *
+ * An ANNOUNCED game has no engine in any build; an out-of-date one has an engine the server
+ * decided not to show. Neither opens anything, so neither is a control.
+ *
+ * Mirrors iOS `GameTile`.
+ */
 @Composable
 private fun GameCard(game: GamesService.CatalogGame, onClick: () -> Unit) {
     val context = LocalContext.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    val playable = game.availability == GamesService.Availability.PLAYABLE
     // Card dips under the finger and springs back — the same bouncy language as the board.
+    // Only when there is something to press.
     val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.96f else 1f,
+        targetValue = if (pressed && playable) 0.96f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "press",
     )
@@ -290,7 +309,19 @@ private fun GameCard(game: GamesService.CatalogGame, onClick: () -> Unit) {
             .scale(scale)
             .clip(RoundedCornerShape(VoiidRadius.lg))
             .background(VoiidColor.surfaceCard)
-            .clickable(interactionSource = interaction, indication = null) { onClick() },
+            .then(
+                if (playable) {
+                    Modifier.clickable(interactionSource = interaction, indication = null) {
+                        onClick()
+                    }
+                } else {
+                    Modifier.semantics {
+                        contentDescription = "${game.name}, " +
+                            if (game.availability == GamesService.Availability.ANNOUNCED)
+                                "coming soon" else "requires an app update"
+                    }
+                }
+            ),
     ) {
         Box(
             Modifier
@@ -309,7 +340,10 @@ private fun GameCard(game: GamesService.CatalogGame, onClick: () -> Unit) {
                     painter = painterResource(artId),
                     contentDescription = game.name,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
+                    // Dimmed, not greyscaled: the art still has to read as THIS game's art,
+                    // and a desaturated card beside five colour ones looks broken rather
+                    // than pending.
+                    modifier = Modifier.fillMaxSize().alpha(if (playable) 1f else 0.42f),
                 )
             } else {
                 // Art hasn't shipped for this game yet — a tinted glyph over its NAME, since
@@ -327,10 +361,52 @@ private fun GameCard(game: GamesService.CatalogGame, onClick: () -> Unit) {
                     Text(
                         game.name,
                         style = VoiidFont.rounded(15, FontWeight.SemiBold),
-                        color = VoiidColor.textPrimary,
+                        color = if (playable) VoiidColor.textPrimary
+                                else VoiidColor.textSecondary,
                         maxLines = 2,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(horizontal = VoiidSpacing.sm),
+                    )
+                }
+            }
+
+            // ── THE STATE, ON THE CARD ──────────────────────────────────────────────
+            // Top-left over the art, and it carries the reason as well as the badge: a
+            // teaser line the server supplied ("Coming in October") beats an undated card,
+            // which reads as abandoned the longer it sits there.
+            if (!playable) {
+                Column(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding(VoiidSpacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        if (game.availability == GamesService.Availability.ANNOUNCED) "SOON"
+                        else "UPDATE",
+                        style = VoiidFont.rounded(9.5f, FontWeight.Bold),
+                        // All-caps at this size reads cramped without a positive bump —
+                        // tracking is size-specific.
+                        letterSpacing = 0.6.sp,
+                        color = VoiidColor.textPrimary,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(VoiidColor.surfaceRaised.copy(alpha = 0.92f))
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                    )
+                    val reason = when (game.availability) {
+                        GamesService.Availability.ANNOUNCED -> game.teaser ?: "Coming soon"
+                        else -> "Update Voiid to play"
+                    }
+                    Text(
+                        reason,
+                        style = VoiidFont.rounded(11f),
+                        color = VoiidColor.textPrimary,
+                        maxLines = 2,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(VoiidColor.surfaceRaised.copy(alpha = 0.85f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
                     )
                 }
             }

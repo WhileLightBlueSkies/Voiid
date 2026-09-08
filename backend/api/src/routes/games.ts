@@ -22,6 +22,7 @@ import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
+import { readClient, cmpVersion } from '../version';
 
 const router = Router();
 
@@ -119,17 +120,77 @@ async function reachableOpponents(userId: string, opponentIds: string[]): Promis
   return new Set(rows.map((r) => r.user_id));
 }
 
-/** GET /games — the catalog. Static, tiny, and the client caches it. */
+/**
+ * GET /games — the catalog, resolved FOR THIS CLIENT.
+ *
+ * ── THE SERVER DECIDES WHAT A BUILD MAY SEE ──────────────────────────────────────
+ * Every game ships inside the app; native code cannot be delivered out of band on iOS
+ * (App Store Guideline 2.5.2). So the shelf is server-driven: a game is written, shipped
+ * hidden, and turned on from the admin panel with no release and no review.
+ *
+ * This endpoint does the comparison rather than the client, so both platforms cannot drift
+ * into disagreeing about who may play what. The client receives an `availability` it can
+ * render directly and is never asked to reason about versions.
+ *
+ *   'playable'  — draw it normally; tapping starts a match.
+ *   'update'    — draw it with "Update to play". The user's build either lacks this game or
+ *                 has a copy we have since decided is not good enough (see min_app).
+ *   'announced' — a teaser. Dimmed, badged, NOT tappable: there may be no code behind it in
+ *                 any build, which is why name/icon/teaser travel in this row.
+ *
+ * `hidden` rows are simply absent — there is no fourth value, because the client should
+ * never receive a row it must then decide to discard.
+ *
+ * ── WHY min_app CANNOT BE A BOOLEAN ──────────────────────────────────────────────
+ * A "needs_update" flag computed anywhere but here would eventually be shown to someone
+ * already running the build we wanted them on. Comparing their reported version against
+ * min_app makes that impossible: a 1.6 client cannot be told to update to 1.6.
+ *
+ * A client that sends no version header is treated as too old — the conservative direction.
+ * It is shown "Update to play" rather than being handed a match it may not be able to run.
+ */
 router.get(
   '/',
   requireAuth,
   rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
-  asyncHandler(async (_req, res) => {
-    const rows = await query(
-      `select id, slug, name, category, min_players, max_players, icon_key
-         from games where enabled = true order by name`
+  asyncHandler(async (req, res) => {
+    const client = readClient(req);
+    const rows = await query<{
+      id: string; slug: string; name: string; category: string;
+      min_players: number; max_players: number; icon_key: string | null;
+      release_state: string; min_app: string | null; teaser: string | null;
+      game_version: string;
+    }>(
+      `select id, slug, name, category, min_players, max_players, icon_key,
+              release_state, min_app, teaser, game_version
+         from games
+        where enabled = true and release_state <> 'hidden'
+        order by name`
     );
-    res.json({ games: rows });
+
+    const games = rows.map((g) => {
+      let availability: 'playable' | 'update' | 'announced';
+      if (g.release_state === 'announced') {
+        availability = 'announced';
+      } else if (!g.min_app) {
+        availability = 'playable';
+      } else if (!client.appVersion) {
+        availability = 'update';
+      } else {
+        availability = cmpVersion(client.appVersion, g.min_app) >= 0 ? 'playable' : 'update';
+      }
+      return {
+        id: g.id, slug: g.slug, name: g.name, category: g.category,
+        min_players: g.min_players, max_players: g.max_players, icon_key: g.icon_key,
+        availability,
+        // Only meaningful for 'announced'; harmless and null otherwise.
+        teaser: g.teaser,
+        // Descriptive, for diagnostics and support. The client never gates on it.
+        game_version: g.game_version,
+      };
+    });
+
+    res.json({ games });
   })
 );
 
@@ -279,12 +340,43 @@ router.post(
     // human, server-side bots) 400'd on every attempt even though its catalog row sets
     // min_players = 1. The catalog is the authority on how many seats a game needs; encoding
     // that a second time here just meant two sources of truth disagreeing.
-    const games = await query<{ id: string; min_players: number; max_players: number }>(
-      `select id, min_players, max_players from games where slug = $1 and enabled = true`,
+    const games = await query<{
+      id: string; min_players: number; max_players: number;
+      release_state: string; min_app: string | null;
+    }>(
+      `select id, min_players, max_players, release_state, min_app
+         from games where slug = $1 and enabled = true`,
       [slug]
     );
     const game = games[0];
     if (!game) return res.status(404).json({ error: 'unknown game' });
+
+    // ── THE SHELF IS NOT THE BOUNDARY ────────────────────────────────────────────────
+    // GET /games hides what a build may not see, but hiding a row is presentation. This is
+    // the enforcement: a client that guesses a slug, replays an old request, or runs a build
+    // whose UI predates the gate must not be able to open a match for a game we have decided
+    // it may not play.
+    //
+    // 'announced' is refused outright — there may be no engine behind it in ANY build, so a
+    // match would be a row nobody can render.
+    //
+    // 'live' with a min_app above the caller's version is refused for the reason min_app
+    // exists: that build's copy of the game is one we judged not good enough to show. A
+    // missing version header is treated as too old, matching the catalog's own conservative
+    // direction.
+    if (game.release_state === 'announced') {
+      return res.status(409).json({ error: 'game not available yet', slug });
+    }
+    if (game.min_app) {
+      const callerVersion = readClient(req).appVersion;
+      if (!callerVersion || cmpVersion(callerVersion, game.min_app) < 0) {
+        return res.status(426).json({
+          error: 'app update required for this game',
+          slug,
+          min_app: game.min_app,
+        });
+      }
+    }
 
     // ── LUDO SCHEMA-V3 VALIDATION (§7.1, §8.1) ────────────────────────────────────────
     let ludoMode: 'duel' | 'four' | null = null;
