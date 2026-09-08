@@ -60,7 +60,7 @@ android {
         minSdk = 24          // Android 7.0+ — broad device coverage (older-OS fallbacks below)
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0"
+        versionName = "0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
