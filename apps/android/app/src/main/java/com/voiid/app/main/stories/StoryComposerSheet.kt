@@ -253,8 +253,8 @@ private const val MAX_VIDEO_MS = 30_000L
 
 private fun prepareFromUri(context: Context, uri: Uri): Pair<ComposerMedia?, String?> {
     val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
-    val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-        ?: return null to "Couldn't read that file."
+    val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { com.voiid.app.net.StoryMediaLimits.readBounded(it, com.voiid.app.net.StoryMediaLimits.MAX_SOURCE_BYTES) } }.getOrNull()
+        ?: return null to "Couldn’t read that file. Choose media under 50 MB."
     return when {
         mime.startsWith("image/") -> runCatching { prepareImage(bytes) to null }
             .getOrElse { null to "Couldn’t read that photo." }

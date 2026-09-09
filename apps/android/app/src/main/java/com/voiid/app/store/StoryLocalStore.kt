@@ -11,6 +11,7 @@ import com.voiid.app.model.wire
 import com.voiid.app.net.ApiClient
 import com.voiid.app.net.ChatEngine
 import com.voiid.app.store.UserDirectory
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
@@ -62,17 +63,51 @@ object StoryLocalStore {
         runCatching { dao(context).audience(storyId) }.getOrDefault(emptyList())
     }
 
+    // Serialize local publication/deletion so an in-flight download cannot resurrect a file.
+    @Volatile var accountGeneration: Long = 0
+        private set
+
+    fun invalidateAccount() { accountGeneration += 1 }
+
+    suspend fun clearMediaForSignOut(context: Context) = withContext(Dispatchers.IO) {
+        mediaMutex.withLock { File(context.cacheDir, "stories").deleteRecursively() }
+    }
+
+    private val mediaMutex = kotlinx.coroutines.sync.Mutex()
+
+    suspend fun commitDownload(context: Context, id: String, bytes: ByteArray, expectedGeneration: Long): String? = withContext(Dispatchers.IO) {
+        mediaMutex.withLock {
+            if (expectedGeneration != accountGeneration) return@withLock null
+            val row = dao(context).byId(id) ?: return@withLock null
+            if (row.expiresAt <= System.currentTimeMillis() / 1000) return@withLock null
+            val file = File(mediaDir(context), "$id.bin")
+            val atomic = android.util.AtomicFile(file)
+            val stream = atomic.startWrite()
+            try { stream.write(bytes); atomic.finishWrite(stream) }
+            catch (e: Exception) { atomic.failWrite(stream); throw e }
+            dao(context).setDownload(id, file.absolutePath, StoryDownloadState.READY.wire())
+            file.absolutePath
+        }
+    }
+
     // MARK: - Writes
 
     /** Upsert a story (feed sync OR our own optimistic post). MILLIS -> SECONDS here. */
-    suspend fun upsert(context: Context, story: Story) = withContext(Dispatchers.IO) {
-        runCatching { dao(context).upsert(story.toRow()) }
+    suspend fun upsert(context: Context, story: Story, expectedGeneration: Long = accountGeneration) = withContext(Dispatchers.IO) {
+        mediaMutex.withLock {
+            if (expectedGeneration == accountGeneration) runCatching { dao(context).upsert(story.toRow()) }
+        }
     }
 
     /** Persist the audience of one of our stories (author-side only). */
-    suspend fun saveAudience(context: Context, storyId: String, userIds: List<String>) = withContext(Dispatchers.IO) {
-        if (userIds.isEmpty()) return@withContext
-        runCatching { dao(context).insertAudience(userIds.distinct().map { StoryAudienceRow(storyId, it) }) }
+    suspend fun saveAudience(context: Context, storyId: String, userIds: List<String>, expectedGeneration: Long = accountGeneration) = withContext(Dispatchers.IO) {
+        mediaMutex.withLock {
+            runCatching {
+                if (userIds.isNotEmpty() && expectedGeneration == accountGeneration && dao(context).byId(storyId) != null) {
+                    dao(context).insertAudience(userIds.distinct().map { StoryAudienceRow(storyId, it) })
+                }
+            }
+        }
     }
 
     /** Record that WE opened a story on THIS device (never transmitted). Idempotent. */
@@ -93,10 +128,13 @@ object StoryLocalStore {
         }
 
     suspend fun deleteStory(context: Context, storyId: String) = withContext(Dispatchers.IO) {
-        runCatching {
-            dao(context).byId(storyId)?.localPath?.let { runCatching { File(it).delete() } }
-            dao(context).delete(storyId)
-            dao(context).deleteAudience(storyId)
+        mediaMutex.withLock {
+            runCatching {
+                val path = dao(context).byId(storyId)?.localPath
+                dao(context).delete(storyId)
+                dao(context).deleteAudience(storyId)
+                path?.let { runCatching { File(it).delete() } }
+            }
         }
     }
 
@@ -106,12 +144,14 @@ object StoryLocalStore {
      * the number of rows swept.
      */
     suspend fun sweepExpired(context: Context): Int = withContext(Dispatchers.IO) {
-        val nowSec = System.currentTimeMillis() / 1000
-        val d = dao(context)
-        val gone = runCatching { d.expired(nowSec) }.getOrDefault(emptyList())
-        gone.forEach { row -> row.localPath?.let { runCatching { File(it).delete() } } }
-        runCatching { d.deleteExpired(nowSec); d.pruneAudience(); d.pruneViews() }
-        gone.size
+        mediaMutex.withLock {
+            val nowSec = System.currentTimeMillis() / 1000
+            val d = dao(context)
+            val gone = runCatching { d.expired(nowSec) }.getOrDefault(emptyList())
+            gone.forEach { row -> row.localPath?.let { runCatching { File(it).delete() } } }
+            runCatching { d.deleteExpired(nowSec); d.pruneAudience(); d.pruneViews() }
+            gone.size
+        }
     }
 
     // MARK: - Mapping (the SECONDS <-> MILLIS boundary)

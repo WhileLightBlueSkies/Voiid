@@ -149,16 +149,27 @@ private fun ContextPage(
     var chromeVisible by remember { mutableStateOf(true) }
     var replyText by remember(index) { mutableStateOf("") }
     var showReplySheet by remember(index) { mutableStateOf(false) }
+    var actionBusy by remember(index) { mutableStateOf(false) }
+    var actionError by remember(index) { mutableStateOf<String?>(null) }
     var sentToast by remember(index) { mutableStateOf(false) }
     var dragY by remember { mutableFloatStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
 
     val story = context.stories.getOrNull(index) ?: return
 
+    // A page retains a snapshot; observe deletion separately so a stale page cannot keep playing.
+    val appContext = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(story.id, active) {
+        if (active) com.voiid.app.store.StoryLocalStore.observeStory(appContext, story.id).collect { current ->
+            if (current == null || current.isExpired()) onClose()
+        }
+    }
+
     // Download the current story. This one stays on the PAGE's scope on purpose — its result
     // writes this page's state, so a page the pager recycles should take it down with it.
     LaunchedEffect(story.id, active) {
         if (!active) return@LaunchedEffect
+        if (story.isMine && stories.receiptsEnabled) stories.loadViewers(story.id)
         progress = 0f
         loadState = StoryDownloadState.DOWNLOADING
         localPath = stories.ensureDownloaded(story)
@@ -187,8 +198,8 @@ private fun ContextPage(
     // `active` MUST be a key: HorizontalPager pre-composes neighbours, so without it an adjacent
     // (not-yet-shown) page would either fire a receipt for a story never seen, or — once swiped to —
     // never restart and never record the view at all.
-    LaunchedEffect(story.id, active, loadState, paused) {
-        if (!active || paused || loadState != StoryDownloadState.READY) return@LaunchedEffect
+    LaunchedEffect(story.id, active, loadState, paused, actionBusy, showReplySheet) {
+        if (!active || paused || actionBusy || showReplySheet || loadState != StoryDownloadState.READY) return@LaunchedEffect
         kotlinx.coroutines.delay(1000)
         stories.onViewed(story)
     }
@@ -201,9 +212,9 @@ private fun ContextPage(
 
     // The timer: advance `progress` at ~30 Hz while active, ready, and not paused. Do NOT start
     // until the media is downloaded (a spinner shows instead), so the bar never races an empty frame.
-    LaunchedEffect(story.id, active, paused, loadState) {
-        if (!active || paused || loadState != StoryDownloadState.READY) return@LaunchedEffect
-        val duration = if (story.isVideo) (story.durationMs ?: IMAGE_DURATION_MS).coerceAtMost(30_000L) else IMAGE_DURATION_MS
+    LaunchedEffect(story.id, active, paused, actionBusy, showReplySheet, loadState) {
+        if (!active || paused || actionBusy || showReplySheet || loadState != StoryDownloadState.READY) return@LaunchedEffect
+        val duration = if (story.isVideo) (story.durationMs ?: IMAGE_DURATION_MS).coerceIn(1_000L, 30_000L) else IMAGE_DURATION_MS
         val step = 33L
         while (progress < 1f) {
             kotlinx.coroutines.delay(step)
@@ -319,8 +330,12 @@ private fun ContextPage(
                     Spacer(Modifier.size(6.dp))
                     Icon(
                         Icons.Default.Delete, "Delete", tint = Color.White,
-                        modifier = Modifier.size(22.dp).softClickable(scale = 0.9f) {
-                            stories.delete(story.id); onClose()
+                        modifier = Modifier.size(22.dp).softClickable(scale = 0.9f, enabled = !actionBusy) {
+                            actionBusy = true; actionError = null
+                            stories.delete(story.id) { ok ->
+                                actionBusy = false
+                                if (ok) onClose() else actionError = "Couldn't delete this moment. Try again."
+                            }
                         },
                     )
                 } else {
@@ -340,8 +355,9 @@ private fun ContextPage(
 
             // Footer
             Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(16.dp)) {
+                actionError?.let { Text(it, color = Color.White, style = VoiidFont.rounded(13), modifier = Modifier.padding(bottom = 8.dp)) }
                 if (story.isMine) {
-                    val count = stories.viewersByStory[story.id]?.size ?: stories.deliveredCounts[story.id]?.first ?: 0
+                    val count = stories.viewersByStory[story.id]?.size
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(999.dp))
                             .background(Color.White.copy(alpha = 0.15f))
@@ -353,7 +369,7 @@ private fun ContextPage(
                         Icon(Icons.Default.RemoveRedEye, null, tint = Color.White, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.size(8.dp))
                         Text(
-                            if (stories.receiptsEnabled) "$count ${if (count == 1) "view" else "views"}" else "Views hidden",
+                            if (!stories.receiptsEnabled) "Views hidden" else if (count == null) "Viewers" else "$count ${if (count == 1) "view" else "views"}",
                             style = VoiidFont.rounded(14, FontWeight.SemiBold), color = Color.White,
                         )
                     }
@@ -363,7 +379,13 @@ private fun ContextPage(
                             Text(
                                 emoji, style = VoiidFont.rounded(26),
                                 modifier = Modifier.bouncyClickable {
-                                    stories.sendReply(story, "", emoji); onClose()
+                                    if (!actionBusy) {
+                                        actionBusy = true; actionError = null
+                                        stories.sendReply(story, "", emoji) { ok ->
+                                            actionBusy = false
+                                            if (ok) onClose() else actionError = "Couldn't send your reaction. Try again."
+                                        }
+                                    }
                                 },
                             )
                         }
@@ -394,7 +416,7 @@ private fun ContextPage(
     if (showReplySheet) {
         com.voiid.app.ui.components.VoiidSheet(
             visible = true,
-            onDismiss = { showReplySheet = false },
+            onDismiss = { if (!actionBusy) showReplySheet = false },
             detents = listOf(com.voiid.app.ui.components.VoiidDetent.Fixed(260.dp)),
         ) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding()) {
@@ -410,21 +432,27 @@ private fun ContextPage(
                     onValueChange = { replyText = it },
                 )
                 Spacer(Modifier.height(12.dp))
-                val canSend = replyText.isNotBlank()
+                actionError?.let { Text(it, color = VoiidColor.textPrimary, style = VoiidFont.rounded(13)) }
+                val canSend = replyText.isNotBlank() && !actionBusy
                 Box(
                     Modifier.fillMaxWidth()
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
                         .background(VoiidColor.primary.copy(alpha = if (canSend) 1f else 0.4f))
                         .softClickable(enabled = canSend) {
-                            stories.sendReply(story, replyText.trim(), null)
-                            showReplySheet = false
-                            sentToast = true
-                            onClose()
+                            actionBusy = true; actionError = null
+                            stories.sendReply(story, replyText.trim(), null) { ok ->
+                                actionBusy = false
+                                if (ok) {
+                                    showReplySheet = false
+                                    sentToast = true
+                                    onClose()
+                                } else actionError = "Couldn't send your reply. Try again."
+                            }
                         }
                         .padding(vertical = 14.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("Send", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textOnPrimary)
+                    Text(if (actionBusy) "Sending…" else "Send", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textOnPrimary)
                 }
                 Spacer(Modifier.navigationBarsPadding())
             }

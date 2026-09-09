@@ -290,3 +290,11 @@ end-to-end encrypted; server access checks supplement it.
   latency cost for someone else's cleanup.
 - **pg_cron + a lifecycle rule alone.** Retention would become a console setting
   outside the repo, and the DB half and object half would drift silently apart.
+
+### Cached availability reconciliation (2026-09-10)
+
+`POST /stories/availability` accepts `{ "story_ids": ["uuid", ...] }` (at most 1,000 IDs) and returns `{ "available": ["uuid", ...] }`. It returns only live Moments authored by the caller or addressed to one of the caller's active devices, excluding blocked authors. Missing, expired and unauthorized IDs are omitted without distinction. No ciphertext is returned and no delivery state changes.
+
+Clients use this after reconnecting to remove unavailable cached Moments when the live deletion signal was missed. They remove local content only after a successfully decoded response; a failed request or older server without the route leaves local state intact. This is cache reconciliation, not retroactive revocation of recipient-held plaintext or a replacement for a durable inbox/acknowledgment protocol.
+
+Receipt consumers bind `viewer_id` to the authenticated owner of the session that decrypted the receipt, and bind `story_id` to the routed row. Device-delivery counts must never be presented as viewer counts. An empty local contact/chat list does not grant permission to accept arbitrary authenticated Moments; clients defer feed consumption until that list is available.

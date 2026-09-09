@@ -62,6 +62,7 @@ enum SessionTeardown {
 
     @MainActor
     private static func wipeInMemoryState() {
+        StoryEngine.shared.resetForSignOut()
         // Plaintext messages and live Olm sessions.
         ChatEngine.shared.wipeInMemoryState()
         // Contact names, phone numbers and photos from the previous user's address book.

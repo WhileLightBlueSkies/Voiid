@@ -142,6 +142,14 @@ class StoryService(private val tokens: TokenStore) {
         return resp.stories
     }
 
+    @Serializable private data class AvailabilityBody(val story_ids: List<String>)
+    @Serializable private data class AvailabilityResponse(val available: List<String>)
+    suspend fun available(ids: List<String>): Set<String> {
+        val body = ApiClient.json.encodeToString(AvailabilityBody.serializer(), AvailabilityBody(ids))
+        val response: AvailabilityResponse = api.requestAs("POST", "stories/availability", jsonBody = body)
+        return response.available.map { it.lowercase() }.toSet()
+    }
+
     suspend fun mine(deviceId: String?): List<MineStory> {
         val q = "stories/mine" + (deviceId?.let { "?device_id=$it" } ?: "")
         val resp: MineResp = api.requestAs("GET", q)
@@ -156,7 +164,9 @@ class StoryService(private val tokens: TokenStore) {
             val req = Request.Builder().url(presign.download_url).get().build()
             blobClient.newCall(req).execute().use {
                 if (!it.isSuccessful) throw ApiError.Http(it.code, "story download failed (${it.code})")
-                it.body?.bytes() ?: ByteArray(0)
+                val body = it.body ?: throw ApiError.Http(502, "Empty Moment download")
+                if (body.contentLength() > StoryMediaLimits.MAX_CIPHERTEXT_BYTES) throw ApiError.Http(413, "Moment is too large")
+                body.byteStream().use { stream -> StoryMediaLimits.readBounded(stream, StoryMediaLimits.MAX_CIPHERTEXT_BYTES) }
             }
         }
     }

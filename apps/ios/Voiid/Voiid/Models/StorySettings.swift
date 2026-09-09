@@ -52,6 +52,14 @@ final class StorySettings: ObservableObject {
         archiveByDefault = (UserDefaults.standard.object(forKey: Key.archiveByDefault) as? Bool) ?? true
     }
 
+    func resetForSignOut() {
+        sendViewReceipts = false
+        archiveByDefault = true
+        for key in [Key.sendViewReceipts, Key.defaultAudience, Key.audienceIsCustom, Key.archiveByDefault] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
     // MARK: - Remembered audience (§2.2)
 
     /// The last-used custom audience, or nil when the last post was "My Contacts" (which

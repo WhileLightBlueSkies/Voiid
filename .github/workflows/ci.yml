@@ -508,8 +508,18 @@ jobs:
     name: iOS simulator build
     runs-on: macos-15
     timeout-minutes: 60
+    # macos-15 still defaults to Xcode 16.4, which cannot compile the app's iOS 26 APIs.
+    # Use an explicit preinstalled SDK for both the Rust framework and Swift app build.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify selected Xcode
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
 
       # apps/ios/vendor/ is gitignored, and the Xcode project references Firebase as an
       # XCLocalSwiftPackageReference to "../vendor/firebase-ios-sdk". A fresh checkout

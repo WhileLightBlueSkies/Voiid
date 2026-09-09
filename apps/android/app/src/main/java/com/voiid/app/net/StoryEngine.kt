@@ -6,6 +6,7 @@ import com.voiid.app.model.StoryDownloadState
 import com.voiid.app.model.StoryEnvelope
 import com.voiid.app.model.StoryUploadState
 import com.voiid.app.model.StoryViewReceipt
+import com.voiid.app.model.isBoundTo
 import com.voiid.app.store.StoryLocalStore
 import com.voiid.app.store.UserDirectory
 import uniffi.voiid.MediaKey
@@ -42,12 +43,27 @@ class StoryEngine private constructor(context: Context) {
     var deliveryWarning: String? = null
         private set
     private val feedMutex = Mutex()
+    private val receiptMutex = Mutex()
+    private val downloadLocks = Array(16) { Mutex() }
     private val appContext = context.applicationContext
     private val tokens = TokenStore.get(appContext)
     private val e2e = E2EManager.get(appContext)
     private val chat = ChatEngine.get(appContext)
     private val service = StoryService(tokens)
     private val prefs = appContext.getSharedPreferences("voiid_story_engine", Context.MODE_PRIVATE)
+
+    fun resetForSignOut() {
+        StoryLocalStore.invalidateAccount()
+        prefs.edit().clear().apply()
+        appContext.getSharedPreferences(com.voiid.app.model.StoryPrefs.NAME, Context.MODE_PRIVATE).edit().clear().apply()
+        deliveryWarning = null
+        com.voiid.app.main.stories.clearStoryFrameCache()
+        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) { StoryLocalStore.clearMediaForSignOut(appContext) }
+    }
+
+    private fun checkAccount(epoch: Long) {
+        if (epoch != StoryLocalStore.accountGeneration) throw kotlinx.coroutines.CancellationException("Account changed")
+    }
 
     /**
      * Story ids whose key ciphertext could NOT be decrypted. An Olm message is decrypt-once: a
@@ -94,12 +110,14 @@ class StoryEngine private constructor(context: Context) {
         audienceUserIds: List<String>,
     ): Story {
         val myId = tokens.userId ?: throw ApiError.NotAuthenticated
+        val epoch = StoryLocalStore.accountGeneration
         val storyId = UUID.randomUUID().toString()
         deliveryWarning = null
 
         // 1. Encrypt the blob → ciphertext + fresh random media key. 2. PUT ciphertext to R2.
         val enc = encryptMedia(bytes)
         val r2Key = service.uploadCiphertext(enc.ciphertext)
+        checkAccount(epoch)
         val ref = ChatEngine.MediaRef(r2Key, mime, enc.mediaKey.key, enc.mediaKey.nonce, enc.mediaKey.ciphertextSha256)
 
         val createdAt = System.currentTimeMillis()
@@ -117,6 +135,7 @@ class StoryEngine private constructor(context: Context) {
 
         // 4. Fan out: encrypt ONCE PER TARGET DEVICE (audience devices + our own linked devices).
         val bcast = chat.encryptBroadcast(envJson.encodeToByteArray(), audienceUserIds, includeOwnDevices = true)
+        checkAccount(epoch)
         if (bcast.isEmpty()) throw ApiError.Http(409, "no deliverable devices for this audience")
         val keys = bcast.map { StoryService.KeyEntry(it.recipientDeviceId, it.ciphertext) }
 
@@ -129,6 +148,7 @@ class StoryEngine private constructor(context: Context) {
             runCatching { service.appendKeys(storyId, batch) }
                 .onFailure { deliveryWarning = "Your moment was shared, but some devices could not be reached." }
         }
+        checkAccount(epoch)
         val expiresAt = parseTs(resp.expires_at) ?: claimExpiry
 
         // 6. Cache the plaintext we already hold so "Your story" renders with no download.
@@ -144,8 +164,9 @@ class StoryEngine private constructor(context: Context) {
             downloadState = if (localPath != null) StoryDownloadState.READY else StoryDownloadState.NONE,
             uploadState = StoryUploadState.SENT,
         )
-        StoryLocalStore.upsert(appContext, story)
-        StoryLocalStore.saveAudience(appContext, storyId, audienceUserIds)
+        StoryLocalStore.upsert(appContext, story, epoch)
+        checkAccount(epoch)
+        StoryLocalStore.saveAudience(appContext, storyId, audienceUserIds, epoch)
         android.util.Log.i("VOIID", "📸 story posted id=$storyId keys=${keys.size}/${audienceUserIds.size} users")
         return story
     }
@@ -157,13 +178,24 @@ class StoryEngine private constructor(context: Context) {
     suspend fun syncFeed(): SyncResult = feedMutex.withLock { syncFeedLocked() }
 
     private suspend fun syncFeedLocked(): SyncResult {
+        val epoch = StoryLocalStore.accountGeneration
         val myId = tokens.userId
         // The address book loads ASYNCHRONOUSLY on Android; without awaiting it the "known
         // author" gate below runs against an empty directory and DROPS every story (the
         // "Android stories nobody can see" bug — the drop is permanent because the feed is
         // deliver-once). iOS loads the directory synchronously, so it never hit this.
         UserDirectory.ready(appContext)
+        val reachable = reachableAuthors()
+        // A new inbound prekey session proves identity, not contact permission. Wait for
+        // the local contact/chat list before consuming the deliver-once feed.
+        if (reachable.isEmpty()) return SyncResult(emptyList())
         val live = runCatching { StoryLocalStore.liveStories(appContext) }.getOrDefault(emptyList())
+        for (batch in live.filter { !it.id.startsWith("pending-") }.chunked(1000)) {
+            // A network failure or an older server without this route must retain local media.
+            val available = runCatching { service.available(batch.map { it.id }) }.getOrNull() ?: continue
+            checkAccount(epoch)
+            for (story in batch) if (story.id.lowercase() !in available) StoryLocalStore.deleteStory(appContext, story.id)
+        }
         val existing = live.map { it.id }.toHashSet()
         // Rows that came from the SERVER **and from someone else**. A failed post leaves an
         // optimistic "pending-<uuid>" row behind (StoriesStore.post) which lives for 24h — and
@@ -188,6 +220,7 @@ class StoryEngine private constructor(context: Context) {
         // (deliver-once) pass would return nothing in that case and the feed would stay empty.
         val includeDelivered = serverBacked == 0
         val rows = service.feed(e2e.deviceId, includeDelivered)
+        checkAccount(epoch)
         // How many envelopes the SERVER had for this device. Zero is the single most useful
         // fact when a moment "never arrives": it proves nothing was ever addressed here, so
         // the fault is on the SEND side (audience, or the sender's device lookup) rather than
@@ -200,11 +233,11 @@ class StoryEngine private constructor(context: Context) {
         )
         // Computed ONCE for the batch: it reads the conversations table, and validate() is not
         // a suspend function, so it cannot do this per row.
-        val reachable = reachableAuthors()
         val fresh = mutableListOf<Story>()
         for (row in rows) {
             // decrypt-once dedup: already stored, OR already proven undecryptable.
             if (existing.contains(row.story_id) || dead.contains(row.story_id)) continue
+            if (!row.author_id.equals(myId, ignoreCase = true) && row.author_id.lowercase() !in reachable) continue
             val plain = chat.decryptBroadcast(row.ciphertext, row.author_id, row.author_device_id)
             // Tombstone on the DECRYPT ATTEMPT, whichever way it went — not just on failure.
             //
@@ -218,6 +251,7 @@ class StoryEngine private constructor(context: Context) {
             //
             // Marking here makes the rule exact: we attempt each envelope at most once, and
             // recovery is always the author re-posting.
+            checkAccount(epoch)
             markStoryDead(row.story_id)
             if (plain == null) {
                 android.util.Log.w("VOIID", "⚠️ story key undecryptable id=${row.story_id} — tombstoned, will not retry")
@@ -230,7 +264,7 @@ class StoryEngine private constructor(context: Context) {
                 .getOrNull()
                 ?: continue
             val story = validate(env, row, myId, reachable) ?: continue
-            StoryLocalStore.upsert(appContext, story)
+            StoryLocalStore.upsert(appContext, story, epoch)
             fresh.add(story)
         }
         if (rows.isNotEmpty() && fresh.isEmpty()) {
@@ -305,31 +339,7 @@ class StoryEngine private constructor(context: Context) {
         // directory, the conversation peers) is lowercase. Comparing literally would make our
         // OWN story from a linked iPhone look like a stranger's.
         val isMine = env.author_id.equals(myId, ignoreCase = true)
-        // Author must be someone we actually know. Note: we only reach here AFTER successfully
-        // decrypting the broadcast key (decryptBroadcast != null), which itself REQUIRES an
-        // established E2E session with the author — a stranger can't forge that. So the
-        // directory check is a secondary filter, not the only guard; with the directory now
-        // loaded (awaited in syncFeed) it passes for real contacts and only drops genuine
-        // strangers who somehow hold a session.
-        // "Known" is REACHABLE — in the address book OR someone we have a 1:1 chat with — not
-        // directory-only. You can chat with someone daily without ever saving them, and their
-        // story was being discarded; the feed is deliver-once, so that drop was permanent.
-        // Matches the send side (candidateAudience) and iOS (storyReachableUserIds).
-        // NOT a hard drop when the local cache is COLD. reachable is built from the local
-        // conversation list + address-book directory, both of which are legitimately EMPTY on
-        // a fresh install or right after sign-in — and the feed is deliver-once, so discarding
-        // here loses a real contact's moment permanently. That was the iOS→Android
-        // "moments never arrive" bug. An empty set means "we don't know yet", not "stranger".
-        // `reachable` is normalised to lowercase by reachableAuthors(), so the probe must be too
-        // — otherwise an uppercase iOS author id misses the set and the story is dropped as a
-        // stranger's even though that person is a contact.
-        if (!isMine && reachable.isNotEmpty() && env.author_id.lowercase() !in reachable) {
-            android.util.Log.w("VOIID", "🚫 story DROPPED id=${env.story_id}: author=${env.author_id} is neither a contact nor someone you have a chat with")
-            return null
-        }
-        if (!isMine && reachable.isEmpty()) {
-            android.util.Log.i("VOIID", "story ACCEPTED id=${env.story_id} with a cold reachability cache — directory not yet synced")
-        }
+        if (!isMine && env.author_id.lowercase() !in reachable) return null
         return Story(
             // Store the SERVER's rendering of both ids, not the envelope's. The server value is
             // the canonical (lowercase) one that every other local table, the dedup set and the
@@ -359,16 +369,24 @@ class StoryEngine private constructor(context: Context) {
      * Returns the local file path, or null on failure (the viewer surfaces "couldn't load" /
      * "no longer available"). `decryptMedia` verifies the ciphertext SHA-256 before decrypting.
      */
-    suspend fun ensureDownloaded(story: Story): String? {
-        story.localPath?.let { p -> if (File(p).exists()) return p }
+    suspend fun ensureDownloaded(story: Story): String? =
+        downloadLocks[(story.id.hashCode() and Int.MAX_VALUE) % downloadLocks.size].withLock {
+            ensureDownloadedLocked(story)
+        }
+
+    private suspend fun ensureDownloadedLocked(story: Story): String? {
+        val epoch = StoryLocalStore.accountGeneration
+        val current = StoryLocalStore.story(appContext, story.id)?.takeUnless { it.isExpired() } ?: return null
+        current.localPath?.let { p -> if (File(p).exists()) return p }
         StoryLocalStore.setDownload(appContext, story.id, null, StoryDownloadState.DOWNLOADING)
         return try {
             val ciphertext = service.downloadCiphertext(story.id)
-            val plain = decryptMedia(MediaKey(story.media.key, story.media.nonce, story.media.sha256), ciphertext)
-            val file = File(StoryLocalStore.mediaDir(appContext), "${story.id}.bin").apply { writeBytes(plain) }
-            StoryLocalStore.setDownload(appContext, story.id, file.absolutePath, StoryDownloadState.READY)
-            file.absolutePath
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val plain = decryptMedia(MediaKey(current.media.key, current.media.nonce, current.media.sha256), ciphertext)
+                StoryLocalStore.commitDownload(appContext, current.id, plain, epoch)
+            }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             // A 404/403 means the object is gone (reaped) or we lost entitlement — distinct from a
             // decrypt failure, but both end as "can't show this". 404 => GONE so the UI says "no
             // longer available"; anything else => FAILED ("couldn't be loaded").
@@ -388,6 +406,8 @@ class StoryEngine private constructor(context: Context) {
      *  per-device receipts setting is ON and it isn't our own story — send an encrypted view receipt
      *  to the author's devices. */
     suspend fun onViewed(story: Story, receiptsEnabled: Boolean) {
+        val current = StoryLocalStore.story(appContext, story.id) ?: return
+        if (current.isExpired() || current.viewedAt != null) return
         StoryLocalStore.markViewed(appContext, story.id)
         if (!receiptsEnabled || story.isMine) return
         val myId = tokens.userId ?: return
@@ -407,9 +427,14 @@ class StoryEngine private constructor(context: Context) {
      * the local viewer list. When OFF, incoming receipts are discarded on decrypt (§4.4) — the
      * opt-out is reciprocal. Returns the story ids whose viewer list changed.
      */
-    suspend fun fetchReceipts(receiptsEnabled: Boolean): Set<String> {
+    suspend fun fetchReceipts(receiptsEnabled: Boolean): Set<String> = receiptMutex.withLock {
+        fetchReceiptsLocked(receiptsEnabled)
+    }
+
+    private suspend fun fetchReceiptsLocked(receiptsEnabled: Boolean): Set<String> {
+        if (!receiptsEnabled) return emptySet()
+        val epoch = StoryLocalStore.accountGeneration
         val rows = runCatching { service.receipts(e2e.deviceId) }.getOrDefault(emptyList())
-        if (!receiptsEnabled) return emptySet()   // discarded on decrypt: we don't even store them
         val changed = HashSet<String>()
         for (row in rows) {
             // The server does NOT name the viewer (story_receipts has no viewer_user_id column),
@@ -420,20 +445,22 @@ class StoryEngine private constructor(context: Context) {
             // worth attributing, and the decryptor falls back to scanning cached sessions.
             val audience = runCatching { StoryLocalStore.audience(appContext, row.story_id) }
                 .getOrDefault(emptyList())
-            val plain = chat.decryptStoryReceipt(row.ciphertext, audience)
-            if (plain == null) {
+            checkAccount(epoch)
+            val decrypted = chat.decryptStoryReceipt(row.ciphertext, audience)
+            checkAccount(epoch)
+            if (decrypted == null) {
                 android.util.Log.w("VOIID", "⚠️ view receipt undecryptable story=${row.story_id} (audience=${audience.size})")
                 continue
             }
-            val receipt = runCatching { ApiClient.json.decodeFromString(StoryViewReceipt.serializer(), plain) }.getOrNull()
+            val receipt = runCatching { ApiClient.json.decodeFromString(StoryViewReceipt.serializer(), decrypted.second) }.getOrNull()
                 ?: continue
             // Bind the receipt to the row the server routed it under, exactly as iOS does —
             // otherwise a peer could record a view against a story that isn't the one they saw.
-            if (receipt.story_id != row.story_id) {
+            if (!receipt.isBoundTo(row.story_id, decrypted.first)) {
                 android.util.Log.w("VOIID", "🚫 view receipt DROPPED: story_id mismatch (${receipt.story_id} vs ${row.story_id})")
                 continue
             }
-            StoryLocalStore.recordView(appContext, receipt.story_id, receipt.viewer_id, receipt.viewed_at)
+            StoryLocalStore.recordView(appContext, row.story_id, decrypted.first.lowercase(), receipt.viewed_at.coerceAtMost(System.currentTimeMillis()))
             changed.add(receipt.story_id)
         }
         if (rows.isNotEmpty()) {

@@ -208,11 +208,13 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
         // Optimistic local echo with a temp id + cached bytes, so it appears immediately.
         val tempId = "pending-" + UUID.randomUUID()
         val now = System.currentTimeMillis()
+        val epoch = StoryLocalStore.accountGeneration
         val localPath = runCatching {
             File(StoryLocalStore.mediaDir(appContext), "$tempId.bin").also { it.writeBytes(bytes) }.absolutePath
         }.getOrNull()
         val placeholderRef = ChatEngine.MediaRef(mediaUrl = "", mime = mime, key = "", nonce = "", sha256 = "")
         viewModelScope.launch {
+            if (epoch != StoryLocalStore.accountGeneration) { posting = false; return@launch }
             StoryLocalStore.upsert(
                 appContext,
                 Story(
@@ -223,7 +225,8 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
                     downloadState = StoryDownloadState.READY, uploadState = StoryUploadState.UPLOADING,
                 ),
             )
-            StoryLocalStore.saveAudience(appContext, tempId, audienceUserIds)
+            if (epoch != StoryLocalStore.accountGeneration) { posting = false; return@launch }
+            StoryLocalStore.saveAudience(appContext, tempId, audienceUserIds, epoch)
             loadLocal()
             try {
                 engine.postStory(bytes, mime, caption, width, height, durationMs, allowsReplies, audienceUserIds)
@@ -322,6 +325,13 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     /** Send a reply to a story as an ordinary 1:1 message into the chat with the author. */
     fun sendReply(story: Story, text: String, reaction: String?, onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
+            val current = StoryLocalStore.story(appContext, story.id)
+            if (current == null || current.isExpired() || !current.allowsReplies || current.isMine ||
+                (text.isBlank() && reaction.isNullOrBlank())) {
+                loadError = "This moment is no longer available for replies."
+                onDone(false)
+                return@launch
+            }
             val ok = runCatching {
                 val convId = chatService.createDirect(story.authorId)
                 ChatEngine.get(appContext).sendStoryReply(
@@ -338,14 +348,14 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     /** Delete one of OUR stories. The engine now throws when the SERVER delete fails, so the
      *  local row is kept and the user is told — silently dropping it locally would leave the
      *  moment visible to everyone else while looking deleted here. */
-    fun delete(storyId: String, onDone: () -> Unit = {}) {
+    fun delete(storyId: String, onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
             val ok = runCatching { engine.deleteStory(storyId) }
                 .onFailure { android.util.Log.w("VOIID", "story delete failed id=$storyId", it) }
                 .isSuccess
             if (!ok) loadError = "Couldn't delete that moment."
             loadLocal()
-            onDone()
+            onDone(ok)
         }
     }
 

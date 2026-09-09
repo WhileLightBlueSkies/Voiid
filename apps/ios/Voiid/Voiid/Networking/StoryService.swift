@@ -100,6 +100,13 @@ final class StoryService {
         return resp.stories
     }
 
+    func available(storyIds: [String]) async throws -> Set<String> {
+        struct Body: Encodable { let story_ids: [String] }
+        struct Response: Decodable { let available: [String] }
+        let response: Response = try await api.request("POST", "stories/availability", body: Body(story_ids: storyIds))
+        return Set(response.available.map { $0.lowercased() })
+    }
+
     /// §7.4 — my own live stories + delivered-device counts.
     func mine(deviceId: String) async throws -> [MineStory] {
         let resp: MineResp = try await api.request("GET", "stories/mine?device_id=\(deviceId)")

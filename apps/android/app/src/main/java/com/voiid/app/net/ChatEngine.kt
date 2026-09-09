@@ -962,30 +962,25 @@ class ChatEngine private constructor(context: Context) {
                 .getOrNull()
         }
 
-    /**
-     * Decrypt a view receipt whose sender the server deliberately does NOT name (story_receipts
-     * has no viewer_user_id column). We try every ESTABLISHED session we already hold; the one
-     * that MACs the ciphertext decrypts it, exactly like the candidate loop in [decryptInbound]
-     * (a non-matching session fails cleanly without touching its ratchet state). A receipt that
-     * would need a brand-new inbound session accepted can't be attributed without a sender id and
-     * is dropped — acceptable because receipts are opt-in and best-effort, and the session the
-     * author minted while fanning the story out is already in memory for exactly these viewers.
-     */
-    fun decryptStoryReceipt(ciphertextB64: String, audienceUserIds: List<String> = emptyList()): String? {
+    /** Decrypt using known audience/device sessions under the normal peer lock. Preserve the
+     *  authenticated owner alongside plaintext and persist each successful ratchet advance. */
+    suspend fun decryptStoryReceipt(ciphertextB64: String, audienceUserIds: List<String> = emptyList()): Pair<String, String>? {
         val wire = decodeWire(ciphertextB64) ?: return null
-        // Load the audience's sessions from DISK before scanning. `sessions` is a LAZY cache
-        // populated only by candidateSessions() — so on a cold start (the usual case when you
-        // open Moments to check your views) it is EMPTY, every receipt failed to decrypt, and
-        // the viewer list was permanently blank. Receipts are deliver-once, so each miss was
-        // unrecoverable. iOS passes the audience for exactly this reason; Android scanned only
-        // whatever happened to be in memory. Restoring by device is what makes the sessions the
-        // author minted while fanning the story out available to match against.
-        for (uid in audienceUserIds) {
-            val devices = runCatching { deviceIdsWithSessions(uid) }.getOrDefault(emptyList())
-            for (deviceId in devices) candidateSessions(uid, deviceId)
-        }
-        for (list in sessions.values) for (s in list) {
-            runCatching { s.decrypt(wire) }.getOrNull()?.let { return it.decodeToString() }
+        // Keep the authenticated session owner alongside the plaintext. A viewer_id inside
+        // ciphertext is a claim, not proof of who encrypted it.
+        val users = if (audienceUserIds.isNotEmpty()) audienceUserIds else
+            prefs.all.keys.filter { it.startsWith("sess::") }.mapNotNull { it.split("::").getOrNull(1) }
+        for (uid in users.distinct()) {
+            val plain = syncLock(uid).withLock {
+                for (deviceId in deviceIdsWithSessions(uid)) {
+                    // Reuse the normal decrypt path: it persists ratchet advances and handles
+                    // prekey messages safely, unlike the old unpersisted Session.decrypt loop.
+                    val decrypted = runCatching { decryptInbound(wire, uid, deviceId) }.getOrNull()
+                    if (decrypted != null) return@withLock decrypted
+                }
+                null
+            }
+            if (plain != null) return uid to plain
         }
         return null
     }

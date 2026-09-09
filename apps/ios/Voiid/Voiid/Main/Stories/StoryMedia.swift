@@ -34,6 +34,9 @@ import Combine
 final class StoryImageCache {
     static let shared = StoryImageCache()
 
+    private var generation = 0
+    func clear() { generation += 1; cache.removeAllObjects() }
+
     private let cache = NSCache<NSString, UIImage>()
 
     private init() {
@@ -56,11 +59,12 @@ final class StoryImageCache {
         let key = "\(url.path)|\(Int(maxPixel))" as NSString
         if let hit = cache.object(forKey: key) { return hit }
 
+        let epoch = generation
         let decoded = await Task.detached(priority: .userInitiated) {
             StoryImageCache.downsample(url, maxPixel: maxPixel)
         }.value
 
-        guard let decoded else { return nil }
+        guard epoch == generation, !Task.isCancelled, let decoded else { return nil }
         cache.setObject(decoded, forKey: key, cost: decoded.decodedCost)
         return decoded
     }
@@ -76,9 +80,11 @@ final class StoryImageCache {
 
         let key = "\(url.path)|backdrop" as NSString
         if let hit = cache.object(forKey: key) { return hit }
+        let epoch = generation
         guard let frame = await StoryImageCache.firstFrame(url, maxPixel: Self.backdropPixel) else {
             return nil
         }
+        guard epoch == generation, !Task.isCancelled else { return nil }
         cache.setObject(frame, forKey: key, cost: frame.decodedCost)
         return frame
     }

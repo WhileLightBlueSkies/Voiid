@@ -271,6 +271,28 @@ router.post('/presign-download', requireAuth, rateLimit({ max: 120, windowSecond
 // UPHOLDS THE RULE: `ciphertext` is the per-device blob this server cannot decrypt;
 // `r2_key` addresses ciphertext; `media_mime` is the wrapper type.
 // ─────────────────────────────────────────────────────────────────────────────────
+// Reconcile cached IDs after an offline delete/block without replaying one-time envelopes.
+// Only return live IDs the caller is entitled to; missing/expired/foreign IDs are indistinguishable.
+router.post('/availability', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const ids = req.body?.story_ids;
+  if (!Array.isArray(ids) || ids.length > 1000 || ids.some(id => typeof id !== 'string' || !UUID_RE.test(id))) {
+    return res.status(400).json({ error: 'story_ids must contain at most 1000 UUIDs' });
+  }
+  if (!ids.length) return res.json({ available: [] });
+  const blocked = [...await blockedUserIds(user_id)];
+  const rows = await query<{ id: string }>(
+    `select s.id from stories s
+      where s.id = any($1::uuid[]) and s.expires_at > now()
+        and not (s.author_id = any($3::uuid[]))
+        and (s.author_id = $2::uuid or exists (
+          select 1 from story_keys k join devices d on d.id = k.recipient_device_id
+          where k.story_id = s.id and d.user_id = $2::uuid and d.revoked_at is null))`,
+    [[...new Set(ids.map(id => id.toLowerCase()))], user_id, blocked]
+  );
+  return res.json({ available: rows.map(row => row.id) });
+}));
+
 router.get('/feed', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const deviceId = callerDeviceId(req);
@@ -644,7 +666,7 @@ router.post('/:id/receipt', requireAuth, rateLimit({ max: 120, windowSeconds: 60
   await publisher.publish(
     `channel:user:${authorId}`,
     JSON.stringify({ type: 'story_receipt', story_id: storyId })
-  );
+  ).catch((error) => console.warn('[stories] receipt relay failed:', (error as Error).message));
 
   return res.json({ accepted });
 }));
@@ -699,7 +721,7 @@ router.delete('/:id', requireAuth, rateLimit({ max: 120, windowSeconds: 60, buck
     await publisher.publish(
       `channel:user:${r.user_id}`,
       JSON.stringify({ type: 'story_deleted', story_id: storyId })
-    );
+    ).catch((error) => console.warn('[stories] deletion relay failed:', (error as Error).message));
   }
 
   return res.status(204).end();

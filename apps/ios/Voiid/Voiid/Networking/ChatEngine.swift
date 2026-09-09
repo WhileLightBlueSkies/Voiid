@@ -2049,7 +2049,7 @@ final class ChatEngine {
     /// posted it (the viewer id lives inside the encrypted payload), so we try the story's
     /// KNOWN AUDIENCE devices — the author already holds a session with each, established
     /// when the story key was fanned out to them. Returns nil to drop.
-    func decryptStoryReceipt(ciphertextB64: String, audienceUserIds: [String]) async -> Data? {
+    func decryptStoryReceipt(ciphertextB64: String, audienceUserIds: [String]) async -> (userId: String, plaintext: Data)? {
         guard let wire = decodeWire(ciphertextB64) else { return nil }
         return await CrossProcessLock.withLock {
             reloadCryptoState()
@@ -2057,7 +2057,7 @@ final class ChatEngine {
                 guard let devs: DevicesResponse = try? await api.request("GET", "devices/\(uid)") else { continue }
                 for d in devs.devices {
                     if let plain = try? await decryptInbound(wire, peerUserId: uid, senderDeviceId: d.id) {
-                        return Data(plain.utf8)
+                        return (userId: uid, plaintext: Data(plain.utf8))
                     }
                 }
             }

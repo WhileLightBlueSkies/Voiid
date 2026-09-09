@@ -147,3 +147,8 @@ data class StoryViewReceipt(
     val viewer_id: String,
     val viewed_at: Long,        // epoch MILLIS
 )
+
+/** Match a receipt's claims to the ratchet-authenticated peer and server-routed story. */
+internal fun StoryViewReceipt.isBoundTo(storyId: String, authenticatedViewerId: String): Boolean =
+    v == 1 && t == "story_view" && story_id.equals(storyId, ignoreCase = true) &&
+        viewer_id.equals(authenticatedViewerId, ignoreCase = true) && viewed_at > 0

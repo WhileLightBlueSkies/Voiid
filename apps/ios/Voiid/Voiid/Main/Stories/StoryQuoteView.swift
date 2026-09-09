@@ -46,15 +46,13 @@ struct StoryQuoteView: View {
     let secondary: Color
     let fill: Color
 
-    /// Three genuinely distinct states, never collapsed into two. `.loading` is the brief
-    /// window while the thumbnail decodes off the main thread; `.expired` is the honest,
-    /// permanent end state of a 24h object; `.present` is a real frame. Collapsing loading
-    /// into expired would flash "Moment expired" at every story that is actually still there,
-    /// and collapsing expired into loading would spin forever on one that is genuinely gone.
+    /// Loading, present, expired and unavailable are separate states: a missing local file
+    /// does not prove expiry, and a retained author archive must not keep a chat quote live.
     private enum Frame: Equatable {
         case loading
         case present(UIImage)
         case expired
+        case unavailable
     }
 
     @State private var frame: Frame = .loading
@@ -99,7 +97,22 @@ struct StoryQuoteView: View {
         .accessibilityLabel(accessibilityLabel)
         // Keyed on the id so a recycled bubble in a scrolling list re-resolves rather than
         // showing the previous row's frame.
-        .task(id: storyId) { await resolve() }
+        .task(id: storyId) {
+            await resolve()
+            let expiry = StoryStore.story(storyId)?.expiresAt ?? createdAt?.addingTimeInterval(24 * 3600)
+            if let expiry, expiry > Date() {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, min(expiry.timeIntervalSinceNow, 24 * 3600)) * 1_000_000_000))
+                if !Task.isCancelled { await resolve() }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .voiidStorySignal)) { note in
+            guard (note.userInfo?["story_id"] as? String)?.lowercased() == storyId.lowercased() else { return }
+            if (note.userInfo?["type"] as? String) == "story_deleted" { frame = .unavailable }
+            else { Task { await resolve() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            Task { await resolve() }
+        }
     }
 
     // MARK: - Pieces
@@ -121,6 +134,8 @@ struct StoryQuoteView: View {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFill()
+            case .unavailable:
+                Image(systemName: "photo").foregroundColor(secondary)
             case .expired:
                 // The honest marker. Never a placeholder photo, never a guessed caption — the
                 // media is genuinely gone and the interface says so instead of implying it is
@@ -136,7 +151,7 @@ struct StoryQuoteView: View {
 
     private var authorLine: String {
         guard let authorId else { return "Moment" }
-        if authorId == TokenStore.shared.userId { return "Your moment" }
+        if authorId.lowercased() == TokenStore.shared.userId?.lowercased() { return "Your moment" }
         let name = UserDirectory.shared.displayName(authorId)
         return name.isEmpty ? "Moment" : name
     }
@@ -147,6 +162,7 @@ struct StoryQuoteView: View {
     private var bodyLine: String {
         switch frame {
         case .expired: return "Moment expired"
+        case .unavailable: return "Moment unavailable"
         case .loading, .present:
             let age = StoryTime.relative(createdAt)
             return age.isEmpty ? "Moment" : "Moment · \(age)"
@@ -164,17 +180,20 @@ struct StoryQuoteView: View {
     /// re-fetch (or re-mark) a moment. Mirrors StoryMomentCard.loadFrame exactly, so a story
     /// the tray already warmed is a cache hit here.
     private func resolve() async {
-        guard let story = StoryStore.story(storyId),
-              let path = story.localPath,
-              FileManager.default.fileExists(atPath: path) else {
-            frame = .expired
+        guard let story = StoryStore.story(storyId) else {
+            frame = createdAt.map { $0.addingTimeInterval(24 * 3600) <= Date() } == true ? .expired : .unavailable
             return
         }
-        let isVideo = story.media.mime.hasPrefix("video")
-        let img = await StoryImageCache.shared.backdrop(at: URL(fileURLWithPath: path), isVideo: isVideo)
-        // A row that exists with a path we cannot decode is, from the reader's point of view,
-        // the same situation as a swept one: there is nothing to show. Saying "expired" is
-        // closer to true than spinning forever on a frame that will never arrive.
-        frame = img.map(Frame.present) ?? .expired
+        guard !story.isExpired else { frame = .expired; return }
+        guard story.authorId.lowercased() == authorId?.lowercased(),
+              let path = story.localPath, FileManager.default.fileExists(atPath: path) else {
+            frame = .unavailable
+            return
+        }
+        let img = await StoryImageCache.shared.backdrop(at: URL(fileURLWithPath: path), isVideo: story.media.mime.hasPrefix("video"))
+        // Decoding suspends; deletion or expiry must win even when a thumbnail was cached.
+        guard !Task.isCancelled, let current = StoryStore.story(storyId) else { frame = .unavailable; return }
+        guard !current.isExpired else { frame = .expired; return }
+        frame = img.map(Frame.present) ?? .unavailable
     }
 }

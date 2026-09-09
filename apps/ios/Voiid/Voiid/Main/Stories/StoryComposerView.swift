@@ -234,7 +234,10 @@ struct StoryComposerView: View {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             export.exportAsynchronously { cont.resume() }
         }
-        guard export.status == .completed, let data = try? Data(contentsOf: out) else {
+        guard export.status == .completed else { throw CapError.tooBig("Couldn't prepare video") }
+        let fileSize = (try? out.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
+        guard fileSize <= 50 * 1024 * 1024 else { throw CapError.tooBig("Video is too large") }
+        guard let data = try? Data(contentsOf: out) else {
             throw CapError.tooBig("Couldn't prepare video")
         }
         guard data.count <= 50 * 1024 * 1024 else { throw CapError.tooBig("Video is too large") }

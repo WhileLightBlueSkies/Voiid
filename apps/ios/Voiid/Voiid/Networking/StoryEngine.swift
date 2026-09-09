@@ -27,6 +27,8 @@ final class StoryEngine: ObservableObject {
     private let svc = StoryService.shared
     private let chat = ChatEngine.shared
     private var refreshTask: Task<Bool, Never>?
+    private var generation = 0
+    private var downloads: [String: Task<URL?, Never>] = [:]
     @Published var actionError: String?
 
     /// Live contexts (others' stories), rebuilt from StoryStore after every sync.
@@ -59,6 +61,16 @@ final class StoryEngine: ObservableObject {
         }
     }
 
+    func resetForSignOut() {
+        generation += 1
+        refreshTask?.cancel(); refreshTask = nil
+        downloads.values.forEach { $0.cancel() }; downloads.removeAll()
+        contexts = []; myStories = []; posting = []; failedPosts = []; hasUnviewed = false; actionError = nil
+        StoryImageCache.shared.clear()
+        StorySettings.shared.resetForSignOut()
+        try? FileManager.default.removeItem(at: StoryStore.mediaCacheDir)
+    }
+
     private var myUserId: String? { TokenStore.shared.userId }
     private var myDeviceId: String? { E2EManager.shared.deviceId }
 
@@ -87,24 +99,42 @@ final class StoryEngine: ObservableObject {
     @discardableResult
     func refresh() async -> Bool {
         if let refreshTask { return await refreshTask.value }
+        let epoch = generation
         let task = Task { @MainActor in
             reloadFromStore()
             let succeeded = await syncFeed()
+            guard epoch == generation, !Task.isCancelled else { return false }
             await syncReceipts()
+            guard epoch == generation, !Task.isCancelled else { return false }
             reloadFromStore()
             autoDownloadEligible()
             return succeeded
         }
         refreshTask = task
         let succeeded = await task.value
-        refreshTask = nil
+        if epoch == generation { refreshTask = nil }
         return succeeded
     }
 
     /// Pull this device's pending story key blobs, decrypt + validate each, persist.
     private func syncFeed() async -> Bool {
+        let epoch = generation
         guard let deviceId = myDeviceId else { return false }
         let rows: [StoryService.FeedStory]
+        let reachable = Set(UserDirectory.shared.storyReachableUserIds().map { $0.lowercased() })
+        // An authenticated prekey session is not permission to enter the Moments feed.
+        // Defer consuming envelopes while the local contact/chat list is still empty.
+        guard !reachable.isEmpty else { return true }
+        let cached = StoryStore.liveContexts().flatMap { $0.stories }
+        for batch in cached.chunked(into: 1000) {
+            guard let available = try? await svc.available(storyIds: batch.map { $0.id }) else { continue }
+            guard epoch == generation, !Task.isCancelled else { return false }
+            for story in batch where !available.contains(story.id.lowercased()) {
+                StoryStore.delete(story.id)
+                NotificationCenter.default.post(name: .voiidStorySignal, object: nil,
+                    userInfo: ["type": "story_deleted", "story_id": story.id])
+            }
+        }
         // RECOVERY: with no live stories held locally, re-fetch already-delivered rows too, so a
         // lost local DB (or a past dropped key) still recovers the live feed instead of staying
         // empty — the deliver-once feed would otherwise return nothing.
@@ -115,16 +145,17 @@ final class StoryEngine: ObservableObject {
         do { rows = try await svc.feed(deviceId: deviceId, includeDelivered: includeDelivered) }
         catch { NSLog("[VOIID] story feed fetch failed: \(error)"); return false }
 
+        guard epoch == generation, !Task.isCancelled else { return false }
         // Computed ONCE for the whole batch: it reads the conversations table, and doing that
         // per row would be a DB hit per story.
-        let reachable = Set(UserDirectory.shared.storyReachableUserIds().map { $0.lowercased() })
-
         for row in rows {
             if StoryStore.exists(row.story_id) { continue }   // dedup / decrypt-once (§1.5.6)
+            guard row.author_id.lowercased() == myUserId?.lowercased() || reachable.contains(row.author_id.lowercased()) else { continue }
             guard let plain = await chat.decryptStoryEnvelope(
                     ciphertextB64: row.ciphertext,
                     authorUserId: row.author_id,
                     authorDeviceId: row.author_device_id) else { continue }
+            guard epoch == generation, !Task.isCancelled else { return false }
             // Decode failures are LOGGED, never silent. This exact line silently dropped every
             // story sent from Android: kotlinx omits default-valued fields and Swift's
             // synthesized Codable throws keyNotFound instead of applying the property default,
@@ -172,26 +203,7 @@ final class StoryEngine: ObservableObject {
             // discarded. Because the feed is deliver-once, that drop was PERMANENT. It also
             // disagreed with the send side, which now offers exactly this same set.
             //
-            // This is not the real security boundary anyway: we only reach here after
-            // decryptStoryEnvelope succeeded, which REQUIRES an established E2E session with
-            // the author — a stranger cannot forge that. The check is a secondary filter
-            // against someone who somehow holds a session, so widening it to "reachable"
-            // costs nothing. (Android's equivalent gate carries the same reasoning.)
-            //
-            // NOT enforced when `reachable` is EMPTY. That set is built from the local
-            // conversation list + directory, both legitimately empty on a fresh install or
-            // right after sign-in, and the feed is deliver-once — so dropping there loses a
-            // real contact's moment permanently. Empty means "not synced yet", not "stranger".
-            // (Android's equivalent gate carries the same carve-out.)
-            guard reachable.isEmpty
-                    || reachable.contains(env.author_id.lowercased())
-                    || env.author_id.lowercased() == myUserId?.lowercased() else {
-                NSLog("[VOIID] story DROPPED id=\(row.story_id): author=\(env.author_id) is neither a contact nor someone you have a chat with")
-                continue
-            }
-            if reachable.isEmpty && env.author_id != myUserId {
-                NSLog("[VOIID] story ACCEPTED id=\(row.story_id) with a cold reachability cache — directory not yet synced")
-            }
+            guard reachable.contains(env.author_id.lowercased()) || env.author_id.lowercased() == myUserId?.lowercased() else { continue }
 
             let story = Story(
                 id: row.story_id,
@@ -234,6 +246,7 @@ final class StoryEngine: ObservableObject {
                    width: Int?, height: Int?, durationMs: Int?,
                    audienceUserIds: [String], archive: Bool) async throws {
         guard let myUserId else { throw StoryError.noRecipients }
+        let epoch = generation
         let storyId = UUID().uuidString.lowercased()
         let createdMs = Int64(Date().timeIntervalSince1970 * 1000)
         let expiresMs = createdMs + 24 * 60 * 60 * 1000
@@ -255,6 +268,7 @@ final class StoryEngine: ObservableObject {
             try await putToR2(presign.upload_url, ciphertext: enc.ciphertext,
                               contentType: "application/octet-stream")
 
+            guard epoch == generation, !Task.isCancelled else { throw CancellationError() }
             // 3. Build the envelope (the media KEY rides inside it, never leaving E2E).
             let ref = MediaRef(mediaUrl: presign.key, mime: mime,
                                key: enc.key, nonce: enc.nonce, sha256: enc.sha256)
@@ -268,6 +282,7 @@ final class StoryEngine: ObservableObject {
             //    our own other devices so linked devices show "My story".
             let perDevice = try await chat.encryptStoryKeys(envData, audienceUserIds: audienceUserIds,
                                                             includeOwnDevices: true)
+            guard epoch == generation, !Task.isCancelled else { throw CancellationError() }
             let keys = perDevice.map { StoryService.KeyEntry(recipient_device_id: $0.deviceId, ciphertext: $0.ciphertext) }
             guard !keys.isEmpty else { throw StoryError.noRecipients }
 
@@ -282,6 +297,7 @@ final class StoryEngine: ObservableObject {
                 catch { actionError = "Your moment was shared, but some devices could not be reached." }
             }
 
+            guard epoch == generation, !Task.isCancelled else { throw CancellationError() }
             // Persist the authoritative row (server expiry wins) with the plaintext already cached.
             let story = Story(id: storyId, authorId: myUserId, authorDeviceId: myDeviceId,
                               isMine: true,
@@ -314,6 +330,7 @@ final class StoryEngine: ObservableObject {
                 NSLog("[VOIID] ⚠️ story \(storyId) reached NO other device — audience empty or peers have no active devices")
             }
         } catch {
+            guard epoch == generation else { throw error }
             posting.remove(storyId)
             failedPosts.insert(storyId)
             NSLog("[VOIID] ❌ post story failed \(storyId): \(error)")
@@ -329,35 +346,43 @@ final class StoryEngine: ObservableObject {
     /// URL, or nil on a decrypt failure / R2 404 (the caller shows the right failure copy).
     @discardableResult
     func ensureDownloaded(_ story: Story) async -> URL? {
-        // Re-read the row rather than trusting the caller's copy. The viewer holds a `Story`
-        // snapshotted when its page was built, so a story downloaded since then still looks
-        // undownloaded to it — with the prefetch window now revisiting the same stories on
-        // every step, that meant paying for the same blob again and again.
-        let known = StoryStore.story(story.id)?.localPath ?? story.localPath
-        if let path = known, FileManager.default.fileExists(atPath: path) {
+        if let task = downloads[story.id] { return await task.value }
+        let task = Task { @MainActor in await downloadCurrentStory(story.id) }
+        downloads[story.id] = task
+        let result = await task.value
+        downloads[story.id] = nil
+        return result
+    }
+
+    private func downloadCurrentStory(_ id: String) async -> URL? {
+        guard let story = StoryStore.story(id) else { return nil }
+        // An author's explicit archive can use its existing file, never re-download expiry.
+        guard !story.isExpired || (story.isMine && story.archivedAt != nil) else { return nil }
+        if let path = story.localPath, FileManager.default.fileExists(atPath: path) {
             return URL(fileURLWithPath: path)
         }
-        StoryStore.setDownload(story.id, state: .downloading)
+        guard !story.isExpired else { return nil }
+        StoryStore.setDownload(id, state: .downloading)
         do {
-            let url = try await svc.presignDownload(storyId: story.id)
+            let url = try await svc.presignDownload(storyId: id)
             let ciphertext = try await getFromR2(url)
+            // A delete/expiry may have occurred during either await. Never trust a viewer snapshot.
+            guard !Task.isCancelled, let current = StoryStore.story(id), !current.isExpired else { return nil }
             let plain = try chat.decryptStoryBlob(ciphertext: ciphertext,
-                                                  key: story.media.key, nonce: story.media.nonce,
-                                                  sha256: story.media.sha256)
-            let path = StoryStore.mediaCacheDir.appendingPathComponent("\(story.id).bin").path
+                key: current.media.key, nonce: current.media.nonce, sha256: current.media.sha256)
+            let path = StoryStore.mediaCacheDir.appendingPathComponent("\(id).bin").path
             try plain.write(to: URL(fileURLWithPath: path),
-                            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            StoryStore.setDownload(story.id, state: .ready, localPath: path)
+                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            StoryStore.setDownload(id, state: .ready, localPath: path)
             reloadFromStore()
             return URL(fileURLWithPath: path)
         } catch {
-            // R2 404 (object gone) is distinct from a decrypt failure only in the message;
-            // both leave the viewer with a clear terminal state, never a blank frame.
+            guard !Task.isCancelled, StoryStore.exists(id) else { return nil }
             let gone: Bool
-            if case APIError.http(let s, _, _) = error, s == 404 { gone = true } else { gone = false }
-            StoryStore.setDownload(story.id, state: gone ? .gone : .failed)
+            if case APIError.http(let status, _, _) = error, status == 404 || status == 403 { gone = true }
+            else { gone = false }
+            StoryStore.setDownload(id, state: gone ? .gone : .failed)
             reloadFromStore()
-            NSLog("[VOIID] story download failed \(story.id): \(error)")
             return nil
         }
     }
@@ -367,9 +392,12 @@ final class StoryEngine: ObservableObject {
     /// cheap signal on this client), so we cap purely on already-downloaded count, which is
     /// the load-bearing half of the rule — everything else stays a pointer until opened.
     private func autoDownloadEligible() {
+        var budget = max(0, 3 - downloads.count)
         for ctx in contexts.prefix(20) {
             let inFlight = ctx.stories.filter { !$0.isViewed && ($0.downloadState == .ready || $0.downloadState == .downloading) }.count
             guard inFlight < 3, let first = ctx.stories.first(where: { !$0.isViewed && $0.downloadState == .none }) else { continue }
+            guard budget > 0 else { break }
+            budget -= 1
             Task { await ensureDownloaded(first) }
         }
     }
@@ -379,6 +407,7 @@ final class StoryEngine: ObservableObject {
     /// Mark a story seen locally (drives the ring — always recorded, never transmitted) and,
     /// if the viewer opted in AND it isn't our own story, fan a view receipt to the author.
     func markViewed(_ story: Story) async {
+        guard let current = StoryStore.story(story.id), !current.isExpired, current.viewedAt == nil else { return }
         StoryStore.markViewed(story.id)
         reloadFromStore()
         guard StorySettings.shared.sendViewReceipts, !story.isMine, let myUserId else { return }
@@ -401,18 +430,23 @@ final class StoryEngine: ObservableObject {
     /// upsert the viewer list. When receipts are OFF the receipts are discarded on decrypt
     /// (the reciprocal opt-out, §4.4) — we simply do not pull or store them.
     private func syncReceipts() async {
+        let epoch = generation
         guard StorySettings.shared.sendViewReceipts, let deviceId = myDeviceId else { return }
         let rows: [StoryService.ReceiptRow]
         do { rows = try await svc.receipts(deviceId: deviceId) }
         catch { return }
+        guard epoch == generation, !Task.isCancelled else { return }
         for row in rows {
-            let audience = StoryStore.audience(storyId: row.story_id)
-            guard !audience.isEmpty else { continue }
-            guard let plain = await chat.decryptStoryReceipt(ciphertextB64: row.ciphertext, audienceUserIds: audience),
-                  let env = try? JSONDecoder().decode(StoryViewEnvelope.self, from: plain),
-                  env.story_id == row.story_id else { continue }
-            StoryStore.recordView(storyId: row.story_id, viewerUserId: env.viewer_id,
-                                  viewedAt: Date(timeIntervalSince1970: TimeInterval(env.viewed_at) / 1000))
+            let savedAudience = StoryStore.audience(storyId: row.story_id)
+            let audience = savedAudience.isEmpty ? Array(UserDirectory.shared.storyReachableUserIds()) : savedAudience
+            guard let decrypted = await chat.decryptStoryReceipt(ciphertextB64: row.ciphertext, audienceUserIds: audience),
+                  let env = try? JSONDecoder().decode(StoryViewEnvelope.self, from: decrypted.plaintext),
+                  (env.v ?? 1) == 1, (env.t ?? "story_view") == "story_view",
+                  env.story_id.lowercased() == row.story_id.lowercased(),
+                  env.viewer_id.lowercased() == decrypted.userId.lowercased(), env.viewed_at > 0 else { continue }
+            guard epoch == generation, !Task.isCancelled else { return }
+            StoryStore.recordView(storyId: row.story_id, viewerUserId: decrypted.userId.lowercased(),
+                                  viewedAt: min(Date(), Date(timeIntervalSince1970: TimeInterval(env.viewed_at) / 1000)))
         }
     }
 
@@ -422,7 +456,11 @@ final class StoryEngine: ObservableObject {
     /// the conversation if absent. `reaction` is a single emoji for the quick-tap rail.
     @discardableResult
     func reply(to story: Story, text: String, reaction: String?) async -> Bool {
-        guard story.allowsReplies, !story.isExpired else { return false }
+        guard let current = StoryStore.story(story.id), current.allowsReplies, !current.isExpired,
+              !current.isMine, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || reaction != nil else {
+            actionError = "This moment is no longer available for replies."
+            return false
+        }
         let env = StoryReplyEnvelope(storyId: story.id, storyAuthorId: story.authorId,
                                      storyCreatedAt: Int64(story.createdAt.timeIntervalSince1970 * 1000),
                                      text: text, reaction: reaction)
@@ -472,10 +510,15 @@ final class StoryEngine: ObservableObject {
 
     private func getFromR2(_ urlString: String) async throws -> Data {
         guard let url = URL(string: urlString) else { throw StoryError.badURL }
-        let (data, resp) = try await URLSession.shared.data(from: url)
+        // Download ciphertext to a temporary file first, so a oversized remote object
+        // cannot force an unbounded in-memory allocation before the cap is checked.
+        let (file, resp) = try await URLSession.shared.download(from: url)
+        defer { try? FileManager.default.removeItem(at: file) }
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw APIError.http(status: status, message: "story download failed (\(status))") }
-        return data
+        let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
+        guard size <= 50 * 1024 * 1024 + 1024 else { throw APIError.http(status: 413, message: "Moment is too large") }
+        return try Data(contentsOf: file, options: .mappedIfSafe)
     }
 
     // MARK: - Dates

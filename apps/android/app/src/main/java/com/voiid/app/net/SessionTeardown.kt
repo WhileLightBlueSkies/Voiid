@@ -38,6 +38,8 @@ object SessionTeardown {
     fun wipeLocalAccountState(context: Context) {
         val appContext = context.applicationContext
 
+        runCatching { StoryEngine.get(appContext).resetForSignOut() }
+
         // 1 — in-memory state, BEFORE the files/tables, or a flush rewrites them.
         runCatching { ChatEngine.get(appContext).wipeInMemoryState() }
         runCatching { UserDirectory.wipe() }

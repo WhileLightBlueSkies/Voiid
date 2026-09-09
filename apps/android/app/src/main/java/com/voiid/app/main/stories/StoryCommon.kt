@@ -67,7 +67,10 @@ private val thumbCache = object : LruCache<String, ImageBitmap>(
 }
 
 /** Drops every cached frame. Called when the viewer closes — this heap is not worth holding idle. */
+private val frameGeneration = java.util.concurrent.atomic.AtomicInteger()
+
 fun clearStoryFrameCache() {
+    frameGeneration.incrementAndGet()
     thumbCache.evictAll()
 }
 
@@ -99,6 +102,7 @@ private suspend fun loadFrame(
     targetW: Int,
     targetH: Int,
 ): ImageBitmap? {
+    val epoch = frameGeneration.get()
     val key = frameKey(path, targetW, targetH)
     thumbCache.get(key)?.let { return it }
     if (!File(path).exists()) return null
@@ -107,6 +111,7 @@ private suspend fun loadFrame(
             if (isVideo) videoFrame(path, targetW, targetH) else ChatImageDecoder.decodeFile(File(path), targetW, targetH)
         }.getOrNull()
     } ?: return null
+    if (epoch != frameGeneration.get()) { decoded.recycle(); return null }
     return decoded.asImageBitmap().also { thumbCache.put(key, it) }
 }
 

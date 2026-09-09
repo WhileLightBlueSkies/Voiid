@@ -32,7 +32,7 @@ function harness(file: string, query: (sql: string, params: any[]) => Promise<an
   vm.runInNewContext(code, { require: (id: string) => mocks[id] ?? localRequire(id), exports: {}, Buffer, console: { warn() {} } });
   return { signed, async request(method: string, path: string, body: any = {}, user = viewer) {
     let status = 200, data: any;
-    const res = { status(n: number) { status = n; return this; }, json(value: any) { data = value; return this; } };
+    const res = { status(n: number) { status = n; return this; }, json(value: any) { data = value; return this; }, end() { return this; } };
     await routes.get(`${method} ${path}`)!({ body, auth: { user_id: user }, params: { id: story }, query: { device_id: device } }, res);
     return { status, data };
   } };
@@ -88,4 +88,57 @@ test('view receipts require a live story and a non-revoked viewer device', async
   });
   assert.equal((await h.request('post', '/:id/receipt', { receipts: [{ recipient_device_id: device, ciphertext: 'AQID' }] })).status, 403);
   assert.equal(reads, 2);
+});
+
+
+test('availability is bounded and returns only live authorized IDs without replaying ciphertext', async () => {
+  let reads = 0;
+  const h = harness('stories.ts', async (sql, params) => {
+    reads++;
+    assert.match(sql, /s.expires_at > now\(\)/);
+    assert.match(sql, /d.user_id = \$2::uuid and d.revoked_at is null/);
+    assert.match(sql, /not \(s.author_id = any/);
+    assert.doesNotMatch(sql, /update|ciphertext/i);
+    assert.deepEqual(Array.from(params[0]), [story]);
+    assert.equal(params[1], viewer);
+    assert.deepEqual(Array.from(params[2]), [author]);
+    return [];
+  }, new Set([author]));
+  assert.equal((await h.request('post', '/availability', { story_ids: ['invalid'] })).status, 400);
+  assert.equal((await h.request('post', '/availability', { story_ids: Array(1001).fill(story) })).status, 400);
+  assert.equal((await h.request('post', '/availability', { story_ids: [] })).data.available.length, 0);
+  assert.equal(reads, 0);
+  const result = await h.request('post', '/availability', { story_ids: [story.toUpperCase(), story] });
+  assert.equal(result.status, 200); assert.equal(result.data.available.length, 0); assert.equal(reads, 1);
+});
+
+test('availability preserves authorized live IDs', async () => {
+  const h = harness('stories.ts', async () => [{ id: story }]);
+  const result = await h.request('post', '/availability', { story_ids: [story] });
+  assert.equal(result.status, 200); assert.equal(result.data.available[0], story);
+});
+
+test('a completed deletion succeeds even when the socket relay is offline', async () => {
+  let deleted = false;
+  const h = harness('stories.ts', async sql => {
+    if (sql.includes('select author_id, r2_key')) return [{ author_id: author, r2_key: 'encrypted' }];
+    if (sql.includes('select distinct d.user_id')) return [{ user_id: viewer }];
+    if (sql.includes('delete from stories')) { deleted = true; return []; }
+    throw new Error(`Unexpected SQL: ${sql}`);
+  });
+  assert.equal((await h.request('delete', '/:id', {}, author)).status, 204);
+  assert.equal(deleted, true);
+});
+
+test('a persisted view receipt succeeds even when its socket relay is offline', async () => {
+  let inserted = false;
+  const h = harness('stories.ts', async sql => {
+    if (sql.includes('select author_id from stories')) return [{ author_id: author }];
+    if (sql.includes('select 1 as one from story_keys')) return [{ one: 1 }];
+    if (sql.includes('select id from devices')) return [{ id: device }];
+    if (sql.includes('insert into story_receipts')) { inserted = true; return []; }
+    throw new Error(`Unexpected SQL: ${sql}`);
+  });
+  const result = await h.request('post', '/:id/receipt', { receipts: [{ recipient_device_id: device, ciphertext: 'AQID' }] });
+  assert.equal(result.status, 200); assert.equal(result.data.accepted, 1); assert.equal(inserted, true);
 });
