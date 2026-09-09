@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -118,20 +120,27 @@ object ConferenceManager {
     val state: StateFlow<ConferenceState?> = _state.asStateFlow()
 
     /** True from the first moment of an escalation until teardown. Read by the other engines. */
-    val isActive: Boolean get() = _state.value != null
+    val isActive: Boolean get() = _state.value?.stage?.let { it != Stage.ENDED } == true
 
     /** The call this engine is bound to, or null. Lets [CallManager] scope its carve-outs. */
-    val activeCallId: String? get() = _state.value?.callId
+    val activeCallId: String? get() = _state.value?.takeIf { it.stage != Stage.ENDED }?.callId
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lifecycle = Any()
+    private val keyRotationMutex = Mutex()
+    @Volatile private var generation = 0L
+    private val addingPerson = java.util.concurrent.atomic.AtomicBoolean(false)
+    private fun isCurrent(callId: String, session: Long = generation): Boolean =
+        generation == session && _state.value?.let { it.callId == callId && it.stage != Stage.ENDED } == true
 
     @Volatile private var appContext: Context? = null
     @Volatile private var room: Room? = null
     @Volatile private var keyProvider: io.livekit.android.e2ee.KeyProvider? = null
     @Volatile private var eventJob: Job? = null
     @Volatile private var rekeyJob: Job? = null
+    private var rosterJob: Job? = null
     @Volatile private var cutoverJob: Job? = null
+    @Volatile private var peerRetirementRequested = false
 
     /** The user who owns key minting for this call. Falls back to the lowest user id present. */
     @Volatile private var inviterUserId: String? = null
@@ -142,6 +151,9 @@ object ConferenceManager {
     /** Current per-call secret + its epoch. Never persisted, never leaves memory. */
     @Volatile private var currentSecret: String? = null
     @Volatile private var keyEpoch: Int = 0
+    @Volatile private var secretCallId: String? = null
+    @Volatile private var keyMinter: String? = null
+    private val keyGenerations = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     /** Guards against re-applying an unchanged key, exactly like the group engine's dedup. */
     @Volatile private var lastAppliedKey: String? = null
@@ -197,7 +209,7 @@ object ConferenceManager {
             // Our peer is being migrated onto the SFU by the inviter.
             "call_migrate" -> onMigrate(frame)
             // The invitee took it (or refused). Either way the roster moved — re-key.
-            "call_invite_accept" -> scheduleRekey("invitee accepted")
+            "call_invite_accept" -> if (isCurrent(frame.callId)) scheduleRekey("invitee accepted")
             "call_invite_decline" -> onInviteDeclined(frame)
             // A copy of the per-call secret addressed to this device.
             "call_key" -> onCallKey(frame)
@@ -244,25 +256,21 @@ object ConferenceManager {
         // conference) belongs to the 1:1 frame-E2EE layer — route it there instead of
         // dropping it because this engine has no state.
         val oneToOne = CallManager.state.value
-        if (oneToOne?.callId == frame.callId && !oneToOne.isConferenceInvite) {
-            CallManager.onOneToOneCallKey(
-                ciphertexts = mapOf(frame.deviceId.toString() to (frame.ciphertextB64 ?: "")),
-                senderDeviceId = frame.senderDeviceId,
-                fromUserId = frame.fromUserId,
-                callId = frame.callId,
-            )
-            return
-        }
-        val callId = _state.value?.callId ?: pendingKeyCallId ?: return
+        val callId = _state.value?.callId ?: pendingKeyCallId ?: oneToOne?.callId ?: return
         if (frame.callId != callId) return
         val c = courier ?: return
         scope.launch {
             val env = c.open(frame, callId) ?: return@launch
-            if (env.epoch < keyEpoch) {
+            if (_state.value?.callId != callId && pendingKeyCallId != callId && CallManager.state.value?.let { it.callId == callId && it.phase != CallManager.Phase.ENDED } != true) return@launch
+            if (secretCallId != callId) { keyEpoch = 0; currentSecret = null; keyMinter = null; secretCallId = callId }
+            if (env.epoch < keyEpoch || (env.epoch == keyEpoch && keyMinter?.let { frame.fromUserId > it } == true)) {
                 Log.i("VOIID", "conference: ignoring stale call key epoch=${env.epoch} < $keyEpoch")
                 return@launch
             }
+            CallManager.applyOpenedCallSecret(callId, env.secret, env.epoch)
+            keyMinter = frame.fromUserId
             keyEpoch = env.epoch
+            keyGenerations[callId] = env.epoch
             currentSecret = env.secret
             applySecret(env.secret)
         }
@@ -275,7 +283,31 @@ object ConferenceManager {
     @Volatile private var pendingKeyCallId: String? = null
 
     /** Called by [CallManager] the moment a conference invite starts ringing. */
-    fun expectKeyFor(callId: String) { pendingKeyCallId = callId }
+    fun expectKeyFor(callId: String) {
+        if (secretCallId != callId && _state.value?.callId != callId) {
+            currentSecret = null; keyEpoch = 0
+        }
+        pendingKeyCallId = callId
+    }
+
+    fun forgetCallKey(callId: String) {
+        keyGenerations.remove(callId)
+        if (secretCallId == callId) {
+            currentSecret = null; secretCallId = null; keyEpoch = 0; keyMinter = null
+        }
+        if (pendingKeyCallId == callId) pendingKeyCallId = null
+    }
+
+    /** Carry the 1:1 generation forward so escalation always supersedes the peer's key. */
+    fun seedOneToOneSecret(callId: String, secret: String, epoch: Int) {
+        if (CallManager.state.value?.callId != callId) return
+        if (secretCallId == callId && keyEpoch > epoch) return
+        secretCallId = callId
+        currentSecret = secret
+        keyEpoch = epoch
+        keyGenerations[callId] = epoch
+        keyMinter = appContext?.let { TokenStore.get(it).userId }
+    }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // Inviter: add a person to a live 1:1 call
@@ -303,7 +335,15 @@ object ConferenceManager {
     ) {
         init(context)
         val ctx = appContext ?: return
+        if (!addingPerson.compareAndSet(false, true)) return
+        val session = generation
+        fun stillOnCall(): Boolean = generation == session &&
+            (isCurrent(callId, session) || CallManager.state.value?.let {
+                it.callId == callId && it.phase == CallManager.Phase.CONNECTED
+            } == true)
         scope.launch {
+            try {
+            if (!stillOnCall()) return@launch
             val api = ConferenceApi(ctx)
             val res = try {
                 api.escalate(callId, inviteeUserId)
@@ -325,6 +365,7 @@ object ConferenceManager {
                 return@launch
             }
 
+            if (!stillOnCall()) return@launch
             val myId = TokenStore.get(ctx).userId
             val inviteeName = com.voiid.app.store.UserDirectory
                 .callRosterName(inviteeUserId, res.invitee?.username)
@@ -340,7 +381,9 @@ object ConferenceManager {
                         stage = Stage.ESCALATING,
                         isInviter = true,
                         roster = res.participants,
-                        videoEnabled = kind == CallKind.VIDEO,
+                        muted = CallManager.state.value?.muted ?: false,
+                        speakerOn = CallManager.state.value?.speaker ?: true,
+                        videoEnabled = CallManager.state.value?.videoEnabled ?: (kind == CallKind.VIDEO),
                         notice = "Adding $inviteeName…",
                     )
                 } else {
@@ -353,6 +396,7 @@ object ConferenceManager {
             // §3.3 — mint a FRESH secret and fan it pairwise. Every participant, including the
             // original peer, gets the new epoch: a key the invitee never had is not a key.
             val secret = mintAndFan(callId, res.participants)
+            if (!isCurrent(callId, session)) return@launch
             if (secret == null) {
                 fail("Couldn't share the call's encryption key.", keepCall = true)
                 withContext(Dispatchers.Main) { onResult("Couldn't set up encryption for the new participant.") }
@@ -366,9 +410,13 @@ object ConferenceManager {
             runCatching { ws.sendCallInvite(inviteeUserId, callId, kind, adhocRoomName(callId)) }
             peerUserId?.let { runCatching { ws.sendCallMigrate(it, callId, adhocRoomName(callId)) } }
 
-            connectRoom(ctx, callId, publishMedia = false)
-            armCutover(callId)
+            if (_state.value?.stage == Stage.ESCALATING) {
+                armCutover(callId)
+                connectRoom(ctx, callId, publishMedia = false)
+                maybeCutOver()
+            }
             withContext(Dispatchers.Main) { onResult(null) }
+            } finally { addingPerson.set(false) }
         }
     }
 
@@ -394,12 +442,17 @@ object ConferenceManager {
                 kind = live.kind,
                 stage = Stage.ESCALATING,
                 isInviter = false,
-                videoEnabled = live.kind == CallKind.VIDEO,
+                muted = live.muted,
+                speakerOn = live.speaker,
+                videoEnabled = live.videoEnabled,
                 notice = "Adding someone to the call…",
             )
         }
+        val session = generation
+        armCutover(frame.callId)
         scope.launch {
             refreshRoster(frame.callId)
+            if (!isCurrent(frame.callId, session)) return@launch
             // Subscribe-only, exactly like the inviter: the 1:1 stack still owns the microphone
             // and will until the inviter's `call_hangup` retires that leg.
             connectRoom(ctx, frame.callId, publishMedia = false)
@@ -436,15 +489,18 @@ object ConferenceManager {
                 notice = "Joining…",
             )
         }
+        val session = generation
         scope.launch {
-            runCatching { WebSocketClient.get(ctx).sendCallInviteAccept(inviterUserId, callId) }
             // invited => joined. This is the membership event the inviter hangs its rekey off,
             // so it must happen before we expect to be able to decrypt anyone.
             val joined = runCatching { ConferenceApi(ctx).join(callId) }.getOrElse {
+                if (!isCurrent(callId, session)) return@launch
                 Log.e("VOIID", "conference: join failed", it)
                 fail("Couldn't join the call.", keepCall = false)
                 return@launch
             }
+            if (!isCurrent(callId, session)) return@launch
+            runCatching { WebSocketClient.get(ctx).sendCallInviteAccept(inviterUserId, callId) }
             _state.value = _state.value?.copy(roster = joined.participants, notice = null)
             connectRoom(ctx, callId, publishMedia = true)
         }
@@ -457,9 +513,9 @@ object ConferenceManager {
     fun declineInvite(context: Context, callId: String, inviterUserId: String) {
         init(context)
         val ctx = appContext ?: return
-        pendingKeyCallId = null
+        if (pendingKeyCallId == callId) { pendingKeyCallId = null; currentSecret = null; keyEpoch = 0 }
         scope.launch {
-            runCatching { WebSocketClient.get(ctx).sendCallInviteDecline(inviterUserId, callId) }
+            if (inviterUserId.isNotBlank()) runCatching { WebSocketClient.get(ctx).sendCallInviteDecline(inviterUserId, callId) }
             runCatching { ConferenceApi(ctx).leave(callId) }
                 .onFailure { Log.w("VOIID", "conference: decline leave failed (harmless)", it) }
         }
@@ -478,23 +534,29 @@ object ConferenceManager {
         val ctx = appContext ?: return false
         val myId = TokenStore.get(ctx).userId ?: return false
         val roster = _state.value?.roster.orEmpty()
-        val inviter = inviterUserId
-        if (inviter != null && roster.any { it.user_id == inviter }) return inviter == myId
-        val lowest = roster.map { it.user_id }.filter { it.isNotBlank() }.minOrNull() ?: return false
-        return lowest == myId
+        return conferenceKeyCoordinator(roster) == myId
     }
 
     /** Mint the next epoch, fan it to everyone else, apply it locally. Returns the secret. */
-    private suspend fun mintAndFan(callId: String, roster: List<CallRosterEntry>): String? {
+    private suspend fun mintAndFan(callId: String, roster: List<CallRosterEntry>): String? =
+        keyRotationMutex.withLock { mintAndFanSerial(callId, roster) }
+
+    private suspend fun mintAndFanSerial(callId: String, roster: List<CallRosterEntry>): String? {
+        val session = generation
+        if (!isCurrent(callId, session)) return null
         val c = courier ?: return null
         val ctx = appContext ?: return null
         val myId = TokenStore.get(ctx).userId
-        val recipients = roster.map { it.user_id }.filter { it.isNotBlank() && it != myId }
+        val recipients = roster.filter { it.state == "joined" || it.state == "invited" }.map { it.user_id }.filter { it.isNotBlank() && it != myId }
+        if (secretCallId != callId) { keyEpoch = keyGenerations[callId] ?: 0; secretCallId = callId }
+        keyMinter = myId
         val epoch = ++keyEpoch
+        keyGenerations[callId] = epoch
         val secret = runCatching { c.mintAndDistribute(callId, epoch, recipients) }.getOrElse {
             Log.e("VOIID", "conference: minting/distributing the call key failed", it)
             return null
         }
+        if (!isCurrent(callId, session)) return null
         currentSecret = secret
         applySecret(secret)
         return secret
@@ -540,8 +602,8 @@ object ConferenceManager {
         rekeyJob?.cancel()
         rekeyJob = scope.launch {
             delay(REKEY_DEBOUNCE_MS)
-            refreshRoster(callId)
-            if (!shouldMint()) return@launch
+            refreshRoster(callId, rekeyOnChange = false)
+            if (!isCurrent(callId) || !shouldMint()) return@launch
             Log.i("VOIID", "conference: re-keying ($reason)")
             mintAndFan(callId, _state.value?.roster.orEmpty())
         }
@@ -560,14 +622,36 @@ object ConferenceManager {
      * every future call and quietly convert a shared call into a persistent identity edge, which
      * is precisely what "a shared call grants no messaging rights" forbids.
      */
-    private suspend fun refreshRoster(callId: String) {
+    private suspend fun refreshRoster(callId: String, rekeyOnChange: Boolean = true) {
+        val session = generation
         val ctx = appContext ?: return
         val res = runCatching { ConferenceApi(ctx).participants(callId) }.getOrElse {
             Log.w("VOIID", "conference: roster refresh failed (keeping the last one)", it)
             return
         }
-        _state.value = _state.value?.copy(roster = res.participants)
+        if (!isCurrent(callId, session)) return
+        if (res.status in setOf("ended", "missed", "declined")) {
+            endInternal(userInitiated = false)
+            return
+        }
+        val next = res.participants.filter { it.state == "joined" || it.state == "invited" }
+        val before = _state.value?.roster.orEmpty().map { it.user_id to it.state }.toSet()
+        _state.value = _state.value?.copy(roster = next)
         publishSnapshot()
+        if (rekeyOnChange && before != next.map { it.user_id to it.state }.toSet() && shouldMint()) {
+            mintAndFan(callId, next)
+        }
+    }
+
+    private fun startRosterPolling(callId: String) {
+        rosterJob?.cancel()
+        val session = generation
+        rosterJob = scope.launch {
+            while (isCurrent(callId, session)) {
+                refreshRoster(callId)
+                delay(3_000)
+            }
+        }
     }
 
     /** For the "add person" sheet and any surface that wants the current roster on demand. */
@@ -588,6 +672,16 @@ object ConferenceManager {
      * capture, and is flipped on at cutover.
      */
     private suspend fun connectRoom(ctx: Context, callId: String, publishMedia: Boolean) {
+        val session = generation
+        try {
+            kotlinx.coroutines.withTimeout(35_000) { connectRoomAttempt(ctx, callId, publishMedia, session) }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            if (isCurrent(callId, session)) fail("The conference couldn't connect. Try again.", keepCall = true)
+        }
+    }
+
+    private suspend fun connectRoomAttempt(ctx: Context, callId: String, publishMedia: Boolean, session: Long) {
+        if (!isCurrent(callId, session)) return
         if (room != null) {
             if (publishMedia) publishLocalMedia()
             return
@@ -595,6 +689,7 @@ object ConferenceManager {
         val creds = try {
             ConferenceApi(ctx).adhocToken(callId)
         } catch (e: ApiError.Http) {
+            if (!isCurrent(callId, session)) return
             fail(
                 if (e.status == 503) "Conference calling isn't configured on this server."
                 else e.message ?: "Couldn't join the conference.",
@@ -602,6 +697,7 @@ object ConferenceManager {
             )
             return
         } catch (e: Exception) {
+            if (!isCurrent(callId, session)) return
             Log.e("VOIID", "conference: adhoc token failed", e)
             fail("Couldn't reach the server to join the conference.", keepCall = true)
             return
@@ -609,6 +705,11 @@ object ConferenceManager {
 
         // NEVER JOIN WITHOUT A KEY. Both group clients already refuse; so does this one. A room
         // joined with no frame encryption hands plaintext media to the SFU.
+        val keyDeadline = android.os.SystemClock.elapsedRealtime() + 8_000
+        while (isCurrent(callId, session) && currentSecret == null && android.os.SystemClock.elapsedRealtime() < keyDeadline) {
+            delay(100)
+        }
+        if (!isCurrent(callId, session)) return
         val secret = currentSecret
         val keyB64 = secret?.let { CallKeyCourier.liveKitSharedKey(it) }
         if (keyB64 == null) {
@@ -661,28 +762,34 @@ object ConferenceManager {
                 )
             }
         } catch (e: Exception) {
+            if (!isCurrent(callId, session)) return
             Log.e("VOIID", "conference: room create failed", e)
             fail("Couldn't start the conference engine.", keepCall = true)
             return
         }
-        if (_state.value == null) { runCatching { r.disconnect() }; return }   // torn down during setup
+        if (!isCurrent(callId, session)) { runCatching { r.disconnect(); r.release() }; return }   // torn down during setup
         room = r
+        startRosterPolling(callId)
         _state.value = _state.value?.copy(e2ee = true)
         startEventMirror(r)
 
         try {
             r.connect(creds.url, creds.token)
         } catch (e: Exception) {
+            if (!isCurrent(callId, session)) return
             Log.e("VOIID", "conference: connect failed", e)
             fail("Couldn't connect to the conference.", keepCall = true)
             return
         }
-        if (_state.value == null) { teardownRoom(); return }
+        if (!isCurrent(callId, session)) { runCatching { r.disconnect() }; return }
         _state.value = _state.value?.copy(sfuConnected = true)
         Log.i("VOIID", "conference: on the SFU room=${creds.room} publishing=$publishMedia")
 
         if (publishMedia) publishLocalMedia()
+        if (!isCurrent(callId, session)) return
         publishSnapshot()
+        maybeCutOver()
+        if (peerRetirementRequested) onPeerMigration(callId)
     }
 
     /**
@@ -694,12 +801,16 @@ object ConferenceManager {
     private suspend fun publishLocalMedia() {
         val r = room ?: return
         val s = _state.value ?: return
-        runCatching { r.localParticipant.setMicrophoneEnabled(true) }
-            .onFailure { Log.e("VOIID", "conference: mic publish failed", it) }
-        if (s.kind == CallKind.VIDEO) {
+        val session = generation
+        if (!isCurrent(s.callId, session)) return
+        runCatching { r.localParticipant.setMicrophoneEnabled(!s.muted) }
+            .onFailure { if (isCurrent(s.callId, session)) fail("Couldn't start conference audio.", keepCall = false); return }
+        if (!isCurrent(s.callId, session) || room !== r) return
+        if (s.videoEnabled) {
             runCatching { r.localParticipant.setCameraEnabled(true) }
                 .onFailure { Log.e("VOIID", "conference: camera publish failed", it) }
         }
+        if (!isCurrent(s.callId, session) || room !== r) return
         applySpeaker(s.speakerOn)
         publishSnapshot()
     }
@@ -708,6 +819,7 @@ object ConferenceManager {
         eventJob?.cancel()
         eventJob = scope.launch {
             r.events.events.collect { ev ->
+                if (room !== r) return@collect
                 when (ev) {
                     is RoomEvent.Disconnected -> {
                         Log.i("VOIID", "conference: disconnected reason=${ev.reason}")
@@ -801,8 +913,6 @@ object ConferenceManager {
 
         _state.value = cur.copy(
             tiles = listOfNotNull(local) + remotes,
-            muted = local?.micMuted ?: cur.muted,
-            videoEnabled = local?.cameraOn ?: cur.videoEnabled,
         )
     }
 
@@ -844,7 +954,7 @@ object ConferenceManager {
      */
     private fun maybeCutOver() {
         val s = _state.value ?: return
-        if (s.stage != Stage.ESCALATING) return
+        if (s.stage != Stage.ESCALATING || !s.sfuConnected) return
         if (!s.isInviter) return
         val ctx = appContext ?: return
         val myId = TokenStore.get(ctx).userId ?: return
@@ -858,20 +968,32 @@ object ConferenceManager {
         // Ordinary hangup: the peer's engine already knows this call is escalating and will treat
         // it as "retire the leg", while a peer that somehow missed the migrate simply ends the
         // call — which is the honest outcome for a client that never made it onto the SFU.
-        CallManager.retire1to1LegForConference(notifyPeer = true)
-        scope.launch { publishLocalMedia() }
+        CallManager.retire1to1LegForConference(notifyPeer = true) {
+            if (isCurrent(s.callId)) scope.launch { publishLocalMedia() }
+        }
     }
 
     /**
      * The 1:1 leg has gone away on THIS device (the inviter hung it up). Called by [CallManager].
      * Promotes us to CONFERENCE and takes over the microphone.
      */
+    fun onPeerMigration(callId: String) {
+        val current = _state.value ?: return
+        if (current.callId != callId || current.stage != Stage.ESCALATING) return
+        peerRetirementRequested = true
+        if (!current.sfuConnected) return
+        peerRetirementRequested = false
+        CallManager.retire1to1LegForConference(notifyPeer = false) {
+            if (isCurrent(callId)) on1to1LegRetired()
+        }
+    }
+
     fun on1to1LegRetired() {
         val s = _state.value ?: return
         if (s.stage != Stage.ESCALATING) return
         cutoverJob?.cancel(); cutoverJob = null
         _state.value = s.copy(stage = Stage.CONFERENCE, notice = null)
-        scope.launch { publishLocalMedia() }
+        scope.launch { if (isCurrent(s.callId)) publishLocalMedia() }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -880,7 +1002,14 @@ object ConferenceManager {
 
     fun toggleMute() {
         val r = room ?: return
-        val target = !(_state.value?.muted ?: false)
+        val current = _state.value ?: return
+        val target = !current.muted
+        _state.value = current.copy(muted = target)
+        if (current.stage == Stage.ESCALATING) {
+            if (CallManager.state.value?.muted != target) CallManager.toggleMute()
+            return
+        }
+        if (!current.sfuConnected) return
         scope.launch {
             runCatching { r.localParticipant.setMicrophoneEnabled(!target) }
                 .onFailure { Log.e("VOIID", "conference: toggle mute failed", it) }
@@ -890,7 +1019,14 @@ object ConferenceManager {
 
     fun toggleVideo() {
         val r = room ?: return
-        val target = !(_state.value?.videoEnabled ?: false)
+        val current = _state.value ?: return
+        val target = !current.videoEnabled
+        _state.value = current.copy(videoEnabled = target)
+        if (current.stage == Stage.ESCALATING) {
+            if (CallManager.state.value?.videoEnabled != target) CallManager.toggleVideo()
+            return
+        }
+        if (!current.sfuConnected) return
         scope.launch {
             runCatching { r.localParticipant.setCameraEnabled(target) }
                 .onFailure { Log.e("VOIID", "conference: toggle video failed", it) }
@@ -910,7 +1046,9 @@ object ConferenceManager {
 
     fun toggleSpeaker() {
         val on = !(_state.value?.speakerOn ?: true)
-        applySpeaker(on)
+        if (_state.value?.stage == Stage.ESCALATING) {
+            if (CallManager.state.value?.speaker != on) CallManager.toggleSpeaker()
+        } else applySpeaker(on)
         _state.value = _state.value?.copy(speakerOn = on)
     }
 
@@ -956,7 +1094,7 @@ object ConferenceManager {
                 // setMicrophoneEnabled suspends, and the focus callback arrives on the
                 // AudioManager's thread — so it has to hop onto this engine's scope.
                 scope.launch {
-                    runCatching { room?.localParticipant?.setMicrophoneEnabled(!interrupted) }
+                    runCatching { room?.localParticipant?.setMicrophoneEnabled(!interrupted && _state.value?.muted == false) }
                 }
             }
             // Captured BEFORE the first override, and only once.
@@ -997,6 +1135,7 @@ object ConferenceManager {
     private fun endInternal(userInitiated: Boolean) {
         val s = synchronized(lifecycle) {
             val cur = _state.value ?: return
+            generation++
             _state.value = null
             cur
         }
@@ -1019,7 +1158,7 @@ object ConferenceManager {
         // it stayed forever — blocking every future call ("one call at a time") and keeping
         // the frame-cryptor keys alive past the call they belong to.
         val leg = CallManager.state.value
-        if (leg?.callId == s.callId && leg.isConferenceInvite) {
+        if (leg?.callId == s.callId) {
             CallManager.retireConferenceLeg(callId = s.callId)
         }
     }
@@ -1034,10 +1173,16 @@ object ConferenceManager {
      * take the still-standing 1:1 leg's relay authorization with it.
      */
     private fun fail(message: String, keepCall: Boolean) {
-        val cur = _state.value
+        val cur = _state.value ?: return
+        if (cur.stage == Stage.ENDED) return
+        val hasOriginalCall = keepCall && cur.stage == Stage.ESCALATING &&
+            CallManager.state.value?.let { it.callId == cur.callId && !it.isConferenceInvite && it.phase != CallManager.Phase.ENDED } == true
+        generation++
+        val session = generation
         if (cur != null) _state.value = cur.copy(stage = Stage.ENDED, error = message, notice = null)
         teardownRoom()
-        if (!keepCall) {
+        if (!hasOriginalCall) {
+            CallManager.retireConferenceLeg(cur.callId)
             val ctx = appContext
             val callId = cur?.callId
             if (ctx != null && callId != null) {
@@ -1046,7 +1191,7 @@ object ConferenceManager {
         }
         scope.launch {
             delay(ERROR_LINGER_MS)
-            if (_state.value?.error != null) _state.value = null
+            if (generation == session && _state.value?.error != null) _state.value = null
         }
     }
 
@@ -1059,15 +1204,21 @@ object ConferenceManager {
         // with no foreground service at all: backgrounding the app let Android suspend
         // capture, and on 12+ kill the process. Stopping here is half of the fix; the
         // start is in connectRoom.
-        appContext?.let { runCatching { CallForegroundService.stop(it) } }
+        appContext?.let {
+            if (CallManager.state.value?.phase in setOf(null, CallManager.Phase.ENDED))
+                runCatching { CallForegroundService.stop(it) }
+        }
+        rosterJob?.cancel(); rosterJob = null
         eventJob?.cancel(); eventJob = null
         rekeyJob?.cancel(); rekeyJob = null
         cutoverJob?.cancel(); cutoverJob = null
+        peerRetirementRequested = false
         val r = room
         room = null
         keyProvider = null
         lastAppliedKey = null
         currentSecret = null
+        secretCallId = null; keyMinter = null
         keyEpoch = 0
         inviterUserId = null
         originalPeerUserId = null

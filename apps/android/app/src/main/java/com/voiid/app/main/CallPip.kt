@@ -410,6 +410,8 @@ class CallPipController(private val activity: ComponentActivity) {
     private fun broadcast(action: String, requestCode: Int): PendingIntent {
         val intent = Intent(activity, com.voiid.app.net.CallActionReceiver::class.java)
             .setAction(action)
+            .putExtra(CallForegroundService.EXTRA_CALL_ID, CallManager.state.value?.callId)
+            .setData(android.net.Uri.parse("voiid://call-action/${CallManager.state.value?.callId}/$action"))
             .setPackage(activity.packageName)
         return PendingIntent.getBroadcast(
             activity,

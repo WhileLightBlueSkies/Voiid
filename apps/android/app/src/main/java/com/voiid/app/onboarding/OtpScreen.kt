@@ -3,6 +3,14 @@ package com.voiid.app.onboarding
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Lock
+import com.voiid.app.ui.components.VoiidMotion
+import com.voiid.app.ui.theme.VoiidRadius
+import com.voiid.app.ui.theme.VoiidSpacing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -187,23 +195,35 @@ fun OtpScreen(
         return
     }
 
-    OnbScaffold(showBack = true, onBack = onBack) {
-        Spacer(Modifier.height(24.dp))
-        Text("Verify your number", style = VoiidFont.rounded(22, FontWeight.Bold),
-            color = VoiidColor.textPrimary, modifier = Modifier.padding(horizontal = 24.dp))
+    OnboardingScaffold(
+        footer = {
+            OnboardingKitButton(
+                title = "Verify & Continue",
+                enabled = complete && !verifying,
+                busy = verifying,
+            ) { focus.clearFocus(); verify() }
+        },
+    ) {
+        Spacer(Modifier.height(VoiidSpacing.lg))
 
-        // Recipient line with an explicit way back to correct a wrong number — a wrong
-        // number is the most likely reason the code never arrives. Mirrors iOS `recipient`.
+        OnboardingHeader(
+            title = OnboardingTitleSpec.Stacked("Enter verification code", "we sent to you"),
+            blurb = "We've sent a $length-digit code to",
+        )
+
+        // The recipient, with an explicit way back to correct it — a wrong number is the
+        // most likely reason a code never arrives.
         Row(
-            modifier = Modifier.padding(horizontal = 24.dp).padding(top = 6.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(phoneNumber, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            Text(phoneNumber, style = VoiidFont.rounded(17, FontWeight.SemiBold),
+                color = VoiidBrand.text)
             Text(
                 "Change",
                 style = VoiidFont.rounded(15, FontWeight.Medium),
-                color = VoiidColor.primary,
+                color = VoiidBrand.lime,
                 modifier = Modifier.clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -211,10 +231,8 @@ fun OtpScreen(
                 ) { haptics.tap(); onBack() },
             )
         }
-        Text("We sent a $length-digit code to you", style = VoiidFont.rounded(14),
-            color = VoiidColor.textSecondary, modifier = Modifier.padding(horizontal = 24.dp).padding(top = 4.dp))
 
-        // Hidden field captures all input; decorationBox renders the display circles.
+        // Hidden field captures all input; decorationBox renders the display boxes.
         BasicTextField(
             value = code,
             onValueChange = { newVal ->
@@ -222,29 +240,27 @@ fun OtpScreen(
                 if (digits != code) {
                     code = digits
                     // A typed digit that did not complete the code still deserves feedback;
-                    // completing it dismisses the keyboard with a soft press. Mirrors iOS.
+                    // completing it dismisses the keyboard with a soft press.
                     if (digits.isNotEmpty() && digits.length < length) haptics.selection()
                     if (digits.length == length) { focus.clearFocus(); haptics.soft() }
                 }
             },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            // Text + cursor are invisible; the display circles below render the digits.
+            // Text + cursor are invisible; the boxes below render the digits.
             textStyle = TextStyle(color = Color.Transparent),
             cursorBrush = SolidColor(Color.Transparent),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(top = 32.dp)
+                .padding(top = VoiidSpacing.lg)
                 .focusRequester(fr)
                 // ONE-TIME-CODE semantics: the Android counterpart of iOS's
-                // `.textContentType(.oneTimeCode)` — password managers and Gboard offer the
-                // SMS code straight into this field.
+                // `.textContentType(.oneTimeCode)`.
                 .semantics { contentType = ContentType.Companion.SmsOtpCode }
                 .onFocusChanged { focused = it.isFocused },
             decorationBox = { innerTextField ->
                 Box {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        for (i in 0 until length) OtpCircle(i, code, focused, length)
+                        for (i in 0 until length) OtpBox(i, code, focused, length)
                     }
                     // Transparent input overlay keeps the IME attached + captures taps.
                     Box(Modifier.matchParentSize()) { innerTextField() }
@@ -258,7 +274,8 @@ fun OtpScreen(
 
         errorText?.let {
             Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error,
-                modifier = Modifier.padding(horizontal = 24.dp).padding(top = 12.dp))
+                modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.sm),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
 
         // Live countdown for the current code — real deadline, one tick per second.
@@ -271,90 +288,126 @@ fun OtpScreen(
                             append("The code has expired. Request a new one.")
                         }
                     } else {
-                        withStyle(SpanStyle(color = VoiidColor.textSecondary)) {
+                        withStyle(SpanStyle(color = VoiidBrand.textDim)) {
                             append("The code will expire in ")
                         }
                         val total = remainingSeconds.coerceAtLeast(0)
-                        withStyle(SpanStyle(color = VoiidColor.primary, fontFeatureSettings = "tnum")) {
+                        withStyle(SpanStyle(color = VoiidBrand.lime, fontFeatureSettings = "tnum")) {
                             append("%02d:%02d".format(total / 60, total % 60))
                         }
                     }
                 },
                 style = VoiidFont.rounded(14),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 16.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
             )
+        }
+
+        // The security note. Present on iOS and previously missing here entirely.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = VoiidSpacing.lg)
+                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .background(VoiidBrand.card)
+                .border(1.dp, VoiidBrand.hairline, RoundedCornerShape(VoiidRadius.lg))
+                .padding(VoiidSpacing.md),
+            horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier.size(46.dp).clip(CircleShape)
+                    .background(VoiidBrand.lime.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Default.Lock, null, tint = VoiidBrand.lime,
+                    modifier = Modifier.size(19.dp))
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Keep your code secure", style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                    color = VoiidBrand.text)
+                Text("Never share your code with anyone.\nVoiid will never ask for it.",
+                    style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim)
+            }
         }
 
         // Resend asks Firebase for a fresh code and REPLACES the verification id.
         Row(
-            modifier = Modifier.padding(horizontal = 24.dp).padding(top = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.lg),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         ) {
-            Icon(
-                Icons.Default.Refresh, null,
-                tint = VoiidColor.primary, modifier = Modifier.height(18.dp),
-            )
-            Text("Didn't receive the code?", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
+            Icon(Icons.Default.Refresh, null, tint = VoiidBrand.lime,
+                modifier = Modifier.size(17.dp))
+            Text("Didn't receive the code?", style = VoiidFont.rounded(15),
+                color = VoiidBrand.textDim)
             Text(
                 if (resending) "Sending…" else "Resend code",
                 style = VoiidFont.rounded(15, FontWeight.SemiBold),
-                color = VoiidColor.primary.copy(alpha = if (resending || verifying) 0.5f else 1f),
-                modifier = Modifier
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        enabled = !resending && !verifying,
-                    ) { haptics.tap(); resend() },
+                color = VoiidBrand.lime.copy(alpha = if (resending || verifying) 0.5f else 1f),
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    enabled = !resending && !verifying,
+                ) { haptics.tap(); resend() },
             )
         }
 
-        Spacer(Modifier.weight(1f))
-
-        OnbAccentButton(
-            title = if (verifying) "Verifying…" else "Continue",
-            enabled = complete && !verifying,
-            modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
-        ) { verify() }
+        Spacer(Modifier.height(VoiidSpacing.xl))
     }
 }
 
 @Composable
-private fun RowScope.OtpCircle(i: Int, code: String, keyboardUp: Boolean, length: Int) {
-    val activeIndex = minOf(code.length, length - 1)
-    val isActive = keyboardUp && i == activeIndex && code.length < length
+private fun RowScope.OtpBox(i: Int, code: String, keyboardUp: Boolean, length: Int) {
+    // The caret STAYS on the last box when the code is complete. Android previously cleared
+    // it (`code.length < length`), so a finished code highlighted nothing and the screen read
+    // as though focus had been lost.
+    val isCursor = keyboardUp && i == minOf(code.length, length - 1)
     val filled = i < code.length
-    val scale by animateFloatAsState(
-        if (isActive) 1.06f else 1f,
-        // Match iOS .spring(response: 0.3, dampingFraction: 0.6) — StiffnessMedium (1500)
-        // was too snappy; MediumLow (~400) matches the iOS feel.
-        spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow),
-        label = "otpScale",
+    val borderColor by androidx.compose.animation.animateColorAsState(
+        if (isCursor) VoiidBrand.lime else VoiidBrand.fieldEdge,
+        animationSpec = androidx.compose.animation.core.tween(150, easing = VoiidMotion.easeOut),
+        label = "otpBorder",
     )
-    val digit = if (i < code.length) code[i].toString() else ""
     Box(
         modifier = Modifier
             .weight(1f)
-            .height(52.dp)
-            .scale(scale)
-            .clip(CircleShape)
-            .background(VoiidColor.fieldFill)
+            .height(62.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(VoiidBrand.field)
             .border(
-                width = if (isActive) 2.dp else 1.dp,
-                color = if (isActive || filled) VoiidColor.primary else VoiidColor.fieldBorder,
-                shape = CircleShape,
+                width = if (isCursor) 1.5.dp else 1.dp,
+                color = borderColor,
+                shape = RoundedCornerShape(14.dp),
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Text(digit, style = VoiidFont.rounded(22, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        if (filled) {
+            Text(
+                code[i].toString(),
+                style = VoiidFont.rounded(26, FontWeight.SemiBold)
+                    .copy(fontFeatureSettings = "tnum"),
+                color = VoiidBrand.text,
+            )
+        } else {
+            // An UNDERSCORE, not an empty box: it says "a character goes here" where a bare
+            // outline says only "a box is here".
+            Box(
+                Modifier
+                    .offset(y = 12.dp)
+                    .size(width = 18.dp, height = 2.dp)
+                    .background(VoiidBrand.textDim.copy(alpha = 0.5f))
+            )
+        }
     }
 }
 
 @Composable
 private fun LaunchedFocus(fr: androidx.compose.ui.focus.FocusRequester) {
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        // small delay so the field is attached before requesting focus / showing the keyboard
-        kotlinx.coroutines.delay(150)
+        // 350ms, matching iOS. The field must be attached before focus is requested, and a
+        // keyboard that appears before the screen has settled reads as a jump.
+        kotlinx.coroutines.delay(350)
         runCatching { fr.requestFocus() }
     }
 }

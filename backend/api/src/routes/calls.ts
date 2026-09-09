@@ -697,16 +697,38 @@ router.post('/:id/status', requireAuth, asyncHandler(async (req, res) => {
   );
   if (!member[0]) return res.status(403).json({ error: 'not a member of this conversation' });
 
-  // Stamp answered_at on connect, ended_at on any terminal state (idempotent via coalesce).
-  await query(
-    `update calls set
-       status      = $2,
-       answered_at = case when $2 = 'connected' then coalesce(answered_at, now()) else answered_at end,
-       ended_at    = case when $2 in ('ended','missed','declined') then coalesce(ended_at, now()) else ended_at end,
-       end_reason  = coalesce($3, end_reason)
-     where id = $1`,
-    [callId, status, end_reason ?? null]
-  );
+  // Serialize the history decision with escalation: a request that waited behind
+  // admission must see the newly committed conference before choosing its end path.
+  const conference = await withTransaction(async (execute) => {
+    await execute(`select status from calls where id = $1 for update`, [callId]);
+    const participants = await execute<{ one: number }>(
+      `select 1 as one from call_participants where call_id = $1 limit 1`, [callId]
+    );
+    if (participants.length) return true;
+    // Stamp answered_at on connect, ended_at on any terminal state (idempotent via coalesce).
+    await execute(
+      `update calls set
+         status      = $2,
+         answered_at = case when $2 = 'connected' then coalesce(answered_at, now()) else answered_at end,
+         ended_at    = case when $2 in ('ended','missed','declined') then coalesce(ended_at, now()) else ended_at end,
+         end_reason  = coalesce($3, end_reason)
+       where id = $1 and ended_at is null
+         and status not in ('ended','missed','declined')
+         and not exists (select 1 from call_participants where call_id = $1)`,
+      [callId, status, end_reason ?? null]
+    );
+    return false;
+  });
+  // An older client or a failed upgrade may still post a 1:1 terminal status.
+  // Once membership exists, that means this person leaves, not everyone ends.
+  if (conference) {
+    if (status !== 'connected') {
+      await transitionConferenceParticipant(callId, user_id, 'leave');
+      const call = await loadCall(callId);
+      if (call) await refreshCallGrant(call);
+    }
+    return res.json({ call_id: callId, status, participant_only: true });
+  }
 
   return res.json({ call_id: callId, status });
 }));
@@ -815,7 +837,7 @@ async function canReachForCall(requester: string, invitee: string): Promise<bool
  * `call_participants` has never been written by anything, and the first escalation is
  * precisely the moment it starts being. So:
  *
- *   - a live `call_participants` row (state <> 'left'), for anyone already in the room; or
+ *   - a live `call_participants` row (state in ('invited', 'joined')), for anyone already in the room; or
  *   - active membership of the call's own conversation, for the ORIGINAL two participants
  *     of the 1:1 leg, whose only record of being on this call is the `calls` row itself.
  *
@@ -825,9 +847,10 @@ async function isLiveCallParticipant(call: CallRow, userId: string): Promise<boo
   const rows = await query<{ ok: boolean }>(
     `select (
         exists(select 1 from call_participants
-                where call_id = $1 and user_id = $2 and state <> 'left')
-     or exists(select 1 from conversation_members
-                where conversation_id = $3 and user_id = $2 and left_at is null)
+                where call_id = $1 and user_id = $2 and state in ('invited', 'joined'))
+     or (not exists(select 1 from call_participants where call_id = $1)
+         and exists(select 1 from conversation_members
+                where conversation_id = $3 and user_id = $2 and left_at is null))
      ) as ok`,
     [call.id, userId, call.conversation_id]
   );
@@ -890,6 +913,12 @@ export async function admitParticipant(input: {
     // Bring the original 1:1 pair in (idempotent), then record the requester's device. Inside
     // the lock, so the seeded pair is counted by any admission that follows.
     await seedOriginalParticipants(call, execute);
+    const requester = await execute<{ one: number }>(
+      `select 1 as one from call_participants
+        where call_id = $1 and user_id = $2 and state = 'joined'`,
+      [callId, requesterId]
+    );
+    if (!requester.length) return { status: 403, body: { error: 'not joined to this call' } };
     await execute(
       `insert into call_participants (call_id, user_id, device_id, state, state_changed_at)
        values ($1, $2, $3, 'joined', now())
@@ -961,10 +990,10 @@ async function seedOriginalParticipants(call: CallRow, execute: typeof query = q
 }
 
 /** Every user id currently permitted to be in this call, in join order. */
-async function liveParticipantIds(callId: string): Promise<string[]> {
-  const rows = await query<{ user_id: string }>(
+async function liveParticipantIds(callId: string, execute: typeof query = query): Promise<string[]> {
+  const rows = await execute<{ user_id: string }>(
     `select user_id from call_participants
-      where call_id = $1 and state <> 'left'
+      where call_id = $1 and state in ('invited', 'joined')
       order by joined_at asc, user_id asc`,
     [callId]
   );
@@ -984,29 +1013,38 @@ async function liveParticipantIds(callId: string): Promise<string[]> {
  * build that has not yet learned to read `p`.
  */
 async function refreshCallGrant(call: CallRow): Promise<string[]> {
-  const participants = await liveParticipantIds(call.id);
+  return withTransaction(async (execute) => {
+    const live = await execute<{ status: string }>(
+      `select status from calls where id = $1 for update`, [call.id]
+    );
+    if (!live[0] || !['ringing', 'connected'].includes(live[0].status)) {
+      await redis.del(ringGrantKey(call.id));
+      return [];
+    }
+    const participants = await liveParticipantIds(call.id, execute);
 
-  // The original callee = the other active member of the call's conversation. Read-only.
-  const peerRows = await query<{ user_id: string }>(
-    `select user_id from conversation_members
-      where conversation_id = $1 and user_id <> $2 and left_at is null
-      order by joined_at asc
-      limit 1`,
-    [call.conversation_id, call.caller_user_id]
-  );
-  const originalPeer = peerRows[0]?.user_id ?? participants.find((p) => p !== call.caller_user_id);
+    // The original callee = the other active member of the call's conversation. Read-only.
+    const peerRows = await execute<{ user_id: string }>(
+      `select user_id from conversation_members
+        where conversation_id = $1 and user_id <> $2 and left_at is null
+        order by joined_at asc
+        limit 1`,
+      [call.conversation_id, call.caller_user_id]
+    );
+    const originalPeer = peerRows[0]?.user_id ?? participants.find((p) => p !== call.caller_user_id);
 
-  const legacyPair: [string, string] | undefined = originalPeer
-    ? [call.caller_user_id, originalPeer]
-    : undefined;
+    const legacyPair: [string, string] | undefined = originalPeer
+      ? [call.caller_user_id, originalPeer]
+      : undefined;
 
-  await redis.set(
-    ringGrantKey(call.id),
-    encodeCallGrant(participants, legacyPair),
-    'EX',
-    CONFERENCE_GRANT_TTL_SECONDS
-  );
-  return participants;
+    await redis.set(
+      ringGrantKey(call.id),
+      encodeCallGrant(participants, legacyPair),
+      'EX',
+      CONFERENCE_GRANT_TTL_SECONDS
+    );
+    return participants;
+  });
 }
 
 /**
@@ -1028,7 +1066,7 @@ async function loadRoster(callId: string, selfId: string): Promise<CallRosterEnt
     `select cp.user_id, u.username, cp.state, cp.invited_by
        from call_participants cp
        join users u on u.id = cp.user_id
-      where cp.call_id = $1 and cp.state <> 'left'
+      where cp.call_id = $1 and cp.state in ('invited', 'joined')
       order by cp.joined_at asc, cp.user_id asc`,
     [callId]
   );
@@ -1194,11 +1232,17 @@ router.post('/:id/adhoc-token', requireAuth, asyncHandler(async (req, res) => {
     });
   }
 
+  const call = await loadCall(callId);
+  if (!call) return res.status(404).json({ error: 'call not found' });
+  if (!['ringing', 'connected'].includes(call.status)) {
+    return res.status(409).json({ error: 'call is not live' });
+  }
+
   // NOTE the gate: `call_participants`, state invited|joined. NOT conversation membership,
   // and NOT "is the call live" — an invitee answers before anyone marks them joined.
   const rows = await query<{ state: CallParticipantState }>(
     `select state from call_participants
-      where call_id = $1 and user_id = $2 and state <> 'left'`,
+      where call_id = $1 and user_id = $2 and state in ('invited', 'joined')`,
     [callId, user_id]
   );
   if (!rows[0]) return res.status(403).json({ error: 'not a participant of this call' });
@@ -1233,6 +1277,61 @@ router.post('/:id/adhoc-token', requireAuth, asyncHandler(async (req, res) => {
 // they arrived. The server never sees that secret — this endpoint only moves the row and
 // rewrites the relay grant.
 // ─────────────────────────────────────────────────────────────────────────────────
+/** Serialize participant transitions with admission and call closure. A late join must
+ * never revive a declined/left participant or reopen a call after its last member left. */
+export async function transitionConferenceParticipant(
+  callId: string, userId: string, action: 'join' | 'leave', deviceId: string | null = null
+): Promise<{ status: number; outcome?: string; changed?: boolean }> {
+  return withTransaction(async (execute) => {
+    const calls = await execute<{ status: string }>(
+      `select status from calls where id = $1 for update`, [callId]
+    );
+    if (!calls[0]) return { status: 404 };
+    if (action === 'join') {
+      if (!['ringing', 'connected'].includes(calls[0].status)) return { status: 409 };
+      const updated = await execute<{ state: string }>(
+        `update call_participants
+            set state = 'joined', device_id = coalesce($3, device_id), left_at = null,
+                joined_at = case when state = 'invited' then now() else joined_at end,
+                state_changed_at = now()
+          where call_id = $1 and user_id = $2 and state in ('invited', 'joined')
+          returning state`, [callId, userId, deviceId]
+      );
+      return { status: updated.length ? 200 : 403, outcome: updated[0]?.state };
+    }
+    const updated = await execute<{ state: string }>(
+      `update call_participants
+          set state = case when state = 'invited' then 'declined' else 'left' end,
+              left_at = now(), state_changed_at = now()
+        where call_id = $1 and user_id = $2 and state in ('invited', 'joined')
+        returning state`, [callId, userId]
+    );
+    if (!updated.length) {
+      const member = await execute<{ state: string }>(
+        `select state from call_participants where call_id = $1 and user_id = $2`, [callId, userId]
+      );
+      // An outsider must not rewrite a 1:1 grant as an empty conference grant.
+      return { status: member.length ? 200 : 403, changed: false };
+    }
+    // Pending invitations cannot keep an empty conference alive indefinitely.
+    const joined = await execute<{ one: number }>(
+      `select 1 as one from call_participants where call_id = $1 and state = 'joined' limit 1`, [callId]
+    );
+    if (updated.length && !joined.length) {
+      await execute(
+        `update call_participants set state = 'left', left_at = now(), state_changed_at = now()
+          where call_id = $1 and state = 'invited'`, [callId]
+      );
+      await execute(
+        `update calls set status = 'ended', ended_at = coalesce(ended_at, now()),
+            end_reason = coalesce(end_reason, 'hangup')
+          where id = $1 and status in ('ringing', 'connected')`, [callId]
+      );
+    }
+    return { status: 200, outcome: updated[0]?.state, changed: !!updated.length };
+  });
+}
+
 router.post('/:id/join', requireAuth, asyncHandler(async (req, res) => {
   const { user_id, device_id } = (req as any).auth;
   const callId = req.params.id;
@@ -1241,21 +1340,10 @@ router.post('/:id/join', requireAuth, asyncHandler(async (req, res) => {
   const call = await loadCall(callId);
   if (!call) return res.status(404).json({ error: 'call not found' });
 
-  // Joining requires an EXISTING non-left row: you may only join a call you were invited
-  // to (or were already in). There is no self-service join — that would make a known
-  // call_id a way into any room.
-  const updated = await query<{ user_id: string }>(
-    `update call_participants
-        set state = 'joined',
-            device_id = coalesce($3, device_id),
-            left_at = null,
-            joined_at = case when state = 'invited' then now() else joined_at end,
-            state_changed_at = now()
-      where call_id = $1 and user_id = $2 and state <> 'left'
-      returning user_id`,
-    [callId, user_id, device_id ?? null]
-  );
-  if (!updated[0]) return res.status(403).json({ error: 'not a participant of this call' });
+  const result = await transitionConferenceParticipant(callId, user_id, 'join', device_id ?? null);
+  if (result.status !== 200) {
+    return res.status(result.status).json({ error: result.status === 409 ? 'call is not live' : 'not a participant of this call' });
+  }
 
   const participants = await refreshCallGrant(call);
   return res.json({
@@ -1292,46 +1380,18 @@ router.post('/:id/leave', requireAuth, asyncHandler(async (req, res) => {
   const call = await loadCall(callId);
   if (!call) return res.status(404).json({ error: 'call not found' });
 
-  // `returning state` gives the NEW value, which is exactly what the caller needs to know:
-  // 'declined' if they were still only invited, 'left' if they had actually joined. There is
-  // no need to report the prior state, and reading it back with a subquery would read the
-  // ALREADY-UPDATED row anyway.
-  const updated = await query<{ state: string }>(
-    `update call_participants
-        set state = case when call_participants.state = 'invited' then 'declined' else 'left' end,
-            left_at = now(),
-            state_changed_at = now()
-      where call_id = $1 and user_id = $2 and state not in ('left', 'declined')
-      returning state`,
-    [callId, user_id]
-  );
-  // Idempotent: leaving twice is a no-op success, not a 403. Clients retry this on
-  // teardown and a failing retry would strand the grant naming someone who is gone.
+  const result = await transitionConferenceParticipant(callId, user_id, 'leave');
+  if (result.status !== 200) return res.status(result.status).json({ error: 'not a participant of this call' });
   const remaining = await refreshCallGrant(call);
-
-  // Last one out ends the call record. Writes `calls` only — never a conversation row.
-  if (remaining.length === 0) {
-    await query(
-      `update calls
-          set status = case when status in ('ringing','connected') then 'ended' else status end,
-              ended_at = coalesce(ended_at, now()),
-              end_reason = coalesce(end_reason, 'hangup')
-        where id = $1`,
-      [callId]
-    );
-    // Nobody may signal on this call any more. Dropping the grant is what makes that
-    // immediate rather than TTL-eventual.
-    await redis.del(ringGrantKey(callId));
-  }
 
   return res.json({
     call_id: callId,
     left: true,
-    was_participant: !!updated[0],
+    was_participant: result.changed ?? false,
     // WHICH transition happened, so the client can say the true thing. 'declined' means they
     // never joined; 'left' means they did. Without this the caller has to guess, and the two
     // are not interchangeable in any UI that reports them.
-    outcome: updated[0]?.state ?? null,
+    outcome: result.outcome ?? null,
     participant_count: remaining.length,
   });
 }));

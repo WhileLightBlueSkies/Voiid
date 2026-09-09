@@ -6,6 +6,10 @@ import android.util.Log
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 
 /**
  * Ad-hoc conference calling — the wire, the REST contract and the key courier.
@@ -389,7 +393,16 @@ class CallKeyCourier(context: Context) {
             }
 
         val env = runCatching { ApiClient.json.decodeFromString(CallKeyEnvelope.serializer(), plain) }
-            .getOrNull()
+            .getOrNull() ?: runCatching {
+                val obj = ApiClient.json.parseToJsonElement(plain).jsonObject
+                if (obj["k"]?.jsonPrimitive?.contentOrNull != "secret") return@runCatching null
+                CallKeyEnvelope(
+                    call_id = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: expectedCallId,
+                    epoch = obj["gen"]?.jsonPrimitive?.intOrNull ?: 1,
+                    secret = obj["secret"]?.jsonPrimitive?.contentOrNull ?: return@runCatching null,
+                    srtp_commit = false,
+                )
+            }.getOrNull()
         if (env == null || env.t != "voiid:call_key" || env.call_id != expectedCallId) {
             Log.w("VOIID", "call key: envelope rejected for call=$expectedCallId")
             return null
@@ -471,4 +484,11 @@ class CallKeyCourier(context: Context) {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
     }
+}
+
+/** Same election on both platforms, using only joined members of the shared roster. */
+internal fun conferenceKeyCoordinator(roster: List<CallRosterEntry>): String? {
+    val joined = roster.filter { it.state == "joined" }.map { it.user_id }.filter { it.isNotBlank() }.toSet()
+    return roster.mapNotNull { it.invited_by }.filter { it in joined }.minOrNull()
+        ?: joined.minOrNull()
 }

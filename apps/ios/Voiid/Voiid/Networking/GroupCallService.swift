@@ -110,11 +110,35 @@ final class GroupCallService: NSObject, ObservableObject {
     private var tickTimer: Timer?
     /// Guards against overlapping join attempts (double-tap on the call button).
     private var joining = false
+    private var generation = UUID()
+    private(set) var adhocCallId: String?
+    private var deferredMedia = false
+    private var joinDeadline: Task<Void, Never>?
+    private var keyRecoveryTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private static let keyRecoveryTimeout: Duration = .seconds(8)
+
+    private func isCurrent(_ session: UUID) -> Bool {
+        generation == session && !Task.isCancelled
+    }
+
+    private func beginJoin() -> UUID {
+        generation = UUID()
+        let session = generation
+        joining = true
+        joinDeadline?.cancel()
+        joinDeadline = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(35))
+            guard let self, self.isCurrent(session), self.joining else { return }
+            await self.teardown(failure: "The call couldn't connect. Try again.")
+        }
+        return session
+    }
     /// Live subscription to MLS epoch changes for the active conversation. When the
     /// group's membership changes mid-call the exporter secret rotates, so we must
     /// re-derive and re-apply the media key or participants at different epochs desync.
     /// Held only while in a call; torn down on leave.
     private var epochSubscription: AnyCancellable?
+    private var callKeySubscription: AnyCancellable?
 
     private override init() { super.init() }
 
@@ -142,14 +166,17 @@ final class GroupCallService: NSObject, ObservableObject {
     /// group call cannot take the app down with it.
     func join(conversationId: String, title: String, isVideo: Bool) async {
         guard !joining, !state.isActive else { return }
-        guard CallService.shared.active == nil else {
+        guard CallService.shared.active == nil ||
+            (CallService.shared.active?.isGroupCallInvite == true &&
+             CallService.shared.active?.conversationId == conversationId) else {
             state = .failed("Finish your current call first.")
             return
         }
 
-        joining = true
-        defer { joining = false }
+        let session = beginJoin()
+        defer { if generation == session { joining = false; joinDeadline?.cancel(); joinDeadline = nil } }
 
+        adhocCallId = nil
         self.conversationId = conversationId
         groupCallingUnavailable = false
         state = .connecting
@@ -164,16 +191,20 @@ final class GroupCallService: NSObject, ObservableObject {
                                          body: TokenBody(conversation_id: conversationId),
                                          as: TokenResponse.self)
         } catch let APIError.http(status, _, _) where status == 503 {
+            guard isCurrent(session) else { return }
             // LIVEKIT_* unset on this deployment — not an error the user caused.
             groupCallingUnavailable = true
             state = .failed("Group calling isn't available on this server.")
             self.conversationId = nil
             return
         } catch {
+            guard isCurrent(session) else { return }
             state = .failed("Couldn't start the group call.")
             self.conversationId = nil
             return
         }
+
+        guard isCurrent(session) else { return }
 
         // 2. The E2EE key, derived from our MLS group. If we can't derive it we
         //    must NOT fall back to an unencrypted room — that would silently hand
@@ -200,16 +231,19 @@ final class GroupCallService: NSObject, ObservableObject {
 
         do {
             try await room.connect(url: auth.url, token: auth.token)
+            guard isCurrent(session) else { await room.disconnect(); return }
             try await room.localParticipant.setMicrophone(enabled: true)
+            guard isCurrent(session) else { await room.disconnect(); return }
             if isVideo {
                 try await room.localParticipant.setCamera(enabled: true)
             }
         } catch {
-            await teardown()
-            state = .failed("Couldn't connect to the group call.")
+            guard isCurrent(session) else { return }
+            await teardown(failure: "Couldn't connect to the group call.")
             return
         }
 
+        guard isCurrent(session) else { await room.disconnect(); return }
         configureAudioSession()
         subscribeToEpochChanges(conversationId: conversationId)
         state = .connected
@@ -219,6 +253,7 @@ final class GroupCallService: NSObject, ObservableObject {
         // call is join-only and no one else learns it started.
         struct RingBody: Encodable { let conversation_id: String; let call_kind: String }
         Task {
+            guard isCurrent(session) else { return }
             _ = try? await api.request("POST", "calls/group/ring",
                 body: RingBody(conversation_id: conversationId,
                                call_kind: isVideo ? "video" : "voice")) as EmptyResponse
@@ -251,16 +286,18 @@ final class GroupCallService: NSObject, ObservableObject {
     func joinAdhoc(callId: String, url: String, token: String, room roomName: String,
                    passphrase: String, isVideo: Bool, deferAudioSession: Bool) async -> Bool {
         guard !joining, !state.isActive else { return false }
-        joining = true
-        defer { joining = false }
+        let session = beginJoin()
+        defer { if generation == session { joining = false; joinDeadline?.cancel(); joinDeadline = nil } }
 
         // Left nil on purpose: every path keyed on it (epoch subscription, group rekey, the
         // group ring) must stay inert for an ad-hoc room.
+        adhocCallId = callId
+        deferredMedia = deferAudioSession
         conversationId = nil
         groupCallingUnavailable = false
         state = .connecting
-        videoEnabled = isVideo
-        muted = false
+        videoEnabled = deferAudioSession ? CallService.shared.videoEnabled : isVideo
+        muted = deferAudioSession ? CallService.shared.muted : false
 
         let options = RoomOptions(
             defaultCameraCaptureOptions: CameraCaptureOptions(position: .front),
@@ -270,18 +307,30 @@ final class GroupCallService: NSObject, ObservableObject {
         )
         let room = Room(delegate: self, roomOptions: options)
         self.room = room
+        callKeySubscription = CallKeyExchange.shared.secretRotated
+            .filter { $0 == callId }
+            .sink { [weak self] id in
+                Task { @MainActor in
+                    guard let self, self.isCurrent(session), self.room === room,
+                          let key = CallKeyExchange.shared.passphrase(callId: id) else { return }
+                    room.e2eeManager?.keyProvider.setKey(key: key)
+                }
+            }
 
         do {
             try await room.connect(url: url, token: token)
-            try await room.localParticipant.setMicrophone(enabled: true)
-            if isVideo {
-                try await room.localParticipant.setCamera(enabled: true)
+            guard isCurrent(session) else { await room.disconnect(); return false }
+            if !deferAudioSession {
+                try await room.localParticipant.setMicrophone(enabled: !muted)
+                guard isCurrent(session) else { await room.disconnect(); return false }
+                if isVideo { try await room.localParticipant.setCamera(enabled: true) }
             }
         } catch {
-            await teardown()
-            state = .failed("Couldn't join the call.")
+            guard isCurrent(session) else { return false }
+            await teardown(failure: "Couldn't join the call.")
             return false
         }
+        guard isCurrent(session) else { await room.disconnect(); return false }
 
         if !deferAudioSession { configureAudioSession() }
         state = .connected
@@ -295,8 +344,22 @@ final class GroupCallService: NSObject, ObservableObject {
     /// so the cutover happens exactly once, after the old leg is gone rather than while it is
     /// still configuring the same session.
     func adoptAudioSession() {
-        guard state.isActive else { return }
+        guard state.isActive, let room else { return }
         configureAudioSession()
+        guard deferredMedia else { return }
+        deferredMedia = false
+        let session = generation
+        Task {
+            do {
+                guard isCurrent(session) else { return }
+                try await room.localParticipant.setMicrophone(enabled: !muted)
+                guard isCurrent(session) else { return }
+                if videoEnabled { try await room.localParticipant.setCamera(enabled: true) }
+            } catch {
+                guard isCurrent(session) else { return }
+                await teardown(failure: "Couldn't start conference audio.")
+            }
+        }
     }
 
     /// Leave an ad-hoc conference room. Distinct from `leave()` only in what it does NOT do:
@@ -304,7 +367,8 @@ final class GroupCallService: NSObject, ObservableObject {
     /// `joinAdhoc` never set either. Idempotent — the conference layer calls this from the
     /// abort path, the explicit-leave path and the call-ended path, and any of the three may
     /// run after another already tore the room down.
-    func leaveAdhoc() async {
+    func leaveAdhoc(callId: String? = nil) async {
+        if let callId, adhocCallId != callId { return }
         guard state.isActive || room != nil else { return }
         await teardown()
     }
@@ -353,15 +417,16 @@ final class GroupCallService: NSObject, ObservableObject {
     // MARK: - Leave
 
     /// Leave the call and release the audio route. Idempotent.
-    func leave() async {
+    func leave(conversationId expectedConversationId: String? = nil) async {
+        if let expectedConversationId, conversationId != expectedConversationId { return }
         guard state.isActive || room != nil else { return }
+        let conferenceId = adhocCallId
         await teardown()
-        state = .idle
         // If THIS room was an ad-hoc conference (escalated 1:1 / accepted invite), close
         // the conference books and retire the CallService leg it grew out of. Without
         // this the retired leg stayed "active" forever, silently blocking new calls and
         // keeping frame-cryptor keys alive past their call.
-        await CallConferenceService.shared.noteGroupLeaveIfAdhoc()
+        if let conferenceId { await CallConferenceService.shared.noteGroupLeaveIfAdhoc(callId: conferenceId) }
     }
 
     // MARK: - Ongoing-call presence
@@ -408,36 +473,47 @@ final class GroupCallService: NSObject, ObservableObject {
         }
     }
 
-    private func teardown() async {
+    private func teardown(failure: String? = nil) async {
+        // Invalidate and detach before disconnect suspends. Old callbacks may still arrive.
+        generation = UUID()
+        joining = false
+        joinDeadline?.cancel(); joinDeadline = nil
+        keyRecoveryTasks.values.forEach { $0.cancel() }
+        keyRecoveryTasks.removeAll()
         stopPresenceHeartbeat(conversationId: conversationId)
         stopTicking()
-        epochSubscription?.cancel()
-        epochSubscription = nil
-        if let room {
-            room.remove(delegate: self)
-            await room.disconnect()
-        }
+        epochSubscription?.cancel(); epochSubscription = nil
+        callKeySubscription?.cancel(); callKeySubscription = nil
+        let oldRoom = room
         room = nil
+        oldRoom?.remove(delegate: self)
         participants = []
         conversationId = nil
+        adhocCallId = nil
+        deferredMedia = false
         connectedSeconds = 0
         muted = false
         videoEnabled = false
-        deactivateAudioSession()
+        state = failure.map { .failed($0) } ?? .idle
+        // During a failed upgrade the original 1:1 leg still owns the audio session.
+        if CallService.shared.migratingCallId == nil { deactivateAudioSession() }
+        await oldRoom?.disconnect()
     }
 
     // MARK: - Controls
 
-    func toggleMute() {
+    func toggleMute() { setMuted(!muted) }
+
+    func setMuted(_ next: Bool) {
         guard let room else { return }
-        let next = !muted
         muted = next  // optimistic, so the button responds immediately
+        guard !deferredMedia else { return }
         Task { [weak self] in
             do {
                 try await room.localParticipant.setMicrophone(enabled: !next)
             } catch {
                 // Roll back if the SDK refused.
-                await MainActor.run { self?.muted = !next }
+                await MainActor.run { if self?.room === room { self?.muted = !next } }
             }
         }
     }
@@ -446,11 +522,12 @@ final class GroupCallService: NSObject, ObservableObject {
         guard let room else { return }
         let next = !videoEnabled
         videoEnabled = next
+        guard !deferredMedia else { return }
         Task { [weak self] in
             do {
                 try await room.localParticipant.setCamera(enabled: next)
             } catch {
-                await MainActor.run { self?.videoEnabled = !next }
+                await MainActor.run { if self?.room === room { self?.videoEnabled = !next } }
             }
             await MainActor.run { self?.refreshParticipants() }
         }
@@ -578,17 +655,17 @@ final class GroupCallService: NSObject, ObservableObject {
 extension GroupCallService: RoomDelegate {
     nonisolated func room(_ room: Room, didUpdateConnectionState state: ConnectionState, from _: ConnectionState) {
         Task { @MainActor in
+            guard self.room === room else { return }
             switch state {
             case .connected:
                 // Covers both first connect and recovery from a drop.
-                if self.state != .connected, self.room != nil { self.state = .connected }
+                if !self.joining, self.state != .connected { self.state = .connected }
                 self.refreshParticipants()
             case .reconnecting:
                 if self.state.isActive { self.state = .reconnecting }
             case .disconnected:
                 if self.state.isActive {
                     await self.teardown()
-                    self.state = .idle
                 }
             default:
                 break
@@ -596,63 +673,89 @@ extension GroupCallService: RoomDelegate {
         }
     }
 
-    nonisolated func room(_: Room, didDisconnectWithError error: LiveKitError?) {
+    nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
         Task { @MainActor in
+            guard self.room === room else { return }
             guard self.state.isActive else { return }
-            await self.teardown()
-            // A clean hang-up also lands here; only surface genuine errors.
-            self.state = error == nil ? .idle : .failed("The group call disconnected.")
+            await self.teardown(failure: error == nil ? nil : "The group call disconnected.")
         }
     }
 
-    nonisolated func room(_: Room, didFailToConnectWithError _: LiveKitError?) {
+    nonisolated func room(_ room: Room, didFailToConnectWithError _: LiveKitError?) {
         Task { @MainActor in
-            await self.teardown()
-            self.state = .failed("Couldn't connect to the group call.")
+            guard self.room === room else { return }
+            await self.teardown(failure: "Couldn't connect to the group call.")
         }
     }
 
-    nonisolated func room(_: Room, participantDidConnect _: RemoteParticipant) {
-        Task { @MainActor in self.refreshParticipants() }
+    nonisolated func room(_ room: Room, participantDidConnect _: RemoteParticipant) {
+        Task { @MainActor in
+            guard self.room === room else { return }; self.refreshParticipants() }
     }
 
-    nonisolated func room(_: Room, participantDidDisconnect _: RemoteParticipant) {
-        Task { @MainActor in self.refreshParticipants() }
+    nonisolated func room(_ room: Room, participantDidDisconnect _: RemoteParticipant) {
+        Task { @MainActor in
+            guard self.room === room else { return }; self.refreshParticipants() }
     }
 
-    nonisolated func room(_: Room, didUpdateSpeakingParticipants _: [Participant]) {
-        Task { @MainActor in self.refreshParticipants() }
+    nonisolated func room(_ room: Room, didUpdateSpeakingParticipants _: [Participant]) {
+        Task { @MainActor in
+            guard self.room === room else { return }; self.refreshParticipants() }
     }
 
-    nonisolated func room(_: Room, participant _: RemoteParticipant, didSubscribeTrack _: RemoteTrackPublication) {
-        Task { @MainActor in self.refreshParticipants() }
+    nonisolated func room(_ room: Room, participant _: RemoteParticipant, didSubscribeTrack _: RemoteTrackPublication) {
+        Task { @MainActor in
+            guard self.room === room else { return }; self.refreshParticipants() }
     }
 
-    nonisolated func room(_: Room, participant _: RemoteParticipant, didUnsubscribeTrack _: RemoteTrackPublication) {
-        Task { @MainActor in self.refreshParticipants() }
+    nonisolated func room(_ room: Room, participant _: RemoteParticipant, didUnsubscribeTrack publication: RemoteTrackPublication) {
+        Task { @MainActor in
+            guard self.room === room else { return }
+            self.keyRecoveryTasks.removeValue(forKey: ObjectIdentifier(publication))?.cancel()
+            self.refreshParticipants()
+        }
     }
 
-    nonisolated func room(_: Room, participant _: LocalParticipant, didPublishTrack _: LocalTrackPublication) {
-        Task { @MainActor in self.refreshParticipants() }
+    nonisolated func room(_ room: Room, participant _: LocalParticipant, didPublishTrack _: LocalTrackPublication) {
+        Task { @MainActor in
+            guard self.room === room else { return }; self.refreshParticipants() }
     }
 
-    nonisolated func room(_: Room, participant _: LocalParticipant, didUnpublishTrack _: LocalTrackPublication) {
-        Task { @MainActor in self.refreshParticipants() }
+    nonisolated func room(_ room: Room, participant _: LocalParticipant, didUnpublishTrack _: LocalTrackPublication) {
+        Task { @MainActor in
+            guard self.room === room else { return }; self.refreshParticipants() }
     }
 
-    nonisolated func room(_: Room, participant _: Participant, trackPublication _: TrackPublication, didUpdateIsMuted _: Bool) {
-        Task { @MainActor in self.refreshParticipants() }
+    nonisolated func room(_ room: Room, participant _: Participant, trackPublication _: TrackPublication, didUpdateIsMuted _: Bool) {
+        Task { @MainActor in
+            guard self.room === room else { return }; self.refreshParticipants() }
     }
 
     /// E2EE health. If frames stop decrypting the key is out of step with the
     /// group — usually a membership commit we haven't applied yet.
-    nonisolated func room(_: Room, trackPublication _: TrackPublication, didUpdateE2EEState e2eeState: E2EEState) {
+    nonisolated func room(_ room: Room, trackPublication publication: TrackPublication, didUpdateE2EEState e2eeState: E2EEState) {
         Task { @MainActor in
-            // `missing_key` can appear transiently right after joining, so it is
-            // deliberately not treated as fatal.
-            if e2eeState == .decryption_failed || e2eeState == .encryption_failed {
-                self.state = .failed("Encryption keys are out of sync. Rejoin the call.")
-            }
+            self.handleEncryptionState(room: room, publication: publication, state: e2eeState)
+        }
+    }
+
+    private func handleEncryptionState(room: Room, publication: TrackPublication, state: E2EEState) {
+        guard self.room === room else { return }
+        let id = ObjectIdentifier(publication)
+        if state == .ok {
+            keyRecoveryTasks.removeValue(forKey: id)?.cancel()
+            return
+        }
+        guard state == .decryption_failed || state == .encryption_failed || state == .missing_key,
+              keyRecoveryTasks[id] == nil else { return }
+        let session = generation
+        // A membership change delivers the new encrypted key separately from media.
+        // Keep encryption enabled while it catches up; never fall back to plaintext.
+        keyRecoveryTasks[id] = Task { [weak self] in
+            do { try await Task.sleep(for: Self.keyRecoveryTimeout) } catch { return }
+            guard let self, self.isCurrent(session), self.room === room else { return }
+            self.keyRecoveryTasks[id] = nil
+            await self.teardown(failure: "Encryption keys are out of sync. Rejoin the call.")
         }
     }
 }

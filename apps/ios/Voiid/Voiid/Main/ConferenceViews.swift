@@ -119,6 +119,7 @@ struct ConferenceInviteSheet: View {
 /// exact thing the conference design refuses.
 struct ConferenceRoster: View {
     @ObservedObject private var conference = CallConferenceService.shared
+    @ObservedObject private var room = GroupCallService.shared
 
     var body: some View {
         if conference.roster.count > 1 {
@@ -129,9 +130,10 @@ struct ConferenceRoster: View {
                     .textCase(.uppercase)
 
                 ForEach(conference.roster) { entry in
+                    let onRoom = room.participants.contains { $0.userId == entry.userId }
                     HStack(spacing: 8) {
                         Circle()
-                            .fill(entry.isRinging ? VoiidColor.accent : Color.green)
+                            .fill(onRoom ? Color.green : VoiidColor.accent)
                             .frame(width: 6, height: 6)
                         // Resolved by the engine, never here — see the header. An unknown
                         // participant renders as @username and nothing more.
@@ -139,8 +141,8 @@ struct ConferenceRoster: View {
                             .font(VoiidFont.rounded(13, .medium))
                             .foregroundColor(.white)
                             .lineLimit(1)
-                        if entry.isRinging {
-                            Text("ringing")
+                        if !onRoom {
+                            Text(entry.isRinging ? "Ringing…" : "Joining…")
                                 .font(VoiidFont.rounded(11, .regular))
                                 .foregroundColor(.white.opacity(0.6))
                         }
@@ -182,7 +184,7 @@ struct ConferenceInviteBanner: View {
                 HStack(spacing: VoiidSpacing.xl) {
                     Button {
                         Haptics.rigid()
-                        Task { await conference.declineInvite() }
+                        CallService.shared.decline()
                     } label: {
                         Image(systemName: "phone.down.fill")
                             .font(.system(size: 22)).foregroundColor(.white)
@@ -191,7 +193,7 @@ struct ConferenceInviteBanner: View {
                     }
                     Button {
                         Haptics.tap()
-                        Task { _ = await conference.acceptInvite() }
+                        CallService.shared.accept()
                     } label: {
                         Image(systemName: "phone.fill")
                             .font(.system(size: 22)).foregroundColor(.white)

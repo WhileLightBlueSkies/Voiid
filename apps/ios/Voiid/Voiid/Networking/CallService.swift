@@ -180,6 +180,45 @@ final class CallService: NSObject, ObservableObject {
         return LKRTCPeerConnectionFactory(encoderFactory: encoder, decoderFactory: decoder)
     }()
 
+    private var setupTask: Task<Void, Never>?
+    private var connectDeadlineTask: Task<Void, Never>?
+    private var recoveryDeadlineTask: Task<Void, Never>?
+    private var endedCallIds: [String] = []
+
+    private func isCurrentCall(_ id: String) -> Bool {
+        active?.id == id && active?.state != .ended
+    }
+
+    private func startConnectDeadline(for id: String) {
+        guard connectDeadlineTask == nil else { return }
+        connectDeadlineTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(35)) } catch { return }
+            guard let self, self.isCurrentCall(id), !self.everConnected else { return }
+            self.pendingEndReason = .setupFailed
+            self.endActiveCall(notifyPeer: true, fromCallKit: false)
+        }
+    }
+
+    private func armRecoveryDeadline(for id: String, seconds: Double, retry: Bool) {
+        recoveryDeadlineTask?.cancel()
+        recoveryDeadlineTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            guard let self, self.isCurrentCall(id) else { return }
+            self.recoveryDeadlineTask = nil
+            if let pc = self.pc, pc.iceConnectionState == .connected || pc.iceConnectionState == .completed {
+                self.handleIceRecovered()
+                return
+            }
+            self.restartBackoffTask?.cancel()
+            self.restartInFlight = false
+            if retry { self.requestIceRestart(reason: "restart deadline") }
+            else {
+                self.pendingEndReason = .iceFailed
+                self.endActiveCall(notifyPeer: true, fromCallKit: false)
+            }
+        }
+    }
+
     private var pc: LKRTCPeerConnection?
     private var localAudioTrack: LKRTCAudioTrack?
     private var videoCapturer: LKRTCCameraVideoCapturer?
@@ -358,8 +397,18 @@ final class CallService: NSObject, ObservableObject {
         socket.onCallIce = { [weak self] _, callId, cand, mline, mid in
             Task { @MainActor in self?.handleRemoteIce(callId: callId, candidate: cand, sdpMLineIndex: mline, sdpMid: mid) }
         }
-        socket.onCallHangup = { [weak self] _, callId in
-            Task { @MainActor in self?.handleRemoteEnd(callId: callId, reason: .remoteHangup) }
+        socket.onCallHangup = { [weak self] _, callId, wireReason in
+            Task { @MainActor in
+                if wireReason == "conference-migrated",
+                   CallConferenceService.shared.callId == callId {
+                    CallConferenceService.shared.completeRemoteHandover(callId: callId)
+                    return
+                }
+                let reason: CallEndReason = wireReason == "no-answer" ? .timeout :
+                    (wireReason == "ice-failed" ? .iceFailed :
+                        (wireReason == "setup-failed" ? .setupFailed : .remoteHangup))
+                self?.handleRemoteEnd(callId: callId, reason: reason)
+            }
         }
         socket.onCallBusy = { [weak self] _, callId in
             Task { @MainActor in self?.handleRemoteEnd(callId: callId, reason: .busy) }
@@ -370,8 +419,8 @@ final class CallService: NSObject, ObservableObject {
         socket.onCallRinging = { [weak self] _, callId in
             Task { @MainActor in self?.handleRemoteRinging(callId: callId) }
         }
-        socket.onCallTaken = { [weak self] callId, reason in
-            Task { @MainActor in self?.handleCallTakenElsewhere(callId: callId, reason: reason) }
+        socket.onCallTaken = { [weak self] callId, reason, winnerDeviceId in
+            Task { @MainActor in self?.handleCallTakenElsewhere(callId: callId, reason: reason, winnerDeviceId: winnerDeviceId) }
         }
         socket.onCallHold = { [weak self] _, callId in
             Task { @MainActor in self?.handlePeerHold(callId: callId, held: true) }
@@ -684,8 +733,9 @@ final class CallService: NSObject, ObservableObject {
         // callee's own cap is not enough on a bad network.
         startOutgoingRingCap(for: callId)
 
-        Task {
-            await setupPeerConnection(isVideo: isVideo)
+        setupTask = Task {
+            guard await setupPeerConnection(isVideo: isVideo, callId: callId),
+                  !Task.isCancelled, isCurrentCall(callId) else { return }
             CallManager.shared.startOutgoingCall(uuid: uuid, handle: peerUserId, displayName: title,
                                                  hasVideo: isVideo, phoneNumber: peerPhone(peerUserId))
             CallManager.shared.reportOutgoingConnecting(uuid: uuid)
@@ -734,6 +784,7 @@ final class CallService: NSObject, ObservableObject {
                     // A push token is not proof of reachability (the device may be off, or
                     // the token stale), so this is deliberately only the ZERO case: it means
                     // the server has nowhere to send, which is a fact rather than a guess.
+                    guard !Task.isCancelled, isCurrentCall(callId) else { return }
                     if (result.ringing_devices ?? 1) == 0 {
                         NSLog("[VOIID] callee has no registered devices — unavailable")
                         await MainActor.run {
@@ -747,8 +798,10 @@ final class CallService: NSObject, ObservableObject {
                     // send would be dropped in silence. Failing loudly here is the honest
                     // outcome: a call that cannot possibly connect must not present as
                     // ringing forever.
+                    guard !Task.isCancelled, isCurrentCall(callId) else { return }
                     NSLog("[VOIID] calls/ring failed — no grant, aborting call: \(error)")
-                    hangUp()
+                    pendingEndReason = .setupFailed
+                    endActiveCall(notifyPeer: true, fromCallKit: false)
                     return
                 }
             } else {
@@ -768,26 +821,33 @@ final class CallService: NSObject, ObservableObject {
             // talking to an old client.
             watchForKeyRotation()
             await CallKeyExchange.shared.beginOneToOne(callId: callId, peerUserId: peerUserId)
+            guard !Task.isCancelled, isCurrentCall(callId) else {
+                CallKeyExchange.shared.clear(callId: callId)
+                return
+            }
 
             await createAndSendOffer(callId: callId, peerUserId: peerUserId, isVideo: isVideo)
         }
     }
 
     private func createAndSendOffer(callId: String, peerUserId: String, isVideo: Bool) async {
-        guard let pc else { return }
+        guard isCurrentCall(callId), !Task.isCancelled, let pc else { return }
         let constraints = LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         do {
             let offer = try await pc.offer(for: constraints)
+            guard !Task.isCancelled, isCurrentCall(callId), self.pc === pc else { return }
             // Turn on Opus FEC/DTX before the SDP becomes our local description.
             let tuned = LKRTCSessionDescription(type: .offer,
                                               sdp: CallSDPTuning.tuneLocalDescription(offer.sdp))
             try await pc.setLocalDescription(tuned)
+            guard !Task.isCancelled, isCurrentCall(callId), self.pc === pc else { return }
             socket.sendCallOffer(toUserId: peerUserId, callId: callId,
                                  callKind: isVideo ? "video" : "voice", sdp: tuned.sdp)
             // Senders exist now; receivers arrive with the answer. Both are covered —
             // this call runs again from handleAnswer once the remote description lands.
             attachFrameCryptorsIfReady()
         } catch {
+            guard !Task.isCancelled, isCurrentCall(callId), self.pc === pc else { return }
             NSLog("[VOIID] call offer failed: \(error.localizedDescription)")
             pendingEndReason = .setupFailed
             endActiveCall(notifyPeer: true, fromCallKit: false)
@@ -874,6 +934,7 @@ final class CallService: NSObject, ObservableObject {
         guard call.isOutgoing else {
             NSLog("[VOIID] ICE restart needed (\(reason)) but we're the answerer — awaiting peer's offer")
             isReconnecting = true
+            if recoveryDeadlineTask == nil { armRecoveryDeadline(for: call.id, seconds: 30, retry: false) }
             return
         }
 
@@ -884,6 +945,7 @@ final class CallService: NSObject, ObservableObject {
         isReconnecting = true
         NSLog("[VOIID] ICE restart attempt \(attempt + 1)/\(Self.maxIceRestarts): \(reason)")
 
+        armRecoveryDeadline(for: call.id, seconds: Double(attempt + 1) * 10, retry: true)
         restartBackoffTask?.cancel()
         restartBackoffTask = Task { [weak self] in
             // First attempt fires immediately; later ones back off (0s, 2s, 4s).
@@ -908,6 +970,7 @@ final class CallService: NSObject, ObservableObject {
         // setConfiguration keeps the connection (and its media) alive; only the
         // candidate gathering is affected.
         let fresh = await fetchIceServers()
+        guard !Task.isCancelled, isCurrentCall(callId), self.pc === pc else { return }
         let config = pc.configuration
         config.iceServers = fresh
         if !pc.setConfiguration(config) {
@@ -923,13 +986,16 @@ final class CallService: NSObject, ObservableObject {
             let offer = try await pc.offer(for: constraints)
             let tuned = LKRTCSessionDescription(type: .offer,
                                               sdp: CallSDPTuning.tuneLocalDescription(offer.sdp))
+            guard !Task.isCancelled, isCurrentCall(callId), self.pc === pc else { return }
             try await pc.setLocalDescription(tuned)
+            guard !Task.isCancelled, isCurrentCall(callId), self.pc === pc else { return }
             // Same channel, same call_id — the peer treats this as renegotiation,
             // not a new incoming call (see handleIncomingOffer).
             socket.sendCallOffer(toUserId: peerUserId, callId: callId,
                                  callKind: isVideo ? "video" : "voice", sdp: tuned.sdp)
             NSLog("[VOIID] ICE restart offer sent for \(callId)")
         } catch {
+            guard !Task.isCancelled, isCurrentCall(callId), self.pc === pc else { return }
             NSLog("[VOIID] ICE restart offer failed: \(error.localizedDescription)")
             restartInFlight = false
             // Don't end the call here — the ICE state handlers will trigger
@@ -940,6 +1006,7 @@ final class CallService: NSObject, ObservableObject {
     /// A restart worked: clear the reconnect UI and let the call earn a fresh
     /// budget of attempts if the network misbehaves again later.
     private func handleIceRecovered() {
+        recoveryDeadlineTask?.cancel(); recoveryDeadlineTask = nil
         guard restartInFlight || isReconnecting || iceRestartAttempts > 0 else { return }
         NSLog("[VOIID] ICE recovered — resetting restart budget")
         restartInFlight = false
@@ -966,19 +1033,7 @@ final class CallService: NSObject, ObservableObject {
     /// Answerer-side backstop: if the caller's restart offer never arrives and ICE
     /// never comes back, end the call instead of hanging in limbo.
     private func startAnswererRecoveryWatchdog(callId: String) {
-        guard restartBackoffTask == nil else { return }
-        restartBackoffTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(30))
-            guard !Task.isCancelled, let self else { return }
-            guard let call = self.active, call.id == callId, call.state != .ended else { return }
-            if let pc = self.pc, pc.iceConnectionState == .connected || pc.iceConnectionState == .completed {
-                self.handleIceRecovered()
-                return
-            }
-            NSLog("[VOIID] no recovery from peer within watchdog — ending call \(callId)")
-            self.pendingEndReason = .iceFailed
-            self.endActiveCall(notifyPeer: true, fromCallKit: false)
-        }
+        if recoveryDeadlineTask == nil { armRecoveryDeadline(for: callId, seconds: 30, retry: false) }
     }
 
     /// `.disconnected` fires constantly on mobile and usually heals itself within
@@ -1043,6 +1098,17 @@ final class CallService: NSObject, ObservableObject {
                                         /// conversation's LiveKit room rather than an ad-hoc one.
                                         isGroupCall: Bool = false,
                                         completion: @escaping () -> Void) {
+        if endedCallIds.contains(callId) {
+            let uuid = UUID()
+            CallManager.shared.reportIncomingCall(uuid: uuid, handle: callerId.isEmpty ? callId : callerId,
+                displayName: displayName ?? "Voiid call", hasVideo: kind == "video") { _ in
+                Task { @MainActor in
+                    CallManager.shared.endCall(uuid: uuid)
+                    completion()
+                }
+            }
+            return
+        }
         // The WS offer beat the push (app was alive), or this is a duplicate push —
         // the call is already ringing, nothing to do. Still must call completion.
         if let active, active.id == callId { completion(); return }
@@ -1218,6 +1284,7 @@ final class CallService: NSObject, ObservableObject {
     }
 
     private func handleIncomingOffer(from: String, callId: String, kind: String, sdp: String) {
+        guard !endedCallIds.contains(callId) else { return }
         // RENEGOTIATION: an offer for a call that is already up. This is the peer
         // performing an ICE restart after a network handover — it is NOT a new
         // call. Do not ring, do not touch CallKit; just apply it and answer.
@@ -1339,13 +1406,16 @@ final class CallService: NSObject, ObservableObject {
             guard let pc, let current = active, current.id == call.id, current.state != .ended else { return }
             do {
                 try await pc.setRemoteDescription(LKRTCSessionDescription(type: .offer, sdp: sdp))
+                guard isCurrentCall(call.id), self.pc === pc, !Task.isCancelled else { return }
                 hasRemoteDescription = true
                 drainPendingCandidates()
                 let answer = try await pc.answer(for: LKRTCMediaConstraints(mandatoryConstraints: nil,
                                                                          optionalConstraints: nil))
                 let tuned = LKRTCSessionDescription(type: .answer,
                                                   sdp: CallSDPTuning.tuneLocalDescription(answer.sdp))
+                guard isCurrentCall(call.id), self.pc === pc, !Task.isCancelled else { return }
                 try await pc.setLocalDescription(tuned)
+                guard isCurrentCall(call.id), self.pc === pc, !Task.isCancelled else { return }
                 socket.sendCallAnswer(toUserId: from.isEmpty ? current.peerUserId : from,
                                       callId: current.id, sdp: tuned.sdp)
                 stats.resetRateBaseline()
@@ -1556,7 +1626,8 @@ final class CallService: NSObject, ObservableObject {
     /// would then have posted "missed call" for a call that was answered. The server
     /// now fans the verdict back to the user's own channel (`call_taken`); this is the
     /// only path that can distinguish "nobody picked up" from "someone else did".
-    private func handleCallTakenElsewhere(callId: String, reason: String) {
+    private func handleCallTakenElsewhere(callId: String, reason: String, winnerDeviceId: String?) {
+        if let winnerDeviceId, winnerDeviceId == E2EManager.shared.deviceId { return }
         if let waiting = waitingCall, waiting.id == callId {
             clearWaitingCall(sendBusy: false, takenElsewhere: reason)
             return
@@ -1564,7 +1635,10 @@ final class CallService: NSObject, ObservableObject {
         guard let call = active, call.id == callId, !call.isOutgoing else { return }
         // WE are the device that resolved it — this frame is the echo of our own
         // answer coming back off our own channel.
-        guard !localAnswerGiven, !everConnected, call.state == .incomingRinging else { return }
+        if winnerDeviceId == nil || reason == "busy" {
+            guard !localAnswerGiven, !everConnected, call.state == .incomingRinging else { return }
+        }
+        guard call.state != .ended else { return }
         NSLog("[VOIID] call \(callId) \(reason)ed on another device — stopping this ring")
         // Nothing was missed and the caller needs no hangup from us: the sibling
         // device is talking to them.
@@ -1572,7 +1646,7 @@ final class CallService: NSObject, ObservableObject {
         pendingEndReason = .declined   // ⇒ outcome "declined", never "missed"
         CallManager.shared.endCall(uuid: call.uuid,
                                    reason: reason == "answer" ? .answeredElsewhere : .declinedElsewhere)
-        endActiveCall(notifyPeer: false, fromCallKit: true)
+        endActiveCall(notifyPeer: false, fromCallKit: true, reportStatus: false)
         // recordCall upserts on the call id, so this corrects the row endActiveCall
         // just wrote — a call answered on your tablet belongs in history as answered.
         if reason == "answer" {
@@ -1653,7 +1727,7 @@ final class CallService: NSObject, ObservableObject {
             answerWaitingCall()
             return
         }
-        guard var call = active, call.uuid == uuid else { return }
+        guard var call = active, call.uuid == uuid, call.state != .ended else { return }
         // ── CONFERENCE INVITE: the conference engine owns acceptance. ──────────────
         // An ad-hoc invite NEVER receives an SDP offer — the invitee joins the SFU by
         // fetching an ad-hoc token — so falling through to the 1:1 answer path parked
@@ -1661,14 +1735,14 @@ final class CallService: NSObject, ObservableObject {
         // the engine that actually knows how to get in, and end the CallKit call if
         // joining fails rather than leaving a live report over a dead screen.
         if call.isConferenceInvite {
+            guard call.state == .incomingRinging else { return }
             localAnswerGiven = true
             ringCapTask?.cancel(); ringCapTask = nil
-        outgoingRingCapTask?.cancel(); outgoingRingCapTask = nil
             outgoingRingCapTask?.cancel(); outgoingRingCapTask = nil
             MissedCallNotifier.cancel(callId: call.id)
             call.state = .connecting
             active = call
-            Task { [weak self] in
+            setupTask = Task { [weak self] in
                 // A GROUP ring joins the conversation's own room; an ad-hoc conference
                 // invite goes through the escalation engine. Both are "no offer is coming",
                 // which is why they share this branch, but they join by different keys.
@@ -1681,16 +1755,18 @@ final class CallService: NSObject, ObservableObject {
                     // success and .failed on error, so the state IS the verdict.
                     joined = GroupCallService.shared.state.isActive
                 } else {
-                    joined = await CallConferenceService.shared.acceptInvite()
+                    joined = await CallConferenceService.shared.acceptInvite(callId: call.id, inviter: call.peerUserId)
                 }
                 guard joined else {
                     NSLog("[VOIID] conference accept failed — ending")
-                    pendingEndReason = .setupFailed
-                    guard let self, let current = self.active, current.id == call.id else { return }
+                    guard let self, let current = self.active, current.id == call.id, current.state != .ended else { return }
+                    self.pendingEndReason = .setupFailed
                     CallManager.shared.endCall(uuid: current.uuid)
                     self.endActiveCall(notifyPeer: false, fromCallKit: false)
                     return
                 }
+                guard let self, self.isCurrentCall(call.id) else { return }
+                self.markConnected()
             }
             return
         }
@@ -1698,6 +1774,7 @@ final class CallService: NSObject, ObservableObject {
         // fail — and remember it, because a call that fails after being answered is a
         // failed call, never a missed one.
         localAnswerGiven = true
+        startConnectDeadline(for: call.id)
         ringCapTask?.cancel(); ringCapTask = nil
         outgoingRingCapTask?.cancel(); outgoingRingCapTask = nil
         MissedCallNotifier.cancel(callId: call.id)
@@ -1715,17 +1792,21 @@ final class CallService: NSObject, ObservableObject {
         call.state = .connecting
         active = call
         watchForKeyRotation()
-        Task {
-            await setupPeerConnection(isVideo: call.isVideo)
-            guard let pc else { return }
+        setupTask?.cancel()
+        setupTask = Task {
+            guard await setupPeerConnection(isVideo: call.isVideo, callId: call.id),
+                  isCurrentCall(call.id), !Task.isCancelled, let pc else { return }
             do {
                 try await pc.setRemoteDescription(LKRTCSessionDescription(type: .offer, sdp: offerSDP))
+                guard isCurrentCall(call.id), self.pc === pc, !Task.isCancelled else { return }
                 hasRemoteDescription = true
                 drainPendingCandidates()
                 let answer = try await pc.answer(for: LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
                 let tuned = LKRTCSessionDescription(type: .answer,
                                                   sdp: CallSDPTuning.tuneLocalDescription(answer.sdp))
+                guard isCurrentCall(call.id), self.pc === pc, !Task.isCancelled else { return }
                 try await pc.setLocalDescription(tuned)
+                guard isCurrentCall(call.id), self.pc === pc, !Task.isCancelled else { return }
                 socket.sendCallAnswer(toUserId: call.peerUserId, callId: call.id, sdp: tuned.sdp)
                 // Callee side: receivers came with the offer; senders exist now. If the
                 // caller's `call_key` envelope already landed we cover everything here;
@@ -1735,6 +1816,7 @@ final class CallService: NSObject, ObservableObject {
                     callId: call.id, peerUserId: call.peerUserId,
                     localSDP: tuned.sdp, remoteSDP: offerSDP)
             } catch {
+                guard isCurrentCall(call.id), self.pc === pc, !Task.isCancelled else { return }
                 NSLog("[VOIID] call answer failed: \(error.localizedDescription)")
                 pendingEndReason = .setupFailed
                 endActiveCall(notifyPeer: true, fromCallKit: false)
@@ -1751,19 +1833,18 @@ final class CallService: NSObject, ObservableObject {
 
     /// Decline an incoming call.
     func decline() {
-        guard let call = active, !call.isOutgoing else { return }
+        guard let call = active, !call.isOutgoing, call.state == .incomingRinging else { return }
         // A declined CONFERENCE invite goes through the conference leave path — that is
         // what flips the server row from 'invited' to gone and refreshes everyone's
         // roster. The 1:1 decline frame would land on the inviter's engine as noise and
         // the roster would show a ghost ringer forever.
         if call.isConferenceInvite {
             pendingEndReason = .declined
-            Task { [weak self] in
-                await CallConferenceService.shared.declineInvite()
-                guard let self, let current = self.active, current.id == call.id else { return }
-                CallManager.shared.endCall(uuid: current.uuid)
-                self.endActiveCall(notifyPeer: false, fromCallKit: false)
+            if !call.isGroupCallInvite {
+                Task { await CallConferenceService.shared.declineInvite(callId: call.id, inviterUserId: call.peerUserId) }
             }
+            CallManager.shared.endCall(uuid: call.uuid)
+            endActiveCall(notifyPeer: false, fromCallKit: false)
             return
         }
         // peerUserId can still be empty if a VoIP push rang us with no caller_id and
@@ -1776,10 +1857,16 @@ final class CallService: NSObject, ObservableObject {
     // MARK: - Answer / ICE inbound
 
     private func handleAnswer(callId: String, sdp: String) {
-        guard let call = active, call.id == callId, let pc else { return }
+        guard let call = active, isCurrentCall(callId), let pc else { return }
+        if !everConnected {
+            active?.state = .connecting
+            CallToneService.shared.stopRingback()
+            startConnectDeadline(for: callId)
+        }
         Task {
             do {
                 try await pc.setRemoteDescription(LKRTCSessionDescription(type: .answer, sdp: sdp))
+                guard isCurrentCall(callId), self.pc === pc, !Task.isCancelled else { return }
                 hasRemoteDescription = true
                 drainPendingCandidates()
                 // Receivers exist now — finish covering the connection.
@@ -1794,8 +1881,13 @@ final class CallService: NSObject, ObservableObject {
                 // The attempt budget is only refunded once ICE actually connects.
                 restartInFlight = false
             } catch {
+                guard isCurrentCall(callId), self.pc === pc, !Task.isCancelled else { return }
                 NSLog("[VOIID] setRemoteDescription(answer) failed: \(error.localizedDescription)")
                 restartInFlight = false
+                if !everConnected {
+                    pendingEndReason = .setupFailed
+                    endActiveCall(notifyPeer: true, fromCallKit: false)
+                }
             }
         }
     }
@@ -1869,7 +1961,7 @@ final class CallService: NSObject, ObservableObject {
     func finishMigration(callId: String, notifyPeer: Bool) {
         guard let call = active, call.id == callId else { migratingCallId = nil; return }
         if notifyPeer {
-            WebSocketClient.shared.sendCallHangup(toUserId: call.peerUserId, callId: callId)
+            WebSocketClient.shared.sendCallHangup(toUserId: call.peerUserId, callId: callId, reason: "conference-migrated")
         }
         migratingCallId = nil
 
@@ -1878,6 +1970,10 @@ final class CallService: NSObject, ObservableObject {
         // happen: the user is still on this call, and the SFU is about to take the same audio
         // session over.
         offerTimeoutTask?.cancel(); offerTimeoutTask = nil
+        connectDeadlineTask?.cancel(); connectDeadlineTask = nil
+        recoveryDeadlineTask?.cancel(); recoveryDeadlineTask = nil
+        disconnectGraceTask?.cancel(); disconnectGraceTask = nil
+        restartBackoffTask?.cancel(); restartBackoffTask = nil
         videoCapturer?.stopCapture()
         videoCapturer = nil
         videoSource = nil
@@ -1909,6 +2005,7 @@ final class CallService: NSObject, ObservableObject {
             kind: isVideo ? "video" : "voice",
             conversationId: nil,
             displayName: nil,
+            isConference: true,
             completion: {}
         )
         // Marked after reporting: the report path builds the ActiveCall, and this is the one
@@ -1923,9 +2020,9 @@ final class CallService: NSObject, ObservableObject {
     /// `startCall` was silently blocked ("one call at a time") and the frame-cryptor
     /// keys outlived the call they belonged to.
     func retireConferenceLeg(callId: String) {
-        guard let call = active, call.id == callId, call.isConferenceInvite else { return }
+        guard let call = active, call.id == callId else { return }
         pendingEndReason = everConnected ? .localHangup : .unknown
-        endActiveCall(notifyPeer: false, fromCallKit: false)
+        endActiveCall(notifyPeer: false, fromCallKit: false, reportStatus: false)
     }
 
     func hangUp() {
@@ -1941,6 +2038,7 @@ final class CallService: NSObject, ObservableObject {
             clearWaitingCall(sendBusy: false, decline: true)
             return
         }
+        guard let current = active, current.uuid == uuid, current.state != .ended else { return }
         // Declining a CONFERENCE INVITE from the native UI must go out through the
         // conference leave path, or the server keeps our row 'invited' and every
         // participant's roster shows us ringing forever. `decline()` owns that logic;
@@ -1965,8 +2063,20 @@ final class CallService: NSObject, ObservableObject {
 
     /// Tear down the call. `notifyPeer` sends a hangup; `fromCallKit` avoids
     /// re-entering the CallKit end transaction.
-    func endActiveCall(notifyPeer: Bool, fromCallKit: Bool) {
-        guard let call = active else { return }
+    func endActiveCall(notifyPeer: Bool, fromCallKit: Bool, reportStatus: Bool = true) {
+        guard let call = active, call.state != .ended else { return }
+        let conferenceLeg = call.isConferenceInvite || CallConferenceService.shared.callId == call.id
+        let conferenceMedia = call.isConferenceInvite || CallConferenceService.shared.phase == .conference
+        active?.state = .ended
+        endedCallIds.append(call.id)
+        if endedCallIds.count > 128 { endedCallIds.removeFirst() }
+        setupTask?.cancel(); setupTask = nil
+        connectDeadlineTask?.cancel(); connectDeadlineTask = nil
+        recoveryDeadlineTask?.cancel(); recoveryDeadlineTask = nil
+        disconnectGraceTask?.cancel(); disconnectGraceTask = nil
+        restartBackoffTask?.cancel(); restartBackoffTask = nil
+        postCallMetrics(callId: call.id, endReason: pendingEndReason)
+        socket.dropQueuedFrames(forCallId: call.id, keepingTerminal: true)
         offerTimeoutTask?.cancel(); offerTimeoutTask = nil
         ringCapTask?.cancel(); ringCapTask = nil
         outgoingRingCapTask?.cancel(); outgoingRingCapTask = nil
@@ -1993,7 +2103,16 @@ final class CallService: NSObject, ObservableObject {
         }
         isOnHold = false
         peerOnHold = false
-        if notifyPeer, !call.peerUserId.isEmpty { socket.sendCallHangup(toUserId: call.peerUserId, callId: call.id) }
+        if notifyPeer, !conferenceMedia, !call.peerUserId.isEmpty {
+            if pendingEndReason == .declined {
+                socket.sendCallDecline(toUserId: call.peerUserId, callId: call.id)
+            } else {
+                socket.sendCallHangup(toUserId: call.peerUserId, callId: call.id,
+                    reason: pendingEndReason == .timeout ? "no-answer" :
+                        (pendingEndReason == .iceFailed ? "ice-failed" :
+                            (pendingEndReason == .setupFailed ? "setup-failed" : "hangup")))
+            }
+        }
         // Tell CallKit WHY it ended. An inbound call that never connected is a MISSED
         // call and must be reported as `.unanswered`, or it files in Recents as a
         // normal completed call and the user never sees they were called.
@@ -2048,13 +2167,13 @@ final class CallService: NSObject, ObservableObject {
             MissedCallNotifier.cancel(callId: call.id)
         }
 
-        // Best-effort call-record status update.
+        // Conference membership ends through /leave; a sibling verdict is local only.
         let callId = call.id
-        Task {
+        if reportStatus && !conferenceLeg { Task {
             struct StatusBody: Encodable { let status: String }
             _ = try? await api.request("POST", "calls/\(callId)/status",
                                        body: StatusBody(status: "ended"), as: EmptyResponse.self)
-        }
+        } }
 
         timer?.invalidate(); timer = nil
         connectedSeconds = 0
@@ -2082,7 +2201,13 @@ final class CallService: NSObject, ObservableObject {
         // id matches, so calling it unconditionally is safe — and without it an escalated
         // call left its roster poll hitting GET /calls/:id/participants every 3 seconds
         // forever, and its per-call keys uncleared.
+        if call.isConferenceInvite, CallConferenceService.shared.callId != call.id {
+            Task { await CallConferenceService.shared.declineInvite(callId: call.id, inviterUserId: nil) }
+        }
         CallConferenceService.shared.callEnded(callId: call.id)
+        if call.isGroupCallInvite, let conversationId = call.conversationId {
+            Task { await GroupCallService.shared.leave(conversationId: conversationId) }
+        }
 
         lastEndReason = pendingEndReason
         var ended = call; ended.state = .ended
@@ -2098,6 +2223,9 @@ final class CallService: NSObject, ObservableObject {
 
     func setMuted(_ m: Bool) {
         muted = m
+        if let call = active, GroupCallService.shared.adhocCallId == call.id || call.isGroupCallInvite {
+            GroupCallService.shared.setMuted(m)
+        }
         // Hold already silences us; unmuting while held must not start sending.
         localAudioTrack?.isEnabled = !m && !isOnHold
     }
@@ -2126,8 +2254,9 @@ final class CallService: NSObject, ObservableObject {
 
     // MARK: - Peer connection setup
 
-    private func setupPeerConnection(isVideo: Bool) async {
+    private func setupPeerConnection(isVideo: Bool, callId: String) async -> Bool {
         let iceServers = await fetchIceServers()
+        guard isCurrentCall(callId), !Task.isCancelled else { return false }
         let config = LKRTCConfiguration()
         config.iceServers = iceServers
         config.sdpSemantics = .unifiedPlan
@@ -2156,6 +2285,7 @@ final class CallService: NSObject, ObservableObject {
             pc?.add(track, streamIds: ["voiid_stream"])
             startCapture(capturer: capturer, front: usingFrontCamera)
         }
+        return pc != nil
     }
 
     private func startCapture(capturer: LKRTCCameraVideoCapturer, front: Bool) {
@@ -2192,7 +2322,8 @@ final class CallService: NSObject, ObservableObject {
     }
 
     private func markConnected() {
-        guard var call = active, call.state != .connected else { return }
+        guard var call = active, call.state != .connected, call.state != .ended else { return }
+        connectDeadlineTask?.cancel(); connectDeadlineTask = nil
         call.state = .connected
         active = call
         isReconnecting = false
@@ -2235,7 +2366,7 @@ final class CallService: NSObject, ObservableObject {
 extension CallService: LKRTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didGenerate candidate: LKRTCIceCandidate) {
         Task { @MainActor in
-            guard let call = self.active else { return }
+            guard self.pc === pc, let call = self.active, call.state != .ended else { return }
             self.socket.sendCallIce(toUserId: call.peerUserId, callId: call.id,
                                     candidate: candidate.sdp, sdpMLineIndex: candidate.sdpMLineIndex,
                                     sdpMid: candidate.sdpMid)
@@ -2244,6 +2375,7 @@ extension CallService: LKRTCPeerConnectionDelegate {
 
     nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didChange newState: LKRTCIceConnectionState) {
         Task { @MainActor in
+            guard self.pc === pc, let call = self.active, call.state != .ended else { return }
             switch newState {
             case .connected, .completed:
                 self.handleIceRecovered()
@@ -2277,7 +2409,10 @@ extension CallService: LKRTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didAdd rtpReceiver: LKRTCRtpReceiver, streams: [LKRTCMediaStream]) {
         // Unified-plan remote track arrival.
         if let video = rtpReceiver.track as? LKRTCVideoTrack {
-            Task { @MainActor in self.remoteVideoTrack = video }
+            Task { @MainActor in
+                guard self.pc === pc, let call = self.active, call.state != .ended else { return }
+                self.remoteVideoTrack = video
+            }
         }
     }
 

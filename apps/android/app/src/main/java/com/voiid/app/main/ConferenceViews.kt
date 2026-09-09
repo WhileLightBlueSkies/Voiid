@@ -172,6 +172,7 @@ fun ConferenceRoster(modifier: Modifier = Modifier) {
             color = Color.White.copy(alpha = 0.6f),
         )
         roster.forEach { entry ->
+            val onRoom = state?.tiles?.any { it.userId == entry.user_id } == true
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -180,7 +181,7 @@ fun ConferenceRoster(modifier: Modifier = Modifier) {
                     Modifier
                         .size(6.dp)
                         .clip(CircleShape)
-                        .background(if (entry.isJoined) VoiidColor.success else VoiidColor.accent),
+                        .background(if (onRoom) VoiidColor.success else VoiidColor.accent),
                 )
                 // `displayName` is the roster entry's OWN identity surface: a saved contact
                 // reads as their name, a stranger as @handle, and never a uuid. Resolved
@@ -190,9 +191,9 @@ fun ConferenceRoster(modifier: Modifier = Modifier) {
                     style = VoiidFont.rounded(13, FontWeight.Medium),
                     color = Color.White,
                 )
-                if (!entry.isJoined) {
+                if (!onRoom) {
                     Text(
-                        "ringing",
+                        if (entry.isJoined) "Joining…" else "Ringing…",
                         style = VoiidFont.rounded(11),
                         color = Color.White.copy(alpha = 0.6f),
                     )

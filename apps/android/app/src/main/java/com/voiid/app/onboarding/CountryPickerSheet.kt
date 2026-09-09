@@ -64,7 +64,14 @@ fun CountryPickerSheet(
     val results = remember(query) {
         if (query.isBlank()) CountryStore.all
         else CountryStore.all.filter {
-            it.name.contains(query, ignoreCase = true) || it.dialCode.contains(query)
+            // Name, EXACT iso code, or a dial-code PREFIX with any leading "+" stripped.
+            // Android matched only name and `dialCode.contains(query)`, so "IN" found nothing,
+            // "+91" found nothing, and "1" matched +91/+61/+371 and about a hundred others.
+            val q = query.trim().lowercase()
+            val digits = q.removePrefix("+")
+            it.name.contains(q, ignoreCase = true) ||
+                it.id.lowercase() == q ||
+                (digits.isNotEmpty() && it.dialCode.removePrefix("+").startsWith(digits))
         }
     }
 
@@ -126,7 +133,7 @@ fun CountryPickerSheet(
                     decorationBox = { inner ->
                         Box(contentAlignment = Alignment.CenterStart) {
                             if (query.isEmpty()) {
-                                Text("Search country or code", style = VoiidFont.rounded(16), color = VoiidColor.placeholder)
+                                Text("Country, code or +dial", style = VoiidFont.rounded(16), color = VoiidColor.placeholder)
                             }
                             inner()
                         }
@@ -141,7 +148,20 @@ fun CountryPickerSheet(
             }
 
             // List
-            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+            // A search that matches nothing must SAY so. An empty list reads as a screen
+            // that failed to load.
+            if (results.isEmpty()) {
+                Column(
+                    Modifier.fillMaxWidth().weight(1f).padding(top = 48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(Icons.Default.Search, null, tint = VoiidColor.placeholder,
+                        modifier = Modifier.size(32.dp))
+                    Text("No countries match \u201C$query\u201D", style = VoiidFont.rounded(15),
+                        color = VoiidColor.textSecondary)
+                }
+            } else LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                 items(results, key = { it.id }) { c ->
                     Row(
                         modifier = Modifier

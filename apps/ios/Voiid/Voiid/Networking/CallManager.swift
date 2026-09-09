@@ -289,6 +289,8 @@ extension CallManager: CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
         Task { @MainActor in
+            guard self.service?.active?.uuid == action.callUUID,
+                  self.service?.active?.state != .ended else { action.fail(); return }
             self.service?.setMuted(action.isMuted)
             action.fulfill()
         }

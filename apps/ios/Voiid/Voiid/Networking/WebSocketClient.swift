@@ -83,7 +83,7 @@ final class WebSocketClient {
     /// Inbound trickle ICE candidate. (fromUserId, callId, candidate, sdpMLineIndex, sdpMid)
     var onCallIce: ((_ fromUserId: String, _ callId: String, _ candidate: String, _ sdpMLineIndex: Int32, _ sdpMid: String?) -> Void)?
     /// Peer hung up / call ended. (fromUserId, callId)
-    var onCallHangup: ((_ fromUserId: String, _ callId: String) -> Void)?
+    var onCallHangup: ((_ fromUserId: String, _ callId: String, _ reason: String?) -> Void)?
     /// Peer is busy in another call. (fromUserId, callId)
     var onCallBusy: ((_ fromUserId: String, _ callId: String) -> Void)?
     /// Peer declined the incoming call. (fromUserId, callId)
@@ -97,7 +97,7 @@ final class WebSocketClient {
     /// one must stop ringing. Relayed to the sender's own channel by the WS server —
     /// every other call frame goes only to the far side, which is why a second device
     /// used to keep ringing until the caller gave up. (callId, "answer" | "decline")
-    var onCallTaken: ((_ callId: String, _ reason: String) -> Void)?
+    var onCallTaken: ((_ callId: String, _ reason: String, _ winnerDeviceId: String?) -> Void)?
     /// Peer put the call on hold. (fromUserId, callId)
     var onCallHold: ((_ fromUserId: String, _ callId: String) -> Void)?
     /// Peer took the call off hold. (fromUserId, callId)
@@ -148,8 +148,8 @@ final class WebSocketClient {
         sendJSON(["type": "call_ice", "to_user_id": toUserId, "call_id": callId,
                   "candidate": candidateBody], queueIfDown: true)
     }
-    func sendCallHangup(toUserId: String, callId: String) {
-        sendJSON(["type": "call_hangup", "to_user_id": toUserId, "call_id": callId], queueIfDown: true)
+    func sendCallHangup(toUserId: String, callId: String, reason: String = "hangup") {
+        sendJSON(["type": "call_hangup", "to_user_id": toUserId, "call_id": callId, "reason": reason], queueIfDown: true)
     }
     func sendCallBusy(toUserId: String, callId: String) {
         sendJSON(["type": "call_busy", "to_user_id": toUserId, "call_id": callId], queueIfDown: true)
@@ -454,7 +454,7 @@ final class WebSocketClient {
                 }
             }
         case "call_hangup":
-            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallHangup?(from, cid) }
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallHangup?(from, cid, obj["reason"] as? String) }
         case "call_busy":
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallBusy?(from, cid) }
         case "call_decline":
@@ -463,7 +463,7 @@ final class WebSocketClient {
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallRinging?(from, cid) }
         case "call_taken":
             if let cid = obj["call_id"] as? String {
-                onCallTaken?(cid, (obj["reason"] as? String) ?? "answer")
+                onCallTaken?(cid, (obj["reason"] as? String) ?? "answer", obj["winner_device_id"] as? String)
             }
         // ── Conference escalation. EVERY field except type/from/call_id is optional here:
         // these frames are new, the relay is deployed separately, and an older relay that
@@ -504,6 +504,9 @@ final class WebSocketClient {
                     }
                 } else if let map = obj["ciphertexts"] as? [String: String] {
                     byDevice = map
+                }
+                if let device = obj["device_id"] as? String, let body = obj["ciphertext"] as? String {
+                    byDevice[device] = body
                 }
                 if !byDevice.isEmpty {
                     onCallKey?(from, cid, obj["sender_device_id"] as? String, byDevice)
@@ -578,8 +581,11 @@ final class WebSocketClient {
 
     /// Drop anything still queued for a call that's over — no point replaying
     /// ICE for a torn-down peer connection after a long outage.
-    func dropQueuedFrames(forCallId callId: String) {
-        outboundQueue.removeAll { ($0["call_id"] as? String) == callId }
+    func dropQueuedFrames(forCallId callId: String, keepingTerminal: Bool = false) {
+        outboundQueue.removeAll {
+            guard ($0["call_id"] as? String) == callId else { return false }
+            return !keepingTerminal || !["call_hangup", "call_decline", "call_busy"].contains(($0["type"] as? String) ?? "")
+        }
     }
 
     private func startHeartbeat() {

@@ -2,6 +2,10 @@ package com.voiid.app.onboarding
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import kotlinx.coroutines.delay
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -66,6 +70,37 @@ import com.voiid.app.ui.theme.VoiidFont
 import kotlinx.coroutines.launch
 
 /**
+ * Strip what autofill adds. Port of iOS `PhoneScreen.normalise`.
+ *
+ * THE GUARD IS THE LENGTH CHECK. A bare national number that happens to start with its own
+ * dial digits — a Delhi landline starting "91…" — is only stripped when what remains is still
+ * a plausible length, so a legitimate number is never mangled.
+ *
+ * Android had none of this: autofill returning "+91 98765 43210" was filtered to
+ * "919876543210" and then prefixed with the dial code again, sending +91919876543210 — a
+ * wrong number that looks correctly entered.
+ */
+internal fun normalisePhone(raw: String, country: Country): String {
+    var d = raw.filter { it.isDigit() }
+    val code = country.dialCode.removePrefix("+")
+
+    if (d.length > country.maxDigits && d.startsWith(code)) {
+        val stripped = d.removePrefix(code)
+        if (stripped.length >= country.minDigits) d = stripped
+    }
+
+    // Some regions autofill a trunk "0" prefix ("098765..."). Same guard.
+    if (d.length > country.maxDigits && d.startsWith("0")) {
+        val stripped = d.removePrefix("0")
+        if (stripped.length >= country.minDigits) d = stripped
+    }
+
+    return d.take(country.maxDigits)
+}
+
+
+
+/**
  * Onboarding — phone entry, built to the brand reference. Twin of iOS
  * `Onboarding/PhoneScreen.swift`; the two must stay identical.
  *
@@ -89,18 +124,34 @@ fun PhoneScreen(
     var appeared by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { appeared = true }
 
+    val focus = LocalFocusManager.current
+    val fieldFocus = remember { FocusRequester() }
+    // 350ms, matching iOS. The field must be attached before focus is requested, and a
+    // keyboard that appears before the screen has settled reads as a jump.
+    LaunchedEffect(Unit) {
+        delay(350)
+        runCatching { fieldFocus.requestFocus() }
+    }
+
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
 
-    /** Digits only, so formatting characters a keyboard might insert never reach the wire. */
-    val digits = phone.filter { it.isDigit() }
+    /**
+     * Digits only, normalised. Formatting characters a keyboard might insert never reach the
+     * wire, and a pasted or autofilled number is stripped of its dial code and trunk zero.
+     */
+    val digits = normalisePhone(phone, country)
 
     /**
-     * Enough digits to be worth sending. Deliberately loose: national number lengths run from 6
-     * to 12, and a client that enforces a per-country length rejects legitimate numbers in
-     * places nobody tested. Firebase is the real validator.
+     * Plausible LENGTH for this country, not a validity check — several countries have
+     * genuinely variable formats, and the SMS is the real validator.
+     *
+     * This was `digits.length >= 6` under a comment arguing that per-country lengths reject
+     * legitimate numbers. iOS ships a 237-entry table doing exactly that, so the loose rule
+     * was not a shared decision: it let a 6-digit Indian number through to Firebase and put
+     * no ceiling on the other end at all.
      */
-    val valid = digits.length >= 6
+    val valid = digits.length >= country.minDigits && digits.length <= country.maxDigits
 
     // Send the OTP via Firebase, then advance to the OTP screen with the verificationId.
     // (Firebase texts the code; we verify it on the next screen.)
@@ -117,6 +168,7 @@ fun PhoneScreen(
                 haptics.tap(); onContinue(e164, verificationId)
             } catch (e: Exception) {
                 errorText = e.message ?: "Couldn't send code"
+                haptics.error()
             }
             sending = false
         }
@@ -205,7 +257,16 @@ fun PhoneScreen(
 
                 BasicTextField(
                     value = phone,
-                    onValueChange = { phone = it },
+                    onValueChange = { raw ->
+                        phone = raw
+                        // Reaching the country's full length is the end of the task: the
+                        // keyboard steps out of the way of Continue rather than sitting over
+                        // it, and the soft press confirms the number is complete.
+                        if (normalisePhone(raw, country).length == country.maxDigits) {
+                            focus.clearFocus()
+                            haptics.soft()
+                        }
+                    },
                     singleLine = true,
                     textStyle = TextStyle(
                         color = VoiidColor.textPrimary,
@@ -218,7 +279,8 @@ fun PhoneScreen(
                         imeAction = ImeAction.Go,
                     ),
                     keyboardActions = KeyboardActions(onGo = { sendOtp() }),
-                    modifier = Modifier.weight(1f).padding(end = 16.dp),
+                    modifier = Modifier.weight(1f).padding(end = 16.dp)
+                        .focusRequester(fieldFocus),
                     decorationBox = { inner ->
                         if (phone.isEmpty()) {
                             Text("Enter phone number", style = VoiidFont.rounded(17),
@@ -305,7 +367,17 @@ fun PhoneScreen(
     if (showPicker) {
         CountryPickerSheet(
             selected = country,
-            onSelect = { country = it },
+            onSelect = { picked ->
+                // ONLY when it actually changed. A number typed for India is not a number
+                // for Germany, so it is cleared rather than silently re-prefixed — and the
+                // field takes focus back so the user can start typing immediately.
+                val changed = picked.id != country.id
+                country = picked
+                if (changed) {
+                    phone = ""
+                    scope.launch { delay(50); runCatching { fieldFocus.requestFocus() } }
+                }
+            },
             onDismiss = { showPicker = false },
         )
     }

@@ -116,6 +116,7 @@ class CallForegroundService : Service() {
         const val EXTRA_VIDEO = "video"
         const val EXTRA_TITLE = "title"
 
+        const val EXTRA_CALL_ID = "voiid_call_action_id"
         const val ACTION_ACCEPT = "com.voiid.app.CALL_ACCEPT"
         const val ACTION_DECLINE = "com.voiid.app.CALL_DECLINE"
         /** Fired by the PiP window's mute RemoteAction. */
@@ -227,7 +228,7 @@ class CallForegroundService : Service() {
                 context, 1, acceptActivityIntent(context, callId),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            val declinePi = actionIntent(context, ACTION_DECLINE, 2)
+            val declinePi = actionIntent(context, ACTION_DECLINE, 2, callId)
 
             val kindLabel = if (video) "Incoming video call" else "Incoming voice call"
             val notif = NotificationCompat.Builder(context, INCOMING_CHANNEL)
@@ -329,7 +330,7 @@ class CallForegroundService : Service() {
                 .setOngoing(true)
                 .setAutoCancel(false)
                 .setContentIntent(openPi)
-                .addAction(0, "Decline", actionIntent(context, ACTION_WAITING_DECLINE, 5))
+                .addAction(0, "Decline", actionIntent(context, ACTION_WAITING_DECLINE, 5, call.callId))
                 .addAction(0, "End & answer", takePi)
                 .build()
             runCatching { NotificationManagerCompat.from(context).notify(WAITING_ID, notif) }
@@ -339,8 +340,10 @@ class CallForegroundService : Service() {
             runCatching { NotificationManagerCompat.from(context).cancel(WAITING_ID) }
         }
 
-        private fun actionIntent(context: Context, action: String, req: Int): PendingIntent {
+        private fun actionIntent(context: Context, action: String, req: Int, callId: String?): PendingIntent {
             val i = Intent(context, CallActionReceiver::class.java).setAction(action)
+                .putExtra(EXTRA_CALL_ID, callId)
+                .setData(android.net.Uri.parse("voiid://call-action/$callId/$action"))
             return PendingIntent.getBroadcast(
                 context, req, i,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -426,6 +429,12 @@ class CallForegroundService : Service() {
 class CallActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         CallManager.init(context)
+        val callId = intent.getStringExtra(CallForegroundService.EXTRA_CALL_ID) ?: return
+        val waitingAction = intent.action == CallForegroundService.ACTION_WAITING_ACCEPT ||
+            intent.action == CallForegroundService.ACTION_WAITING_DECLINE
+        if (waitingAction) {
+            if (CallManager.waiting.value?.callId != callId) return
+        } else if (CallManager.state.value?.callId != callId) return
         when (intent.action) {
             CallForegroundService.ACTION_ACCEPT -> {
                 CallForegroundService.cancelIncoming(context)

@@ -1,5 +1,12 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.MailOutline
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import com.voiid.app.ui.theme.VoiidSpacing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -128,130 +135,87 @@ fun CreateProfileScreen(
         }
     }
 
-    OnbScaffold(showBack = true, onBack = onBack) {
-        Spacer(Modifier.height(16.dp))
-        Text("A few more details", style = VoiidFont.rounded(28, FontWeight.Bold),
-            color = VoiidColor.textPrimary, modifier = Modifier.padding(horizontal = 24.dp))
-        Text("Both are optional — you can add them later.", style = VoiidFont.rounded(15),
-            color = VoiidColor.textSecondary,
-            modifier = Modifier.padding(horizontal = 24.dp).padding(top = 6.dp))
+    OnboardingScaffold(
+        footer = {
+            OnboardingKitButton(
+                title = if (saving) "Saving…" else "Finish",
+                enabled = canFinish,
+                busy = saving,
+            ) { submit(includeExtras = true) }
 
-        EmailField(
-            email = email,
-            valid = emailValid,
-            onChange = { email = it },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 28.dp),
-        )
-        Text("Used to help you recover your account.",
-            style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
-            modifier = Modifier.padding(horizontal = 28.dp).padding(top = 4.dp))
+            Text(
+                "Skip for now",
+                style = VoiidFont.rounded(15),
+                color = VoiidBrand.textDim.copy(alpha = if (saving) 0.5f else 1f),
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        enabled = !saving,
+                    ) { haptics.tap(); submit(includeExtras = false) },
+            )
 
-        BioField(
-            bio = bio,
-            onChange = { if (it.length <= 120) bio = it },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 16.dp),
+            StepDots(current = 1, total = 2)
+        },
+    ) {
+        Spacer(Modifier.height(VoiidSpacing.md))
+
+        OnboardingHeader(
+            title = OnboardingTitleSpec.Stacked("A few more", "details"),
+            blurb = "Both are optional — you can add them later.",
         )
-        Text("${bio.length}/120", style = VoiidFont.rounded(12),
-            color = VoiidColor.textSecondary.copy(alpha = 0.8f),
-            modifier = Modifier.padding(horizontal = 28.dp).padding(top = 4.dp))
+
+        Column(
+            Modifier.fillMaxWidth().padding(top = VoiidSpacing.lg),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OnboardingField(
+                icon = Icons.Outlined.MailOutline,
+                label = "Email address",
+                prompt = "Enter your email address",
+                value = email,
+                onValueChange = { email = it },
+                keyboardType = KeyboardType.Email,
+                capitalization = KeyboardCapitalization.None,
+                trailing = {
+                    // WARNING, not error, and no red border: an address still being typed is
+                    // incomplete rather than wrong.
+                    if (email.isNotEmpty() && !emailValid) {
+                        Icon(Icons.Outlined.ErrorOutline, null, tint = VoiidColor.warning,
+                            modifier = Modifier.size(20.dp))
+                    }
+                },
+            )
+
+            Text(
+                "Used to help you recover your account.",
+                style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim,
+                modifier = Modifier.fillMaxWidth().padding(start = 4.dp),
+            )
+
+            // The counter lives INSIDE the field, bottom-right — `characterLimit` draws it.
+            OnboardingField(
+                icon = Icons.Outlined.Edit,
+                label = "Bio (optional)",
+                prompt = "Tell the world about yourself",
+                value = bio,
+                onValueChange = { bio = it },
+                characterLimit = 120,
+                imeAction = ImeAction.Done,
+            )
+        }
 
         errorText?.let {
             Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error,
-                modifier = Modifier.padding(horizontal = 24.dp).padding(top = 10.dp))
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.sm))
         }
 
-        PrivacyNote(modifier = Modifier.padding(horizontal = 24.dp).padding(top = 20.dp))
+        PrivacyNote(modifier = Modifier.padding(top = VoiidSpacing.lg))
 
-        Spacer(Modifier.weight(1f))
-
-        OnbAccentButton(
-            title = if (saving) "Saving…" else "Finish",
-            enabled = canFinish,
-            modifier = Modifier.padding(horizontal = 24.dp),
-        ) { submit(includeExtras = true) }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "Skip for now",
-            style = VoiidFont.rounded(15),
-            color = VoiidColor.textSecondary.copy(alpha = if (saving) 0.5f else 1f),
-            modifier = Modifier
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    enabled = !saving,
-                ) {
-                    haptics.tap()
-                    submit(includeExtras = false)
-                },
-        )
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(VoiidSpacing.xl))
     }
-}
-
-@Composable
-private fun EmailField(email: String, valid: Boolean, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
-    val shape = RoundedCornerShape(com.voiid.app.ui.theme.VoiidRadius.pill)
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier
-            .height(PILL_HEIGHT)
-            .clip(shape)
-            .background(VoiidColor.fieldFill)
-            .border(1.dp, if (!valid) VoiidColor.error else VoiidColor.fieldBorder, shape)
-            .padding(horizontal = 20.dp),
-    ) {
-        BasicTextField(
-            value = email,
-            onValueChange = onChange,
-            singleLine = true,
-            textStyle = VoiidFont.rounded(17).merge(TextStyle(color = VoiidColor.textPrimary)),
-            cursorBrush = SolidColor(VoiidColor.primary),
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                keyboardType = androidx.compose.ui.text.input.KeyboardType.Email,
-            ),
-            modifier = Modifier.weight(1f),
-            decorationBox = { inner ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (email.isEmpty()) {
-                        Text("Email address", style = VoiidFont.rounded(17),
-                             color = VoiidColor.placeholder)
-                    }
-                    inner()
-                }
-            },
-        )
-        if (email.isNotEmpty() && !valid) {
-            Icon(Icons.Default.Cancel, null, tint = VoiidColor.error, modifier = Modifier.size(20.dp))
-        }
-    }
-}
-
-@Composable
-private fun BioField(bio: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
-    val shape = RoundedCornerShape(28.dp)
-    BasicTextField(
-        value = bio,
-        onValueChange = onChange,
-        textStyle = VoiidFont.rounded(17).merge(TextStyle(color = VoiidColor.textPrimary)),
-        cursorBrush = SolidColor(VoiidColor.primary),
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 96.dp)
-            .clip(shape)
-            .background(VoiidColor.fieldFill)
-            .border(1.dp, VoiidColor.fieldBorder, shape)
-            .padding(horizontal = 24.dp, vertical = 16.dp),
-        maxLines = 6,
-        decorationBox = { inner ->
-            Box(contentAlignment = Alignment.TopStart) {
-                if (bio.isEmpty()) {
-                    Text("Tell the world about yourself", style = VoiidFont.rounded(17),
-                         color = VoiidColor.placeholder)
-                }
-                inner()
-            }
-        },
-    )
 }
 
 /** The one reassurance on the screen: nothing here is public. */

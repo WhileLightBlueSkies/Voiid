@@ -403,7 +403,8 @@ private fun InCallUi(state: CallManager.CallState) {
     var showAddPerson by remember { mutableStateOf(false) }
     // The conference roster is drawn over the call surface when there is more than one other
     // participant — see ConferenceViews.kt for why it is deliberately spare.
-    val conference by ConferenceManager.state.collectAsState()
+    val conferenceState by ConferenceManager.state.collectAsState()
+    val conference = conferenceState?.takeIf { it.callId == state.callId && it.stage != ConferenceManager.Stage.ENDED }
 
     val reduceMotion = reduceMotionEnabled()
     // Live timer derived from the real connection time.
@@ -421,7 +422,18 @@ private fun InCallUi(state: CallManager.CallState) {
     // call is silent on purpose — both must beat the running timer, which otherwise ticks along
     // implying everything is fine.
     val statusText = when {
-        state.phase == CallManager.Phase.ENDED -> "Call ended"
+        state.phase == CallManager.Phase.ENDED -> when (state.endReason) {
+            "declined", "declined-elsewhere" -> "Call declined"
+            "busy" -> "Busy"
+            "no-answer" -> "No answer"
+            "unavailable" -> "Unavailable"
+            "answered-elsewhere" -> "Answered on another device"
+            "ice-failed", "ice-closed", "setup-failed", "ring-failed" -> "Call failed"
+            else -> "Call ended"
+        }
+        conference?.stage == ConferenceManager.Stage.ESCALATING -> "Adding participant…"
+        conference != null && !conference.sfuConnected -> "Joining conference…"
+        conference != null -> "Conference · %02d:%02d".format(seconds / 60, seconds % 60)
         state.reconnecting -> "Reconnecting…"
         state.onHold -> "On hold"
         state.peerOnHold -> "${state.peerName} put you on hold"
@@ -532,16 +544,17 @@ private fun InCallUi(state: CallManager.CallState) {
             CallControls(
                 isVideo = isVideo, muted = state.muted, speaker = state.speaker, videoOn = state.videoEnabled,
                 onHold = state.onHold,
-                canHold = state.phase == CallManager.Phase.CONNECTED || state.phase == CallManager.Phase.CONNECTING,
-                onMute = { haptics.tap(); CallManager.toggleMute() },
-                onSpeaker = { haptics.tap(); CallManager.toggleSpeaker() },
-                onVideo = { haptics.tap(); CallManager.toggleVideo() },
-                onFlip = { haptics.tap(); CallManager.switchCamera() },
+                canHold = conference == null && (state.phase == CallManager.Phase.CONNECTED || state.phase == CallManager.Phase.CONNECTING),
+                onMute = { haptics.tap(); if (conference != null) ConferenceManager.toggleMute() else CallManager.toggleMute() },
+                onSpeaker = { haptics.tap(); if (conference != null) ConferenceManager.toggleSpeaker() else CallManager.toggleSpeaker() },
+                onVideo = { haptics.tap(); if (conference != null) ConferenceManager.toggleVideo() else CallManager.toggleVideo() },
+                onFlip = { haptics.tap(); if (conference != null) ConferenceManager.switchCamera() else CallManager.switchCamera() },
                 onToggleHold = { haptics.tap(); CallManager.toggleHold() },
                 onEnd = { haptics.rigid(); CallManager.hangup() },
                 // Offered only on a CONNECTED 1:1 that is not already a conference. Escalating
                 // a call that has not connected has nothing to escalate.
-                onAddPerson = if (state.phase == CallManager.Phase.CONNECTED && !ConferenceManager.isActive) {
+                onAddPerson = if (state.phase == CallManager.Phase.CONNECTED &&
+                    (conference == null || (conference.stage == ConferenceManager.Stage.CONFERENCE && conference.canAddMore))) {
                     { haptics.tap(); showAddPerson = true }
                 } else null,
             )

@@ -79,6 +79,8 @@ object CallManager {
         val kind: CallKind,
         val incoming: Boolean,
         val phase: Phase,
+        val endReason: String? = null,
+        val accepted: Boolean = false,
         val muted: Boolean = false,
         val speaker: Boolean = false,
         val videoEnabled: Boolean = true,
@@ -273,8 +275,8 @@ object CallManager {
         // Route inbound call signaling from the WS relay to us. Distinct callback slot
         // from ChatStore's message/typing handlers, so both coexist on the one socket.
         WebSocketClient.get(appContext).onCallSignal = { sig -> onSignal(sig) }
-        WebSocketClient.get(appContext).onCallTaken = { callId, reason ->
-            mainHandler.post { onCallTakenElsewhere(callId, reason) }
+        WebSocketClient.get(appContext).onCallTaken = { callId, reason, winnerDeviceId ->
+            mainHandler.post { onCallTakenElsewhere(callId, reason, winnerDeviceId) }
         }
         // Names for the call UI come from the local directory, never from signaling — see
         // [com.voiid.app.store.UserDirectory]. Load it before the first ring can arrive.
@@ -290,7 +292,15 @@ object CallManager {
         // at a "Connecting…" screen over a dead join (the exact failure iOS guards).
         scope.launch {
             ConferenceManager.state.collect { cs ->
-                val err = cs?.error ?: return@collect
+                if (cs == null) return@collect
+                if (cs.stage == ConferenceManager.Stage.CONFERENCE) {
+                    update(cs.callId) { it.copy(muted = cs.muted, speaker = cs.speakerOn, videoEnabled = cs.videoEnabled) }
+                }
+                if (cs.sfuConnected && cs.stage == ConferenceManager.Stage.CONFERENCE) {
+                    val leg = _state.value
+                    if (leg?.callId == cs.callId && leg.isConferenceInvite && leg.phase == Phase.CONNECTING) markConnected()
+                }
+                if (cs.error == null) return@collect
                 if (cs.stage == ConferenceManager.Stage.ENDED) {
                     val s = _state.value ?: return@collect
                     if (s.isConferenceInvite && s.callId == cs.callId &&
@@ -301,6 +311,7 @@ object CallManager {
                 }
             }
         }
+        ConferenceManager.init(appContext)
         initialized = true
     }
 
@@ -398,6 +409,7 @@ object CallManager {
         // bug. The ring is not best-effort; it is the precondition.
         scope.launch(Dispatchers.IO) {
             val rang = runCatching { CallApi(appContext).ring(peerUserId, callId, kind, conversationId) }
+            if (!isCurrentCall(callId)) return@launch
             if (rang.isFailure) {
                 val err = rang.exceptionOrNull()
                 // "No registered devices" is a DIFFERENT outcome from "the ring failed":
@@ -421,14 +433,17 @@ object CallManager {
             runCatching {
                 val secret = CallKeyCourier(appContext)
                     .mintAndDistribute(callId, epoch = 1, recipientUserIds = listOf(peerUserId))
+                if (!isCurrentCall(callId)) return@launch
                 applyFrameSecret(secret, epoch = 1)
+                ConferenceManager.seedOneToOneSecret(callId, secret, epoch = 1)
             }.onFailure {
                 android.util.Log.e("VOIID", "1:1 call key mint failed — proceeding DTLS-only", it)
             }
+            if (!isCurrentCall(callId)) return@launch
             // Only now is it safe to put an offer on the wire.
             exec.execute {
                 val servers = iceServers()
-                createPeerConnection(servers) ?: return@execute
+                createPeerConnection(servers, callId) ?: return@execute
                 addLocalMedia(kind)
                 applyAudioRoute(kind == CallKind.VIDEO)
                 // Senders exist now; receivers arrive with the answer — that path
@@ -437,16 +452,31 @@ object CallManager {
                 val p = pc ?: return@execute
                 p.createOffer(object : SdpObserverAdapter() {
                     override fun onCreateSuccess(sdp: SessionDescription) {
+                        if (!isCurrentCall(callId) || pc !== p) return
                         val tuned = tune(sdp)
-                        p.setLocalDescription(SdpObserverAdapter(), tuned)
-                        WebSocketClient.get(appContext).sendCallOffer(peerUserId, callId, kind, tuned.description)
+                        p.setLocalDescription(object : SdpObserverAdapter() {
+                            override fun onSetSuccess() {
+                                if (isCurrentCall(callId) && pc === p)
+                                    WebSocketClient.get(appContext).sendCallOffer(peerUserId, callId, kind, tuned.description)
+                            }
+                            override fun onSetFailure(error: String?) { setupFailed(callId) }
+                        }, tuned)
                     }
+                    override fun onCreateFailure(error: String?) { setupFailed(callId) }
                 }, offerAnswerConstraints(kind))
             }
         }
     }
 
     // ---- inbound signaling -----------------------------------------------------
+
+    private val endedCallIds = java.util.Collections.synchronizedSet(linkedSetOf<String>())
+    private fun isCurrentCall(callId: String): Boolean =
+        _state.value?.let { it.callId == callId && it.phase != Phase.ENDED } == true
+
+    private fun setupFailed(callId: String) {
+        if (isCurrentCall(callId)) endInternal(notifyPeer = true, reason = "setup-failed")
+    }
 
     private fun onSignal(sig: WebSocketClient.CallSignal) {
         when (sig.type) {
@@ -472,7 +502,7 @@ object CallManager {
         if (s.phase != Phase.RINGING_OUT) return    // already connecting/connected/ended
         // Their phone is audibly ringing NOW, so ours starts its ringback at the same moment
         // and the status line may finally say "Ringing…" truthfully.
-        update { it.copy(peerRinging = true) }
+        update(sig.callId) { it.copy(peerRinging = true) }
         CallTones.startRingback()
     }
 
@@ -480,12 +510,13 @@ object CallManager {
     private fun onRemoteHold(sig: WebSocketClient.CallSignal, held: Boolean) {
         val s = _state.value ?: return
         if (s.callId != sig.callId) return
-        update { it.copy(peerOnHold = held) }
+        update(sig.callId) { it.copy(peerOnHold = held) }
     }
 
     /** A ring push (FCM) arrived before/independent of the WS offer — show incoming UI now. */
     fun onRingPush(callId: String, callerId: String, callerName: String, kind: CallKind, conversationId: String?) {
         appContextOrNull()?.let { init(it) }
+        if (endedCallIds.contains(callId)) return
         if (_state.value?.callId == callId) return
         if (_waiting.value?.callId == callId) return
         // Busy in a group call — don't ring over it or we'd tear down live group media.
@@ -550,7 +581,8 @@ object CallManager {
         context: Context,
     ) {
         init(context)
-        if (!TokenStore.get(context).isAuthenticated) return
+        if (!TokenStore.get(context).isAuthenticated || endedCallIds.contains(callId)) return
+        ConferenceManager.expectKeyFor(callId)
         if (_state.value?.callId == callId) return
         if (_waiting.value?.callId == callId) return
         if (GroupCallManager.isActive) {
@@ -598,17 +630,21 @@ object CallManager {
      * through the conference path, and writing an outcome now would file a completed call
      * that is still happening.
      */
-    fun retire1to1LegForConference(notifyPeer: Boolean) {
+    fun retire1to1LegForConference(notifyPeer: Boolean, onReleased: () -> Unit = {}) {
         val s = _state.value ?: return
+        retiredPeerCallId = s.callId
         cancelOfferTimeout()
         CallTones.stopRingback()
         if (notifyPeer && s.phase != Phase.ENDED) {
             // The peer's engine knows this call is escalating and treats the hangup as
             // "retire the leg". A peer that somehow missed the migrate simply ends — which is
             // the honest outcome for a client that never reached the SFU.
-            runCatching { WebSocketClient.get(appContext).sendCallHangup(s.peerUserId, s.callId) }
+            runCatching { WebSocketClient.get(appContext).sendCallHangup(s.peerUserId, s.callId, "conference-migrated") }
         }
-        exec.execute { releaseWebRtc() }
+        cancelConnectTimeout()
+        cancelDisconnectGrace()
+        cancelRestartWatchdog()
+        exec.execute { releaseWebRtc(); if (isCurrentCall(s.callId)) onReleased() }
     }
 
     /**
@@ -663,7 +699,7 @@ object CallManager {
             android.util.Log.w("VOIID", "ring cap reached for $callId — treating as missed")
             // notifyPeer = true, unlike the no-offer path: the caller DID reach us, so they
             // deserve a verdict rather than ringing out blind.
-            endInternal(notifyPeer = true, reason = "missed")
+            endInternal(notifyPeer = true, reason = "no-answer")
         }
         ringCap = r
         mainHandler.postDelayed(r, INCOMING_RING_CAP_MS)
@@ -800,7 +836,8 @@ object CallManager {
      *
      * Mirrors iOS `handleCallTakenElsewhere`.
      */
-    private fun onCallTakenElsewhere(callId: String, reason: String) {
+    private fun onCallTakenElsewhere(callId: String, reason: String, winnerDeviceId: String?) {
+        if (winnerDeviceId != null && winnerDeviceId == E2EManager.get(appContext).deviceId) return
         // A waiting call resolved elsewhere: drop the second-call banner, send no busy —
         // the sibling is handling it.
         if (_waiting.value?.callId == callId) {
@@ -811,7 +848,7 @@ object CallManager {
         if (s.callId != callId || !s.incoming) return
         // WE are the device that answered — this is the echo of our own verdict coming back
         // off our own channel, and ending here would end the call we just took.
-        if (s.phase != Phase.RINGING_IN) return
+        if ((winnerDeviceId == null || reason == "busy") && s.phase != Phase.RINGING_IN) return
 
         android.util.Log.i("VOIID", "call $callId ${reason}ed on another device — stopping this ring")
         // notifyPeer = false is the whole point: the sibling device is talking to them, so a
@@ -821,7 +858,8 @@ object CallManager {
     }
 
     private fun onRemoteOffer(sig: WebSocketClient.CallSignal) {
-        val current = _state.value
+        if (endedCallIds.contains(sig.callId) || retiredPeerCallId == sig.callId) return
+        var current = _state.value
         // RENEGOTIATION, not a new call: same call_id on a call that has already completed an
         // offer/answer exchange. This is the peer's ICE restart after their network moved.
         // It must be applied silently — no ring, no incoming UI, no notification, no state
@@ -838,6 +876,7 @@ object CallManager {
         // the reviewer flagged) and a duplicate notification. Attach the SDP to the
         // existing call and set up the peer connection; never re-ring, never re-report.
         if (current != null && current.callId == sig.callId && !hasNegotiated) {
+            if (pc != null || !current.incoming) return
             cancelOfferTimeout()
             // Refine the name only if the push had none; never downgrade a resolved name.
             if (current.peerName.isBlank()) {
@@ -847,9 +886,13 @@ object CallManager {
             val sdp = sig.sdp ?: return
             exec.execute {
                 val servers = iceServers()
-                createPeerConnection(servers) ?: return@execute
+                createPeerConnection(servers, sig.callId) ?: return@execute
                 pc?.setRemoteDescription(object : SdpObserverAdapter() {
-                    override fun onSetSuccess() { remoteDescSet = true; drainCandidates(); if (acceptPending) doAnswer() }
+                    override fun onSetSuccess() { exec.execute {
+                        if (!isCurrentCall(sig.callId)) return@execute
+                        remoteDescSet = true; drainCandidates(); if (acceptPending) doAnswer()
+                    } }
+                    override fun onSetFailure(error: String?) { setupFailed(sig.callId) }
                 }, SessionDescription(SessionDescription.Type.OFFER, sdp))
             }
             return
@@ -884,6 +927,7 @@ object CallManager {
                 // End ours WITHOUT notifying — they are not on a call with us, they are
                 // calling us, and a hangup would cancel the call we are about to answer.
                 endInternal(notifyPeer = false, reason = "glare-yield")
+                current = null
                 // Fall through: `_state` is clear, so this offer now rings normally below.
             } else {
                 android.util.Log.i("VOIID", "glare with ${sig.fromUserId}: ours wins")
@@ -929,9 +973,13 @@ object CallManager {
         val sdp = sig.sdp ?: return
         exec.execute {
             val servers = iceServers()
-            createPeerConnection(servers) ?: return@execute
+            createPeerConnection(servers, sig.callId) ?: return@execute
             pc?.setRemoteDescription(object : SdpObserverAdapter() {
-                override fun onSetSuccess() { remoteDescSet = true; drainCandidates(); if (acceptPending) doAnswer() }
+                override fun onSetSuccess() { exec.execute {
+                        if (!isCurrentCall(sig.callId)) return@execute
+                        remoteDescSet = true; drainCandidates(); if (acceptPending) doAnswer()
+                    } }
+                    override fun onSetFailure(error: String?) { setupFailed(sig.callId) }
             }, SessionDescription(SessionDescription.Type.OFFER, sdp))
         }
     }
@@ -946,6 +994,7 @@ object CallManager {
     private fun onRenegotiationOffer(sig: WebSocketClient.CallSignal, s: CallState) {
         val sdp = sig.sdp ?: return
         exec.execute {
+            if (!isCurrentCall(s.callId)) return@execute
             val p = pc ?: return@execute
             // Glare: both ends restarted at the same instant, so we hold a local offer and are
             // being handed a remote one. Someone has to yield. We use a fixed, symmetric rule —
@@ -965,6 +1014,7 @@ object CallManager {
             p.setRemoteDescription(object : SdpObserverAdapter() {
                 override fun onSetSuccess() {
                     exec.execute {
+                        if (!isCurrentCall(s.callId) || pc !== p) return@execute
                         remoteDescSet = true
                         drainCandidates()
                         answerRenegotiation(s)
@@ -976,17 +1026,24 @@ object CallManager {
 
     /** Build + send the answer to a renegotiation offer. Runs on [exec]. */
     private fun answerRenegotiation(s: CallState) {
+        if (!isCurrentCall(s.callId)) return
         val p = pc ?: return
         p.createAnswer(object : SdpObserverAdapter() {
             override fun onCreateSuccess(sdp: SessionDescription) {
+                if (!isCurrentCall(s.callId) || pc !== p) return
                 val tuned = tune(sdp)
-                p.setLocalDescription(SdpObserverAdapter(), tuned)
-                WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
+                p.setLocalDescription(object : SdpObserverAdapter() {
+                    override fun onSetSuccess() {
+                        if (isCurrentCall(s.callId) && pc === p)
+                            WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
+                    }
+                }, tuned)
             }
         }, offerAnswerConstraints(s.kind))
     }
 
     private fun onRemoteAnswer(sig: WebSocketClient.CallSignal) {
+        if (!isCurrentCall(sig.callId)) return
         // The caller's half of the same rule: an answer means media is being negotiated, so
         // arm the cap that turns "connecting forever" into an honest failure.
         _state.value?.let { st -> mainHandler.post { armConnectTimeout(st.callId) } }
@@ -997,9 +1054,11 @@ object CallManager {
         // session is negotiated and any later same-call_id offer is a renegotiation.
         val wasRestart = restartInFlight
         exec.execute {
+            if (!isCurrentCall(sig.callId)) return@execute
             pc?.setRemoteDescription(object : SdpObserverAdapter() {
                 override fun onSetSuccess() {
                     exec.execute {
+                        if (!isCurrentCall(sig.callId)) return@execute
                         remoteDescSet = true
                         hasNegotiated = true
                         restartInFlight = false
@@ -1012,7 +1071,7 @@ object CallManager {
         if (!wasRestart && _state.value?.phase != Phase.CONNECTED) {
             // Answered: the ring is over, so the cap must not fire on a live call.
             cancelIncomingRingCap()
-            update { it.copy(phase = Phase.CONNECTING) }
+            update(sig.callId) { it.copy(phase = Phase.CONNECTING) }
         }
     }
 
@@ -1026,6 +1085,7 @@ object CallManager {
         if (_state.value?.callId != sig.callId) return
         val ice = IceCandidate(mid, idx, cand)
         exec.execute {
+            if (!isCurrentCall(sig.callId)) return@execute
             if (remoteDescSet) pc?.addIceCandidate(ice) else pendingRemoteCandidates.add(ice)
         }
     }
@@ -1033,11 +1093,16 @@ object CallManager {
     private fun onRemoteEnd(sig: WebSocketClient.CallSignal) {
         // The second caller gave up (or cancelled) before we chose — drop the waiting slot.
         if (_waiting.value?.callId == sig.callId) { clearWaiting(); return }
-        if (_state.value?.callId != sig.callId) return
+        if (!isCurrentCall(sig.callId)) return
+        if (sig.type == "call_hangup" && sig.reason == "conference-migrated" &&
+            ConferenceManager.activeCallId == sig.callId) {
+            ConferenceManager.onPeerMigration(sig.callId)
+            return
+        }
         val reason = when (sig.type) {
             "call_decline" -> "declined"
             "call_busy" -> "busy"
-            else -> "remote-hangup"
+            else -> sig.reason?.takeIf { it in setOf("no-answer", "ice-failed", "setup-failed") } ?: "remote-hangup"
         }
         // Audible feedback while the ENDED frame is on screen: a declined or busy call should
         // sound different from one the peer simply hung up on.
@@ -1199,8 +1264,8 @@ object CallManager {
      */
     fun retireConferenceLeg(callId: String) {
         val s = _state.value ?: return
-        if (s.callId != callId || !s.isConferenceInvite) return
-        endInternal(notifyPeer = false, reason = "conference-ended")
+        if (s.callId != callId) return
+        endInternal(notifyPeer = false, reason = "conference-ended", conferenceLeg = true)
     }
 
     // ---- user actions (from the call UI) --------------------------------------
@@ -1239,41 +1304,46 @@ object CallManager {
             )
             return
         }
-        update { it.copy(phase = Phase.CONNECTING) }
+        cancelIncomingRingCap()
+        update { it.copy(phase = Phase.CONNECTING, accepted = true) }
+        armConnectTimeout(s.callId)
         CallForegroundService.cancelIncoming(appContext)
         startForegroundService()
         exec.execute {
+            if (!isCurrentCall(s.callId)) return@execute
             if (remoteDescSet && pc != null) doAnswer() else acceptPending = true
         }
     }
 
     private fun doAnswer() {
         val s = _state.value ?: return
+        if (!isCurrentCall(s.callId)) return
+        val p = pc ?: return
         acceptPending = false
         addLocalMedia(s.kind)
         applyAudioRoute(s.kind == CallKind.VIDEO)
-        pc?.createAnswer(object : SdpObserverAdapter() {
+        p.createAnswer(object : SdpObserverAdapter() {
             override fun onCreateSuccess(sdp: SessionDescription) {
+                if (!isCurrentCall(s.callId) || pc !== p) return
                 val tuned = tune(sdp)
-                pc?.setLocalDescription(SdpObserverAdapter(), tuned)
-                // We've now completed offer/answer: any further offer on this call_id is a
-                // renegotiation to apply silently, not a new call to ring.
-                hasNegotiated = true
-                // Media negotiation has begun: from here ICE must reach CONNECTED or we must
-                // say so. See armConnectTimeout — the un-handled third outcome.
-                mainHandler.post { armConnectTimeout(s.callId) }
-                // Receivers came with the offer; senders exist now. If the caller's
-                // `call_key` already landed we cover everything; otherwise the key
-                // arrival re-runs attachment (see onCallKeyReceived).
-                attachFrameCryptorsIfReady()
-                WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
+                p.setLocalDescription(object : SdpObserverAdapter() {
+                    override fun onSetSuccess() {
+                        if (!isCurrentCall(s.callId) || pc !== p) return
+                        hasNegotiated = true
+                        attachFrameCryptorsIfReady()
+                        WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
+                    }
+                    override fun onSetFailure(error: String?) { setupFailed(s.callId) }
+                }, tuned)
             }
+            override fun onCreateFailure(error: String?) { setupFailed(s.callId) }
         }, offerAnswerConstraints(s.kind))
     }
 
     /** Reject an incoming call. */
     fun decline() {
         val s = _state.value ?: return
+        if (!s.incoming || s.phase != Phase.RINGING_IN) return
         // A declined CONFERENCE invite must leave through the conference path — that is
         // what removes our row server-side and refreshes every roster. The 1:1 decline
         // frame would land on the inviter as noise and the roster would ring forever.
@@ -1300,6 +1370,10 @@ object CallManager {
     }
 
     fun toggleMute() {
+        if (ConferenceManager.state.value?.let { it.callId == _state.value?.callId && it.stage == ConferenceManager.Stage.CONFERENCE } == true) {
+            ConferenceManager.toggleMute()
+            return
+        }
         val s = _state.value ?: return
         val muted = !s.muted
         // Hold outranks mute: un-muting while held must not quietly start sending audio again.
@@ -1319,6 +1393,7 @@ object CallManager {
      */
     fun toggleHold() {
         val s = _state.value ?: return
+        if (ConferenceManager.activeCallId == s.callId) return
         if (s.phase != Phase.CONNECTED && s.phase != Phase.CONNECTING) return
         val hold = !s.onHold
         exec.execute {
@@ -1338,6 +1413,10 @@ object CallManager {
     }
 
     fun toggleSpeaker() {
+        if (ConferenceManager.state.value?.let { it.callId == _state.value?.callId && it.stage == ConferenceManager.Stage.CONFERENCE } == true) {
+            ConferenceManager.toggleSpeaker()
+            return
+        }
         val s = _state.value ?: return
         val on = !s.speaker
         applyAudioRoute(on)
@@ -1515,6 +1594,10 @@ object CallManager {
     }
 
     fun toggleVideo() {
+        if (ConferenceManager.state.value?.let { it.callId == _state.value?.callId && it.stage == ConferenceManager.Stage.CONFERENCE } == true) {
+            ConferenceManager.toggleVideo()
+            return
+        }
         val s = _state.value ?: return
         if (s.kind != CallKind.VIDEO) return
         if (s.onHold) return   // held calls send nothing; resume first
@@ -1527,6 +1610,10 @@ object CallManager {
     }
 
     fun switchCamera() {
+        if (ConferenceManager.state.value?.let { it.callId == _state.value?.callId && it.stage == ConferenceManager.Stage.CONFERENCE } == true) {
+            ConferenceManager.switchCamera()
+            return
+        }
         exec.execute {
             (videoCapturer as? CameraVideoCapturer)?.switchCamera(null)
             frontCamera = !frontCamera
@@ -1653,8 +1740,11 @@ object CallManager {
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         }
 
-    private fun createPeerConnection(iceServers: List<PeerConnection.IceServer>): PeerConnection? {
-        pc = factory.createPeerConnection(rtcConfig(iceServers), pcObserver)
+    private fun createPeerConnection(iceServers: List<PeerConnection.IceServer>, callId: String): PeerConnection? {
+        if (!isCurrentCall(callId)) return null
+        pc?.let { return it }
+        pc = factory.createPeerConnection(rtcConfig(iceServers), pcObserver(callId, peerGeneration.incrementAndGet()))
+        if (pc == null) setupFailed(callId)
         return pc
     }
 
@@ -1725,8 +1815,11 @@ object CallManager {
         pendingRemoteCandidates.clear()
     }
 
-    private val pcObserver = object : PeerConnection.Observer {
+    @Volatile private var retiredPeerCallId: String? = null
+    private val peerGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private fun pcObserver(callId: String, generation: Long) = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate) {
+            if (!isCurrentCall(callId) || peerGeneration.get() != generation) return
             val s = _state.value ?: return
             val obj = buildString {
                 append("{")
@@ -1744,13 +1837,14 @@ object CallManager {
          * once the old candidates die, and the correct response is to re-gather, not hang up.
          */
         override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
+            if (!isCurrentCall(callId) || peerGeneration.get() != generation) return
             when (newState) {
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED -> {
                     // Whatever we were worried about resolved itself (or our restart worked).
                     cancelDisconnectGrace()
                     cancelRestartWatchdog()
-                    exec.execute { restartInFlight = false; iceRestartAttempts = 0 }
+                    exec.execute { if (isCurrentCall(callId)) { restartInFlight = false; iceRestartAttempts = 0 } }
                     markConnected()
                 }
                 // Transient by nature — give it a moment to heal before touching anything.
@@ -1768,6 +1862,7 @@ object CallManager {
         }
 
         override fun onTrack(transceiver: RtpTransceiver) {
+            if (!isCurrentCall(callId) || peerGeneration.get() != generation) return
             val track = transceiver.receiver?.track() ?: return
             if (track is VideoTrack) {
                 remoteVideoTrack = track
@@ -1780,6 +1875,7 @@ object CallManager {
         }
 
         override fun onAddTrack(receiver: RtpReceiver, streams: Array<out org.webrtc.MediaStream>?) {
+            if (!isCurrentCall(callId) || peerGeneration.get() != generation) return
             val track = receiver.track()
             if (track is VideoTrack) {
                 remoteVideoTrack = track
@@ -1801,8 +1897,10 @@ object CallManager {
         override fun onRenegotiationNeeded() {}
     }
 
+    @Synchronized
     private fun markConnected() {
         val s = _state.value ?: return
+        if (s.phase == Phase.ENDED) return
         cancelConnectTimeout()
         metrics?.onConnected()
         CallTones.stopRingback()
@@ -1840,8 +1938,13 @@ object CallManager {
             val parsed = runCatching {
                 ApiClient.json.decodeFromString(CallKeyEnvelope.serializer(), env)
             }.getOrNull() ?: parseIosEnvelope(env, callId) ?: return@launch
-            applyFrameSecret(parsed.secret, parsed.epoch)
+            if (parsed.call_id == callId) applyOpenedCallSecret(callId, parsed.secret, parsed.epoch)
         }
+    }
+
+    fun applyOpenedCallSecret(callId: String, secret: String, epoch: Int) {
+        if (!isCurrentCall(callId) || _state.value?.isConferenceInvite == true) return
+        exec.execute { if (isCurrentCall(callId)) applyFrameSecret(secret, epoch) }
     }
 
     /** iOS-shaped key envelope ({v,k:"secret",call_id,secret,gen}). */
@@ -1948,8 +2051,17 @@ object CallManager {
         callSecretEpoch = 0
     }
 
-    private fun endInternal(notifyPeer: Boolean, reason: String) {
+    @Synchronized
+    private fun endInternal(notifyPeer: Boolean, reason: String, conferenceLeg: Boolean = false) {
         val s = _state.value ?: return
+        if (s.phase == Phase.ENDED) return
+        val conference = ConferenceManager.state.value?.takeIf { it.callId == s.callId }
+        val belongsToConference = conferenceLeg || s.isConferenceInvite || conference != null
+        _state.value = s.copy(phase = Phase.ENDED, reconnecting = false, endReason = reason)
+        synchronized(endedCallIds) {
+            endedCallIds.add(s.callId)
+            if (endedCallIds.size > 128) endedCallIds.remove(endedCallIds.first())
+        }
         cancelConnectTimeout()
         endReason = endReason ?: reason
         cancelOfferTimeout()
@@ -1962,11 +2074,11 @@ object CallManager {
         // ICE giving up. A tone that outlives its call is the worst version of this feature.
         CallTones.stopRingback()
         if (reason == "ice-failed" || reason == "ice-closed") CallTones.playFailed()
-        if (notifyPeer && s.phase != Phase.ENDED) {
-            runCatching { WebSocketClient.get(appContext).sendCallHangup(s.peerUserId, s.callId) }
+        if (notifyPeer && !s.isConferenceInvite && !conferenceLeg && conference?.stage != ConferenceManager.Stage.CONFERENCE) {
+            runCatching { WebSocketClient.get(appContext).sendCallHangup(s.peerUserId, s.callId, reason) }
         }
-        scope.launch(Dispatchers.IO) {
-            runCatching { CallApi(appContext).status(s.callId, "ended") }
+        if (!belongsToConference && reason !in setOf("answered-elsewhere", "declined-elsewhere")) {
+            scope.launch(Dispatchers.IO) { runCatching { CallApi(appContext).status(s.callId, "ended") } }
         }
         // Anonymous aggregate — counters only, and it can never fail the call (see CallStats).
         runCatching {
@@ -1979,9 +2091,9 @@ object CallManager {
         // Final outcome. "declined" covers both directions (we rejected it, or the callee did);
         // anything that never connected is a miss, which is the whole point of the log.
         val outcome = when {
-            s.connectedAtMs != null -> "answered"
-            reason == "declined" -> "declined"
-            reason == "ice-failed" || reason == "ice-closed" -> "failed"
+            s.connectedAtMs != null || reason == "answered-elsewhere" -> "answered"
+            reason in setOf("declined", "busy", "declined-elsewhere") -> "declined"
+            s.accepted || reason in setOf("ice-failed", "ice-closed", "setup-failed", "ring-failed", "unavailable") -> "failed"
             else -> "missed"
         }
         recordCall(s, outcome = outcome, endedAtMs = System.currentTimeMillis())
@@ -1989,14 +2101,17 @@ object CallManager {
         // our `call_history` can never disagree about what happened.
         TelecomBridge.setDisconnected(s.callId, disconnectCause(s, reason, outcome))
         endCallSession()
-        update { it.copy(phase = Phase.ENDED, reconnecting = false) }
+        if (ConferenceManager.activeCallId == s.callId) ConferenceManager.leave()
+        else if (s.isConferenceInvite) ConferenceManager.declineInvite(appContext, s.callId, "")
+        ConferenceManager.forgetCallKey(s.callId)
         exec.execute { releaseWebRtc() }
         restoreAudioRoute()
         CallForegroundService.stop(appContext)
         // Let the UI show the ENDED frame briefly, then clear.
         scope.launch {
             kotlinx.coroutines.delay(600)
-            if (_state.value?.phase == Phase.ENDED) _state.value = null
+            if (_state.value?.callId != s.callId || _state.value?.phase != Phase.ENDED) return@launch
+            _state.value = null
             // Reset the minimize flag with the call. Leaving it true would start the NEXT
             // call minimized — the user would answer and land on a pill with no call screen.
             _minimized.value = false
@@ -2023,6 +2138,7 @@ object CallManager {
     }
 
     private fun releaseWebRtc() {
+        peerGeneration.incrementAndGet()
         runCatching { videoCapturer?.stopCapture() }
         runCatching { videoCapturer?.dispose() }
         runCatching { videoSource?.dispose() }
@@ -2047,6 +2163,7 @@ object CallManager {
      * aggressively. Idempotent — both call directions funnel through here.
      */
     private fun beginCallSession() {
+        retiredPeerCallId = null
         endReason = null
         iceRestartAttempts = 0
         restartInFlight = false
@@ -2122,12 +2239,14 @@ object CallManager {
         val s = _state.value ?: return
         if (s.phase != Phase.CONNECTING && s.phase != Phase.CONNECTED) return
         markReconnecting(true)
-        exec.execute { doIceRestart(reason) }
+        exec.execute { if (isCurrentCall(s.callId)) doIceRestart(reason) }
     }
 
     /** Publish/clear the UI's "Reconnecting…" flag. Callable from any thread. */
     private fun markReconnecting(on: Boolean) {
+        val callId = _state.value?.callId ?: return
         mainHandler.post {
+            if (!isCurrentCall(callId)) return@post
             val s = _state.value ?: return@post
             if (s.phase == Phase.ENDED || s.reconnecting == on) return@post
             _state.value = s.copy(reconnecting = on)
@@ -2166,14 +2285,18 @@ object CallManager {
             if (servers.isNotEmpty()) p.setConfiguration(rtcConfig(servers))
         }
 
+        if (!isCurrentCall(s.callId) || pc !== p) return
+        armRestartWatchdog()
         val constraints = offerAnswerConstraints(s.kind).apply {
             mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
         }
         p.createOffer(object : SdpObserverAdapter() {
             override fun onCreateSuccess(sdp: SessionDescription) {
+                if (!isCurrentCall(s.callId) || pc !== p) return
                 val tuned = tune(sdp)
                 p.setLocalDescription(object : SdpObserverAdapter() {
                     override fun onSetSuccess() {
+                        if (!isCurrentCall(s.callId) || pc !== p) return
                         // Queued by WebSocketClient if the socket happens to be down — a
                         // handover often takes the signaling socket with it.
                         WebSocketClient.get(appContext)
@@ -2181,12 +2304,12 @@ object CallManager {
                         armRestartWatchdog()
                     }
                     override fun onSetFailure(error: String?) {
-                        exec.execute { restartInFlight = false }
+                        exec.execute { if (isCurrentCall(s.callId)) armRestartWatchdog() }
                     }
                 }, tuned)
             }
             override fun onCreateFailure(error: String?) {
-                exec.execute { restartInFlight = false }
+                exec.execute { if (isCurrentCall(s.callId)) armRestartWatchdog() }
             }
         }, constraints)
     }
@@ -2197,6 +2320,7 @@ object CallManager {
      * until the attempt budget runs out.
      */
     private fun armRestartWatchdog() {
+        val callId = _state.value?.callId ?: return
         cancelRestartWatchdog()
         val backoffMs = 4_000L * iceRestartAttempts.coerceAtLeast(1)   // 4s, 8s, 12s
         val r = Runnable {
@@ -2204,7 +2328,8 @@ object CallManager {
             exec.execute {
                 val s = _state.value ?: return@execute
                 if (s.phase == Phase.ENDED) return@execute
-                if (!restartInFlight) return@execute      // ICE recovered; nothing to do
+                if (!isCurrentCall(callId)) return@execute
+                if (pc?.iceConnectionState() in setOf(PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED)) return@execute
                 restartInFlight = false
                 if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
                     mainHandler.post { endInternal(notifyPeer = true, reason = "ice-failed") }
@@ -2244,7 +2369,7 @@ object CallManager {
     private var connectTimeoutRunnable: Runnable? = null
 
     private fun armConnectTimeout(callId: String) {
-        cancelConnectTimeout()
+        if (!isCurrentCall(callId) || _state.value?.connectedAtMs != null || connectTimeoutRunnable != null) return
         val r = Runnable {
             val s = _state.value ?: return@Runnable
             if (s.callId != callId) return@Runnable
@@ -2493,9 +2618,13 @@ object CallManager {
         mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (kind == CallKind.VIDEO) "true" else "false"))
     }
 
-    private inline fun update(block: (CallState) -> CallState) {
-        val cur = _state.value ?: return
-        _state.value = block(cur)
+    private inline fun update(expectedCallId: String? = _state.value?.callId, block: (CallState) -> CallState) {
+        while (true) {
+            val cur = _state.value ?: return
+            if (cur.callId != expectedCallId || cur.phase == Phase.ENDED) return
+            // A simultaneous hangup or state change must not be overwritten by an old copy.
+            if (_state.compareAndSet(cur, block(cur))) return
+        }
     }
 
     private fun appContextOrNull(): Context? = if (::appContext.isInitialized) appContext else null

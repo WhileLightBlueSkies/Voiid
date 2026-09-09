@@ -101,7 +101,7 @@ class WebSocketClient private constructor(context: Context) {
      *
      * Server-originated on your own channel, so it has no peer — see the dispatch branch.
      */
-    var onCallTaken: ((String, String) -> Unit)? = null
+    var onCallTaken: ((String, String, String?) -> Unit)? = null
 
     /** One inbound call-signaling frame. `from_user_id` is server-stamped (authenticated). */
     data class CallSignal(
@@ -112,6 +112,7 @@ class WebSocketClient private constructor(context: Context) {
         val sdp: String?,
         val candidate: JsonObject?,
         val conversationId: String?,
+        val reason: String? = null,
     )
 
     fun connect() {
@@ -307,8 +308,8 @@ class WebSocketClient private constructor(context: Context) {
         send("""{"type":"call_ice","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"candidate":$candidateJson}""", queueIfDown = true)
     }
 
-    fun sendCallHangup(toUserId: String, callId: String) {
-        send("""{"type":"call_hangup","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    fun sendCallHangup(toUserId: String, callId: String, reason: String = "hangup") {
+        send("""{"type":"call_hangup","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"reason":${enc(reason)}}""", queueIfDown = true)
     }
 
     fun sendCallDecline(toUserId: String, callId: String) {
@@ -554,16 +555,23 @@ class WebSocketClient private constructor(context: Context) {
             "call_invite", "call_invite_accept", "call_invite_decline", "call_migrate", "call_key" -> {
                 val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: return
-                ConferenceRelay.dispatch(
+                val copies = (obj["ciphertexts"] as? kotlinx.serialization.json.JsonArray)
+                    ?.mapNotNull { entry ->
+                        val copy = entry as? JsonObject ?: return@mapNotNull null
+                        val device = copy["device_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                        val body = copy["body"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                        device to body
+                    } ?: listOf(obj["device_id"]?.jsonPrimitive?.contentOrNull to obj["ciphertext"]?.jsonPrimitive?.contentOrNull)
+                for ((device, body) in copies) ConferenceRelay.dispatch(
                     type = t,
                     fromUserId = from,
                     callId = callId,
                     callKind = obj["call_kind"]?.jsonPrimitive?.contentOrNull,
                     room = obj["room"]?.jsonPrimitive?.contentOrNull,
-                    deviceId = obj["device_id"]?.jsonPrimitive?.contentOrNull,
+                    deviceId = device,
                     senderDeviceId = obj["sender_device_id"]?.jsonPrimitive?.contentOrNull
                         ?.takeIf { it.isNotBlank() },
-                    ciphertextB64 = obj["ciphertext"]?.jsonPrimitive?.contentOrNull,
+                    ciphertextB64 = body,
                 )
             }
             // ANSWERED (or DECLINED) ON ANOTHER OF YOUR OWN DEVICES.
@@ -579,7 +587,7 @@ class WebSocketClient private constructor(context: Context) {
             "call_taken" -> {
                 val callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val reason = obj["reason"]?.jsonPrimitive?.contentOrNull ?: "answer"
-                onCallTaken?.invoke(callId, reason)
+                onCallTaken?.invoke(callId, reason, obj["winner_device_id"]?.jsonPrimitive?.contentOrNull)
             }
             "call_offer", "call_answer", "call_ice", "call_hangup", "call_decline", "call_busy",
             "call_ringing", "call_hold", "call_unhold",
@@ -595,6 +603,7 @@ class WebSocketClient private constructor(context: Context) {
                         sdp = obj["sdp"]?.jsonPrimitive?.contentOrNull,
                         candidate = obj["candidate"] as? JsonObject,
                         conversationId = obj["conversation_id"]?.jsonPrimitive?.contentOrNull,
+                        reason = obj["reason"]?.jsonPrimitive?.contentOrNull,
                     ),
                 )
             }

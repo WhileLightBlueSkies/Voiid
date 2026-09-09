@@ -1,3 +1,4 @@
+import { callKeyCopies, callKeyDeliveryFrames, CALL_DEVICE_CLAIM_SCRIPT } from './callSignaling';
 import { randomUUID } from 'node:crypto';
 import { boundedSend, PRESENCE_SCRIPT, FRAME_BUDGET_SCRIPT } from './transport';
 import { callGrantAllows } from '@voiid/common-utils';
@@ -777,7 +778,8 @@ wss.on('connection', async (ws, req) => {
           msg.type === 'call_invite' ||
           msg.type === 'call_invite_accept' ||
           msg.type === 'call_invite_decline' ||
-          msg.type === 'call_migrate') &&
+          msg.type === 'call_migrate' ||
+          msg.type === 'call_key') &&
         typeof msg.to_user_id === 'string' &&
         typeof msg.call_id === 'string'
       ) {
@@ -811,6 +813,8 @@ wss.on('connection', async (ws, req) => {
         // Rebuild the outbound frame from KNOWN fields only (never echo client
         // extras) and stamp the authenticated sender. Undefined fields are dropped
         // by JSON.stringify, so e.g. a hangup without `reason` simply omits it.
+        const keyCopies = msg.type === 'call_key' ? callKeyCopies(msg) : undefined;
+        if (msg.type === 'call_key' && (!keyCopies || !auth.deviceId)) return;
         const out = JSON.stringify({
           type: msg.type,
           call_id: msg.call_id,
@@ -825,6 +829,9 @@ wss.on('connection', async (ws, req) => {
           // missing from that list, so even once the types above are allowed the
           // invitee would be told a conference exists and given no way to enter it.
           room: msg.room,
+          other_user_id: msg.other_user_id,
+          ciphertexts: keyCopies,
+          sender_device_id: msg.type === 'call_key' ? auth.deviceId : undefined,
         });
         // Deliver to the callee's devices (never echo back to the sender).
         if (msg.to_user_id !== userId) {
@@ -833,14 +840,35 @@ wss.on('connection', async (ws, req) => {
           // handler async (which would change frame ordering for every other message type).
           // Frames for one call still land in order because they await the same key.
           const toUserId = msg.to_user_id as string;
-          await callPairAuthorized(msg.call_id as string, userId, toUserId).then((allowed) => {
+          await callPairAuthorized(msg.call_id as string, userId, toUserId).then(async (allowed) => {
             if (!allowed || ws.readyState !== WebSocket.OPEN || Date.now() >= auth.expiresAt) {
               // Fail closed and say nothing useful back: a caller probing which user_ids are
               // reachable must not learn the difference between "not authorized" and
               // "authorized but offline".
               return;
             }
-            pub.publish(`channel:user:${toUserId}`, out);
+            // Device arbitration applies only to a 1:1 grant, never to conference participants.
+            const grant = JSON.parse((await pub.get(ringGrantKey(msg.call_id))) ?? 'null');
+            if (!grant || !callGrantAllows(JSON.stringify(grant), userId, toUserId)) return;
+            if (grant.v !== 2 && ['call_offer', 'call_answer', 'call_ice', 'call_decline', 'call_hangup', 'call_busy'].includes(msg.type)) {
+              const claim = await pub.eval(CALL_DEVICE_CLAIM_SCRIPT, 2,
+                `call:device:${msg.call_id}:${userId}`, `call:device:${msg.call_id}:${toUserId}`, auth.deviceId ?? 'legacy', msg.type,
+                7200, msg.reason ?? '') as [number, string, string];
+              if (Number(claim[0]) !== 1) {
+                if (claim[2] === 'answer' || claim[2] === 'decline') boundedSend(ws, JSON.stringify({
+                  type: 'call_taken', call_id: msg.call_id, from_user_id: userId,
+                  reason: claim[2], winner_device_id: claim[1],
+                }));
+                return;
+              }
+            }
+            if (keyCopies && auth.deviceId) {
+              for (const frame of callKeyDeliveryFrames(msg.call_id, userId, auth.deviceId, keyCopies)) {
+                pub.publish(`channel:user:${toUserId}`, frame);
+              }
+            } else {
+              pub.publish(`channel:user:${toUserId}`, out);
+            }
 
           // Buffer the offer so a callee whose socket is down (backgrounded/killed,
           // about to be woken by the VoIP push) can still get it. We CANNOT decide
@@ -921,6 +949,7 @@ wss.on('connection', async (ws, req) => {
                 call_id: msg.call_id,
                 from_user_id: userId,
                 reason,
+                winner_device_id: auth.deviceId,
               });
               // Live siblings hear it immediately…
               pub.publish(`channel:user:${userId}`, takenFrame);

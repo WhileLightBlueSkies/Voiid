@@ -24,7 +24,7 @@ import { Pool } from 'pg';
 
 import { pool } from '../src/db';
 import { redis, publisher } from '../src/redis';
-import { admitParticipant } from '../src/routes/calls';
+import { admitParticipant, transitionConferenceParticipant } from '../src/routes/calls';
 
 redis.disconnect();
 publisher.disconnect();
@@ -210,6 +210,70 @@ test('conference participant cap under real concurrency', { skip: !url }, async 
       const callId = await callWith(2);
       assert.equal(await admit(callId, await newUser()), true);
       assert.equal(await rosterSize(callId), 3);
+    });
+
+    await t.test('decline is terminal until a fresh invitation, and frees its seat', async () => {
+      const callId = await callWith(2);
+      const invitee = await newUser();
+      assert.equal(await admit(callId, invitee), true);
+      assert.equal((await transitionConferenceParticipant(callId, invitee, 'leave')).outcome, 'declined');
+      assert.equal((await transitionConferenceParticipant(callId, invitee, 'join')).status, 403);
+      assert.equal((await transitionConferenceParticipant(callId, invitee, 'leave')).changed, false);
+      assert.equal(await rosterSize(callId), 2);
+      assert.equal(await admit(callId, invitee), true);
+      assert.equal((await transitionConferenceParticipant(callId, invitee, 'join')).status, 200);
+    });
+
+    await t.test('one member leaving preserves the other members and prevents a stale join', async () => {
+      const callId = await callWith(3);
+      assert.equal((await transitionConferenceParticipant(callId, caller, 'leave')).outcome, 'left');
+      assert.equal(await rosterSize(callId), 2);
+      assert.equal((await db.query('select status from calls where id=$1', [callId])).rows[0].status, 'connected');
+      assert.equal((await transitionConferenceParticipant(callId, caller, 'join')).status, 403);
+      assert.equal(await admit(callId, await newUser()), false, 'a departed original cannot resurrect itself by adding somebody');
+    });
+
+    await t.test('last joined member leaving cancels pending invitations and closes the call', async () => {
+      const callId = await callWith(1);
+      const invitee = await newUser();
+      await admit(callId, invitee);
+      await transitionConferenceParticipant(callId, caller, 'leave');
+      assert.equal(await rosterSize(callId), 0);
+      assert.equal((await db.query('select status from calls where id=$1', [callId])).rows[0].status, 'ended');
+      assert.equal((await transitionConferenceParticipant(callId, invitee, 'join')).status, 409);
+    });
+
+    await t.test('a delayed join cannot race last-member closure and reopen the call', async () => {
+      const callId = await callWith(1);
+      const invitee = await newUser();
+      await admit(callId, invitee);
+      const blocker = await db.connect();
+      let leave!: ReturnType<typeof transitionConferenceParticipant>;
+      let join!: ReturnType<typeof transitionConferenceParticipant>;
+      try {
+        await blocker.query('begin');
+        await blocker.query('select 1 from calls where id=$1 for update', [callId]);
+        leave = transitionConferenceParticipant(callId, caller, 'leave');
+        // Wait until leave actually holds its place behind the call-row lock.
+        const deadline = Date.now() + 5000;
+        let waiting = false;
+        while (Date.now() < deadline) {
+          const { rows } = await db.query(`select 1 from pg_stat_activity where datname=current_database()
+            and wait_event_type='Lock' and query ilike '%select status from calls where id%'`);
+          if (rows.length) { waiting = true; break; }
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        assert.ok(waiting, 'leave must serialize on the call row');
+        join = transitionConferenceParticipant(callId, invitee, 'join');
+        await blocker.query('commit');
+        assert.equal((await leave).status, 200);
+        assert.equal((await join).status, 409);
+        assert.equal(await rosterSize(callId), 0);
+      } finally {
+        await blocker.query('rollback').catch(() => {});
+        blocker.release();
+        await Promise.allSettled([leave, join].filter(Boolean));
+      }
     });
   } finally {
     (pool as any).query = originalQuery;

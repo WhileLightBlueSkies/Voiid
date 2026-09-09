@@ -31,7 +31,7 @@ import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.GppGood
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PanTool
-import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -65,6 +65,7 @@ import com.voiid.app.ui.theme.LocalVoiidDark
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import com.voiid.app.ui.theme.VoiidSpacing
 
 /**
  * Onboarding step 1 — the first screen a new user ever sees. Twin of iOS
@@ -104,70 +105,15 @@ fun WelcomeTermsScreen(
         )
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            // Committed to dark — see the note in OnboardingBrandChrome on why these screens
-            // ignore the theme override.
-            .background(OnboardingBrand.ground),
-    ) {
-        Column(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            // SCROLLS, because the fixed content overflows every phone but the largest. The
-            // footer below is PINNED outside it: the consent control must never require
-            // scrolling to reach.
-            Column(
-                Modifier.weight(1f).verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Spacer(Modifier.height(8.dp))
-
-                OnboardingBrandHeader(appeared = appeared)
-
-                OnboardingTitle(leading = "Terms & ", accented = "Conditions")
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Please read these important documents carefully.\nBy continuing, you agree to our policies.",
-                    style = VoiidFont.rounded(15),
-                    color = VoiidColor.textSecondary,
-                    modifier = Modifier.padding(horizontal = 24.dp),
-                )
-
-                Spacer(Modifier.height(24.dp))
-
-                // ALPHABETICAL BY TITLE, ascending — six items are past the point where a
-                // reader scans the whole list, so a predictable order lets them find one by
-                // name. Terms of Service and Privacy Policy sit last while the checkbox names
-                // exactly those two — which is why both are also linked in the consent line.
-                OnboardingCard(flush = true, modifier = Modifier.padding(horizontal = 20.dp)) {
-                    documentRows().forEachIndexed { index, row ->
-                        DocumentRowView(row) {
-                            haptics.tap()
-                            openDocument = row.document
-                            sheetVisible = true
-                        }
-                        if (index < documentRows().size - 1) DocumentRowDivider()
-                    }
-                }
-
-                Spacer(Modifier.height(22.dp))
-
-                OnboardingPrivacyNote(
-                    icon = Icons.Outlined.Shield,
-                    lines = listOf(
-                        "Your privacy and security are our top priority.",
-                        "We never sell your personal data.",
-                    ),
-                    accentPhrase = null,
-                    modifier = Modifier.padding(horizontal = 24.dp),
-                )
-
-                Spacer(Modifier.height(18.dp))
-            }
-
-            // PINNED footer: the explicit consent control + the gated primary action.
+    // Built from OnboardingKit — the same primitives Permissions uses, which are the port of
+    // iOS's own `OnboardingKit`. The screen previously drew its own card, rows, tile and
+    // privacy note with its own numbers, which is why it drifted from iOS while claiming in
+    // its header comment to be identical.
+    OnboardingScaffold(
+        dismissKeyboardOnTap = false,
+        footer = {
+            // PINNED, not scrolled: the agreement control is the point of the screen, and
+            // making the user scroll to find it is how consent gets skipped.
             ConsentRow(
                 accepted = accepted,
                 reduceMotion = reduceMotion,
@@ -175,25 +121,52 @@ fun WelcomeTermsScreen(
                     haptics.selection()
                     accepted = it
                 },
-                modifier = Modifier.padding(horizontal = 24.dp),
             )
-            Spacer(Modifier.height(14.dp))
-            OnboardingPrimaryButton(
-                title = "Continue",
-                enabled = accepted,
-                modifier = Modifier.padding(horizontal = 20.dp),
-            ) {
+            OnboardingKitButton(title = "Continue", enabled = accepted) {
                 recordConsent()
                 onContinue()
             }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                buildString(context),
-                style = VoiidFont.rounded(12),
-                color = VoiidColor.textSecondary.copy(alpha = 0.7f),
-            )
-            Spacer(Modifier.height(10.dp))
+        },
+    ) {
+        Spacer(Modifier.height(VoiidSpacing.lg))
+
+        OnboardingHeader(
+            title = OnboardingTitleSpec.Inline("Terms & ", "Conditions"),
+            blurb = "Please read these important documents carefully.\n" +
+                "By continuing, you agree to our policies.",
+        )
+
+        // ALPHABETICAL BY TITLE, ascending — six items are past the point where a reader
+        // scans the whole list, so a predictable order lets them find one by name. Terms of
+        // Service and Privacy Policy sit last while the checkbox names exactly those two —
+        // which is why both are also linked in the consent line.
+        OnboardingKitCard(Modifier.padding(top = VoiidSpacing.lg)) {
+            val rows = documentRows()
+            rows.forEachIndexed { index, row ->
+                OnboardingRow(
+                    icon = row.glyph,
+                    title = row.title,
+                    subtitle = row.subtitle,
+                    // These rows OPEN a document, so the chevron tells the truth here — unlike
+                    // Permissions, where nothing opens.
+                    showsChevron = true,
+                ) {
+                    haptics.tap()
+                    openDocument = row.document
+                    sheetVisible = true
+                }
+                if (index < rows.size - 1) OnboardingRowDivider()
+            }
         }
+
+        OnboardingPrivacyPanel(
+            icon = Icons.Filled.VerifiedUser,
+            headline = "Your privacy and security are our top priority.",
+            detail = "We never sell your personal data.",
+            modifier = Modifier.padding(top = VoiidSpacing.md),
+        )
+
+        Spacer(Modifier.height(VoiidSpacing.xl))
     }
 
     // Legal documents present in a SHEET over this screen — committed dark to match the
@@ -268,42 +241,6 @@ private fun documentRows(): List<DocumentRow> = listOf(
     DocumentRow("tos", "Terms of Service", "Rules for using Voiid and our services.", LegalDocuments.terms, Icons.Outlined.Description),
 )
 
-/** A tappable document row — a read affordance, so the disclosure chevron, not a checkmark. */
-@Composable
-private fun DocumentRowView(row: DocumentRow, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .softClickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        OnboardingGlyphTile(row.glyph, size = 38.dp)
-        Column(Modifier.weight(1f)) {
-            Text(row.title, style = VoiidFont.rounded(16, FontWeight.SemiBold),
-                 color = VoiidColor.textPrimary)
-            Text(row.subtitle, style = VoiidFont.rounded(14),
-                 color = VoiidColor.textSecondary)
-        }
-        Icon(
-            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = VoiidColor.textSecondary,
-            modifier = Modifier.size(22.dp),
-        )
-    }
-}
-
-@Composable
-private fun DocumentRowDivider() {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(OnboardingBrand.hairline),
-    )
-}
 
 // MARK: - Consent
 
@@ -376,8 +313,3 @@ private fun CheckboxMark(accepted: Boolean, reduceMotion: Boolean) {
 }
 
 /** Version + build from the package manager, rather than a literal someone must remember to bump. */
-private fun buildString(context: android.content.Context): String = runCatching {
-    val pm = context.packageManager.getPackageInfo(context.packageName, 0)
-    @Suppress("DEPRECATION")
-    "v${pm.versionName} (${pm.versionCode})"
-}.getOrDefault("")

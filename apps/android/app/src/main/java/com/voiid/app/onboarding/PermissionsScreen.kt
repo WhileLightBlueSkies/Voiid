@@ -4,6 +4,8 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import com.voiid.app.ui.components.pressableClickable
+import com.voiid.app.ui.theme.VoiidSpacing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -101,76 +103,54 @@ fun PermissionsScreen(onContinue: () -> Unit) {
         onContinue()
     }
 
-    Box(Modifier.fillMaxSize().background(OnboardingBrand.ground)) {
-        Column(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            // Scrolls with the button pinned — see the note in WelcomeTermsScreen. This is
-            // the worst of the three: SIX rows at ~74dp each, so the content clears a small
-            // phone's height before the header is even counted.
-            Column(
-                Modifier.weight(1f).verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-            Spacer(Modifier.height(8.dp))
-
-            OnboardingBrandHeader(appeared = appeared)
-
-            OnboardingTitle(accented = "Voiid", trailing = " needs a few permissions")
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "These permissions help us give you\nthe best experience.",
-                style = VoiidFont.rounded(17),
-                color = VoiidColor.textSecondary,
-                textAlign = TextAlign.Center,
-            )
-
-            Spacer(Modifier.height(22.dp))
-
-            // Flush rows with hairline dividers rather than separate tiles — six tiles at this
-            // size would fill the screen with gaps and the list would lose its shape.
-            OnboardingCard(flush = true, modifier = Modifier.padding(horizontal = 20.dp)) {
-                permissionRows().forEachIndexed { index, row ->
-                    if (index > 0) {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(1.dp)
-                                .background(OnboardingBrand.hairline),
-                        )
-                    }
-                    PermissionRowView(row)
-                }
-            }
-
-            Spacer(Modifier.height(20.dp))
-
-            OnboardingPrivacyNote(
-                icon = Icons.Outlined.Shield,
-                lines = listOf(
-                    "We respect your privacy.",
-                    "You can change these permissions anytime",
-                    "in your device settings.",
-                ),
-                accentPhrase = "device settings",
-                modifier = Modifier.padding(horizontal = 24.dp),
-            )
-
-            Spacer(Modifier.height(18.dp))
-            }
-
-            OnboardingPrimaryButton(
-                title = "Allow Access",
-                busy = requesting,
-                modifier = Modifier.padding(horizontal = 20.dp),
-            ) {
+    OnboardingScaffold(
+        footer = {
+            OnboardingKitButton(title = "Allow All", enabled = !requesting, busy = requesting) {
                 requesting = true
                 launcher.launch(permissions)
             }
 
-            Spacer(Modifier.height(14.dp))
+            // THE DECLINE PATH. Android had none: the only way off this screen was to
+            // trigger the system prompt. iOS's comment is blunt about why that is wrong —
+            // "a priming screen that hides its decline is a dark pattern" — and the button
+            // is not decoration, it calls onContinue directly and skips the ask entirely.
+            Text(
+                "Not now",
+                style = VoiidFont.rounded(16),
+                color = VoiidBrand.textDim,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .pressableClickable(enabled = !requesting) { haptics.tap(); onContinue() }
+                    .padding(vertical = 6.dp),
+            )
+        },
+    ) {
+        Spacer(Modifier.height(VoiidSpacing.md))
+
+        OnboardingHeader(
+            title = OnboardingTitleSpec.Inline("Allow ", "Permissions"),
+            blurb = "To give you the best experience, Voiid needs\na few permissions. You can " +
+                "change these anytime\nin your device settings.",
+        )
+
+        OnboardingKitCard(Modifier.padding(top = VoiidSpacing.lg)) {
+            val rows = permissionRows()
+            rows.forEachIndexed { index, row ->
+                OnboardingRow(
+                    icon = row.glyph,
+                    title = row.title,
+                    subtitle = row.detail,
+                    subtitleWraps = true,
+                    // NO chevron and NO tap: these rows state what is being asked for. A
+                    // chevron on a row that does nothing lies about what a tap does — and
+                    // Android drew a lime arrow on every one of them.
+                    showsChevron = false,
+                )
+                if (index < rows.size - 1) OnboardingRowDivider()
+            }
         }
+
+        Spacer(Modifier.height(VoiidSpacing.xl))
     }
 }
 
@@ -182,23 +162,29 @@ private data class PermissionRow(
 )
 
 /**
- * Order matches the design: the two that find people and capture, then media, then the two
- * that reach out to the user. Copy matches iOS word for word — these screens are meant to be
- * indistinguishable.
+ * The six asks, in iOS's order and with iOS's copy.
+ *
+ * CONTACTS IS LAST, DELIBERATELY. It was first here, which inverted the reason iOS states
+ * for the order: the most personal ask comes last, after the user has seen what the app
+ * wants and why. Reordering it to the front makes the first thing Voiid ever asks for be
+ * the address book.
+ *
+ * Every subtitle previously differed from iOS — all six — under a comment claiming they
+ * matched word for word. They now actually do.
  */
 private fun permissionRows(): List<PermissionRow> = listOf(
-    PermissionRow("contacts", Icons.Outlined.Person, "Contacts",
-                  "Find and connect with your friends"),
-    PermissionRow("camera", Icons.Outlined.CameraAlt, "Camera",
-                  "Take photos and record videos"),
-    PermissionRow("mic", Icons.Outlined.Mic, "Microphone",
-                  "Make voice and video calls"),
-    PermissionRow("photos", Icons.Outlined.Image, "Photos & Media",
-                  "Share photos, videos and documents"),
-    PermissionRow("notifications", Icons.Outlined.Notifications, "Notifications",
-                  "Stay updated with important alerts"),
     PermissionRow("location", Icons.Outlined.LocationOn, "Location",
-                  "Share your location and discover nearby"),
+                  "Shows you relevant content and nearby features."),
+    PermissionRow("notifications", Icons.Outlined.Notifications, "Notifications",
+                  "Keeps you updated on activity and offers."),
+    PermissionRow("camera", Icons.Outlined.CameraAlt, "Camera",
+                  "Lets you capture and share moments."),
+    PermissionRow("mic", Icons.Outlined.Mic, "Microphone",
+                  "Enables voice features and audio notes."),
+    PermissionRow("photos", Icons.Outlined.Image, "Photos & Media",
+                  "Lets you save, upload and share photos."),
+    PermissionRow("contacts", Icons.Outlined.Person, "Contacts",
+                  "Helps you find and connect with people you know (optional)."),
 )
 
 @Composable

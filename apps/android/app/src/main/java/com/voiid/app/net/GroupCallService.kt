@@ -113,6 +113,10 @@ object GroupCallManager {
     @Volatile private var appContext: Context? = null
     /** Guards join/leave against double-taps and overlapping teardown. */
     private val lifecycle = Any()
+    @Volatile private var generation = 0L
+    @Volatile private var joinJob: Job? = null
+    private fun isCurrent(session: Long) = generation == session &&
+        _state.value?.phase?.let { it != Phase.ENDED } == true
 
     // MARK: - Join
 
@@ -128,6 +132,7 @@ object GroupCallManager {
                 return
             }
             if (conversationId.isBlank()) return
+            generation++
             appContext = context.applicationContext
             _state.value = GroupCallState(
                 conversationId = conversationId,
@@ -144,14 +149,22 @@ object GroupCallManager {
         // call you were already on.
         Notifier.cancelGroupCallNotification(ctx, conversationId)
         CallForegroundService.startGroup(ctx, title, video = kind == CallKind.VIDEO)
-        scope.launch { connect(ctx, conversationId, kind) }
+        val session = generation
+        joinJob = scope.launch {
+            try {
+                kotlinx.coroutines.withTimeout(35_000) { connect(ctx, conversationId, kind, session) }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                if (isCurrent(session)) fail("The call couldn't connect. Try again.")
+            }
+        }
     }
 
-    private suspend fun connect(ctx: Context, conversationId: String, kind: CallKind) {
+    private suspend fun connect(ctx: Context, conversationId: String, kind: CallKind, session: Long) {
         // 1) Authorization: exchange the conversation for a room token.
         val creds = try {
             fetchToken(conversationId)
         } catch (e: ApiError.Http) {
+            if (!isCurrent(session)) return
             // 503 + livekit_configured:false means this deployment has no SFU — that is a
             // configuration state, not an error the user did anything to cause.
             fail(
@@ -160,11 +173,13 @@ object GroupCallManager {
             )
             return
         } catch (e: Exception) {
+            if (!isCurrent(session)) return
             Log.e("VOIID", "group call: token fetch failed", e)
             fail("Couldn't reach the server to start the group call.")
             return
         }
 
+        if (!isCurrent(session)) return
         // 2) Derive the MLS call key BEFORE connecting, so the room is E2EE from frame one.
         //    First process any pending group events (Welcome/Commit): a device that was added
         //    to the group but hasn't opened the chat yet holds NO local MLS state, so callKey
@@ -172,6 +187,7 @@ object GroupCallManager {
         //    Establishing the group here makes the call work without the user first opening
         //    the chat (which is what the old error message told them to do by hand).
         runCatching { GroupEngine.get(ctx).syncGroupEvents() }
+        if (!isCurrent(session)) return
         val keyB64 = runCatching { GroupEngine.get(ctx).callKey(conversationId) }.getOrNull()
         if (keyB64 == null) {
             // Connecting without E2EE would hand plaintext media to the SFU. That contradicts
@@ -211,11 +227,12 @@ object GroupCallManager {
                 )
             }
         } catch (e: Exception) {
+            if (!isCurrent(session)) return
             Log.e("VOIID", "group call: room create failed", e)
             fail("Couldn't start the call engine.")
             return
         }
-        if (_state.value == null) { runCatching { r.disconnect() }; return }   // left during setup
+        if (!isCurrent(session)) { runCatching { r.disconnect(); r.release() }; return }   // left during setup
         room = r
         _state.value = _state.value?.copy(e2ee = true)
         startEventMirror(r)
@@ -224,22 +241,25 @@ object GroupCallManager {
         try {
             r.connect(creds.url, creds.token)
         } catch (e: Exception) {
+            if (!isCurrent(session)) return
             Log.e("VOIID", "group call: connect failed", e)
             fail("Couldn't connect to the call.")
             return
         }
-        if (_state.value == null) { teardown(); return }
+        if (!isCurrent(session)) { runCatching { r.disconnect() }; return }
 
         // Advertise the call to the other members so they get a "join" notification — without
         // this the call is join-only and nobody else ever learns it started.
         runCatching { ringGroup(ctx, conversationId, kind) }
             .onFailure { Log.w("VOIID", "group call: ring fan-out failed (call still usable)", it) }
 
+        if (!isCurrent(session)) return
         startPresenceHeartbeat(ctx, conversationId)
 
         // 4) Publish. Mic always; camera only for a video call.
         runCatching { r.localParticipant.setMicrophoneEnabled(true) }
-            .onFailure { Log.e("VOIID", "group call: mic publish failed", it) }
+            .onFailure { if (isCurrent(session)) fail("Couldn't start call audio."); return }
+        if (!isCurrent(session)) return
         if (kind == CallKind.VIDEO) {
             runCatching { r.localParticipant.setCameraEnabled(true) }
                 .onFailure { Log.e("VOIID", "group call: camera publish failed", it) }
@@ -250,6 +270,7 @@ object GroupCallManager {
         // "speaker" while the audio came out of the earpiece, and the first tap of the new
         // button would appear to do nothing (it would toggle to `false`, which is where the
         // hardware already was).
+        if (!isCurrent(session)) return
         applySpeaker(_state.value?.speakerOn ?: true)
 
         _state.value = _state.value?.copy(
@@ -269,6 +290,7 @@ object GroupCallManager {
         eventJob?.cancel()
         eventJob = scope.launch {
             r.events.events.collect { ev ->
+                if (room !== r) return@collect
                 when (ev) {
                     is RoomEvent.Disconnected -> {
                         // The SDK exhausted its own reconnect policy.
@@ -522,6 +544,8 @@ object GroupCallManager {
     private fun endInternal(userInitiated: Boolean) {
         synchronized(lifecycle) {
             if (_state.value == null) return
+            generation++
+            joinJob?.cancel(); joinJob = null
             _state.value = null
         }
         Log.i("VOIID", "group call: ended userInitiated=$userInitiated")
@@ -530,12 +554,13 @@ object GroupCallManager {
 
     /** Surface a message, then clear the call. The UI shows [GroupCallState.error] briefly. */
     private fun fail(message: String) {
+        val session = generation
         val cur = _state.value
         if (cur != null) _state.value = cur.copy(phase = Phase.ENDED, error = message)
         teardown()
         scope.launch {
             kotlinx.coroutines.delay(ERROR_LINGER_MS)
-            if (_state.value?.error != null) _state.value = null
+            if (generation == session && _state.value?.error != null) _state.value = null
         }
     }
 

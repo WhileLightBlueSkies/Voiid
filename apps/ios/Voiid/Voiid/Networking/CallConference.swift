@@ -189,6 +189,12 @@ final class CallConferenceService: ObservableObject {
     // MARK: Internals
 
     private let api = APIClient()
+    private var generation = UUID()
+    private var addingPerson = false
+    private var joiningInvite = false
+    private func isCurrent(_ id: String, _ session: UUID) -> Bool {
+        callId == id && generation == session && !Task.isCancelled
+    }
     /// The original 1:1 peer, remembered across the migration so we know when BOTH
     /// originals are on the SFU.
     private var originalPeerUserId: String?
@@ -217,6 +223,20 @@ final class CallConferenceService: ObservableObject {
     func configure(socket: WebSocketClient) {
         guard !wired else { return }
         wired = true
+        GroupCallService.shared.$state.sink { [weak self] state in
+            guard let self, self.phase == .conference, let id = self.callId else { return }
+            if case .failed = state {
+                Task { @MainActor in
+                    guard self.callId == id, self.phase == .conference else { return }
+                    await self.leaveConference()
+                }
+            } else if state == .idle {
+                Task { @MainActor in
+                    guard self.callId == id, self.phase == .conference else { return }
+                    await self.leaveConference()
+                }
+            }
+        }.store(in: &cancellables)
 
         socket.onCallInvite = { [weak self] from, callId, room, kind, otherUserId in
             Task { @MainActor in
@@ -264,7 +284,13 @@ final class CallConferenceService: ObservableObject {
         guard phase == .idle || phase == .escalating || phase == .conference else { return }
         guard !inviteeUserId.isEmpty, inviteeUserId != TokenStore.shared.userId else { return }
 
+        guard !addingPerson else { return }
+        addingPerson = true
+        defer { addingPerson = false }
         let id = call.id
+        if callId == nil { callId = id }
+        guard callId == id else { return }
+        let session = generation
         lastError = nil
 
         struct Body: Encodable { let invitee_user_id: String }
@@ -274,6 +300,7 @@ final class CallConferenceService: ObservableObject {
                                              body: Body(invitee_user_id: inviteeUserId),
                                              as: EscalateResponse.self)
         } catch let APIError.http(status, message, _) {
+            guard isCurrent(id, session) else { return }
             // 503 → this deployment has no SFU. Remember it so the button disappears rather
             // than failing again on every tap.
             if status == 503 { conferenceUnavailable = true }
@@ -281,11 +308,13 @@ final class CallConferenceService: ObservableObject {
             NSLog("[VOIID] escalate \(id) failed: \(status) \(message)")
             return
         } catch {
+            guard isCurrent(id, session) else { return }
             lastError = "Couldn't add them to the call."
             return
         }
 
         conferenceUnavailable = false
+        guard isCurrent(id, session), CallService.shared.active?.state == .connected else { return }
         callId = id
         roster = response.participants ?? []
         room = response.room
@@ -296,6 +325,7 @@ final class CallConferenceService: ObservableObject {
         //       Minted AFTER the server accepted the invite so we never rekey a call the
         //       invitee was not actually added to.
         await rekeyForCurrentRoster(callId: id)
+        guard isCurrent(id, session) else { return }
 
         // ── 3. Tell the peer to come along. They keep 1:1 audio until SFU media flows.
         if let peer = originalPeerUserId, let room {
@@ -306,28 +336,35 @@ final class CallConferenceService: ObservableObject {
                                                   otherUserId: peer)
         }
 
-        await enterEscalating(callId: id, isVideo: call.isVideo)
+        if phase == .idle { await enterEscalating(callId: id, isVideo: call.isVideo) }
+        guard isCurrent(id, session) else { return }
         startRosterPolling(callId: id)
     }
 
     /// Bring up the SFU leg while the 1:1 leg keeps running, then watch for the handover
     /// condition. This is the make-before-break window.
     private func enterEscalating(callId id: String, isVideo: Bool) async {
+        let session = generation
+        guard isCurrent(id, session) else { return }
         phase = .escalating
         // The 1:1 engine must not tear the call down as a normal hangup while we migrate:
         // the `calls` row has to stay live or /join and /escalate would 409.
         CallService.shared.beginMigration(callId: id)
 
         guard await joinAdhocRoom(callId: id, isVideo: isVideo) else {
+            guard isCurrent(id, session) else { return }
             abortEscalation(reason: "Couldn't connect to the conference.")
             return
         }
+        guard isCurrent(id, session) else { return }
         startHandoverWatch(callId: id)
     }
 
     /// Fetch the ad-hoc token and connect LiveKit with the CALL key. Returns false if we
     /// could not — the caller keeps the 1:1 call.
     private func joinAdhocRoom(callId id: String, isVideo: Bool) async -> Bool {
+        let session = generation
+        guard isCurrent(id, session) else { return false }
         let auth: AdhocTokenResponse
         do {
             struct Empty: Encodable {}
@@ -340,6 +377,7 @@ final class CallConferenceService: ObservableObject {
         } catch {
             return false
         }
+        guard isCurrent(id, session) else { return false }
         guard let url = auth.url, let token = auth.token else { return false }
         let roomName = auth.room ?? room ?? "voiid-call-\(id)"
         room = roomName
@@ -392,7 +430,7 @@ final class CallConferenceService: ObservableObject {
             // The peer never showed up on the SFU. That is NOT a reason to end anything: the
             // 1:1 leg is still carrying the conversation. Stay in the conference for the
             // invitee's sake but keep the 1:1 leg alive — the peer hears everything either way.
-            NSLog("[VOIID] escalation handover timed out for \(id) — keeping the 1:1 leg up")
+            self.abortEscalation(reason: "The other person couldn't join the conference. Your call is still connected.")
         }
     }
 
@@ -421,15 +459,22 @@ final class CallConferenceService: ObservableObject {
     private func abortEscalation(reason: String) {
         handoverTask?.cancel(); handoverTask = nil
         let id = callId
-        NSLog("[VOIID] escalation aborted: \(reason)")
-        lastError = reason
-        phase = .idle
-        Task {
-            await GroupCallService.shared.leaveAdhoc()
-            if let id { await postLeave(callId: id) }
-        }
-        if let id { CallService.shared.cancelMigration(callId: id) }
         stopRosterPolling()
+        resetLocalState()
+        lastError = reason
+        // Keep the original participants' authorization while their 1:1 call is alive.
+        if let id {
+            Task { await GroupCallService.shared.leaveAdhoc(callId: id) }
+            CallService.shared.cancelMigration(callId: id)
+        }
+    }
+
+    /// A migration signal retires only the original media connection.
+    func completeRemoteHandover(callId id: String) {
+        guard callId == id, phase == .escalating || phase == .conference else { return }
+        guard GroupCallService.shared.adhocCallId == id,
+              GroupCallService.shared.state == .connected else { return }
+        completeHandover(callId: id)
     }
 
     // MARK: - Peer: inbound `call_migrate`
@@ -444,15 +489,19 @@ final class CallConferenceService: ObservableObject {
         room = incomingRoom.isEmpty ? "voiid-call-\(id)" : incomingRoom
         originalPeerUserId = from.isEmpty ? (call.peerUserId.isEmpty ? nil : call.peerUserId) : from
         lastError = nil
+        phase = .escalating
+        let session = generation
         Task { [weak self] in
             guard let self else { return }
             // Wait for the inviter's call_key: joining unkeyed is not an option, and the key
             // frame and the migrate frame race on the wire.
             guard await self.awaitCallKey(callId: id) else {
-                NSLog("[VOIID] call \(id): no call key arrived — staying on the 1:1 leg")
+                if self.isCurrent(id, session) { self.abortEscalation(reason: "Secure conference keys didn't arrive. Your call is still connected.") }
                 return
             }
+            guard self.isCurrent(id, session) else { return }
             await self.enterEscalating(callId: id, isVideo: call.isVideo)
+            guard self.isCurrent(id, session) else { return }
             self.startRosterPolling(callId: id)
         }
     }
@@ -462,11 +511,12 @@ final class CallConferenceService: ObservableObject {
     /// wait here is what covers a reconnect racing the migrate frame.
     private func awaitCallKey(callId id: String, timeout: Duration = .seconds(8)) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
+        let session = generation
+        while isCurrent(id, session), ContinuousClock.now < deadline {
             if CallKeyExchange.shared.hasKey(callId: id) { return true }
             try? await Task.sleep(for: .milliseconds(200))
         }
-        return CallKeyExchange.shared.hasKey(callId: id)
+        return isCurrent(id, session) && CallKeyExchange.shared.hasKey(callId: id)
     }
 
     // MARK: - Invitee: inbound invite
@@ -481,6 +531,11 @@ final class CallConferenceService: ObservableObject {
                               callKind: String, otherUserId: String) {
         // Already on this call (e.g. re-invited after a reconnect) — nothing to ring for.
         if phase == .conference || phase == .escalating, callId == id { return }
+        if let current = callId, current != id {
+            CallService.shared.reportConferenceInvite(callId: id, inviterUserId: from,
+                                                      isVideo: callKind == "video")
+            return
+        }
         callId = id
         room = incomingRoom.isEmpty ? "voiid-call-\(id)" : incomingRoom
         inviterUserId = from.isEmpty ? nil : from
@@ -505,16 +560,33 @@ final class CallConferenceService: ObservableObject {
     @discardableResult
     func acceptInvite() async -> Bool {
         guard let id = callId else { return false }
+        return await acceptInvite(callId: id, inviter: inviterUserId ?? "")
+    }
+
+    func acceptInvite(callId id: String, inviter: String) async -> Bool {
+        guard !joiningInvite else { return false }
+        if callId == id, phase == .conference { return true }
+        if callId != id {
+            guard phase == .idle || phase == .invited else { return false }
+            resetLocalState()
+            callId = id
+            inviterUserId = inviter
+            phase = .invited
+        }
         guard let inviter = inviterUserId, !inviter.isEmpty else {
             // No inviter to accept to. Still legal — the push may have carried no caller id
             // — so proceed, we just cannot send the accept frame.
             return await joinAsInvitee(callId: id, inviter: nil)
         }
-        WebSocketClient.shared.sendCallInviteAccept(toUserId: inviter, callId: id)
         return await joinAsInvitee(callId: id, inviter: inviter)
     }
 
     private func joinAsInvitee(callId id: String, inviter: String?) async -> Bool {
+        let session = generation
+        guard !joiningInvite else { return false }
+        joiningInvite = true
+        defer { if generation == session { joiningInvite = false } }
+        guard isCurrent(id, session) else { return false }
         let isVideo = CallService.shared.active?.isVideo ?? false
         // `POST /join` flips our row invited → joined and rewrites the relay grant. It is
         // ALSO the membership event the inviter hangs the rekey off, so it must precede the
@@ -523,20 +595,25 @@ final class CallConferenceService: ObservableObject {
         do {
             let joined: JoinResponse = try await api.request("POST", "calls/\(id)/join",
                                                              body: Empty(), as: JoinResponse.self)
+            guard isCurrent(id, session) else { return false }
+            if let inviter { WebSocketClient.shared.sendCallInviteAccept(toUserId: inviter, callId: id) }
             roster = joined.participants ?? []
             if let r = joined.room { room = r }
         } catch let APIError.http(status, message, _) {
+            guard isCurrent(id, session) else { return false }
             NSLog("[VOIID] join \(id) failed: \(status) \(message)")
             lastError = Self.userFacing(status: status, serverMessage: message)
             phase = .idle
             return false
         } catch {
+            guard isCurrent(id, session) else { return false }
             lastError = "Couldn't join the call."
             phase = .idle
             return false
         }
 
         guard await awaitCallKey(callId: id) else {
+            guard isCurrent(id, session) else { return false }
             NSLog("[VOIID] invitee \(id): no call key arrived — refusing to join unencrypted")
             lastError = "Secure keys for this call didn't arrive."
             phase = .idle
@@ -546,11 +623,13 @@ final class CallConferenceService: ObservableObject {
         // The invitee has no 1:1 leg, so there is nothing to make-before-break: the SFU may
         // own the audio session immediately.
         guard await joinAdhocRoom(callId: id, isVideo: isVideo) else {
+            guard isCurrent(id, session) else { return false }
             lastError = "Couldn't connect to the call."
             phase = .idle
             await postLeave(callId: id)
             return false
         }
+        guard isCurrent(id, session) else { return false }
         phase = .conference
         GroupCallService.shared.adoptAudioSession()
         startRosterPolling(callId: id)
@@ -570,8 +649,8 @@ final class CallConferenceService: ObservableObject {
         if let inviter, !inviter.isEmpty {
             WebSocketClient.shared.sendCallInviteDecline(toUserId: inviter, callId: id)
         }
-        await postLeave(callId: id)
         if callId == id { resetLocalState() }
+        await postLeave(callId: id)
     }
 
     // MARK: - Leaving
@@ -581,25 +660,22 @@ final class CallConferenceService: ObservableObject {
         guard let id = callId else { return }
         handoverTask?.cancel(); handoverTask = nil
         stopRosterPolling()
-        await GroupCallService.shared.leaveAdhoc()
-        await postLeave(callId: id)
-        // The 1:1 leg may still be up if we abandoned the upgrade — end it properly.
-        if CallService.shared.active?.id == id {
-            CallService.shared.finishMigration(callId: id, notifyPeer: true)
-        }
         resetLocalState()
+        CallService.shared.retireConferenceLeg(callId: id)
+        await GroupCallService.shared.leaveAdhoc(callId: id)
+        await postLeave(callId: id)
     }
 
     /// The GROUP call surface ended (GroupCallService.leave) while this engine held an
     /// ad-hoc conference. Close the books here AND retire the CallService leg the call
     /// grew out of — otherwise `active` stayed set forever and blocked every later call.
-    func noteGroupLeaveIfAdhoc() async {
-        guard let id = callId,
+    func noteGroupLeaveIfAdhoc(callId id: String) async {
+        guard self.callId == id,
               phase == .conference || phase == .escalating else { return }
         stopRosterPolling()
-        await postLeave(callId: id)
         resetLocalState()
         CallService.shared.retireConferenceLeg(callId: id)
+        await postLeave(callId: id)
     }
 
     /// `POST /calls/:id/leave` — idempotent by contract, so a teardown retry is always safe
@@ -607,11 +683,13 @@ final class CallConferenceService: ObservableObject {
     /// which is what stops our frames being relayed the moment we go.
     private func postLeave(callId id: String) async {
         struct Empty: Encodable {}
-        _ = try? await api.request("POST", "calls/\(id)/leave", body: Empty(), as: LeaveResponse.self)
         CallKeyExchange.shared.clear(callId: id)
+        _ = try? await api.request("POST", "calls/\(id)/leave", body: Empty(), as: LeaveResponse.self)
     }
 
     private func resetLocalState() {
+        generation = UUID()
+        joiningInvite = false
         phase = .idle
         callId = nil
         roster = []
@@ -630,8 +708,11 @@ final class CallConferenceService: ObservableObject {
         handoverTask?.cancel(); handoverTask = nil
         stopRosterPolling()
         CallKeyExchange.shared.clear(callId: id)
-        if phase == .conference || phase == .escalating {
-            Task { await GroupCallService.shared.leaveAdhoc() }
+        if phase == .conference || phase == .escalating || phase == .invited {
+            Task {
+                await GroupCallService.shared.leaveAdhoc(callId: id)
+                await postLeave(callId: id)
+            }
         }
         resetLocalState()
     }
@@ -653,18 +734,19 @@ final class CallConferenceService: ObservableObject {
     /// on the newest tile; with no roster to consult, fall back to the lowest live user id.
     private func shouldMint() -> Bool {
         guard let me = TokenStore.shared.userId else { return false }
-        let inviters = roster.compactMap { $0.invitedBy }.filter { !$0.isEmpty }
-        if let inviter = inviters.first {
-            // The inviter still on the call mints; if they have left, fall through.
-            if roster.contains(where: { $0.userId == inviter }) { return inviter == me }
-        }
-        let live = liveParticipantIds(excludingSelf: false).sorted()
-        return live.first == me
+        return Self.keyCoordinator(roster) == me
+    }
+
+    /// Identical to Android: elect from the shared roster, never a device's local inviter.
+    static func keyCoordinator(_ roster: [CallRosterEntry]) -> String? {
+        let joined = Set(roster.filter { $0.state == "joined" }.map { $0.userId }.filter { !$0.isEmpty })
+        return roster.compactMap { $0.invitedBy }.filter { joined.contains($0) }.min()
+            ?? joined.min()
     }
 
     private func liveParticipantIds(excludingSelf: Bool) -> [String] {
         let me = TokenStore.shared.userId
-        var ids = roster.map { $0.userId }.filter { !$0.isEmpty }
+        var ids = roster.filter { $0.state == "joined" || $0.state == "invited" }.map { $0.userId }.filter { !$0.isEmpty }
         // Before the first roster fetch, the original pair is all we know.
         if ids.isEmpty {
             if let peer = originalPeerUserId { ids.append(peer) }
@@ -699,12 +781,17 @@ final class CallConferenceService: ObservableObject {
     }
 
     private func pollRoster(callId id: String) async {
+        let session = generation
         guard let fresh = try? await api.request("GET", "calls/\(id)/participants",
                                                  as: ParticipantsResponse.self) else { return }
-        guard callId == id else { return }
-        let next = fresh.participants ?? []
-        let before = Set(roster.filter { $0.state == "joined" }.map { $0.userId })
-        let after = Set(next.filter { $0.state == "joined" }.map { $0.userId })
+        guard isCurrent(id, session) else { return }
+        if let status = fresh.status, ["ended", "missed", "declined"].contains(status) {
+            await leaveConference()
+            return
+        }
+        let next = (fresh.participants ?? []).filter { $0.state == "joined" || $0.state == "invited" }
+        let before = Set(roster.map { "\($0.userId):\($0.state)" })
+        let after = Set(next.map { "\($0.userId):\($0.state)" })
         roster = next
         // MEMBERSHIP CHANGED → REKEY. Both directions: a joiner must not be able to decrypt
         // media sent before they arrived, and a leaver must not decrypt anything after.

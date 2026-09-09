@@ -340,12 +340,12 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
   if (s.includes('as ok') && s.includes('call_participants') && s.includes('conversation_members')) {
     const [callId, userId, convId] = p;
     const live = db.call_participants.some(
-      (cp) => cp.call_id === callId && cp.user_id === userId && cp.state !== 'left'
+      (cp) => cp.call_id === callId && cp.user_id === userId && ['invited', 'joined'].includes(cp.state)
     );
     const member = db.conversation_members.some(
       (m) => m.conversation_id === convId && m.user_id === userId && !m.left_at
     );
-    return rows([{ ok: live || member }]);
+    return rows([{ ok: live || (!db.call_participants.some((cp) => cp.call_id === callId) && member) }]);
   }
 
   // ── calls.ts: invitee lookup
@@ -428,7 +428,8 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
   if (s.startsWith('select 1 as one from call_participants')) {
     const [callId, userId] = p;
     const cp = db.call_participants.find(
-      (r) => r.call_id === callId && r.user_id === userId && r.left_at === null
+      (r) => r.call_id === callId && (userId == null || r.user_id === userId) &&
+        (s.includes("state = 'joined'") ? r.state === 'joined' : r.left_at === null)
     );
     return rows(cp ? [{ one: 1 }] : []);
   }
@@ -442,17 +443,23 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
   // ── calls.ts: join / leave transitions
   if (s.startsWith('update call_participants set state =')) {
     const joining = s.includes("set state = 'joined'");
+    if (p.length === 1) {
+      for (const cp of db.call_participants.filter((r) => r.call_id === p[0] && r.state === 'invited')) {
+        Object.assign(cp, { state: 'left', left_at: now(), state_changed_at: now() });
+      }
+      return rows([]);
+    }
     const [callId, userId, deviceId] = p;
-    const cp = db.call_participants.find((r) => r.call_id === callId && r.user_id === userId && r.state !== 'left');
+    const cp = db.call_participants.find((r) => r.call_id === callId && r.user_id === userId && ['invited', 'joined'].includes(r.state));
     if (!cp) return rows([]);
     if (joining) Object.assign(cp, { state: 'joined', device_id: deviceId ?? cp.device_id, left_at: null, state_changed_at: now() });
-    else Object.assign(cp, { state: 'left', left_at: now(), state_changed_at: now() });
+    else Object.assign(cp, { state: cp.state === 'invited' ? 'declined' : 'left', left_at: now(), state_changed_at: now() });
     return rows([{ user_id: cp.user_id, state: cp.state }]);
   }
 
   // ── calls.ts: liveParticipantIds
   if (s.startsWith('select user_id from call_participants')) {
-    return rows(db.call_participants.filter((cp) => cp.call_id === p[0] && cp.state !== 'left').map((cp) => ({ user_id: cp.user_id })));
+    return rows(db.call_participants.filter((cp) => cp.call_id === p[0] && ['invited', 'joined'].includes(cp.state)).map((cp) => ({ user_id: cp.user_id })));
   }
 
   // ── calls.ts: original peer, for the legacy a/b pair in the grant
@@ -470,7 +477,8 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
   if (s.startsWith('select state from call_participants')) {
     return rows(
       db.call_participants
-        .filter((cp) => cp.call_id === p[0] && cp.user_id === p[1] && cp.state !== 'left')
+        .filter((cp) => cp.call_id === p[0] && cp.user_id === p[1] &&
+          (!s.includes("state in") || ['invited', 'joined'].includes(cp.state)))
         .map((cp) => ({ state: cp.state }))
     );
   }
@@ -479,7 +487,7 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
   if (s.includes('select cp.user_id, u.username, cp.state, cp.invited_by')) {
     return rows(
       db.call_participants
-        .filter((cp) => cp.call_id === p[0] && cp.state !== 'left')
+        .filter((cp) => cp.call_id === p[0] && ['invited', 'joined'].includes(cp.state))
         .map((cp) => ({
           user_id: cp.user_id,
           username: db.users.find((u) => u.id === cp.user_id)?.username ?? null,
@@ -1021,4 +1029,37 @@ test('the conference endpoints require authentication', async () => {
     });
     assert.equal(res.status, 401, `${method} ${p} must require auth`);
   }
+});
+
+
+test('declined invitees disappear from the live roster and cannot join without a fresh invite', async () => {
+  await seedScenario();
+  await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
+  const decline = await call('POST', `/calls/${CALL}/leave`, { user: C });
+  assert.equal(decline.body.outcome, 'declined');
+  const roster = await call('GET', `/calls/${CALL}/participants`, { user: A });
+  assert.deepEqual(roster.body.participants.map((p: any) => p.user_id).sort(), [A, B]);
+  assert.equal((await call('POST', `/calls/${CALL}/join`, { user: C })).status, 403);
+  assert.equal((await call('GET', `/calls/${CALL}/participants`, { user: C })).status, 403);
+  assert.equal(callGrantAllows(redisStore.get(`callgrant:${CALL}`) ?? null, C, A), false);
+});
+
+test('an outsider leave cannot destroy a live 1:1 signaling grant', async () => {
+  await seedScenario();
+  const grant = JSON.stringify({ a: A, b: B });
+  redisStore.set(`callgrant:${CALL}`, grant);
+  assert.equal((await call('POST', `/calls/${CALL}/leave`, { user: D })).status, 403);
+  assert.equal(redisStore.get(`callgrant:${CALL}`), grant);
+  assert.equal(db.calls[0].status, 'connected');
+});
+
+test('pending invitations cannot outlive the last joined member', async () => {
+  await seedScenario();
+  await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
+  await call('POST', `/calls/${CALL}/leave`, { user: A });
+  await call('POST', `/calls/${CALL}/leave`, { user: B });
+  assert.equal(db.calls[0].status, 'ended');
+  assert.equal(redisStore.has(`callgrant:${CALL}`), false);
+  assert.equal((await call('POST', `/calls/${CALL}/join`, { user: C })).status, 409);
+  assert.equal((await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: DEV_A })).status, 409);
 });

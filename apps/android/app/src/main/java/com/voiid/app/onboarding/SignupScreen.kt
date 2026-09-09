@@ -7,6 +7,13 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import com.voiid.app.ui.theme.VoiidSpacing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -127,69 +134,120 @@ fun SignupScreen(
         }
     }
 
-    OnbScaffold(showBack = true, onBack = onBack) {
-        Spacer(Modifier.height(16.dp))
-        Text("Let's set up your profile", style = VoiidFont.rounded(28, FontWeight.Bold),
-            color = VoiidColor.textPrimary, modifier = Modifier.padding(horizontal = 24.dp))
-        Text("Add a few details to get started.", style = VoiidFont.rounded(15),
-            color = VoiidColor.textSecondary,
-            modifier = Modifier.padding(horizontal = 24.dp).padding(top = 6.dp))
+    OnboardingScaffold(
+        footer = {
+            OnboardingKitButton(title = "Continue", enabled = canContinue) {
+                // Kept in the session too, so anything reading the live profile before the
+                // save lands shows the real name rather than a blank.
+                session.updateProfile(fullName = name.trim())
+                onContinue(
+                    SignupDraft(
+                        fullName = name.trim(),
+                        username = username,
+                        photoJpeg = photoJpeg,
+                    )
+                )
+            }
+            StepDots(current = 0, total = 2)
+        },
+    ) {
+        Spacer(Modifier.height(VoiidSpacing.md))
+
+        OnboardingHeader(
+            title = OnboardingTitleSpec.Stacked("Let's set up", "your profile"),
+            blurb = "Add a few details to get started.",
+        )
 
         AvatarPicker(
             photoJpeg = photoJpeg,
             onPick = { pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-            modifier = Modifier.padding(top = 24.dp),
+            modifier = Modifier.padding(top = VoiidSpacing.md),
         )
         Text(
             if (photoJpeg != null) "Profile photo added" else "Add profile photo",
             style = VoiidFont.rounded(15, FontWeight.SemiBold),
-            color = VoiidColor.textPrimary,
-            modifier = Modifier.padding(top = 10.dp),
+            color = VoiidBrand.text,
+            modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 10.dp),
         )
         Text("PNG, JPG or WEBP. Max 5MB.", style = VoiidFont.rounded(12),
-            color = VoiidColor.textSecondary, modifier = Modifier.padding(top = 2.dp))
+            color = VoiidBrand.textDim,
+            modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 2.dp))
         photoError?.let {
             Text(it, style = VoiidFont.rounded(12), color = VoiidColor.error,
-                modifier = Modifier.padding(horizontal = 24.dp).padding(top = 4.dp))
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp))
         }
 
-        OnbPillField(
-            "Full name", name, { name = it },
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 20.dp),
-        )
+        Column(
+            Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OnboardingField(
+                icon = Icons.Default.Person,
+                label = "Full name",
+                prompt = "Enter your full name",
+                value = name,
+                onValueChange = { name = it },
+                capitalization = KeyboardCapitalization.Words,
+            )
 
-        UsernameField(
-            username = username,
-            status = uStatus,
-            wellFormed = usernameWellFormed,
-            onChange = { raw ->
-                // Usernames are lowercase and unspaced. Correcting as they type beats
-                // rejecting after. Mirrors iOS.
-                username = raw.lowercase().filter { it.isLetterOrDigit() || it == '_' }.take(20)
-            },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 12.dp),
-        )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OnboardingField(
+                    icon = Icons.Default.AlternateEmail,
+                    label = "Username",
+                    prompt = "Choose a unique username",
+                    value = username,
+                    onValueChange = { raw ->
+                        // Usernames are lowercase and unspaced. Correcting as they type beats
+                        // rejecting after. NO length cap here: iOS shows an over-long entry
+                        // and explains it in the help line rather than truncating silently.
+                        username = raw.lowercase().filter { it.isLetterOrDigit() || it == '_' }
+                    },
+                    capitalization = KeyboardCapitalization.None,
+                    imeAction = ImeAction.Done,
+                    trailing = { UsernameStatusGlyph(uStatus, username, usernameWellFormed) },
+                )
+                Text(
+                    usernameHelp(username, uStatus, usernameWellFormed),
+                    style = VoiidFont.rounded(12.5f),
+                    // WARNING, not error: a malformed or taken name has not failed anything,
+                    // it is a state the user can still type their way out of.
+                    color = when {
+                        uStatus is UStatus.Available -> VoiidBrand.lime
+                        uStatus is UStatus.Taken -> VoiidColor.warning
+                        username.isNotEmpty() && !usernameWellFormed -> VoiidColor.warning
+                        else -> VoiidBrand.textDim
+                    },
+                    modifier = Modifier.padding(start = 4.dp),
+                )
+            }
+        }
 
         VerifiedPhoneRow(phone.ifEmpty { session.profile.phoneNumber })
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(VoiidSpacing.xl))
+    }
+}
 
-        OnbAccentButton(
-            title = "Continue",
-            enabled = canContinue,
-            modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
-        ) {
-            // Kept in the session too, so anything reading the live profile before the save
-            // lands shows the real name rather than a blank. Mirrors iOS.
-            session.updateProfile(fullName = name.trim())
-            onContinue(
-                SignupDraft(
-                    fullName = name.trim(),
-                    username = username,
-                    photoJpeg = photoJpeg,
-                )
-            )
+/**
+ * The trailing glyph inside the username field.
+ *
+ * A malformed-but-unchecked username shows the WARNING glyph, not the error one: nothing has
+ * failed yet, the entry is merely incomplete.
+ */
+@Composable
+private fun UsernameStatusGlyph(status: UStatus, username: String, wellFormed: Boolean) {
+    when (status) {
+        is UStatus.Idle -> if (username.isNotEmpty() && !wellFormed) {
+            Icon(Icons.Outlined.ErrorOutline, null, tint = VoiidColor.warning,
+                modifier = Modifier.size(20.dp))
         }
+        is UStatus.Checking -> CircularProgressIndicator(
+            color = VoiidBrand.textDim, strokeWidth = 2.dp, modifier = Modifier.size(18.dp),
+        )
+        is UStatus.Available -> Icon(Icons.Outlined.CheckCircle, null, tint = VoiidBrand.lime,
+            modifier = Modifier.size(20.dp))
+        is UStatus.Taken -> Icon(Icons.Outlined.ErrorOutline, null, tint = VoiidColor.warning,
+            modifier = Modifier.size(20.dp))
     }
 }
 
@@ -256,67 +314,6 @@ private fun AvatarPicker(photoJpeg: ByteArray?, onPick: () -> Unit, modifier: Mo
 }
 
 // MARK: - Username
-
-@Composable
-private fun UsernameField(
-    username: String,
-    status: UStatus,
-    wellFormed: Boolean,
-    onChange: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val shape = RoundedCornerShape(VoiidRadius.pill)
-    Column(modifier) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(PILL_HEIGHT)
-                .clip(shape)
-                .background(VoiidColor.fieldFill)
-                .border(1.dp, if (status is UStatus.Taken) VoiidColor.error else VoiidColor.fieldBorder, shape)
-                .padding(horizontal = 20.dp),
-        ) {
-            Text("@", style = VoiidFont.rounded(17), color = VoiidColor.placeholder)
-            Spacer(Modifier.width(6.dp))
-            BasicTextField(
-                value = username,
-                onValueChange = onChange,
-                singleLine = true,
-                textStyle = VoiidFont.rounded(17).merge(TextStyle(color = VoiidColor.textPrimary)),
-                cursorBrush = SolidColor(VoiidColor.primary),
-                modifier = Modifier.weight(1f),
-                decorationBox = { inner ->
-                    Box(contentAlignment = Alignment.CenterStart) {
-                        if (username.isEmpty()) {
-                            Text("Choose a unique username", style = VoiidFont.rounded(17),
-                                 color = VoiidColor.placeholder)
-                        }
-                        inner()
-                    }
-                },
-            )
-            when (status) {
-                is UStatus.Checking -> CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp), strokeWidth = 2.dp,
-                    color = VoiidColor.textSecondary)
-                is UStatus.Available -> Icon(Icons.Default.CheckCircle, null,
-                    tint = VoiidColor.success, modifier = Modifier.size(20.dp))
-                is UStatus.Taken -> Icon(Icons.Default.Cancel, null,
-                    tint = VoiidColor.error, modifier = Modifier.size(20.dp))
-                is UStatus.Idle -> {}
-            }
-        }
-        Text(
-            usernameHelp(username, status, wellFormed),
-            style = VoiidFont.rounded(12),
-            color = if (status is UStatus.Taken || (username.isNotEmpty() && !wellFormed)) {
-                VoiidColor.error
-            } else VoiidColor.textSecondary,
-            modifier = Modifier.padding(start = 4.dp, top = 4.dp),
-        )
-    }
-}
 
 /** Says what is actually true at each stage. Mirrors iOS `usernameHelp`. */
 private fun usernameHelp(username: String, status: UStatus, wellFormed: Boolean): String {
