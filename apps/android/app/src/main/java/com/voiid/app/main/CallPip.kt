@@ -224,7 +224,7 @@ class CallPipController(private val activity: ComponentActivity) {
     // ---- call-state reactions --------------------------------------------------
 
     private fun onCallState(state: CallManager.CallState?) {
-        applyKeyguardFlags(state != null)
+        applyKeyguardFlags(state != null && state.phase != CallManager.Phase.ENDED)
 
         if (state == null || state.phase == CallManager.Phase.ENDED) {
             // The call is over and the PiP window must not outlive it. There is no public

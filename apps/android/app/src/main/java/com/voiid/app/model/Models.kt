@@ -62,7 +62,8 @@ data class VMessage(
     val status: MessageStatus = MessageStatus.SENT,
     val isMine: Boolean = false,
     val poll: VPoll? = null,                  // set when kind == POLL
-    val reaction: String? = null,             // single emoji reaction on this message
+    val reaction: String? = null,
+    val reactions: Map<String, String> = emptyMap(),             // single emoji reaction on this message
     val deliveredAt: Long? = null,            // for Message Info
     val readAt: Long? = null,                 // for Message Info
     val forwarded: Boolean = false,           // "Forwarded" tag

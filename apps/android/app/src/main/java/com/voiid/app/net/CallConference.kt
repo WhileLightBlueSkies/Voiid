@@ -452,21 +452,11 @@ class CallKeyCourier(context: Context) {
          * never as "verified".
          */
         fun srtpCommitment(secret: String, fingerprintA: String?, fingerprintB: String?): String? {
-            val a = fingerprintA?.trim()?.lowercase().orEmpty()
-            val b = fingerprintB?.trim()?.lowercase().orEmpty()
-            if (a.isEmpty() || b.isEmpty()) return null
-            val ordered = listOf(a, b).sorted()
+            val a = fingerprintA?.takeIf { it.isNotBlank() } ?: return null
+            val b = fingerprintB?.takeIf { it.isNotBlank() } ?: return null
             return runCatching {
                 val keys = uniffi.voiid.srtpKeysFor1to1(uniffi.voiid.CallSecret(secret))
-                val mac = javax.crypto.Mac.getInstance("HmacSHA256")
-                mac.init(javax.crypto.spec.SecretKeySpec(keys.masterKey + keys.masterSalt, "HmacSHA256"))
-                mac.update("voiid-call-commit-v1".toByteArray())
-                for (fp in ordered) {
-                    mac.update(fp.toByteArray())
-                    mac.update(0)      // length-unambiguous separator; two fingerprints can never
-                                       // be reparsed as one concatenated string
-                }
-                Base64.encodeToString(mac.doFinal(), Base64.NO_WRAP)
+                Base64.encodeToString(CallKeyProtocol.commitment(keys.masterKey, keys.masterSalt, a, b), Base64.NO_WRAP)
             }.getOrNull()
         }
 

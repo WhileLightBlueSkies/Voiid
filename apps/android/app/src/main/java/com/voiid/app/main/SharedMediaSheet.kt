@@ -47,7 +47,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.LaunchedEffect
@@ -200,14 +199,7 @@ fun SharedMediaThumb(ref: ChatEngine.MediaRef) {
     val context = LocalContext.current
     var bitmap by remember(ref.mediaUrl) { mutableStateOf<ImageBitmap?>(MediaCache.image(ref.mediaUrl)) }
     LaunchedEffect(ref.mediaUrl) {
-        if (bitmap != null) return@LaunchedEffect
-        withContext(Dispatchers.IO) { MediaCache.image(context, ref.mediaUrl) }?.let { bitmap = it; return@LaunchedEffect }
-        runCatching {
-            val bytes = ChatEngine.get(context).fetchMedia(ref)
-            MediaCache.putData(context, ref.mediaUrl, bytes)
-            val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-            if (bmp != null) { val ib = bmp.asImageBitmap(); MediaCache.putImage(ref.mediaUrl, ib); bitmap = ib }
-        }
+        if (bitmap == null) bitmap = loadMediaBitmap(context, ref)
     }
     val b = bitmap
     // fillMaxSize, NOT fillMaxWidth().aspectRatio(1f).

@@ -109,20 +109,20 @@ final class GroupEngine {
             let previous = memberCreationAllowed
             memberCreationAllowed = createMember
             defer { memberCreationAllowed = previous }
-            reloadSharedState()
+            await reloadSharedState()
             return try await body()
         }
     }
 
     /// Drop this process's caches and re-read the authoritative shared state. Called only
     /// from `withGroupState`, i.e. always with the cross-process lock held.
-    private func reloadSharedState() {
+    private func reloadSharedState() async {
         member = nil
         sessions.removeAll()          // bound to the OLD member's provider — never reuse
         loadConvGroups()              // the other process may have joined a new group
         // The decrypt-once ledger for group messages is ChatEngine's store; re-read it so
         // we neither re-decrypt what the other process already did nor persist over it.
-        ChatEngine.shared.reloadStore()
+        await ChatEngine.shared.reloadStore()
         if let uid = TokenStore.shared.userId, let dev = E2EManager.shared.deviceId {
             restoreMember(userId: uid, deviceId: dev)
         }

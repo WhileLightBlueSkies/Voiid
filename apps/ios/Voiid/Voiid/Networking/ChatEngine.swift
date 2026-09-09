@@ -77,7 +77,7 @@ struct DecryptedMessage: Codable {
     // applyDeleteForEveryone) rather than reconstructing the whole record.
     var text: String
     let createdAt: Date
-    let isMine: Bool
+    var isMine: Bool
     var media: MediaRef? = nil
     /// The KEY-STRIPPED location envelope JSON for a pin / live-share bubble
     /// (docs/LOCATION.md §4), or nil for a non-location message. Kept as a String (not a
@@ -106,6 +106,8 @@ struct DecryptedMessage: Codable {
     var reactions: [String: String]? = nil
     /// Delete-for-everyone tombstone: the original author asked all recipients to erase it.
     var deletedForEveryone: Bool? = nil
+    /// Local tombstone: keep the id for decrypt-once dedup, hide the row on this device.
+    var deletedForMe: Bool? = nil
     /// Quoted-reply snapshot (server id + a short preview + who sent it), so the quote
     /// renders even if the original was since deleted.
     var quotedId: String? = nil
@@ -133,6 +135,16 @@ struct DecryptedMessage: Codable {
     /// A control message (reaction/delete signal): kept in the store so its id counts as
     /// "seen" and is never reprocessed, but NEVER rendered as a bubble.
     var control: Bool? = nil
+
+    /// A ciphertext received from a linked device can still be authored by us.
+    /// Also repairs older cached rows without replaying their decrypt-once ratchet.
+    func resolvingOwnership(for userId: String?) -> Self {
+        guard !isMine, let userId, !userId.isEmpty,
+              senderId.caseInsensitiveCompare(userId) == .orderedSame else { return self }
+        var corrected = self
+        corrected.isMine = true
+        return corrected
+    }
 }
 
 @MainActor
@@ -239,7 +251,8 @@ final class ChatEngine {
     func messages(conversationId: String) -> [DecryptedMessage] {
         ensureLoaded()
         return (store[conversationId] ?? [])
-            .filter { !($0.control ?? false) }
+            .map { $0.resolvingOwnership(for: TokenStore.shared.userId) }
+            .filter { !($0.control ?? false) && $0.deletedForMe != true }
             .sorted { $0.createdAt < $1.createdAt }
     }
 
@@ -302,7 +315,10 @@ final class ChatEngine {
     /// everything rather than one shard. Groups still get the per-message write win (persist
     /// touches only the changed shard); only their reload stays whole. The 1:1 path uses the
     /// cheaper per-conversation `reloadSharedState(_:)`.
-    func reloadStore() { loadStore() }
+    func reloadStore() async {
+        ensureLoaded()
+        if await persist() { loadStore() }
+    }
 
     /// One stored message by local id or server id (the push carries the server id).
     func storedMessage(id: String, conversationId: String) -> DecryptedMessage? {
@@ -354,7 +370,7 @@ final class ChatEngine {
         // Take the cross-process lock + reload shared state so an outbound send never
         // races the NSE's inbound decrypt over the same session keychain item.
         await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
             await flushPendingLocked(conversationId: conversationId, peerUserId: peerUserId)
         }
     }
@@ -363,7 +379,7 @@ final class ChatEngine {
     /// and has reloaded shared state (called directly from `runSyncLocked`, which is
     /// itself already under the lock — flock is NOT reentrant, so we must not re-acquire).
     private func flushPendingLocked(conversationId: String, peerUserId: String) async {
-        let pendings = (store[conversationId] ?? []).filter { $0.isMine && $0.pending && $0.media == nil }
+        let pendings = (store[conversationId] ?? []).filter { $0.isMine && $0.pending && $0.media == nil && $0.deletedForMe != true }
         for p in pendings {
             do {
                 // Fan-out: encrypt ONCE PER TARGET DEVICE (peer's devices + our own other
@@ -416,6 +432,7 @@ final class ChatEngine {
                 }
             }
         }
+        await persist()
     }
 
     /// Flag a still-pending message as failed so the UI can show an error + retry.
@@ -426,6 +443,7 @@ final class ChatEngine {
         store[conversationId] = arr
         markDirty(conversationId)
         persistSoon()
+        onMessageStateChanged?(conversationId)
     }
 
     /// Backwards-compatible one-shot send (enqueue + flush).
@@ -436,6 +454,8 @@ final class ChatEngine {
         return msg
     }
 
+    var onMessageStateChanged: ((String) -> Void)?
+
     private func markSent(localId: String, conversationId: String, serverId: String) {
         guard var arr = store[conversationId], let i = arr.firstIndex(where: { $0.id == localId }) else { return }
         arr[i].pending = false
@@ -444,6 +464,7 @@ final class ChatEngine {
         store[conversationId] = arr
         markDirty(conversationId)
         persistSoon()
+        onMessageStateChanged?(conversationId)
     }
 
     /// Encrypt + send a MEDIA message in a direct conversation. The blob is
@@ -480,7 +501,7 @@ final class ChatEngine {
         // Ratchet-mutating section under the cross-process lock (the slow R2 upload
         // above ran OUTSIDE the lock so we don't stall the NSE on a large upload).
         return try await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
             let messages = try await encryptFanout(envelopeData, peerUserId: peerUserId)
             // Minted ONCE per logical send, before the request, so a transport retry of this
             // same upload reuses it and the server recognises the repeat.
@@ -501,7 +522,11 @@ final class ChatEngine {
             let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                         text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true, media: ref)
-            append(echo, to: conversationId)
+            // Commit while still holding the cross-process lock. A WS echo can start
+            // sync immediately; releasing before the async write lets that sync reload
+            // the old shard and erase our own message (we have no self ciphertext).
+            append(echo, to: conversationId, persist: false)
+            await persist()
             return echo
         }
     }
@@ -519,18 +544,22 @@ final class ChatEngine {
         let data = try JSONEncoder().encode(
             MessageReactionEnvelope(target: targetServerId, emoji: emoji))
         try await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
-            _ = try await api.request(
-                "POST", "messages/send",
-                body: SendBundleBody(conversation_id: conversationId,
-                                     sender_device_id: E2EManager.shared.deviceId,
-                                     messages: messages,
-                                     content_type: MessageActionContentType.reaction,
-                                     client_message_id: UUID().uuidString)) as SendResponse
+            if !messages.isEmpty {
+                _ = try await api.request(
+                    "POST", "messages/send",
+                    body: SendBundleBody(conversation_id: conversationId,
+                                         sender_device_id: E2EManager.shared.deviceId,
+                                         messages: messages,
+                                         content_type: MessageActionContentType.reaction,
+                                         client_message_id: UUID().uuidString)) as SendResponse
+            }
             // Apply our own reaction locally (keyed by OUR user id) and persist.
             applyReaction(target: targetServerId, from: TokenStore.shared.userId ?? "me",
-                          emoji: emoji, in: conversationId)
+                          emoji: emoji, in: conversationId, persist: false)
+            // The next sync must observe the confirmed reaction on disk.
+            await persist()
         }
     }
 
@@ -540,16 +569,23 @@ final class ChatEngine {
                                conversationId: String, peerUserId: String) async throws {
         let data = try JSONEncoder().encode(MessageDeleteEnvelope(target: targetServerId))
         try await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
+            guard let target = storedMessage(id: targetServerId, conversationId: conversationId),
+                  target.resolvingOwnership(for: TokenStore.shared.userId).isMine else {
+                throw APIError.http(status: 403, message: "Only your own messages can be deleted for everyone.")
+            }
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
-            _ = try await api.request(
-                "POST", "messages/send",
-                body: SendBundleBody(conversation_id: conversationId,
-                                     sender_device_id: E2EManager.shared.deviceId,
-                                     messages: messages,
-                                     content_type: MessageActionContentType.delete,
-                                     client_message_id: UUID().uuidString)) as SendResponse
-            applyDeleteForEveryone(target: targetServerId, in: conversationId)
+            if !messages.isEmpty {
+                _ = try await api.request(
+                    "POST", "messages/send",
+                    body: SendBundleBody(conversation_id: conversationId,
+                                         sender_device_id: E2EManager.shared.deviceId,
+                                         messages: messages,
+                                         content_type: MessageActionContentType.delete,
+                                         client_message_id: UUID().uuidString)) as SendResponse
+            }
+            applyDeleteForEveryone(target: targetServerId, in: conversationId, persist: false)
+            await persist()
         }
     }
 
@@ -561,7 +597,7 @@ final class ChatEngine {
                                        quotedPreview: quotedPreview, quotedSender: quotedSender)
         let data = try JSONEncoder().encode(env)
         return try await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",
@@ -574,7 +610,8 @@ final class ChatEngine {
                                         text: text, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true)
             echo.quotedId = quotedId; echo.quotedPreview = quotedPreview; echo.quotedSender = quotedSender
-            append(echo, to: conversationId)
+            append(echo, to: conversationId, persist: false)
+            await persist()
             return echo
         }
     }
@@ -587,7 +624,7 @@ final class ChatEngine {
         let env = ForwardedMediaEnvelope(media: ref, caption: caption)
         let data = try JSONEncoder().encode(env)
         return try await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",
@@ -600,7 +637,8 @@ final class ChatEngine {
                                         text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true, media: ref)
             echo.forwarded = true
-            append(echo, to: conversationId)
+            append(echo, to: conversationId, persist: false)
+            await persist()
             return echo
         }
     }
@@ -608,19 +646,21 @@ final class ChatEngine {
     // Local appliers — shared by the senders (our own action) and inbound (a peer's).
 
     /// Set or clear `userId`'s reaction on the message whose serverId (or local id) matches.
-    func applyReaction(target: String, from userId: String, emoji: String?, in convId: String) {
+    func applyReaction(target: String, from userId: String, emoji: String?, in convId: String,
+                       persist doPersist: Bool = true) {
         guard var arr = store[convId],
-              let i = arr.firstIndex(where: { $0.serverId == target || $0.id == target }) else { return }
+              let i = arr.firstIndex(where: { $0.serverId == target || $0.id == target }),
+              arr[i].deletedForEveryone != true, arr[i].deletedForMe != true else { return }
         var map = arr[i].reactions ?? [:]
         if let emoji { map[userId] = emoji } else { map.removeValue(forKey: userId) }
         arr[i].reactions = map.isEmpty ? nil : map
         store[convId] = arr
         markDirty(convId)
-        persistSoon()
+        if doPersist { persistSoon() }
     }
 
     /// Tombstone the target message (delete-for-everyone).
-    func applyDeleteForEveryone(target: String, in convId: String) {
+    func applyDeleteForEveryone(target: String, in convId: String, persist doPersist: Bool = true) {
         guard var arr = store[convId],
               let i = arr.firstIndex(where: { $0.serverId == target || $0.id == target }) else { return }
         arr[i].deletedForEveryone = true
@@ -629,7 +669,25 @@ final class ChatEngine {
         arr[i].reactions = nil
         store[convId] = arr
         markDirty(convId)
-        persistSoon()
+        if doPersist { persistSoon() }
+    }
+
+    /// Retain a hidden tombstone so sync cannot re-download a locally deleted message.
+    func deleteForMe(messageIds: Set<String>, in conversationId: String) async throws {
+        try await CrossProcessLock.withLock {
+            await reloadSharedState(conversationId)
+            guard var rows = store[conversationId] else { return }
+            for i in rows.indices where messageIds.contains(rows[i].serverId ?? rows[i].id) {
+                rows[i].deletedForMe = true
+                rows[i].text = ""
+                rows[i].media = nil
+                rows[i].reactions = nil
+                rows[i].pending = false
+            }
+            store[conversationId] = rows
+            markDirty(conversationId)
+            guard await persist() else { throw CocoaError(.fileWriteUnknown) }
+        }
     }
 
     /// Send a location envelope (pin or live-share CONTROL) in a direct chat over the
@@ -641,7 +699,7 @@ final class ChatEngine {
                       displayText: String, rendersBubble: Bool) async throws {
         let plaintext = Data(plaintextJSON.utf8)
         try await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
             let messages = try await encryptFanout(plaintext, peerUserId: peerUserId)
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",
@@ -656,7 +714,8 @@ final class ChatEngine {
                                             isMine: true,
                                             locationJSON: LocationWire.strip(plaintextJSON),
                                             deliveryStatus: "sent")
-                append(echo, to: conversationId)
+                append(echo, to: conversationId, persist: false)
+            await persist()
             }
         }
     }
@@ -681,7 +740,7 @@ final class ChatEngine {
         // app-group lock across the whole fetch→decrypt→persist span and re-read shared
         // state first, so the app and the NSE can never advance the same ratchet at once.
         return try await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
             return try await runSyncLocked(conversationId: conversationId, peerUserId: peerUserId)
         }
     }
@@ -701,8 +760,13 @@ final class ChatEngine {
     /// Full per-conversation reload for a conversation critical section: crypto state PLUS
     /// re-reading just THIS conversation's shard (picking up NSE writes to it), instead of the
     /// old whole-store re-decode on every sync.
-    private func reloadSharedState(_ conversationId: String) {
+    private func reloadSharedState(_ conversationId: String) async {
+        ensureLoaded() // Cold app/NSE entry must load the ledger before the write barrier.
+        // A local enqueue/receipt may already be writing off the main actor. Reading
+        // before that write finishes restores an older clock or drops the pending send.
+        let saved = await persist()
         reloadCryptoState()
+        guard saved else { return } // Keep uncommitted local state on disk failure.
         reloadConversationShard(conversationId)
     }
 
@@ -743,7 +807,7 @@ final class ChatEngine {
         let decrypted: [DecryptedMessage]
         do {
             decrypted = try await CrossProcessLock.withLock {
-                reloadSharedState(conversationId)
+                await reloadSharedState(conversationId)
                 // Inbound-only: the NSE must NEVER send, so it skips flushPending.
                 return try await decryptInboundLocked(conversationId: conversationId, peerUserId: peerUserId)
             }
@@ -841,6 +905,15 @@ final class ChatEngine {
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)\(devParam)")
         NSLog("[VOIID] sync conv=\(conversationId): server has \(env.messages.count) msgs")
         let myId = TokenStore.shared.userId
+        // Repair previously misclassified sibling-device rows before dedup skips them.
+        if var cached = store[conversationId] {
+            var changed = false
+            for i in cached.indices {
+                let corrected = cached[i].resolvingOwnership(for: myId)
+                if corrected.isMine != cached[i].isMine { cached[i] = corrected; changed = true }
+            }
+            if changed { store[conversationId] = cached; markDirty(conversationId) }
+        }
         // "seen" = ALL stored ids INCLUDING tombstones. A decrypt-once Olm message that
         // failed can NEVER be re-decrypted (recovery comes from the peer RE-SENDING a new
         // message, not retrying the dead id). Retrying tombstones every sync just re-fails
@@ -855,6 +928,11 @@ final class ChatEngine {
         // make the server hold it forever and hand it back on every sync.
         var stored: [String] = []
         for m in env.messages.reversed() {   // server DESC → process ASC
+            let authoredByMe = myId.map { m.sender_id.caseInsensitiveCompare($0) == .orderedSame } ?? false
+            // Receipt updates apply to both local sends and already-decrypted sibling sends.
+            defer {
+                if authoredByMe, let status = m.receipt_status { applyReceipt(messageId: m.id, status: status) }
+            }
             // Our OWN sent message: we can't decrypt our ratchet output, but the server
             // tells us the recipient's receipt state — advance Sent→Delivered→Seen even
             // if the live WS receipt push was missed (WS-independent status).
@@ -867,12 +945,10 @@ final class ChatEngine {
             //  * Sent from ANOTHER of my devices — the fan-out addressed a real per-device
             //    ciphertext to this device precisely so it could sync. Decrypting it is the
             //    entire point; skipping it threw that ciphertext away.
-            if m.sender_id == myId {
+            if authoredByMe {
                 let fromThisDevice = m.sender_device_id == nil
                     || m.sender_device_id == E2EManager.shared.deviceId
                 if fromThisDevice || m.ciphertext == nil {
-                    let applied = m.receipt_status.flatMap { applyReceipt(messageId: m.id, status: $0) } != nil
-                    NSLog("[VOIID] 🟦 own msg \(m.id) receipt_status=\(m.receipt_status ?? "nil")\(applied ? " → applied" : "")")
                     continue
                 }
                 // Falls through to the normal decrypt path below: a sibling device's message
@@ -894,8 +970,9 @@ final class ChatEngine {
                 // the peer.
                 let plain = try await decryptInbound(wire, peerUserId: m.sender_id,
                                                      senderDeviceId: m.sender_device_id)
-                newlyReceived.append(m.id)
+                if !authoredByMe { newlyReceived.append(m.id) }
                 NSLog("[VOIID] ✅ decrypted inbound id=\(m.id) senderDev=\(m.sender_device_id ?? "nil")")
+                defer { stored.append(m.id) }
                 // ACTION envelopes decorate an EXISTING message rather than adding a bubble.
                 // Probe the discriminator; if it's one, apply it and move on (it's now "seen",
                 // so it won't be reprocessed).
@@ -915,16 +992,15 @@ final class ChatEngine {
                     }
                     // Keep this control id in the store (seen) but hidden from the UI.
                     append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: "",
-                                            createdAt: parseDate(m.created_at), isMine: false,
+                                            createdAt: parseDate(m.created_at), isMine: authoredByMe,
                                             control: true), to: conversationId)
-                    stored.append(m.id)
                     continue
                 }
                 // A reply is a real bubble that also carries a quote.
                 if let reply = MessageActionInbound.parseReply(plain) {
                     replace(id: m.id, with:
                             DecryptedMessage(id: m.id, senderId: m.sender_id, text: reply.text,
-                                             createdAt: parseDate(m.created_at), isMine: false,
+                                             createdAt: parseDate(m.created_at), isMine: authoredByMe,
                                              quotedId: reply.quotedId, quotedPreview: reply.quotedPreview,
                                              quotedSender: reply.quotedSender),
                            to: conversationId)
@@ -939,7 +1015,7 @@ final class ChatEngine {
                         // pin / live_start / live_stop → a real bubble.
                         replace(id: m.id, with:
                                 DecryptedMessage(id: m.id, senderId: m.sender_id, text: loc.text,
-                                                 createdAt: parseDate(m.created_at), isMine: false,
+                                                 createdAt: parseDate(m.created_at), isMine: authoredByMe,
                                                  locationJSON: loc.json),
                                to: conversationId)
                     } else {
@@ -947,7 +1023,7 @@ final class ChatEngine {
                         // already captured; keep the id "seen" (so it isn't reprocessed) but
                         // hide it from the chat — it must never appear as an empty bubble.
                         append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: "",
-                                                createdAt: parseDate(m.created_at), isMine: false,
+                                                createdAt: parseDate(m.created_at), isMine: authoredByMe,
                                                 control: true), to: conversationId)
                     }
                     continue
@@ -958,7 +1034,7 @@ final class ChatEngine {
                 let parsed = decodeEnvelope(plain, contentType: m.content_type)
                 var inbound = DecryptedMessage(id: m.id, senderId: m.sender_id,
                                                text: parsed.caption,
-                                               createdAt: parseDate(m.created_at), isMine: false,
+                                               createdAt: parseDate(m.created_at), isMine: authoredByMe,
                                                media: parsed.media)
                 // Story reply: keep the quoted moment's identity on the record so the bubble
                 // renders a quote instead of a context-free emoji. Set AFTER init rather than
@@ -972,7 +1048,6 @@ final class ChatEngine {
                     inbound.storyQuoteCreatedAt = q.storyCreatedAt
                 }
                 replace(id: m.id, with: inbound, to: conversationId)
-                stored.append(m.id)
             } catch {
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
                 // Tombstone it (failed==true) so the chat shows a placeholder, asks the
@@ -982,7 +1057,7 @@ final class ChatEngine {
                     replace(id: m.id, with:
                             DecryptedMessage(id: m.id, senderId: m.sender_id,
                                              text: "🔒 Message couldn’t be decrypted",
-                                             createdAt: parseDate(m.created_at), isMine: false,
+                                             createdAt: parseDate(m.created_at), isMine: authoredByMe,
                                              failed: true),
                            to: conversationId)
                     stored.append(m.id)
@@ -1149,7 +1224,7 @@ final class ChatEngine {
     func markRead(conversationId: String) async {
         ensureLoaded()
         let ids = (store[conversationId] ?? [])
-            .filter { !$0.isMine && $0.control != true && !$0.failed }
+            .filter { !$0.resolvingOwnership(for: TokenStore.shared.userId).isMine && $0.control != true && !$0.failed }
             .map { $0.id }
             .filter { Self.readReported.insert($0).inserted }
         guard !ids.isEmpty else { return }
@@ -1398,7 +1473,7 @@ final class ChatEngine {
         ensureLoaded()   // never mutate/persist an unloaded store (would clobber on-disk history)
         var arr = store[convId] ?? []
         guard !arr.contains(where: { $0.id == m.id }) else { return }
-        arr.append(m)
+        arr.append(m.resolvingOwnership(for: TokenStore.shared.userId))
         store[convId] = arr
         markDirty(convId)
         if doPersist { persistSoon() }
@@ -1409,7 +1484,8 @@ final class ChatEngine {
     private func replace(id: String, with m: DecryptedMessage, to convId: String) {
         ensureLoaded()
         var arr = store[convId] ?? []
-        if let i = arr.firstIndex(where: { $0.id == id }) { arr[i] = m } else { arr.append(m) }
+        let owned = m.resolvingOwnership(for: TokenStore.shared.userId)
+        if let i = arr.firstIndex(where: { $0.id == id }) { arr[i] = owned } else { arr.append(owned) }
         store[convId] = arr
         markDirty(convId)
     }
@@ -1458,6 +1534,7 @@ final class ChatEngine {
 
     /// Conversations mutated since the last persist — the ONLY shards persist() rewrites.
     private var dirtyConversations: Set<String> = []
+    private var persistenceTask: Task<Bool, Never>?
     private func markDirty(_ convId: String) { dirtyConversations.insert(convId) }
 
     /// Set once a load has run, so a DECODE FAILURE never lets an empty store overwrite real
@@ -1547,6 +1624,26 @@ final class ChatEngine {
     /// (see ChatShardStore's header for the measurements).
     @discardableResult
     private func persist() async -> Bool {
+        // All callers join the active write, including callers whose dirty set has
+        // already been claimed. Drain mutations made during IO before returning.
+        while true {
+            if let active = persistenceTask {
+                guard await active.value else { return false }
+            } else {
+                guard storeLoaded else { return false }
+                if dirtyConversations.isEmpty { return true }
+                let active = Task { @MainActor in
+                    let saved = await persistBatch()
+                    persistenceTask = nil
+                    return saved
+                }
+                persistenceTask = active
+                guard await active.value else { return false }
+            }
+        }
+    }
+
+    private func persistBatch() async -> Bool {
         guard storeLoaded else {
             NSLog("[VOIID] ⚠️ persist skipped — store not loaded (would clobber on-disk history)")
             return false
@@ -1736,6 +1833,17 @@ final class ChatEngine {
         let media: MediaRef
         let caption: String
         init(media: MediaRef, caption: String) { self.v = 1; self.media = media; self.caption = caption }
+        private enum CodingKeys: String, CodingKey { case v, media, caption }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            // Kotlin serialization omits default-valued fields in older Android builds.
+            v = try values.decodeIfPresent(Int.self, forKey: .v) ?? 1
+            guard v == 1 else {
+                throw DecodingError.dataCorruptedError(forKey: .v, in: values, debugDescription: "Unsupported media version")
+            }
+            media = try values.decode(MediaRef.self, forKey: .media)
+            caption = try values.decodeIfPresent(String.self, forKey: .caption) ?? ""
+        }
     }
 
     /// Decode a decrypted plaintext into (caption, media?). Media envelopes are keyed on
@@ -1812,6 +1920,20 @@ final class ChatEngine {
         var delivered_devices: Int = 0
         /// True when the server recognised this as a retry of a send it already accepted.
         var duplicate: Bool = false
+
+        private enum CodingKeys: String, CodingKey {
+            case message_id, created_at, delivered_devices, duplicate
+        }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            message_id = try values.decode(String.self, forKey: .message_id)
+            created_at = try values.decodeIfPresent(String.self, forKey: .created_at)
+            delivered_devices = try values.decodeIfPresent(Int.self, forKey: .delivered_devices) ?? 0
+            // Fresh sends omit this field; only idempotent retries return true.
+            // Synthesized Decodable ignores property defaults and was throwing after
+            // the server had already accepted every first send.
+            duplicate = try values.decodeIfPresent(Bool.self, forKey: .duplicate) ?? false
+        }
     }
 
     private struct MessageDTO: Decodable {
@@ -2015,7 +2137,7 @@ final class ChatEngine {
                         conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
         let data = try JSONEncoder().encode(envelope)
         return try await CrossProcessLock.withLock {
-            reloadSharedState(conversationId)
+            await reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",
@@ -2034,7 +2156,8 @@ final class ChatEngine {
             echo.storyQuoteId = envelope.storyId
             echo.storyQuoteAuthorId = envelope.storyAuthorId
             echo.storyQuoteCreatedAt = envelope.storyCreatedAt
-            append(echo, to: conversationId)
+            append(echo, to: conversationId, persist: false)
+            await persist()
             return echo
         }
     }

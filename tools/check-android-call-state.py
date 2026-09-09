@@ -12,6 +12,8 @@ start = source.index('    private inline fun update(')
 method = source[start:source.index('    private fun appContextOrNull', start)]
 controls_start = source.index('    fun toggleMute() {')
 controls = source[controls_start:source.index('    /**', controls_start)]
+focus_start = source.index('    private fun applyMicrophoneState(')
+focus = source[focus_start:source.index('    private fun applyAudioRoute(', focus_start)]
 conference_source = (root / 'apps/android/app/src/main/java/com/voiid/app/net/CallConference.kt').read_text()
 coordinator = conference_source[conference_source.index('internal fun conferenceKeyCoordinator('):]
 
@@ -45,10 +47,26 @@ object ConferenceManager {
     fun toggleMute() { muteActions++ }
 }
 class AudioTrack { var sending = true; fun setEnabled(value: Boolean) { sending = value } }
-class Executor { fun execute(action: () -> Unit) = action() }
+class Executor {
+    var delayed = false
+    val pending = ArrayDeque<() -> Unit>()
+    fun execute(action: () -> Unit) { if (delayed) pending.addLast(action) else action() }
+    fun drain() { while (pending.isNotEmpty()) pending.removeFirst()() }
+}
+object TelecomBridge { val owned = mutableSetOf<String>(); fun ownsCall(id: String) = id in owned }
+object CallAudioFocus { var abandoned = 0; fun abandon(context: Any) { abandoned++ } }
+class Handler { fun post(action: () -> Unit) = action() }
 class Harness {
     val exec = Executor()
-    val localAudioTrack: AudioTrack? = AudioTrack()
+    val mainHandler = Handler()
+    val appContext = Any()
+    var fallbackFocusInterruptedCallId: String? = null
+    var telecomFocusInterruptedCallId: String? = null
+    fun isCurrentCall(id: String) = _state.value?.let { it.callId == id && it.phase != Phase.ENDED } == true
+    fun fallback(lost: Boolean) = onFallbackAudioFocusChanged("original", lost)
+    fun handoff() = handOffAudioFocusToTelecom("original")
+    fun reconcile() = applyMicrophoneState("original")
+    var localAudioTrack: AudioTrack? = AudioTrack()
     val _state = MutableStateFlow<CallState?>(CallState("original"))
     fun mutate(block: (CallState) -> CallState) = update(block = block)
 '''
@@ -85,6 +103,46 @@ fun main() {
     ConferenceManager.state.value = ConferenceManager.Conference("different-call")
     val unrelated = Harness(); unrelated.toggleMute()
     check(ConferenceManager.muteActions == 1 && unrelated.localAudioTrack?.sending == false)
+    ConferenceManager.state.value = null
+    TelecomBridge.owned.clear()
+    val interrupted = Harness()
+    interrupted.fallback(true)
+    check(interrupted.localAudioTrack?.sending == false)
+    interrupted.toggleMute(); interrupted.toggleMute()
+    check(interrupted.localAudioTrack?.sending == false) // Unmute cannot bypass interruption.
+    TelecomBridge.owned.add("original")
+    interrupted.handoff()
+    check(interrupted.localAudioTrack?.sending == true) // Exact device failure recovery.
+    interrupted.fallback(true)
+    check(interrupted.localAudioTrack?.sending == true) // Late OS callback after handoff.
+    val queued = Harness(); queued.exec.delayed = true
+    TelecomBridge.owned.clear(); queued.fallback(true)
+    TelecomBridge.owned.add("original"); queued.handoff(); queued.exec.drain()
+    check(queued.localAudioTrack?.sending == true)
+    val held = Harness(); held._state.value = held._state.value!!.copy(onHold = true)
+    held.handoff(); check(held.localAudioTrack?.sending == false)
+    val muted = Harness(); muted.toggleMute(); muted.handoff()
+    check(muted.localAudioTrack?.sending == false)
+    var acknowledged = false
+    interrupted.onTelecomAudioFocusChanged(setOf("original"), true) { acknowledged = true }
+    check(acknowledged && interrupted.localAudioTrack?.sending == false)
+    interrupted.handoff(); check(interrupted.localAudioTrack?.sending == false)
+    interrupted.toggleMute()
+    interrupted.onTelecomAudioFocusChanged(setOf("original"), false)
+    check(interrupted.localAudioTrack?.sending == false)
+    interrupted.toggleMute(); check(interrupted.localAudioTrack?.sending == true)
+    val stale = Harness(); stale.exec.delayed = true
+    TelecomBridge.owned.clear(); stale.fallback(true)
+    stale._state.value = CallState("replacement"); stale.exec.drain()
+    check(stale.localAudioTrack?.sending == true)
+    val hangup = Harness(); hangup.exec.delayed = true; hangup.fallback(true)
+    hangup._state.value = hangup._state.value!!.copy(phase = Phase.ENDED); hangup.exec.drain()
+    check(hangup.localAudioTrack?.sending == true)
+    val early = Harness(); early.localAudioTrack = null; early.fallback(true)
+    early.localAudioTrack = AudioTrack(); early.reconcile()
+    check(early.localAudioTrack?.sending == false)
+    early.fallback(false); check(early.localAudioTrack?.sending == true)
+    println("PASS: microphone handoff, queued/late loss, real interruption, mute/hold, replacement, hangup, late track")
     val roster = listOf(CallRosterEntry("b", "joined"), CallRosterEntry("a", "joined"),
                         CallRosterEntry("c", "invited", "b"))
     check(conferenceKeyCoordinator(roster) == "b")
@@ -98,9 +156,11 @@ fun main() {
 with tempfile.TemporaryDirectory(prefix='voiid-android-call-state-') as directory:
     temp = Path(directory)
     kotlin = temp / 'CallStateRace.kt'
-    kotlin.write_text(prelude + method + controls + checks + coordinator)
+    kotlin.write_text(prelude + method + controls + focus + checks + coordinator)
+    (temp / 'BuildConfig.kt').write_text('package com.voiid.app\nobject BuildConfig { const val DEBUG = false }')
+    (temp / 'Log.kt').write_text('package android.util\nobject Log { fun d(tag: String, message: String) = 0 }')
     runtime = os.pathsep.join([stdlib, coroutines, annotations])
     subprocess.run(['java', '-Xmx512m', '-cp', os.pathsep.join(compiler),
                     'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler', '-no-stdlib', '-no-reflect',
-                    '-classpath', runtime, '-d', str(temp / 'classes'), str(kotlin)], check=True)
+                    '-classpath', runtime, '-d', str(temp / 'classes'), str(kotlin), str(temp / 'BuildConfig.kt'), str(temp / 'Log.kt')], check=True)
     subprocess.run(['java', '-cp', os.pathsep.join([str(temp / 'classes'), runtime]), 'CallStateRaceKt'], check=True)

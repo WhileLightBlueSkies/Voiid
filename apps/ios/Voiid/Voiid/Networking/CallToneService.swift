@@ -160,7 +160,7 @@ final class CallToneService: NSObject {
         rtc.lockForConfiguration()
         defer { rtc.unlockForConfiguration() }
 
-        let options: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
+        let options: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .duckOthers]
         do {
             try rtc.setCategory(.playAndRecord, mode: .voiceChat, options: options)
         } catch {

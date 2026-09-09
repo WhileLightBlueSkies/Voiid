@@ -256,6 +256,13 @@ object ConferenceManager {
         // conference) belongs to the 1:1 frame-E2EE layer — route it there instead of
         // dropping it because this engine has no state.
         val oneToOne = CallManager.state.value
+        if (_state.value?.callId != frame.callId && pendingKeyCallId != frame.callId &&
+            oneToOne?.callId == frame.callId && !oneToOne.isConferenceInvite) {
+            val device = frame.deviceId ?: appContext?.let { E2EManager.get(it).deviceId } ?: return
+            val ciphertext = frame.ciphertextB64 ?: return
+            CallManager.onOneToOneCallKey(mapOf(device to ciphertext), frame.senderDeviceId, frame.fromUserId, frame.callId)
+            return
+        }
         val callId = _state.value?.callId ?: pendingKeyCallId ?: oneToOne?.callId ?: return
         if (frame.callId != callId) return
         val c = courier ?: return
@@ -299,14 +306,14 @@ object ConferenceManager {
     }
 
     /** Carry the 1:1 generation forward so escalation always supersedes the peer's key. */
-    fun seedOneToOneSecret(callId: String, secret: String, epoch: Int) {
+    fun seedOneToOneSecret(callId: String, secret: String, epoch: Int, minterUserId: String? = null) {
         if (CallManager.state.value?.callId != callId) return
         if (secretCallId == callId && keyEpoch > epoch) return
         secretCallId = callId
         currentSecret = secret
         keyEpoch = epoch
         keyGenerations[callId] = epoch
-        keyMinter = appContext?.let { TokenStore.get(it).userId }
+        keyMinter = minterUserId ?: appContext?.let { TokenStore.get(it).userId }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

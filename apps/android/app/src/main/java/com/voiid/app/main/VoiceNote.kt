@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -118,168 +119,173 @@ fun VoiceRecordButton(
     onRecordingChange: (Boolean) -> Unit = {},
     onDrag: (Float) -> Unit = {},
     onTick: (Float) -> Unit = {},
+    cancelRequest: Int = 0,
+    enabled: Boolean = true,
+    onDiscard: () -> Unit = {},
+    onError: (String) -> Unit = {},
 ) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
-
+    val send by androidx.compose.runtime.rememberUpdatedState(onSend)
+    val changed by androidx.compose.runtime.rememberUpdatedState(onRecordingChange)
+    val dragged by androidx.compose.runtime.rememberUpdatedState(onDrag)
+    val tick by androidx.compose.runtime.rememberUpdatedState(onTick)
+    val discard by androidx.compose.runtime.rememberUpdatedState(onDiscard)
+    val error by androidx.compose.runtime.rememberUpdatedState(onError)
+    val canRecord by androidx.compose.runtime.rememberUpdatedState(enabled)
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
     var recording by remember { mutableStateOf(false) }
-    var seconds by remember { mutableFloatStateOf(0f) }
-    var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
-    var recFile by remember { mutableStateOf<File?>(null) }
+    val capture = remember { VoiceCapture(context) }
+    var startedAt by remember { mutableStateOf(0L) }
     var tooShort by remember { mutableStateOf(false) }
-
-    fun startRec(): Boolean = runCatching {
-        val f = File.createTempFile("vn", ".m4a", context.cacheDir)
-        @Suppress("DEPRECATION")
-        val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder()
-        r.setAudioSource(MediaRecorder.AudioSource.MIC)
-        r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-        r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-        r.setOutputFile(f.path)
-        r.prepare(); r.start()
-        recorder = r; recFile = f
-        true
-    }.getOrDefault(false)
-
-    /** Stop and return the bytes, or null. Always releases the recorder and temp file. */
-    fun stopRec(): ByteArray? {
-        val r = recorder ?: return null
-        val bytes = runCatching { r.stop(); r.release(); recFile?.readBytes() }.getOrNull()
-        recorder = null
-        recFile?.delete(); recFile = null
-        return bytes
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        // The permission dialog ends the original touch. Require a fresh hold.
+        if (granted) tooShort = true
+        else error("Allow microphone access in Settings to record a voice message.")
     }
-
-    /** "Hold to record" — the one thing a mic glyph cannot say. Shown on a too-short tap, so
-     *  it teaches on failure rather than nagging permanently. */
-    fun showTooShort() {
-        haptics.tap()
-        tooShort = true
-        scope.launch { delay(1600); tooShort = false }
+    fun finish(cancelled: Boolean) {
+        if (!recording) return
+        val duration = (android.os.SystemClock.elapsedRealtime() - startedAt) / 1000f
+        recording = false
+        val bytes = capture.finish(discard = cancelled || duration < 0.5f)
+        if (cancelled) { haptics.tap(); discard() }
+        changed(false)
+        when {
+            cancelled -> Unit
+            duration < 0.5f -> tooShort = true
+            bytes == null -> error("Couldn’t save this recording. Please try again.")
+            else -> { haptics.success(); send(bytes, duration) }
+        }
     }
-
-    // Timer + meter pump. 50ms matches iOS: fast enough that the waveform reads as live.
+    androidx.compose.runtime.LaunchedEffect(cancelRequest) {
+        if (cancelRequest > 0) finish(true)
+    }
+    androidx.compose.runtime.LaunchedEffect(tooShort) {
+        if (tooShort) { delay(1600); tooShort = false }
+    }
+    androidx.compose.runtime.DisposableEffect(capture) {
+        onDispose { capture.finish(discard = true) }
+    }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) finish(true)
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
     androidx.compose.runtime.LaunchedEffect(recording) {
         if (!recording) return@LaunchedEffect
-        seconds = 0f
-        RecordingLevel.reset()
+        var lastSecond = -1
         while (isActive) {
+            val seconds = (android.os.SystemClock.elapsedRealtime() - startedAt) / 1000f
+            if (seconds.toInt() != lastSecond) { lastSecond = seconds.toInt(); tick(seconds) }
+            RecordingLevel.push(capture.level())
             delay(50)
-            seconds += 0.05f
-            onTick(seconds)
-            // maxAmplitude is 0..32767 and resets on each read. sqrt-shaped because raw
-            // linear amplitude spends almost all its range near the floor, so speech barely
-            // moves the bars.
-            val amp = runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
-            RecordingLevel.push(kotlin.math.sqrt(amp / 32767f).coerceIn(0f, 1f))
         }
     }
-
     Box(
-        modifier = Modifier
-            .size(44.dp)
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val startX = down.position.x
-                        var armed = false
-                        var dragX = 0f
-
-                        // HOLD ARMING. Recording begins only if the finger is still down at
-                        // 250ms — otherwise a stray tap on the mic starts a take the user
-                        // never asked for. Matches iOS's holdTimer.
-                        val holdJob = scope.launch {
-                            delay(250)
-                            if (startRec()) {
-                                armed = true
-                                recording = true
-                                seconds = 0f
-                                haptics.rigid()
-                                onRecordingChange(true)
+        Modifier.size(46.dp).pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (!canRecord) continue
+                    down.consume()
+                    val pointer = down.id
+                    val startX = down.position.x
+                    var drag = 0f
+                    var held = false
+                    val holdJob = scope.launch {
+                        delay(250)
+                        held = true
+                        if (androidx.core.content.ContextCompat.checkSelfPermission(context,
+                                android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                        } else {
+                            try {
+                                capture.start()
+                                startedAt = android.os.SystemClock.elapsedRealtime()
+                                RecordingLevel.reset(); dragged(0f); tick(0f)
+                                recording = true; changed(true); haptics.rigid()
+                            } catch (_: Exception) {
+                                error("Microphone unavailable. End any active call and try again.")
                             }
-                        }
-
-                        var released = false
-                        while (!released) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull()
-                            if (change != null && armed) {
-                                // Only LEFTWARD travel counts; rightward is the thumb rolling
-                                // on the glass.
-                                dragX = (change.position.x - startX).coerceAtMost(0f)
-                                onDrag(dragX)
-                            }
-                            if (event.changes.all { !it.pressed }) released = true
-                        }
-
-                        holdJob.cancel()
-                        if (!armed) {
-                            // Released before the hold armed — a tap, not a recording.
-                            showTooShort()
-                            continue
-                        }
-
-                        recording = false
-                        onRecordingChange(false)
-                        onDrag(0f)
-                        RecordingLevel.reset()
-                        val dur = seconds
-                        val cancelled = dragX <= CANCEL_THRESHOLD_PX
-                        val bytes = stopRec()
-
-                        when {
-                            // Dragged past the threshold: discard, and say so with a tap
-                            // rather than a success cue.
-                            cancelled -> haptics.tap()
-                            // Under half a second is a mis-tap, not a message. It used to
-                            // fail SILENTLY — the user pressed the mic, nothing happened,
-                            // and nothing explained why.
-                            dur < 0.5f || bytes == null -> showTooShort()
-                            else -> { haptics.success(); onSend(bytes, dur) }
                         }
                     }
+                    try {
+                        while (true) {
+                            val change = awaitPointerEvent().changes.firstOrNull { it.id == pointer } ?: break
+                            drag = ((change.position.x - startX) / density).coerceAtMost(0f)
+                            if (recording) dragged(drag)
+                            change.consume()
+                            if (!change.pressed) break
+                        }
+                        holdJob.cancel()
+                        if (recording) finish(drag <= CANCEL_THRESHOLD_DP)
+                        else if (!held) { haptics.tap(); tooShort = true }
+                    } finally {
+                        holdJob.cancel()
+                        if (recording) finish(true)
+                    }
                 }
-            },
-        contentAlignment = Alignment.Center,
+            }
+        }, contentAlignment = Alignment.Center,
     ) {
-        // A 32dp CIRCLE, matching send and the other composer actions — it was a bare glyph
-        // with no shape and a vague tap target, visually misaligned next to filled send.
-        Box(
-            Modifier
-                .size(32.dp)
-                .clip(CircleShape)
-                .background(VoiidColor.primary.copy(alpha = 0.12f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Default.Mic, "Record voice",
-                tint = VoiidColor.primary,
-                modifier = Modifier.size(17.dp).alpha(if (recording) 0f else 1f),
-            )
+        Box(Modifier.size(40.dp).clip(CircleShape).background(VoiidColor.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Mic, "Hold to record voice", tint = VoiidColor.primary,
+                modifier = Modifier.size(21.dp).alpha(if (recording) 0f else 1f))
         }
-        androidx.compose.animation.AnimatedVisibility(
-            visible = tooShort,
-            enter = fadeIn(), exit = fadeOut(),
-            modifier = Modifier.offset(y = (-34).dp),
-        ) {
-            Text(
-                "Hold to record",
-                style = VoiidFont.rounded(11, androidx.compose.ui.text.font.FontWeight.Medium),
-                color = VoiidColor.textOnPrimary,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(VoiidColor.textPrimary.copy(alpha = 0.9f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-            )
+        AnimatedVisibility(tooShort, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.offset(y = (-44).dp)) {
+            Text("Hold to record", style = VoiidFont.rounded(11), color = VoiidColor.textOnPrimary,
+                modifier = Modifier.clip(CircleShape).background(VoiidColor.textPrimary).padding(8.dp))
         }
     }
 }
 
-/** Past this leftward travel the release DISCARDS. Shared by the button and the bar so the
- *  visual threshold and the behavioural one cannot drift apart. */
-const val CANCEL_THRESHOLD_PX = -240f
+/** Owns the recorder and file together so every error/cancel path releases both. */
+internal class VoiceCapture(private val context: android.content.Context) {
+    private var recorder: MediaRecorder? = null
+    private var file: File? = null
+    fun start() {
+        finish(discard = true)
+        try {
+            file = File.createTempFile("voice-", ".m4a", context.cacheDir)
+            @Suppress("DEPRECATION")
+            val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else MediaRecorder()
+            recorder = r
+            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            r.setAudioSamplingRate(44100)
+            r.setAudioEncodingBitRate(64000)
+            r.setOutputFile(file!!.path)
+            r.prepare(); r.start()
+        } catch (e: Exception) { finish(discard = true); throw e }
+    }
+    fun finish(discard: Boolean): ByteArray? {
+        val r = recorder
+        recorder = null
+        return try {
+            if (r == null) null else {
+                r.stop()
+                if (discard) null else file?.readBytes()
+            }
+        } catch (_: Exception) { null }
+        finally {
+            runCatching { r?.release() }
+            file?.delete(); file = null
+        }
+    }
+    fun level(): Float = runCatching {
+        kotlin.math.sqrt((recorder?.maxAmplitude ?: 0) / 32767f).coerceIn(0f, 1f)
+    }.getOrDefault(0f)
+}
+
+const val CANCEL_THRESHOLD_DP = -90f
 
 private fun timeString(seconds: Float): String {
     val s = seconds.toInt()
@@ -291,98 +297,46 @@ private fun timeString(seconds: Float): String {
 /** Waveform driven by REAL input level (see [RecordingLevel]), not random numbers. */
 @Composable
 fun LiveWaveform(tint: androidx.compose.ui.graphics.Color = VoiidColor.primary) {
-    Row(
-        modifier = Modifier.height(22.dp).fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End),
-    ) {
-        RecordingLevel.levels.forEachIndexed { i, level ->
-            val animated by androidx.compose.animation.core.animateFloatAsState(
-                targetValue = level, animationSpec = tween(50), label = "lvl",
-            )
-            Box(
-                Modifier
-                    .width(2.5.dp)
-                    .height((3 + 19 * animated).dp)
-                    .clip(CircleShape)
-                    // Newer bars more opaque, so the eye reads direction of travel — a flat
-                    // wall of identical bars looks static even while animating.
-                    .alpha(0.35f + 0.65f * (i.toFloat() / RecordingLevel.BAR_COUNT))
-                    .background(tint),
-            )
+    androidx.compose.foundation.Canvas(Modifier.height(20.dp).fillMaxWidth()) {
+        val levels = RecordingLevel.levels
+        val step = size.width / levels.size
+        levels.forEachIndexed { i, level ->
+            val height = (3.dp.toPx() + (size.height - 3.dp.toPx()) * level).coerceAtMost(size.height)
+            val x = step * (i + 0.5f)
+            drawLine(tint.copy(alpha = 0.35f + 0.65f * i / levels.size),
+                androidx.compose.ui.geometry.Offset(x, (size.height - height) / 2),
+                androidx.compose.ui.geometry.Offset(x, (size.height + height) / 2),
+                strokeWidth = minOf(2.5.dp.toPx(), step * 0.6f), cap = androidx.compose.ui.graphics.StrokeCap.Round)
         }
     }
 }
 
-// MARK: - Recording bar
-
-/**
- * The full-width bar that REPLACES the composer row while recording.
- *
- * It cannot live inside the mic button: a 44dp capsule rendered inside a 32dp slot overflowed
- * its container and fought the text field for space, which is what made the old one look
- * broken. Recording is a modal state, so it takes the whole row.
- *
- * @param dragX 0 at rest, negative when dragged left toward cancel.
- */
 @Composable
-fun RecordingBar(seconds: Float, dragX: Float, onCancel: () -> Unit) {
-    val willCancel = dragX <= CANCEL_THRESHOLD_PX
+fun RecordingBar(seconds: Float, dragX: Float, isDiscarding: Boolean = false, onCancel: () -> Unit) {
+    val willCancel = dragX <= CANCEL_THRESHOLD_DP || isDiscarding
     val tint = if (willCancel) VoiidColor.error else VoiidColor.primary
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(40.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .background(VoiidColor.fieldFill)
-            .border(
-                1.dp,
-                if (willCancel) VoiidColor.error.copy(alpha = 0.6f) else VoiidColor.fieldBorder,
-                RoundedCornerShape(20.dp),
-            )
-            .padding(horizontal = 16.dp)
-            .semantics {
-                contentDescription = "Recording, ${timeString(seconds)}. Slide left to cancel."
-            },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        // A pulsing dot reads as "live" the way a static icon cannot.
-        val blink = rememberInfiniteTransition(label = "recDot")
-        val dotScale by blink.animateFloat(
-            1f, 1.25f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "dotScale",
-        )
-        Box(Modifier.size(9.dp).scale(dotScale).alpha(0.55f).clip(CircleShape).background(VoiidColor.error))
-
-        Text(
-            timeString(seconds),
-            style = VoiidFont.rounded(14, androidx.compose.ui.text.font.FontWeight.SemiBold),
-            color = if (willCancel) VoiidColor.error else VoiidColor.textPrimary,
-        )
-
-        Box(Modifier.weight(1f)) { LiveWaveform(tint = tint) }
-
-        // The affordance has to be VISIBLE — a hidden gesture is not a feature. It flips to
-        // "Release to cancel" past the threshold so the outcome is never a guess.
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            // Follows the finger, damped: 1:1 tracking over-travels and looks loose.
-            modifier = Modifier.offset(x = (dragX * 0.35f).coerceAtLeast(-26f).dp),
-        ) {
-            Icon(
-                if (willCancel) Icons.Default.Delete else Icons.Default.ChevronLeft,
-                contentDescription = null,
-                tint = if (willCancel) VoiidColor.error else VoiidColor.textSecondary,
-                modifier = Modifier.size(13.dp),
-            )
-            Text(
-                if (willCancel) "Release to cancel" else "Slide to cancel",
-                style = VoiidFont.rounded(12, androidx.compose.ui.text.font.FontWeight.Medium),
-                color = if (willCancel) VoiidColor.error else VoiidColor.textSecondary,
-                maxLines = 1,
-            )
+    val fade by androidx.compose.animation.core.animateFloatAsState(
+        if (isDiscarding) 0f else 1f, tween(180), label = "discard")
+    val rotation by androidx.compose.animation.core.animateFloatAsState(
+        if (isDiscarding) -18f else 0f, tween(180), label = "trash")
+    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(28.dp))
+        .background(VoiidColor.fieldFill)
+        .border(1.dp, if (willCancel) tint.copy(alpha = 0.5f) else VoiidColor.fieldBorder, RoundedCornerShape(28.dp))
+        .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        androidx.compose.material3.IconButton(onClick = onCancel, enabled = !isDiscarding, modifier = Modifier.size(44.dp)) {
+            Icon(Icons.Default.Delete, "Delete recording", tint = tint,
+                modifier = Modifier.size(21.dp).graphicsLayer { rotationZ = rotation })
+        }
+        Text(timeString(seconds), style = VoiidFont.rounded(14, androidx.compose.ui.text.font.FontWeight.SemiBold),
+            color = VoiidColor.textPrimary, maxLines = 1)
+        androidx.compose.foundation.layout.Column(Modifier.weight(1f).padding(end = 12.dp)
+            .graphicsLayer { alpha = fade; translationX = (1 - fade) * -16.dp.toPx() },
+            verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            LiveWaveform(tint)
+            Text(if (isDiscarding) "Recording deleted" else if (willCancel) "Release to delete" else "Slide left to delete · release to send",
+                style = VoiidFont.rounded(10), color = VoiidColor.textSecondary, maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
         }
     }
 }

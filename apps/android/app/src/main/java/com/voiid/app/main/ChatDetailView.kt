@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.Close
@@ -83,6 +84,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.voiid.app.model.ChatStore
 import com.voiid.app.model.ConversationType
 import com.voiid.app.model.DummyData
@@ -118,11 +120,22 @@ fun ChatDetailView(
     // Recording state is hoisted HERE, not owned by the mic button: the RecordingBar is a
     // sibling that replaces the composer row, so both need to read it.
     var isRecording by remember { mutableStateOf(false) }
+    var recordingDiscarding by remember { mutableStateOf(false) }
+    var recordingCancelRequest by remember { mutableStateOf(0) }
+    var recordingError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(recordingDiscarding) {
+        if (recordingDiscarding) {
+            kotlinx.coroutines.delay(240)
+            recordingDiscarding = false
+        }
+    }
     var recDragX by remember { mutableFloatStateOf(0f) }
     var recSeconds by remember { mutableFloatStateOf(0f) }
     val messages = chat.messages(conversation.id)
     val typing = conversation.id in chat.typingConversations
     val listState = rememberLazyListState()
+    val notificationTarget by com.voiid.app.net.DeepLinkRouter.pendingMessage.collectAsState()
+    var notificationPositioned by remember(conversation.id) { mutableStateOf(false) }
     val lastMineId = messages.lastOrNull { it.isMine }?.id
     var showDetails by remember { mutableStateOf(false) }
     var replyingTo by remember { mutableStateOf<VMessage?>(null) }
@@ -178,24 +191,80 @@ fun ChatDetailView(
         }
     }
 
-    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) {
-            // Read the real bytes off-thread, then encrypt + upload via sendMedia.
-            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-                if (bytes != null) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    chat.sendMedia(bytes, "image/jpeg", conversationId = conversation.id)
+    var cameraPath by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    fun sendPickedMedia(uri: android.net.Uri, capturedFile: java.io.File? = null) {
+        scope.launch {
+            try {
+                val (bytes, mime) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val type = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    val data = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw java.io.IOException("Media unavailable")
+                    if (data.isEmpty()) throw java.io.IOException("Empty media")
+                    data to type
                 }
-            }
+                chat.sendMedia(bytes, mime, conversationId = conversation.id)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                chat.actionError = "Couldn’t open this photo or video. Please try again."
+            } finally { capturedFile?.delete() }
         }
+    }
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) sendPickedMedia(uri)
+    }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        val file = cameraPath?.let { java.io.File(it) }
+        cameraPath = null
+        if (saved && file != null) {
+            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.chatmedia", file)
+            sendPickedMedia(uri, file)
+        } else file?.delete()
+    }
+    fun openCamera() {
+        try {
+            val directory = java.io.File(context.cacheDir, "chat-camera").apply { mkdirs() }
+            val file = java.io.File.createTempFile("photo-", ".jpg", directory)
+            cameraPath = file.path
+            takePhoto.launch(androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.chatmedia", file))
+        } catch (_: Exception) {
+            cameraPath?.let { java.io.File(it).delete() }; cameraPath = null
+            chat.actionError = "Couldn’t open the camera. Please try again."
+        }
+    }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) openCamera() else chat.actionError = "Allow camera access in Settings to take a photo."
+    }
+    fun requestCamera() {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED) openCamera()
+        else cameraPermission.launch(android.Manifest.permission.CAMERA)
     }
 
     val grouped = messages.sortedBy { it.createdAt }.groupBy { VoiidDate.startOfDay(it.createdAt) }
     val sortedDays = grouped.keys.sorted()
     val itemCount = sortedDays.sumOf { 1 + (grouped[it]?.size ?: 0) } + if (typing) 1 else 0
 
+    val hasEncryptionNotice = !isSelfChat && messages.size < 6
+    LaunchedEffect(notificationTarget, messages.map { it.id }) {
+        val target = notificationTarget?.takeIf { it.conversationId == conversation.id } ?: return@LaunchedEffect
+        val rowIds = buildList {
+            if (hasEncryptionNotice) add("e2ee-notice")
+            sortedDays.forEach { day ->
+                add("sep-$day")
+                addAll(grouped[day].orEmpty().map { it.id })
+            }
+        }
+        val index = rowIds.indexOf(target.messageId)
+        if (index >= 0) {
+            notificationPositioned = true
+            listState.scrollToItem(index)
+            com.voiid.app.net.DeepLinkRouter.consumeMessage(target)
+        }
+    }
     LaunchedEffect(messages.size, typing) {
-        if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
+        if (!notificationPositioned && notificationTarget?.conversationId != conversation.id && itemCount > 0) {
+            listState.animateScrollToItem(itemCount - 1 + if (hasEncryptionNotice) 1 else 0)
+        }
     }
 
     // Load cached + sync (fetch + decrypt) the real E2EE messages on open.
@@ -268,6 +337,10 @@ fun ChatDetailView(
                 ) {
                     Text("Cancel", style = VoiidFont.rounded(16), color = VoiidColor.primary, modifier = Modifier.clickable { exitSelection() })
                     Text("${selectedIds.size} selected", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                    Text("All", color = VoiidColor.primary, modifier = Modifier.clickable {
+                        selectedIds.clear()
+                        selectedIds.addAll(messages.filter { it.call == null && it.kind != MessageKind.SYSTEM }.map { it.id })
+                    })
                     Spacer(Modifier.weight(1f))
                     Icon(
                         Icons.AutoMirrored.Filled.Forward, "Forward",
@@ -287,10 +360,9 @@ fun ChatDetailView(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Icon(
-                        Icons.Default.ChevronLeft, "Back", tint = VoiidColor.textPrimary,
-                        modifier = Modifier.size(28.dp).clickable { haptics.tap(); onBack() },
-                    )
+                    androidx.compose.material3.IconButton(onClick = { haptics.tap(); onBack() }, modifier = Modifier.size(44.dp)) {
+                        Icon(Icons.Default.ChevronLeft, "Back", tint = VoiidColor.textPrimary, modifier = Modifier.size(28.dp))
+                    }
                     Row(
                         modifier = Modifier.weight(1f).clickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
@@ -298,29 +370,22 @@ fun ChatDetailView(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        VoiidAvatar(size = 36.dp, modifier = Modifier.clip(CircleShape))
+                        ProfileAvatar(photoUrl = conversation.photoURL, name = conversation.title, size = 36.dp)
                         Column(Modifier.weight(1f)) {
-                            Text(conversation.title, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1)
+                            Text(conversation.title, style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1)
                             Text(
-                                presenceText(context, chat.directConversations.firstOrNull { it.id == conversation.id } ?: conversation, typing), style = VoiidFont.rounded(11),
+                                presenceText(context, chat.directConversations.firstOrNull { it.id == conversation.id } ?: conversation, typing), style = VoiidFont.rounded(12, FontWeight.Medium),
                                 color = if (typing) VoiidColor.primary else VoiidColor.textSecondary, maxLines = 1,
                             )
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Call, "Voice call", tint = VoiidColor.textPrimary, modifier = Modifier.size(18.dp).clickable { haptics.tap(); startCall(CallKind.VOICE) })
-                        Icon(Icons.Default.Videocam, "Video call", tint = VoiidColor.textPrimary, modifier = Modifier.size(20.dp).clickable { haptics.tap(); startCall(CallKind.VIDEO) })
-                        // NO OVERFLOW MENU. Every item it held now has a better home:
-                        //   * "View profile" duplicated the title, which already opens it;
-                        //   * "Select messages" moved onto the message long-press pill —
-                        //     selecting messages begins with a message, so the affordance
-                        //     belongs on one, and it now starts with the message you pressed;
-                        //   * "Verify encryption" is already on the profile's encryption card;
-                        //   * "Clear chat" moved to the profile's danger card, beside Block
-                        //     and Report, where this conversation's other destructive actions
-                        //     already live.
-                        // An ellipsis whose contents all belong elsewhere is a drawer for
-                        // things nobody decided where to put. Mirrors iOS.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.IconButton(onClick = { haptics.tap(); startCall(CallKind.VOICE) }, modifier = Modifier.size(44.dp)) {
+                            Icon(Icons.Default.Call, "Voice call", tint = VoiidColor.textPrimary, modifier = Modifier.size(20.dp))
+                        }
+                        androidx.compose.material3.IconButton(onClick = { haptics.tap(); startCall(CallKind.VIDEO) }, modifier = Modifier.size(44.dp)) {
+                            Icon(Icons.Default.Videocam, "Video call", tint = VoiidColor.textPrimary, modifier = Modifier.size(23.dp))
+                        }
                     }
                 }
             }
@@ -445,7 +510,7 @@ fun ChatDetailView(
 
                 // Input row
                 val hasText = draft.trim().isNotEmpty()
-                val pillShape = RoundedCornerShape(VoiidRadius.pill)
+                val pillShape = RoundedCornerShape(22.dp)
 
                 // RECORDING IS A MODAL STATE and takes the whole row. The bar cannot live
                 // inside the mic button — a 44dp capsule in a 32dp slot overflowed and fought
@@ -454,55 +519,28 @@ fun ChatDetailView(
                 // The mic itself stays MOUNTED in both branches (below), only hidden. Swapping
                 // it out mid-gesture destroys the composable that owns the pointer loop, which
                 // is exactly how the iOS version lost its drag callbacks.
-                if (isRecording) {
-                    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                        RecordingBar(seconds = recSeconds, dragX = recDragX, onCancel = {})
-                    }
-                }
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        // Collapsed, not removed, while the bar has the row — see above.
-                        .then(if (isRecording) Modifier.height(0.dp) else Modifier)
-                        .alpha(if (isRecording) 0f else 1f)
-                        .padding(horizontal = 16.dp, vertical = if (isRecording) 0.dp else 8.dp)
-                        .clip(pillShape)
-                        .background(if (isRecording) androidx.compose.ui.graphics.Color.Transparent else VoiidColor.fieldFill)
-                        .border(
-                            1.dp,
-                            if (isRecording) androidx.compose.ui.graphics.Color.Transparent else VoiidColor.fieldBorder,
-                            pillShape,
-                        )
-                        .padding(4.dp),
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Box {
-                        // A 32dp tinted DISC, matching send and mic. These were bare 22dp
-                        // glyphs with no shape, so they sat visually unbalanced against the
-                        // filled send button and gave the thumb nothing to aim at.
-                        Box(
-                            Modifier.size(32.dp).clip(CircleShape)
-                                .background(VoiidColor.primary.copy(alpha = 0.12f))
-                                .clickable { haptics.tap(); showAttach = true },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Default.Add, "Attach", tint = VoiidColor.primary,
-                                modifier = Modifier.size(17.dp),
-                            )
-                        }
-                        // Anchored to the LEFT, because the attach button sits at the left
-                        // edge of the composer — an end-aligned menu would grow away from
-                        // the control that opened it.
+                val recordingOverlay = isRecording || recordingDiscarding
+                Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    // Preserve the mic's position and dimensions for the entire gesture.
+                    Row(Modifier.fillMaxWidth().alpha(if (recordingOverlay) 0f else 1f),
+                        verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Box {
+                            androidx.compose.material3.IconButton(
+                                onClick = { haptics.tap(); showAttach = true }, enabled = !recordingOverlay,
+                                modifier = Modifier.size(46.dp)) {
+                                Icon(Icons.Default.Add, "Attach", tint = VoiidColor.primary, modifier = Modifier.size(25.dp))
+                            }
                         VoiidMenu(
                             expanded = showAttach,
                             onDismissRequest = { showAttach = false },
                             alignEnd = false,
                         ) {
-                            VoiidMenuItem("Photo", Icons.Default.Photo) {
+                            VoiidMenuItem("Photos and videos", Icons.Default.Photo) {
                                 showAttach = false
-                                pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                            }
+                            VoiidMenuItem("Camera", Icons.Default.CameraAlt) {
+                                showAttach = false; requestCamera()
                             }
                             VoiidMenuItem("Location", Icons.Default.LocationOn) {
                                 showAttach = false; showLocation = true
@@ -516,85 +554,51 @@ fun ChatDetailView(
                                 }
                             }
                         }
-                    }
-                    // GIF — a FIRST-CLASS button, not buried in the attach menu. It is the
-                    // thing people reach for most, and a menu tap in front of it is friction
-                    // for nothing.
-                    Box(
-                        Modifier.size(32.dp).clip(CircleShape)
-                            .background(VoiidColor.primary.copy(alpha = 0.12f))
-                            .clickable { haptics.tap(); showGifPicker = true },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Outlined.Mood, "GIFs", tint = VoiidColor.primary,
-                            modifier = Modifier.size(17.dp),
-                        )
-                    }
-                    Box(Modifier.weight(1f)) {
-                        // A PLACEHOLDER: the field was empty with no prompt, so the composer
-                        // read as a blank pill with no affordance.
-                        if (draft.isEmpty()) {
-                            Text(
-                                "Message",
-                                style = VoiidFont.rounded(16),
-                                color = VoiidColor.placeholder,
-                            )
                         }
-                        BasicTextField(
-                            value = draft,
-                            onValueChange = { draft = it },
-                            textStyle = VoiidFont.rounded(16).merge(TextStyle(color = VoiidColor.textPrimary)),
-                            cursorBrush = SolidColor(VoiidColor.primary),
-                            // maxLines alone TRUNCATED: past the fifth line the text simply
-                            // stopped being visible, so a long paragraph became unreviewable
-                            // before sending. The field now grows to a ceiling and SCROLLS
-                            // beyond it, which is what the cap was meant to do.
-                            maxLines = Int.MAX_VALUE,
-                            // 32dp, not 46 — the pill's own padding carries the rest of the
-                            // touch target, and 46 + outer padding was most of the wasted
-                            // vertical space. 120dp caps growth at roughly six lines.
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 32.dp, max = 120.dp)
-                                .verticalScroll(rememberScrollState()),
-                        )
-                    }
-                    if (hasText) {
-                        // A FILLED circle: send is the primary action and should look like a
-                        // button, not a loose glyph with no tap target to aim at.
-                        Box(
-                            Modifier.size(32.dp).clip(CircleShape).background(VoiidColor.primary)
-                                .clickable {
+                        Row(Modifier.weight(1f).clip(pillShape).background(VoiidColor.fieldFill)
+                            .border(1.dp, VoiidColor.fieldBorder, pillShape)
+                            .padding(start = 14.dp, end = 2.dp), verticalAlignment = Alignment.Bottom) {
+                            Box(Modifier.weight(1f).padding(vertical = 12.dp)) {
+                                if (draft.isEmpty()) Text("Message", style = VoiidFont.rounded(16), color = VoiidColor.placeholder)
+                                BasicTextField(value = draft, onValueChange = { draft = it }, enabled = !recordingOverlay,
+                                    textStyle = VoiidFont.rounded(16).merge(TextStyle(color = VoiidColor.textPrimary, lineHeight = 22.sp)),
+                                    cursorBrush = SolidColor(VoiidColor.primary), minLines = 1, maxLines = 6,
+                                    // Let the native text field own scrolling and cursor tracking.
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 22.dp))
+                            }
+                            if (!hasText) androidx.compose.material3.IconButton(onClick = { haptics.tap(); showGifPicker = true },
+                                enabled = !recordingOverlay, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Outlined.Mood, "GIFs", tint = VoiidColor.textSecondary, modifier = Modifier.size(22.dp))
+                            }
+                            if (!hasText) androidx.compose.material3.IconButton(onClick = { haptics.tap(); requestCamera() },
+                                enabled = !recordingOverlay, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Default.CameraAlt, "Camera", tint = VoiidColor.textSecondary, modifier = Modifier.size(21.dp))
+                            }
+                        }
+                        Box(Modifier.size(46.dp), contentAlignment = Alignment.Center) {
+                            Box(Modifier.alpha(if (hasText || recordingDiscarding) 0f else 1f)) {
+                                VoiceRecordButton(
+                                    onSend = { bytes, duration ->
+                                        chat.sendMedia(bytes, "audio/m4a", caption = "Voice · ${duration.toInt()}s", conversationId = conversation.id)
+                                    },
+                                    onRecordingChange = { isRecording = it }, onDrag = { recDragX = it }, onTick = { recSeconds = it },
+                                    cancelRequest = recordingCancelRequest, enabled = !hasText && !recordingDiscarding,
+                                    onDiscard = { recordingDiscarding = true }, onError = { recordingError = it },
+                                )
+                            }
+                            if (hasText) androidx.compose.material3.IconButton(
+                                onClick = {
                                     haptics.tap()
                                     chat.send(draft.trim(), conversationId = conversation.id, replyTo = replyingTo)
                                     draft = ""; replyingTo = null
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Default.ArrowUpward, "Send",
-                                tint = VoiidColor.textOnPrimary, modifier = Modifier.size(17.dp),
-                            )
+                                }, enabled = !recordingOverlay,
+                                modifier = Modifier.size(44.dp).clip(CircleShape).background(VoiidColor.primary)) {
+                                Icon(Icons.Default.ArrowUpward, "Send", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(23.dp))
+                            }
                         }
                     }
-                    // ALWAYS COMPOSED, never swapped out — only sized to nothing when text is
-                    // present. An if/else here would tear down the button mid-gesture and take
-                    // its pointer loop with it, which is precisely how iOS lost slide-to-cancel.
-                    Box(
-                        Modifier
-                            .alpha(if (hasText) 0f else 1f)
-                            .width(if (hasText) 0.dp else 44.dp),
-                    ) {
-                        VoiceRecordButton(
-                            onSend = { bytes, duration ->
-                                chat.sendMedia(bytes, "audio/m4a", caption = "Voice · ${duration.toInt()}s", conversationId = conversation.id)
-                            },
-                            onRecordingChange = { isRecording = it },
-                            onDrag = { recDragX = it },
-                            onTick = { recSeconds = it },
-                        )
-                    }
+                    if (recordingOverlay) RecordingBar(seconds = recSeconds, dragX = recDragX,
+                        isDiscarding = recordingDiscarding, onCancel = { recordingCancelRequest++ })
                 }
             }
         }
@@ -722,7 +726,7 @@ fun ChatDetailView(
             Spacer(Modifier.height(20.dp))
             Text("Delete message?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
             Spacer(Modifier.height(6.dp))
-            if (m.isMine) {
+            if (m.isMine && !isGroup && !m.deletedForEveryone && m.status != com.voiid.app.model.MessageStatus.SENDING && m.status != com.voiid.app.model.MessageStatus.FAILED) {
                 com.voiid.app.ui.components.VoiidDialogAction("Delete for everyone", destructive = true) {
                     chat.deleteMessage(m.id, conversation.id, true); deleteMessage = null
                 }
@@ -744,18 +748,37 @@ fun ChatDetailView(
             confirmDestructive = true,
         )
     }
-    if (showBulkDelete) {
+    recordingError?.let { error ->
+        AlertDialog(onDismissRequest = { recordingError = null },
+            title = { Text("Couldn’t record") }, text = { Text(error) },
+            confirmButton = { TextButton(onClick = { recordingError = null }) { Text("OK") } })
+    }
+    chat.actionError?.let { error ->
         com.voiid.app.ui.components.VoiidDialog(
-            onDismissRequest = { showBulkDelete = false },
-            title = "Delete ${selectedIds.size} message${if (selectedIds.size == 1) "" else "s"}?",
-            body = "This will delete the selected messages.",
-            confirmLabel = "Delete",
-            onConfirm = {
-                selectedIds.toList().forEach { chat.deleteMessage(it, conversation.id, false) }
-                showBulkDelete = false; exitSelection()
-            },
-            confirmDestructive = true,
+            onDismissRequest = { chat.actionError = null }, title = "Action couldn’t finish",
+            body = error, confirmLabel = "OK", onConfirm = { chat.actionError = null },
         )
+    }
+    if (showBulkDelete) {
+        val selected = messages.filter { it.id in selectedIds }
+        com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest = { showBulkDelete = false }) {
+            Spacer(Modifier.height(20.dp))
+            Text("Delete ${selectedIds.size} messages?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            if (!isGroup && selected.isNotEmpty() && selected.all {
+                it.isMine && !it.deletedForEveryone && it.status != com.voiid.app.model.MessageStatus.SENDING && it.status != com.voiid.app.model.MessageStatus.FAILED
+            }) {
+                com.voiid.app.ui.components.VoiidDialogAction("Delete for everyone", destructive = true) {
+                    chat.deleteMessages(selectedIds.toSet(), conversation.id, true)
+                    showBulkDelete = false; exitSelection()
+                }
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Delete for me", destructive = true) {
+                chat.deleteMessages(selectedIds.toSet(), conversation.id, false)
+                showBulkDelete = false; exitSelection()
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Cancel") { showBulkDelete = false }
+            Spacer(Modifier.height(8.dp))
+        }
     }
 }
 

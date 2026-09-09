@@ -79,7 +79,7 @@ final class CallManager: NSObject {
         let config = LKRTCAudioSessionConfiguration.webRTC()
         config.category = AVAudioSession.Category.playAndRecord.rawValue
         config.mode = AVAudioSession.Mode.voiceChat.rawValue
-        config.categoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
+        config.categoryOptions = [.allowBluetoothHFP, .duckOthers]
         LKRTCAudioSessionConfiguration.setWebRTC(config)
     }
 

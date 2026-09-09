@@ -46,6 +46,7 @@ struct RootTabView: View {
     // Drives the Stories tab's unread dot: any unexpired unviewed story exists. One home,
     // one truth — there is no story tray above the chat grid (§8.1).
     @ObservedObject private var storyEngine = StoryEngine.shared
+    @ObservedObject private var notificationRouter = NotificationMessageRouter.shared
     @State private var tab: Tab = .chat
     /// True while a swipe is driving the tab change, so the crossfade stands down and the
     /// swipe's own slide is the only motion on screen.
@@ -318,6 +319,9 @@ struct RootTabView: View {
         // so the board (owned by that tab's stack) can present; GamesScreen handles the rest.
         // Ordering is safe either way — the notification is re-broadcast to whoever is
         // listening, and GamesScreen is alive as soon as the tab renders.
+        .onReceive(notificationRouter.$pendingConversation) { destination in
+            if destination != nil { tab = .chat }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .voiidOpenGameMatch)) { _ in
             tab = .games
         }

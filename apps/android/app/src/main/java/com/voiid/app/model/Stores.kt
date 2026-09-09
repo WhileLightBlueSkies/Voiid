@@ -168,6 +168,13 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     /** Pending auto-clears, one per conversation — see the onTyping handler. */
     private val typingExpiry = mutableMapOf<String, kotlinx.coroutines.Job>()
     var loadError by mutableStateOf<String?>(null)
+    var actionError by mutableStateOf<String?>(null)
+    private data class ActionKey(val conversationId: String, val messageId: String)
+    private data class PendingReaction(val id: String = UUID.randomUUID().toString(), val userId: String, val emoji: String?)
+    private val pendingReactions = mutableMapOf<ActionKey, PendingReaction>()
+    private val reactionJobs = mutableMapOf<ActionKey, kotlinx.coroutines.Job>()
+    private val pendingMediaMessages = mutableMapOf<String, VMessage>()
+    private val deletingMessages = mutableSetOf<ActionKey>()
 
     private val chatService = com.voiid.app.net.ChatService(app)
     private val engine = com.voiid.app.net.ChatEngine.get(app)
@@ -461,7 +468,12 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             // Surface delivered chat actions. Reaction display is single-emoji (peer's else
             // mine); the per-user map is persisted in the engine.
             val myId = com.voiid.app.net.TokenStore.get(getApplication()).userId
-            val reaction = d.reactions?.let { m -> m.entries.firstOrNull { it.key != myId }?.value ?: m.values.firstOrNull() }
+            val reactions = (d.reactions ?: emptyMap()).toMutableMap()
+            pendingReactions[ActionKey(convId, d.serverId ?: d.id)]?.let { pending ->
+                if (pending.emoji == null) reactions.remove(pending.userId) else reactions[pending.userId] = pending.emoji
+            }
+            if (d.deletedForEveryone) reactions.clear()
+            val reaction = reactions.values.firstOrNull()
             VMessage(
                 // Use the server id once known so receipts can match it.
                 id = d.serverId ?: d.id, conversationId = convId,
@@ -470,17 +482,18 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 senderName = if (d.isMine) "" else com.voiid.app.store.UserDirectory.displayName(d.senderId),
                 kind = kind, text = d.text, createdAt = d.createdAt,
                 status = status, isMine = d.isMine, mediaRef = d.media, location = d.location,
-                reaction = reaction, deletedForEveryone = d.deletedForEveryone, forwarded = d.forwarded,
+                reaction = reaction, reactions = reactions, deletedForEveryone = d.deletedForEveryone, forwarded = d.forwarded,
                 replyToText = d.quotedPreview, replyToSender = d.quotedSender,
                 // Real Delivered / Read times for the Message Info sheet.
                 deliveredAt = d.deliveredAt, readAt = d.readAt,
             )
         }
-        if (mapped.isNotEmpty() || messagesByConversation.containsKey(convId)) {
+        val visible = (mapped + pendingMediaMessages.values.filter { it.conversationId == convId }).sortedBy { it.createdAt }
+        if (visible.isNotEmpty() || messagesByConversation.containsKey(convId)) {
             val arr = list(convId)
-            arr.clear(); arr.addAll(mapped)
+            arr.clear(); arr.addAll(visible)
         }
-        mapped.lastOrNull()?.let { bumpPreview(convId, if (it.kind == MessageKind.TEXT) it.text else previewFor(it.kind)) }
+        visible.lastOrNull()?.let { bumpPreview(convId, if (it.kind == MessageKind.TEXT) it.text else previewFor(it.kind)) }
     }
 
     /** Send a media (image/voice) message: encrypt the blob on-device, upload the
@@ -495,11 +508,14 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 status = MessageStatus.SENDING, isMine = true,
             ),
         )
+        pendingMediaMessages[tempId] = list(conversationId).last()
         bumpPreview(conversationId, previewFor(kind))
 
         val conv = directConversations.firstOrNull { it.id == conversationId }
         if (conv == null) {
-            markStatus(tempId, conversationId, MessageStatus.SENT)   // group: not supported yet
+            pendingMediaMessages[tempId] = pendingMediaMessages.getValue(tempId).copy(status = MessageStatus.FAILED)
+            refresh(conversationId)
+            actionError = "Media sending isn’t available in this conversation."
             return
         }
         viewModelScope.launch {
@@ -509,10 +525,14 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender
                 // renders its own photo/voice instantly and offline — never re-downloads it.
                 echo.media?.mediaUrl?.let { com.voiid.app.main.MediaCache.putData(appContext, it, data) }
+                pendingMediaMessages.remove(tempId)
                 removeMessage(tempId, conversationId)
                 refresh(conversationId)
             } catch (e: Exception) {
-                markStatus(tempId, conversationId, MessageStatus.FAILED)
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                pendingMediaMessages[tempId]?.let { pendingMediaMessages[tempId] = it.copy(status = MessageStatus.FAILED) }
+                refresh(conversationId)
+                actionError = "Couldn’t send media. Please try again."
                 loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t send media."
             }
         }
@@ -800,19 +820,38 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     }
 
     /** Delete a message. forEveryone=true tombstones it AND tells the peer; else local-only. */
-    fun deleteMessage(messageId: String, convId: String, forEveryone: Boolean) {
-        val arr = messagesByConversation[convId] ?: return
-        val idx = arr.indexOfFirst { it.id == messageId }
-        if (idx < 0) return
-        if (forEveryone) {
-            arr[idx] = arr[idx].copy(deletedForEveryone = true, reaction = null)
-            val conv = directConversations.firstOrNull { it.id == convId }
-            if (conv != null) viewModelScope.launch {
-                val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return@launch
-                runCatching { engine.sendDeleteForEveryone(messageId, convId, peer) }
-            }
-        } else {
-            arr.removeAt(idx)
+    fun deleteMessage(messageId: String, convId: String, forEveryone: Boolean) =
+        deleteMessages(setOf(messageId), convId, forEveryone)
+
+    fun deleteMessages(messageIds: Set<String>, convId: String, forEveryone: Boolean) {
+        val rows = messages(convId).filter { it.id in messageIds }
+        if (rows.isEmpty()) return
+        val conv = directConversations.firstOrNull { it.id == convId }
+        if (forEveryone && (conv == null || rows.any {
+            !it.isMine || it.deletedForEveryone || it.status == MessageStatus.SENDING || it.status == MessageStatus.FAILED
+        })) {
+            actionError = "Only your sent messages can be deleted for everyone."
+            return
+        }
+        val keys = rows.map { ActionKey(convId, it.id) }.toSet()
+        if (keys.any { it in deletingMessages }) return
+        deletingMessages.addAll(keys)
+        viewModelScope.launch {
+            try {
+                if (forEveryone && conv != null) {
+                    val peer = peerUserId(conv)
+                    for (row in rows) engine.sendDeleteForEveryone(row.id, convId, peer)
+                } else {
+                    engine.deleteForMe(convId, rows.map { it.id }.toSet())
+                    rows.forEach { pendingMediaMessages.remove(it.id) }
+                    callLogsByConversation[convId] = callLogsByConversation[convId].orEmpty().filter { it.id !in messageIds }
+                }
+                refresh(convId)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                refresh(convId)
+                actionError = "Couldn’t delete the message. Please try again."
+            } finally { deletingMessages.removeAll(keys) }
         }
     }
 
@@ -824,25 +863,37 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     }
 
     /** Clear all messages in a conversation but keep it in the list. */
-    fun clearChat(convId: String) {
-        messagesByConversation[convId]?.clear()
-        val di = directConversations.indexOfFirst { it.id == convId }
-        if (di >= 0) { directConversations[di] = directConversations[di].copy(lastMessagePreview = null); return }
-        val gi = groupConversations.indexOfFirst { it.id == convId }
-        if (gi >= 0) groupConversations[gi] = groupConversations[gi].copy(lastMessagePreview = null)
-    }
+    fun clearChat(convId: String) = deleteMessages(messages(convId).map { it.id }.toSet(), convId, false)
 
-    /** Toggle an emoji reaction on a message — and DELIVER it to the peer over E2EE. */
+    /** Toggle only this user's emoji, preserving the peer's reaction and send order. */
     fun react(messageId: String, emoji: String, convId: String) {
+        val userId = com.voiid.app.net.TokenStore.get(getApplication()).userId ?: return
+        val conv = directConversations.firstOrNull { it.id == convId } ?: return
         val arr = messagesByConversation[convId] ?: return
         val idx = arr.indexOfFirst { it.id == messageId }
-        if (idx < 0) return
-        val cleared = arr[idx].reaction == emoji
-        arr[idx] = arr[idx].copy(reaction = if (cleared) null else emoji)   // optimistic local
-        val conv = directConversations.firstOrNull { it.id == convId } ?: return
-        viewModelScope.launch {
-            val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return@launch
-            runCatching { engine.sendReaction(messageId, if (cleared) null else emoji, convId, peer) }
+        if (idx < 0 || arr[idx].deletedForEveryone || arr[idx].status == MessageStatus.SENDING || arr[idx].status == MessageStatus.FAILED) return
+        val key = ActionKey(convId, messageId)
+        val pending = PendingReaction(userId = userId, emoji = if (arr[idx].reactions[userId] == emoji) null else emoji)
+        pendingReactions[key] = pending
+        val reactions = arr[idx].reactions.toMutableMap()
+        if (pending.emoji == null) reactions.remove(userId) else reactions[userId] = pending.emoji
+        arr[idx] = arr[idx].copy(reactions = reactions, reaction = reactions.values.firstOrNull())
+        val previous = reactionJobs[key]
+        reactionJobs[key] = viewModelScope.launch {
+            try {
+                previous?.join()
+                val peer = peerUserId(conv)
+                engine.sendReaction(messageId, pending.emoji, convId, peer)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (pendingReactions[key]?.id == pending.id) actionError = "Your reaction couldn’t be sent. Please try again."
+            } finally {
+                if (pendingReactions[key]?.id == pending.id) {
+                    pendingReactions.remove(key)
+                    reactionJobs.remove(key)
+                }
+                refresh(convId)
+            }
         }
     }
 

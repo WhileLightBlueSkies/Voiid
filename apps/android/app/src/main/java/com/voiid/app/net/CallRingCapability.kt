@@ -54,7 +54,8 @@ object CallRingCapability {
     /** Cheap; safe to call on every app foreground and before every ring. */
     fun refresh(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
-        val notifications = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        val notifications = !androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() ||
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         val fsi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&

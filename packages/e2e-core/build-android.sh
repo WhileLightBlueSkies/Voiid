@@ -21,12 +21,12 @@ echo "==> Building JNI libraries for all Android ABIs (release)…"
 cargo ndk \
   -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 \
   -o "$JNI_OUT" \
-  build --release
+  build --release --locked
 
 echo "==> Generating Kotlin bindings…"
 # Use any built .so to introspect the metadata.
 SO=$(find "$JNI_OUT/arm64-v8a" -name "lib${CRATE}.so" | head -1)
-cargo run --bin uniffi-bindgen -- generate \
+cargo run --locked --bin uniffi-bindgen -- generate \
   --library "$SO" \
   --language kotlin --out-dir "$KOTLIN_OUT"
 

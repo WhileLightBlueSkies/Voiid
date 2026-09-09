@@ -172,6 +172,9 @@ object CallManager {
     private var pc: PeerConnection? = null
     private var audioSource: AudioSource? = null
     private var localAudioTrack: AudioTrack? = null
+    // Accessed only on the media executor; call IDs fence delayed callbacks.
+    private var fallbackFocusInterruptedCallId: String? = null
+    private var telecomFocusInterruptedCallId: String? = null
     private var videoSource: VideoSource? = null
     private var localVideoTrack: VideoTrack? = null
     private var videoCapturer: VideoCapturer? = null
@@ -434,8 +437,12 @@ object CallManager {
                 val secret = CallKeyCourier(appContext)
                     .mintAndDistribute(callId, epoch = 1, recipientUserIds = listOf(peerUserId))
                 if (!isCurrentCall(callId)) return@launch
-                applyFrameSecret(secret, epoch = 1)
-                ConferenceManager.seedOneToOneSecret(callId, secret, epoch = 1)
+                exec.execute {
+                    if (isCurrentCall(callId)) {
+                        applyFrameSecret(secret, epoch = 1)
+                        ConferenceManager.seedOneToOneSecret(callId, secret, epoch = 1)
+                    }
+                }
             }.onFailure {
                 android.util.Log.e("VOIID", "1:1 call key mint failed — proceeding DTLS-only", it)
             }
@@ -1063,6 +1070,9 @@ object CallManager {
                         hasNegotiated = true
                         restartInFlight = false
                         drainCandidates()
+                        attachFrameCryptorsIfReady()
+                        resendCallSecretAfterAnswer(sig.callId)
+                        sendVerificationTagIfReady()
                     }
                 }
             }, SessionDescription(SessionDescription.Type.ANSWER, sdp))
@@ -1331,6 +1341,7 @@ object CallManager {
                         if (!isCurrentCall(s.callId) || pc !== p) return
                         hasNegotiated = true
                         attachFrameCryptorsIfReady()
+                        sendVerificationTagIfReady()
                         WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
                     }
                     override fun onSetFailure(error: String?) { setupFailed(s.callId) }
@@ -1377,8 +1388,8 @@ object CallManager {
         val s = _state.value ?: return
         val muted = !s.muted
         // Hold outranks mute: un-muting while held must not quietly start sending audio again.
-        exec.execute { localAudioTrack?.setEnabled(!muted && !(_state.value?.onHold ?: false)) }
-        update { it.copy(muted = muted) }
+        update(expectedCallId = s.callId) { it.copy(muted = muted) }
+        exec.execute { applyMicrophoneState(s.callId) }
     }
 
     /**
@@ -1396,8 +1407,10 @@ object CallManager {
         if (ConferenceManager.activeCallId == s.callId) return
         if (s.phase != Phase.CONNECTED && s.phase != Phase.CONNECTING) return
         val hold = !s.onHold
+        update(expectedCallId = s.callId) { it.copy(onHold = hold) }
         exec.execute {
-            runCatching { localAudioTrack?.setEnabled(!hold && !(_state.value?.muted ?: false)) }
+            if (!isCurrentCall(s.callId)) return@execute
+            applyMicrophoneState(s.callId)
             if (s.kind == CallKind.VIDEO) {
                 runCatching { localVideoTrack?.setEnabled(!hold && (_state.value?.videoEnabled ?: false)) }
                 // Release the camera while held; nobody is watching and it costs battery.
@@ -1409,7 +1422,6 @@ object CallManager {
             val ws = WebSocketClient.get(appContext)
             if (hold) ws.sendCallHold(s.peerUserId, s.callId) else ws.sendCallUnhold(s.peerUserId, s.callId)
         }
-        update { it.copy(onHold = hold) }
     }
 
     fun toggleSpeaker() {
@@ -1418,9 +1430,7 @@ object CallManager {
             return
         }
         val s = _state.value ?: return
-        val on = !s.speaker
-        applyAudioRoute(on)
-        update { it.copy(speaker = on) }
+        selectAudioRoute(if (s.speaker) AudioRoute.Earpiece else AudioRoute.Speaker)
     }
 
     // MARK: - Audio route picker
@@ -1432,7 +1442,7 @@ object CallManager {
 
     /** One selectable audio output. Mirrors iOS `CallAudioRoute`. */
     sealed class AudioRoute(val id: String, val label: String) {
-        object Earpiece : AudioRoute("earpiece", "iPhone")
+        object Earpiece : AudioRoute("earpiece", "Phone")
         object Speaker : AudioRoute("speaker", "Speaker")
         class Bluetooth(val deviceId: Int, name: String) : AudioRoute("bt:$deviceId", name)
         class Wired(val deviceId: Int, name: String) : AudioRoute("wired:$deviceId", name)
@@ -1447,6 +1457,7 @@ object CallManager {
      * collapse to a plain speaker toggle when there is nothing to choose between.
      */
     fun availableAudioRoutes(): List<AudioRoute> {
+        _state.value?.callId?.let { TelecomBridge.availableAudioRoutes(it) }?.let { return it }
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             ?: return listOf(AudioRoute.Earpiece, AudioRoute.Speaker)
         val out = mutableListOf<AudioRoute>(AudioRoute.Earpiece, AudioRoute.Speaker)
@@ -1486,6 +1497,7 @@ object CallManager {
 
     /** The route currently carrying the call, for the picker's checkmark. */
     fun currentAudioRoute(): AudioRoute {
+        _state.value?.callId?.let { TelecomBridge.currentAudioRoute(it) }?.let { return it }
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && am != null) {
             am.communicationDevice?.let { d ->
@@ -1518,18 +1530,10 @@ object CallManager {
     fun selectAudioRoute(route: AudioRoute) {
         val speaker = route is AudioRoute.Speaker
         val callId = _state.value?.callId
-        // `&&` binds tighter than `||`, so the obvious spelling of this condition —
-        // `callId != null && a || b` — is `(callId != null && a) || b`, which lets a null
-        // callId through on the earpiece branch. Parenthesised, and the inner null check
-        // kept, so neither reading can bite.
-        val isBuiltIn = route is AudioRoute.Speaker || route is AudioRoute.Earpiece
-        if (callId != null && isBuiltIn) {
-            // Speaker/earpiece is exactly the toggle Telecom already models.
-            if (TelecomBridge.setAudioRoute(callId, speaker)) {
-                ensureCommunicationMode()
-                update { it.copy(speaker = speaker) }
-                return
-            }
+        requestedAudioRoute = route
+        if (callId != null && TelecomBridge.selectAudioRoute(callId, route)) {
+            ensureCommunicationMode()
+            return // Update the checkmark only when the OS confirms the route.
         }
 
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
@@ -1752,9 +1756,10 @@ object CallManager {
         val p = pc ?: return
         if (localAudioTrack == null) {
             val aSource = factory.createAudioSource(MediaConstraints())
-            val aTrack = factory.createAudioTrack(AUDIO_TRACK_ID, aSource).apply { setEnabled(true) }
+            val aTrack = factory.createAudioTrack(AUDIO_TRACK_ID, aSource).apply { setEnabled(false) }
             audioSource = aSource
             localAudioTrack = aTrack
+            _state.value?.callId?.let { applyMicrophoneState(it) }
             p.addTrack(aTrack, listOf(STREAM_ID))
         }
         if (kind == CallKind.VIDEO && localVideoTrack == null) {
@@ -1863,6 +1868,9 @@ object CallManager {
 
         override fun onTrack(transceiver: RtpTransceiver) {
             if (!isCurrentCall(callId) || peerGeneration.get() != generation) return
+            exec.execute {
+                if (isCurrentCall(callId) && peerGeneration.get() == generation) attachFrameCryptorsIfReady()
+            }
             val track = transceiver.receiver?.track() ?: return
             if (track is VideoTrack) {
                 remoteVideoTrack = track
@@ -1876,6 +1884,9 @@ object CallManager {
 
         override fun onAddTrack(receiver: RtpReceiver, streams: Array<out org.webrtc.MediaStream>?) {
             if (!isCurrentCall(callId) || peerGeneration.get() != generation) return
+            exec.execute {
+                if (isCurrentCall(callId) && peerGeneration.get() == generation) attachFrameCryptorsIfReady()
+            }
             val track = receiver.track()
             if (track is VideoTrack) {
                 remoteVideoTrack = track
@@ -1927,18 +1938,31 @@ object CallManager {
      */
     fun onOneToOneCallKey(ciphertexts: Map<String, String>, senderDeviceId: String?, fromUserId: String, callId: String) {
         val s = _state.value ?: return
-        if (s.callId != callId || s.isConferenceInvite) return
+        if (s.callId != callId || s.isConferenceInvite || s.peerUserId != fromUserId) return
         val myDevice = E2EManager.get(appContext).deviceId ?: return
         val mine = ciphertexts[myDevice] ?: return
         scope.launch(Dispatchers.IO) {
-            val env = runCatching {
-                ChatEngine.get(appContext).decryptBroadcast(mine, fromUserId, senderDeviceId)
-            }.getOrNull() ?: return@launch
-            // Tolerate BOTH envelope shapes (iOS emits {v,k:"secret",call_id,secret,gen}).
-            val parsed = runCatching {
-                ApiClient.json.decodeFromString(CallKeyEnvelope.serializer(), env)
-            }.getOrNull() ?: parseIosEnvelope(env, callId) ?: return@launch
-            if (parsed.call_id == callId) applyOpenedCallSecret(callId, parsed.secret, parsed.epoch)
+            val plain = ChatEngine.get(appContext).decryptBroadcast(mine, fromUserId, senderDeviceId) ?: return@launch
+            val obj = runCatching { ApiClient.json.parseToJsonElement(plain).jsonObject }.getOrNull() ?: return@launch
+            if (obj["call_id"]?.jsonPrimitive?.contentOrNull != callId) return@launch
+            if (obj["k"]?.jsonPrimitive?.contentOrNull == "verify") {
+                val tag = obj["tag"]?.jsonPrimitive?.contentOrNull ?: return@launch
+                val epoch = obj["gen"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return@launch
+                if (epoch < 1 || !Regex("[A-Za-z0-9+/]{43}=").matches(tag)) return@launch
+                exec.execute {
+                    if (!isCurrentCall(callId) || epoch < callSecretEpoch) return@execute
+                    remoteVerificationTag = epoch to tag
+                    sendVerificationTagIfReady()
+                }
+                return@launch
+            }
+            val parsed = runCatching { ApiClient.json.decodeFromString(CallKeyEnvelope.serializer(), plain) }
+                .getOrNull() ?: parseIosEnvelope(plain, callId) ?: return@launch
+            exec.execute {
+                if (!isCurrentCall(callId) || parsed.epoch < 1) return@execute
+                applyFrameSecret(parsed.secret, parsed.epoch)
+                ConferenceManager.seedOneToOneSecret(callId, parsed.secret, parsed.epoch, fromUserId)
+            }
         }
     }
 
@@ -1972,9 +1996,56 @@ object CallManager {
     // drop until BOTH sides hold the key — silence, never plaintext.
     private var frameProvider: org.webrtc.FrameCryptorKeyProvider? = null
     private val frameCryptors = mutableListOf<org.webrtc.FrameCryptor>()
-    private val frameCovered = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
+    private val frameCovered = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     @Volatile private var callSecretB64: String? = null
     @Volatile private var callSecretEpoch = 0
+    private var remoteVerificationTag: Pair<Int, String>? = null
+    private var verificationTagJob: kotlinx.coroutines.Job? = null
+    private var verificationTagInFlight: String? = null
+
+    /** Runs on the media executor once the secret and both descriptions exist. */
+    private fun sendVerificationTagIfReady() {
+        val s = _state.value ?: return
+        if (s.isConferenceInvite || s.phase == Phase.ENDED) return
+        val secret = callSecretB64 ?: return
+        val epoch = callSecretEpoch
+        val local = CallKeyProtocol.fingerprint(pc?.localDescription?.description) ?: return
+        val remote = CallKeyProtocol.fingerprint(pc?.remoteDescription?.description) ?: return
+        val tag = CallKeyCourier.srtpCommitment(secret, local, remote) ?: return
+        remoteVerificationTag?.takeIf { it.first == epoch }?.let {
+            android.util.Log.i("VOIID", if (it.second == tag) "call-key: media keying VERIFIED" else "call-key: commitment MISMATCH")
+        }
+        if (verificationTagInFlight == tag) return
+        verificationTagInFlight = tag
+        verificationTagJob?.cancel()
+        verificationTagJob = scope.launch(Dispatchers.IO) {
+            val envelope = JsonObject(mapOf("v" to JsonPrimitive(1), "k" to JsonPrimitive("verify"),
+                "call_id" to JsonPrimitive(s.callId), "gen" to JsonPrimitive(epoch), "tag" to JsonPrimitive(tag))).toString().toByteArray()
+            // Key frames are ephemeral. Retry fresh encrypted copies, bounded to this call/key.
+            repeat(3) { attempt ->
+                if (attempt > 0) kotlinx.coroutines.delay(1000L shl attempt)
+                if (!isCurrentCall(s.callId) || callSecretB64 != secret || callSecretEpoch != epoch) return@launch
+                runCatching {
+                    val copies = ChatEngine.get(appContext).encryptBroadcast(envelope, listOf(s.peerUserId), includeOwnDevices = false)
+                    if (!isCurrentCall(s.callId) || callSecretB64 != secret || callSecretEpoch != epoch) return@launch
+                    val ws = WebSocketClient.get(appContext)
+                    for (copy in copies) ws.sendCallKey(s.peerUserId, s.callId, copy.recipientDeviceId,
+                        E2EManager.get(appContext).deviceId, copy.ciphertext)
+                }.onFailure { android.util.Log.w("VOIID", "call-key: verification delivery failed") }
+            }
+        }
+    }
+
+    private fun resendCallSecretAfterAnswer(callId: String) {
+        val s = _state.value?.takeIf { it.callId == callId && !it.incoming } ?: return
+        val secret = callSecretB64 ?: return
+        val epoch = callSecretEpoch
+        scope.launch(Dispatchers.IO) {
+            if (!isCurrentCall(callId)) return@launch
+            runCatching { CallKeyCourier(appContext).distribute(callId, epoch, secret, listOf(s.peerUserId)) }
+                .onFailure { android.util.Log.w("VOIID", "call-key: answer-time key delivery failed") }
+        }
+    }
 
     /**
      * HKDF-SHA256 (RFC 5869) — byte-for-byte what CryptoKit's `HKDF<SHA256>.deriveKey`
@@ -1997,6 +2068,13 @@ object CallManager {
     /** Install (or roll) the frame key for the ACTIVE 1:1 call. */
     fun applyFrameSecret(secretB64: String, epoch: Int) {
         if (epoch < callSecretEpoch) return   // stale key: never roll backwards
+        if (callSecretB64 == secretB64 && callSecretEpoch == epoch) {
+            attachFrameCryptorsIfReady(); sendVerificationTagIfReady(); return
+        }
+        if (callSecretB64 != secretB64 || callSecretEpoch != epoch) {
+            verificationTagJob?.cancel(); verificationTagJob = null; verificationTagInFlight = null
+            if (remoteVerificationTag?.first != epoch) remoteVerificationTag = null
+        }
         callSecretEpoch = epoch
         callSecretB64 = secretB64
         val provider = frameProvider ?: org.webrtc.FrameCryptorFactory.createFrameCryptorKeyProvider(
@@ -2016,6 +2094,7 @@ object CallManager {
         ).also { frameProvider = it }
         provider.setSharedKey(0, frameMediaKey(secretB64))
         attachFrameCryptorsIfReady()
+        sendVerificationTagIfReady()
     }
 
     /** Cover every sender/receiver on the live PeerConnection. Idempotent per track. */
@@ -2025,22 +2104,36 @@ object CallManager {
         val s = _state.value ?: return
         synchronized(frameCryptors) {
             for (sender in connection.senders) {
-                if (!frameCovered.add(System.identityHashCode(sender))) continue
+                val id = "sender:${sender.id()}"
+                if (sender.track() == null || id in frameCovered) continue
                 runCatching {
                     frameCryptors += org.webrtc.FrameCryptorFactory.createFrameCryptorForRtpSender(
                         factory, sender, s.peerUserId,
                         org.webrtc.FrameCryptorAlgorithm.AES_GCM, provider,
-                    ).also { it.setEnabled(true) }
-                }
+                    ).also {
+                        if (com.voiid.app.BuildConfig.DEBUG) it.setObserver { _, state ->
+                            android.util.Log.i("VOIID", "call-media: sender cryptor state=$state")
+                        }
+                        it.setEnabled(true)
+                    }
+                    frameCovered.add(id)
+                }.onFailure { android.util.Log.e("VOIID", "call-key: frame cryptor attachment failed", it) }
             }
             for (receiver in connection.receivers) {
-                if (!frameCovered.add(System.identityHashCode(receiver))) continue
+                val id = "receiver:${receiver.id()}"
+                if (receiver.track() == null || id in frameCovered) continue
                 runCatching {
                     frameCryptors += org.webrtc.FrameCryptorFactory.createFrameCryptorForRtpReceiver(
                         factory, receiver, s.peerUserId,
                         org.webrtc.FrameCryptorAlgorithm.AES_GCM, provider,
-                    ).also { it.setEnabled(true) }
-                }
+                    ).also {
+                        if (com.voiid.app.BuildConfig.DEBUG) it.setObserver { _, state ->
+                            android.util.Log.i("VOIID", "call-media: receiver cryptor state=$state")
+                        }
+                        it.setEnabled(true)
+                    }
+                    frameCovered.add(id)
+                }.onFailure { android.util.Log.e("VOIID", "call-key: frame cryptor attachment failed", it) }
             }
         }
     }
@@ -2055,6 +2148,8 @@ object CallManager {
         frameProvider = null
         callSecretB64 = null
         callSecretEpoch = 0
+        verificationTagJob?.cancel(); verificationTagJob = null
+        verificationTagInFlight = null; remoteVerificationTag = null
     }
 
     @Synchronized
@@ -2154,6 +2249,8 @@ object CallManager {
         runCatching { pc?.dispose() }
         videoCapturer = null; videoSource = null; surfaceHelper = null
         localVideoTrack = null; localAudioTrack = null; audioSource = null
+        fallbackFocusInterruptedCallId = null
+        telecomFocusInterruptedCallId = null
         remoteVideoTrack = null; pc = null
         pendingRemoteCandidates.clear(); remoteDescSet = false; acceptPending = false
         videoPausedForBackground = false
@@ -2417,6 +2514,7 @@ object CallManager {
     private var savedAudioMode = AudioManager.MODE_NORMAL
     private var audioConfigured = false
     private var routeWatcher: AudioDeviceCallback? = null
+    private var requestedAudioRoute: AudioRoute? = null
 
     /**
      * Put the device into communication mode and pick an output.
@@ -2428,25 +2526,60 @@ object CallManager {
      * `MODE_IN_COMMUNICATION` is (re)asserted here, and this runs again on every device
      * add/remove, so the mode survives backgrounding and mid-call route changes.
      */
-    private fun applyAudioRoute(speaker: Boolean) {
-        // AUDIO FOCUS IS OURS EITHER WAY — requested BEFORE the Telecom branch below.
-        //
-        // It was requested further down, past the early return, so on every device where
-        // Telecom accepted the call (the common path on API 26+) the request never ran:
-        // music still played over the caller and an interruption still left the call with
-        // no audio. Telecom owns the ROUTE, not focus — a self-managed app is expected to
-        // take focus itself — so this belongs above the split, where both paths reach it.
-        //
-        // Idempotent: CallAudioFocus.request returns immediately if focus is already held,
-        // and this function runs again on every route change.
-        CallAudioFocus.request(appContext) { interrupted ->
-            exec.execute {
-                runCatching {
-                    localAudioTrack?.setEnabled(
-                        !interrupted && !(_state.value?.muted ?: false)
-                            && !(_state.value?.onHold ?: false)
-                    )
+    // All track mutations below run on exec, including focus handoff recovery.
+    private fun applyMicrophoneState(callId: String) {
+        val s = _state.value ?: return
+        if (s.callId != callId || s.phase == Phase.ENDED) return
+        val enabled = !s.muted && !s.onHold &&
+            fallbackFocusInterruptedCallId != callId && telecomFocusInterruptedCallId != callId
+        runCatching {
+            val track = localAudioTrack ?: return@runCatching
+            track.setEnabled(enabled)
+            if (com.voiid.app.BuildConfig.DEBUG) android.util.Log.d("VOIID",
+                "call-media: microphone enabled=$enabled muted=${s.muted} held=${s.onHold} fallbackInterrupted=${fallbackFocusInterruptedCallId == callId} telecomInterrupted=${telecomFocusInterruptedCallId == callId}")
+        }
+    }
+
+    private fun onFallbackAudioFocusChanged(callId: String, interrupted: Boolean) {
+        exec.execute {
+            if (!isCurrentCall(callId) || TelecomBridge.ownsCall(callId)) return@execute
+            fallbackFocusInterruptedCallId = if (interrupted) callId else null
+            applyMicrophoneState(callId)
+        }
+    }
+
+    private fun handOffAudioFocusToTelecom(callId: String) {
+        exec.execute {
+            if (!isCurrentCall(callId) || !TelecomBridge.ownsCall(callId)) return@execute
+            // Telecom already holds focus for this call. Our own request receives LOSS
+            // during that handoff; keeping it would incorrectly stop outgoing audio.
+            CallAudioFocus.abandon(appContext)
+            fallbackFocusInterruptedCallId = null
+            applyMicrophoneState(callId)
+        }
+    }
+
+    fun onTelecomAudioFocusChanged(callIds: Set<String>, interrupted: Boolean, onApplied: () -> Unit = {}) {
+        exec.execute {
+            try {
+                val s = _state.value
+                if (s != null && s.callId in callIds && isCurrentCall(s.callId) && TelecomBridge.ownsCall(s.callId)) {
+                    telecomFocusInterruptedCallId = if (interrupted) s.callId else null
+                    applyMicrophoneState(s.callId)
                 }
+            } finally {
+                mainHandler.post { onApplied() }
+            }
+        }
+    }
+
+    private fun applyAudioRoute(speaker: Boolean) {
+        val callId = _state.value?.callId ?: return
+        if (TelecomBridge.ownsCall(callId)) {
+            handOffAudioFocusToTelecom(callId)
+        } else {
+            CallAudioFocus.request(appContext) { interrupted ->
+                onFallbackAudioFocusChanged(callId, interrupted)
             }
         }
 
@@ -2457,8 +2590,9 @@ object CallManager {
         // that flips back a second after the user changes it. Everything below this line is
         // the FALLBACK for calls Telecom refused (or an OS too old to have taken them), and
         // is unchanged from before Telecom existed.
-        val callId = _state.value?.callId
-        if (callId != null && TelecomBridge.setAudioRoute(callId, speaker)) {
+        if (TelecomBridge.setAudioRoute(callId, speaker)) {
+            // It may have attached between the ownership check and this route request.
+            handOffAudioFocusToTelecom(callId)
             // The ROUTE is Telecom's. The MODE is not, and WebRTC's echo canceller and gain
             // control key off MODE_IN_COMMUNICATION — a call in MODE_NORMAL echoes. Telecom
             // asserts the same value for a self-managed call with `audioModeIsVoip = true`,
@@ -2532,8 +2666,11 @@ object CallManager {
         mainHandler.post {
             val s = _state.value ?: return@post
             if (s.callId != callId || s.phase == Phase.ENDED) return@post
+            handOffAudioFocusToTelecom(callId)
             releaseAudioManagerRoute()
-            TelecomBridge.setAudioRoute(callId, s.speaker)
+            val requested = requestedAudioRoute
+            if (requested != null) TelecomBridge.selectAudioRoute(callId, requested)
+            else TelecomBridge.setAudioRoute(callId, s.speaker)
         }
     }
 
@@ -2586,10 +2723,18 @@ object CallManager {
     private fun reapplyRoute() {
         val s = _state.value ?: return
         if (s.phase == Phase.ENDED) return
+        requestedAudioRoute?.let { requested ->
+            if (availableAudioRoutes().any { it.id == requested.id }) {
+                selectAudioRoute(requested)
+                return
+            }
+            requestedAudioRoute = null
+        }
         applyAudioRoute(s.speaker)
     }
 
     private fun restoreAudioRoute() {
+        requestedAudioRoute = null
         // Hand focus back FIRST so whatever we paused can resume as the call tears down.
         runCatching { CallAudioFocus.abandon(appContext) }
         // Nothing to restore if Telecom held the route for this whole call: `audioConfigured`

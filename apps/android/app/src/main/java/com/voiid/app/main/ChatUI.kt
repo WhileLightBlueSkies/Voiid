@@ -85,6 +85,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.constrainWidth
+import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
@@ -104,12 +106,12 @@ import kotlin.math.roundToInt
 
 private val reactionSet = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 
-/** Bubble shape with the tail squared on the correct side. */
+/** iOS bubble metrics: 20dp corners and a 7dp speaker-side corner. */
 fun bubbleShape(isMine: Boolean): Shape = RoundedCornerShape(
-    topStart = 16.dp,
-    topEnd = 16.dp,
-    bottomEnd = if (isMine) 0.dp else 16.dp,
-    bottomStart = if (isMine) 16.dp else 0.dp,
+    topStart = 20.dp,
+    topEnd = 20.dp,
+    bottomEnd = if (isMine) 7.dp else 20.dp,
+    bottomStart = if (isMine) 20.dp else 7.dp,
 )
 
 // MARK: - Bubble-aware colours
@@ -232,12 +234,12 @@ fun MessageBubble(
         ) {
             if (selectionMode) {
                 Icon(
-                    if (selected) Icons.Default.CheckCircle else Icons.Outlined.Circle, null,
+                    if (selected) Icons.Default.CheckCircle else Icons.Outlined.Circle, if (selected) "Deselect message" else "Select message",
                     tint = if (selected) VoiidColor.primary else VoiidColor.textSecondary.copy(alpha = 0.5f),
-                    modifier = Modifier.align(Alignment.CenterVertically).padding(end = 8.dp).size(22.dp),
+                    modifier = Modifier.align(Alignment.CenterVertically).size(44.dp).clickable(onClick = onSelectTap).padding(11.dp),
                 )
             }
-            if (mine) Spacer(Modifier.width(56.dp))
+            if (mine) Spacer(Modifier.width(24.dp))
             // Group, incoming: the sender's real profile photo beside the bubble, so you can
             // see at a glance who's texting (WhatsApp-style).
             if (isGroup && !mine) {
@@ -252,7 +254,7 @@ fun MessageBubble(
                 modifier = Modifier.weight(1f),
                 contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart,
             ) {
-                Column(horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
+                Column(Modifier.widthIn(max = 300.dp), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
                     Box {
                         Column(
                             modifier = Modifier
@@ -275,50 +277,50 @@ fun MessageBubble(
                                     },
                                     onClick = { if (selectionMode) onSelectTap() },
                                 )
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
                             BubbleInner(message, isGroup, isLastMine, onVote)
                         }
 
                         // Long-press reaction + actions popover
-                        if (showMenu) {
-                            Popup(
-                                alignment = Alignment.TopCenter,
-                                offset = IntOffset(0, with(density) { (-8).dp.roundToPx() }),
-                                onDismissRequest = { showMenu = false },
-                                properties = PopupProperties(focusable = true),
-                            ) {
-                                ReactionActionMenu(
-                                    isMine = mine,
-                                    onReact = { showMenu = false; onReact(it) },
-                                    onMore = { showMenu = false; showEmojiPicker = true },
-                                    onReply = { showMenu = false; onReply() },
-                                    onForward = { showMenu = false; onForward() },
-                                    onCopy = { showMenu = false; onCopy() },
-                                    onInfo = { showMenu = false; onInfo() },
-                                    onDelete = { showMenu = false; onDelete() },
-                                    onSelect = { showMenu = false; onSelect() },
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = showMenu, onDismissRequest = { showMenu = false },
+                            modifier = Modifier.width(324.dp),
+                            shape = RoundedCornerShape(20.dp), containerColor = VoiidColor.surfaceCard,
+                        ) {
+                            ReactionActionMenu(
+                                isMine = mine,
+                                canReact = !message.deletedForEveryone && message.status != MessageStatus.SENDING && message.status != MessageStatus.FAILED,
+                                onReact = { showMenu = false; onReact(it) },
+                                onMore = { showMenu = false; showEmojiPicker = true },
+                                onReply = { showMenu = false; onReply() },
+                                onForward = { showMenu = false; onForward() },
+                                onCopy = { showMenu = false; onCopy() },
+                                onInfo = { showMenu = false; onInfo() },
+                                onDelete = { showMenu = false; onDelete() },
+                                onSelect = { showMenu = false; onSelect() },
+                            )
+                        }
+                    }
+                    if (!message.deletedForEveryone && message.reactions.isNotEmpty()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            message.reactions.values.groupingBy { it }.eachCount().toSortedMap().forEach { (emoji, count) ->
+                                Text(
+                                    if (count > 1) "$emoji $count" else emoji, fontSize = 13.sp,
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(VoiidColor.background)
+                                        .border(0.5.dp, VoiidColor.divider.copy(alpha = 0.5f), CircleShape)
+                                        .clickable(enabled = !selectionMode && message.status != MessageStatus.SENDING && message.status != MessageStatus.FAILED) { onReact(emoji) }
+                                        .padding(horizontal = 9.dp, vertical = 8.dp),
                                 )
                             }
                         }
                     }
-                    // Reaction pill (overlapping bottom corner)
-                    message.reaction?.let { r ->
-                        Text(
-                            r, fontSize = 13.sp,
-                            modifier = Modifier
-                                .offset(y = (-8).dp)
-                                .padding(start = if (mine) 0.dp else 8.dp, end = if (mine) 8.dp else 0.dp)
-                                .clip(CircleShape)
-                                .background(VoiidColor.background)
-                                .border(0.5.dp, VoiidColor.divider.copy(alpha = 0.5f), CircleShape)
-                                .padding(3.dp),
-                        )
-                    }
                 }
             }
-            if (!mine) Spacer(Modifier.width(56.dp))
+            if (!mine) Spacer(Modifier.width(24.dp))
         }
     }
 
@@ -387,16 +389,7 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
 
     when (message.kind) {
         // Text: time + ticks flow INLINE at the end (bubble hugs content, WhatsApp-style) — iOS `textWithMeta`.
-        MessageKind.TEXT -> Row(
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(
-                styledText(message.text, mine), style = VoiidFont.rounded(15), color = bubbleText(mine),
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            MetaRow(message, isLastMine)
-        }
+        MessageKind.TEXT -> TextWithMeta(message, isLastMine)
         // Non-text: content, then the meta row beneath it (iOS `content; metaRow.padding(.top, 2)`).
         MessageKind.IMAGE -> {
             val ref = message.mediaRef
@@ -404,7 +397,9 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
             var viewingFull by remember(message.id) { mutableStateOf(false) }
             if (ref != null) {
                 AsyncMediaImage(ref, onTap = { viewingFull = true })
-                if (viewingFull) {
+                if (viewingFull && ref.mime.startsWith("video/")) {
+                    ChatVideoViewer(ref, onClose = { viewingFull = false })
+                } else if (viewingFull) {
                     val ctx = androidx.compose.ui.platform.LocalContext.current
                     com.voiid.app.ui.components.VoiidPhotoViewer(
                         title = null,
@@ -422,7 +417,9 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
         }
         MessageKind.VOICE -> {
             AsyncVoiceNote(message.mediaRef, message.text, onOwnBubble = message.isMine)
-            MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
+            }
         }
         MessageKind.POLL -> {
             message.poll?.let { PollBubble(it, onVote) }
@@ -543,6 +540,29 @@ private fun CallLogBubble(log: VCallLog, onCallBack: () -> Unit) {
     }
 }
 
+/** Match iOS: inline metadata on a short message, a trailing line for wrapped prose. */
+@Composable
+private fun TextWithMeta(message: VMessage, isLastMine: Boolean) {
+    androidx.compose.ui.layout.Layout(content = {
+        Text(styledText(message.text, message.isMine),
+            style = VoiidFont.rounded(15).copy(lineHeight = 20.sp), color = bubbleText(message.isMine))
+        MetaRow(message, isLastMine)
+    }) { children, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val meta = children[1].measure(loose)
+        val gap = 8.dp.roundToPx()
+        val intrinsic = children[0].maxIntrinsicWidth(constraints.maxHeight)
+        val inline = !message.text.contains('\n') && intrinsic + gap + meta.width <= constraints.maxWidth
+        val text = children[0].measure(loose.copy(maxWidth = if (inline) intrinsic else constraints.maxWidth))
+        val width = constraints.constrainWidth(if (inline) text.width + gap + meta.width else maxOf(text.width, meta.width))
+        val height = if (inline) maxOf(text.height, meta.height) else text.height + 4.dp.roundToPx() + meta.height
+        layout(width, constraints.constrainHeight(height)) {
+            text.placeRelative(0, 0)
+            meta.placeRelative(width - meta.width, height - meta.height)
+        }
+    }
+}
+
 /** Time + delivery-tick row that flows inline after text (or beneath media) — iOS `metaRow`. */
 @Composable
 private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier = Modifier) {
@@ -554,9 +574,8 @@ private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier =
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(VoiidDate.bubbleTime(message.createdAt), style = VoiidFont.rounded(10), color = metaTint)
-        // Clean text status (Sent / Delivered / Seen) under the LAST outgoing message
-        // only, so older messages never change.
-        if (message.isMine && isLastMine) {
+        // Each outgoing bubble reports its own current state, matching iOS.
+        if (message.isMine) {
             val label = when (message.status) {
                 MessageStatus.SENDING -> "Sending…"
                 MessageStatus.SENT -> "Sent"
@@ -564,8 +583,10 @@ private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier =
                 MessageStatus.READ -> "Seen"
                 MessageStatus.FAILED -> "Failed"
             }
-            Text(
-                "· $label",
+            if (message.status == MessageStatus.SENDING) {
+                Icon(Icons.Default.Schedule, "Sending", tint = metaTint, modifier = Modifier.size(11.dp))
+            } else Text(
+                label,
                 // Seen steps up in WEIGHT rather than changing colour, so the distinction
                 // survives for a colour-blind user; Failed is the one state that gets the
                 // error hue because it is the only one the user must act on. Mirrors iOS.
@@ -605,62 +626,41 @@ private fun styledText(text: String, mine: Boolean) = buildAnnotatedString {
 
 @Composable
 private fun ReactionActionMenu(
-    isMine: Boolean,
-    onReact: (String) -> Unit,
-    onMore: () -> Unit,
-    onReply: () -> Unit,
-    onForward: () -> Unit,
-    onCopy: () -> Unit,
-    onInfo: () -> Unit,
-    onDelete: () -> Unit,
-    /** Enter multi-select starting with THIS message. See the note at the call site. */
-    onSelect: () -> Unit,
+    isMine: Boolean, canReact: Boolean,
+    onReact: (String) -> Unit, onMore: () -> Unit,
+    onReply: () -> Unit, onForward: () -> Unit, onCopy: () -> Unit,
+    onInfo: () -> Unit, onDelete: () -> Unit, onSelect: () -> Unit,
 ) {
-    val scale by animateFloatAsState(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "menuPop")
-    Column(
-        Modifier
-            .clip(RoundedCornerShape(20.dp))
-            .background(VoiidColor.surfaceCard)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        // reactions row + "+"
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            reactionSet.forEach { e ->
-                Box(Modifier.size(34.dp).bouncyClickable { onReact(e) }, contentAlignment = Alignment.Center) {
-                    Text(e, fontSize = 28.sp)
+    if (canReact) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            reactionSet.forEach { emoji ->
+                androidx.compose.material3.IconButton(onClick = { onReact(emoji) }, modifier = Modifier.weight(1f).height(44.dp)) {
+                    Text(emoji, fontSize = 25.sp)
                 }
             }
-            Box(
-                Modifier.size(34.dp).clip(CircleShape).background(VoiidColor.fieldFill).clickable { onMore() },
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.Add, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(18.dp)) }
+            androidx.compose.material3.IconButton(onClick = onMore, modifier = Modifier.weight(1f).height(44.dp)) {
+                Icon(Icons.Default.Add, "More reactions", tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
+            }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(VoiidColor.divider.copy(alpha = 0.4f)))
-        // actions row
-        Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-            ActionBtn("Reply", Icons.AutoMirrored.Filled.Reply, VoiidColor.primary, onReply)
-            ActionBtn("Forward", Icons.AutoMirrored.Filled.Forward, VoiidColor.primary, onForward)
-            ActionBtn("Copy", Icons.Default.ContentCopy, VoiidColor.primary, onCopy)
-            if (isMine) ActionBtn("Info", Icons.Default.Info, VoiidColor.primary, onInfo)
-            ActionBtn("Select", Icons.Default.CheckCircle, VoiidColor.primary, onSelect)
-            ActionBtn("Delete", Icons.Default.Delete, VoiidColor.error, onDelete)
-        }
+        androidx.compose.material3.HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.5f))
     }
+    ChatActionItem("Reply", Icons.AutoMirrored.Filled.Reply, onReply)
+    ChatActionItem("Forward", Icons.AutoMirrored.Filled.Forward, onForward)
+    ChatActionItem("Copy", Icons.Default.ContentCopy, onCopy)
+    if (isMine) ChatActionItem("Info", Icons.Default.Info, onInfo)
+    ChatActionItem("Select", Icons.Default.CheckCircle, onSelect)
+    ChatActionItem("Delete", Icons.Default.Delete, onDelete, destructive = true)
 }
 
 @Composable
-private fun ActionBtn(label: String, icon: ImageVector, tint: Color, onClick: () -> Unit) {
-    Column(
-        Modifier.width(60.dp).clickable(
-            interactionSource = remember { MutableInteractionSource() }, indication = null,
-        ) { onClick() },
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
-        Text(label, style = VoiidFont.rounded(11), color = VoiidColor.textPrimary)
-    }
+private fun ChatActionItem(label: String, icon: ImageVector, onClick: () -> Unit, destructive: Boolean = false) {
+    val color = if (destructive) VoiidColor.error else VoiidColor.textPrimary
+    androidx.compose.material3.DropdownMenuItem(
+        text = { Text(label, style = VoiidFont.rounded(15), color = color) },
+        trailingIcon = { Icon(icon, null, tint = color, modifier = Modifier.size(20.dp)) },
+        onClick = onClick,
+    )
 }
 
 // MARK: - Poll bubble (vote + live results)

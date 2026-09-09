@@ -17,6 +17,7 @@ struct ChatsHomeView: View {
     @EnvironmentObject var session: AppSession
     @State private var search = ""
     @State private var tab: Tab = .chats
+    @ObservedObject private var notificationRouter = NotificationMessageRouter.shared
     @State private var openConversation: VConversation?
     @State private var deleteTarget: VConversation?
     @State private var callTarget: VConversation?
@@ -213,18 +214,17 @@ struct ChatsHomeView: View {
             // the deep-link handler below with it, so every tap set `openConversation` and
             // nothing consumed it — the tile highlighted and the chat never appeared.
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
-            .onReceive(NotificationCenter.default.publisher(for: .voiidOpenConversation)) { note in
-                // Deep-link from a tapped message notification: open its conversation,
-                // loading the list first if it isn't in memory yet.
-                guard let convId = note.object as? String else { return }
-                Task { @MainActor in
-                    let present = chat.directConversations.contains { $0.id == convId }
-                        || chat.groupConversations.contains { $0.id == convId }
-                    if !present { await chat.loadConversations() }
-                    if let conv = chat.directConversations.first(where: { $0.id == convId })
-                        ?? chat.groupConversations.first(where: { $0.id == convId }) {
-                        openConversation = conv
-                    }
+            .task(id: notificationRouter.pendingConversation?.id) {
+                guard let destination = notificationRouter.pendingConversation else { return }
+                let convId = destination.conversationId
+                let present = chat.directConversations.contains { $0.id == convId }
+                    || chat.groupConversations.contains { $0.id == convId }
+                if !present { await chat.loadConversations() }
+                guard !Task.isCancelled, notificationRouter.pendingConversation == destination else { return }
+                if let conv = chat.directConversations.first(where: { $0.id == convId })
+                    ?? chat.groupConversations.first(where: { $0.id == convId }) {
+                    openConversation = conv
+                    notificationRouter.consumeConversation(destination)
                 }
             }
             .sheet(isPresented: $showCallLog) {

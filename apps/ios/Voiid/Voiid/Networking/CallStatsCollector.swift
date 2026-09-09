@@ -147,6 +147,16 @@ final class CallStatsCollector {
     private func sample() {
         guard let pc else { return }
         pc.statistics { [weak self] report in
+            #if DEBUG
+            for stat in report.statistics.values where ["inbound-rtp", "outbound-rtp", "media-source"].contains(stat.type) {
+                guard (stat.values["kind"] as? String ?? stat.values["mediaType"] as? String) == "audio" else { continue }
+                let fields = ["packetsSent", "packetsReceived", "bytesSent", "bytesReceived", "totalAudioEnergy", "audioLevel", "totalSamplesReceived", "concealedSamples"].compactMap { key -> String? in
+                    guard let value = stat.values[key] as? NSNumber else { return nil }
+                    return "\(key)=\(value)"
+                }
+                NSLog("[VOIID] call-media: %@ %@", stat.type, fields.joined(separator: " "))
+            }
+            #endif
             // WebRTC calls back on its own signaling thread; parse there (it's
             // pure) and hop to main to publish.
             let parsed = CallStatsCollector.parse(report)

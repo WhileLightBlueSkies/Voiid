@@ -117,7 +117,9 @@ enum CallSDPTuning {
     /// Total, like every other function here: an unexpected SDP yields nil and the call
     /// proceeds exactly as it does today (unverified, DTLS-only).
     static func dtlsFingerprint(in sdp: String) -> String? {
-        for rawLine in sdp.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+        // SDP uses CRLF. Swift treats CRLF as one Character, so splitting on
+        // a Character equal to CR or LF alone misses every SDP attribute.
+        for rawLine in sdp.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard line.hasPrefix("a=fingerprint:") else { continue }
             let value = line.dropFirst("a=fingerprint:".count)

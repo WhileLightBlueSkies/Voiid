@@ -2,9 +2,7 @@
 //  VoiceNote.swift
 //  Voiid
 //
-//  Voice-note UI for the dummy experience: press-and-hold to record (timer + live waveform),
-//  release to send; tap to play back with an animated waveform. No real audio engine wired —
-//  this is the interaction/feel; real AVAudioRecorder/Player slots in here later.
+//  Hold-to-record controls and live input visualization.
 //
 
 import SwiftUI
@@ -25,6 +23,13 @@ struct VoiceRecordButton: View {
     /// Ticking duration, so the bar can show it without owning the recorder.
     var onTick: (TimeInterval) -> Void = { _ in }
 
+    var cancelRequest: Int = 0
+    var onDiscard: () -> Void = {}
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var fingerDown = false
+    @State private var cancelledGesture = false
+    @State private var gestureID = UUID()
+    @State private var recordingError: String?
     @State private var recording = false
     @State private var seconds: TimeInterval = 0
     @State private var timer: Timer?
@@ -75,9 +80,12 @@ struct VoiceRecordButton: View {
             // A bare drag fires from touch-down, so the hold is timed here instead: a 0.25s
             // timer starts recording, and a release before it fires is a tap.
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in
-                        if !recording && holdTimer == nil {
+                        if !fingerDown {
+                            fingerDown = true
+                            cancelledGesture = false
+                            gestureID = UUID()
                             // Touch down: arm the hold. Cancelled on an early release below.
                             armHold()
                         }
@@ -87,17 +95,43 @@ struct VoiceRecordButton: View {
                         onDrag(min(0, value.translation.width))
                     }
                     .onEnded { value in
+                        fingerDown = false
+                        gestureID = UUID()
                         holdTimer?.invalidate()
                         holdTimer = nil
                         guard recording else {
                             // Released before the hold armed — a tap, not a recording.
-                            showTooShort()
+                            if !cancelledGesture { showTooShort() }
                             return
                         }
                         finish(cancelled: value.translation.width <= RecordingBar.cancelThreshold)
                     }
             )
-            .animation(.spring(response: 0.3), value: tooShort)
+            .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.15), value: tooShort)
+            .scaleEffect(recording && !reduceMotion ? 1.06 : 1)
+            .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.12), value: recording)
+            .accessibilityIdentifier("voice.record")
+            .accessibilityLabel("Record voice message")
+            .accessibilityHint("Hold to record. Slide left and release to delete.")
+            .onChange(of: cancelRequest) { _, _ in
+                cancelledGesture = true
+                holdTimer?.invalidate()
+                holdTimer = nil
+                gestureID = UUID()
+                if recording { finish(cancelled: true) }
+            }
+            .onDisappear {
+                fingerDown = false
+                gestureID = UUID()
+                holdTimer?.invalidate()
+                holdTimer = nil
+                if recording { finish(cancelled: true) }
+            }
+            .alert("Couldn’t record", isPresented: Binding(
+                get: { recordingError != nil }, set: { if !$0 { recordingError = nil } }
+            )) {
+                Button("OK", role: .cancel) { recordingError = nil }
+            } message: { Text(recordingError ?? "") }
     }
 
     /// Start the hold countdown. Recording begins only if the finger is still down at 0.25s.
@@ -122,15 +156,24 @@ struct VoiceRecordButton: View {
     }
 
     private func start() {
+        let requestID = gestureID
         AVAudioApplication.requestRecordPermission { granted in
-            guard granted else { return }
-            DispatchQueue.main.async { beginRecording() }
+            DispatchQueue.main.async {
+                guard fingerDown, gestureID == requestID else { return }
+                guard granted else {
+                    recordingError = "Allow microphone access for Voiid in Settings to record voice messages."
+                    return
+                }
+                beginRecording()
+            }
         }
     }
 
     /// Ends the take. `cancelled` discards; otherwise it sends if long enough.
     private func finish(cancelled: Bool) {
+        guard recording else { return }
         timer?.invalidate()
+        timer = nil
         recording = false
         onRecordingChange(false)
         onDrag(0)
@@ -142,7 +185,8 @@ struct VoiceRecordButton: View {
         fileURL = nil
 
         defer { if let url { try? FileManager.default.removeItem(at: url) } }
-        guard !cancelled else { Haptics.tap(); return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        guard !cancelled else { Haptics.tap(); onDiscard(); return }
 
         // Under half a second is a mis-tap, not a message. It used to fail SILENTLY, so the
         // user pressed the mic, nothing happened, and nothing explained why.
@@ -154,8 +198,14 @@ struct VoiceRecordButton: View {
 
     private func beginRecording() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .default)
-        try? session.setActive(true)
+        VoiceNotePlayback.pauseActive()
+        do {
+            try session.setCategory(.playAndRecord, mode: .default)
+            try session.setActive(true)
+        } catch {
+            recordingError = "The microphone is unavailable. Please try again."
+            return
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("voiid_vn_\(UUID().uuidString).m4a")
         let settings: [String: Any] = [
@@ -164,21 +214,33 @@ struct VoiceRecordButton: View {
             AVNumberOfChannelsKey: 1,
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
         ]
-        guard let rec = try? AVAudioRecorder(url: url, settings: settings) else { return }
+        guard let rec = try? AVAudioRecorder(url: url, settings: settings) else {
+            recordingError = "Couldn’t prepare the recording. Please try again."
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            return
+        }
         // METERING ON: the waveform reads real input level. It used to animate random numbers,
         // which looks convincing until you realise it wiggles identically in silence — so it
         // told the user nothing about whether the mic was actually picking them up.
         rec.isMeteringEnabled = true
+        guard rec.record() else {
+            try? FileManager.default.removeItem(at: url)
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            recordingError = "Couldn’t start recording. Please try again."
+            return
+        }
         recorder = rec; fileURL = url
-        rec.record()
         Haptics.rigid()
         recording = true
         seconds = 0
         onRecordingChange(true)
         RecordingLevel.shared.reset()
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            seconds += 0.05
-            onTick(seconds)
+            let current = rec.currentTime
+            let secondChanged = Int(current) != Int(seconds)
+            seconds = current
+            // Only the meter needs 20 Hz. Do not rebuild the entire chat 20 times/second.
+            if secondChanged { onTick(seconds) }
             rec.updateMeters()
             // averagePower is dBFS: -160 (silence) to 0 (peak). Normalised against a -50dB
             // floor, which is roughly room tone on a phone mic.
@@ -219,21 +281,21 @@ struct LiveWaveform: View {
     var tint: Color = VoiidColor.primary
 
     var body: some View {
-        GeometryReader { geo in
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(source.levels.indices, id: \.self) { i in
-                    Capsule()
-                        .fill(tint)
-                        // Newer bars are more opaque, so the eye reads direction of travel —
-                        // a flat wall of identical bars looks static even while animating.
-                        .opacity(0.35 + 0.65 * (Double(i) / Double(source.levels.count)))
-                        .frame(width: 2.5, height: max(3, geo.size.height * source.levels[i]))
-                }
+        Canvas { context, size in
+            let count = min(source.levels.count, max(1, Int(size.width / 4.5)))
+            let levels = Array(source.levels.suffix(count))
+            let step = size.width / CGFloat(count)
+            for (index, level) in levels.enumerated() {
+                let height = max(3, size.height * level)
+                let rect = CGRect(x: CGFloat(index) * step, y: (size.height - height) / 2,
+                                  width: min(2.5, step), height: height)
+                context.fill(Path(roundedRect: rect, cornerRadius: 1.25),
+                             with: .color(tint.opacity(0.35 + 0.65 * Double(index + 1) / Double(count))))
             }
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .trailing)
-            .animation(.linear(duration: 0.05), value: source.levels)
         }
         .frame(height: 22)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 }
 
@@ -295,73 +357,70 @@ struct VoiceNotePlayer: View {
 /// want.
 struct RecordingBar: View {
     let seconds: TimeInterval
-    /// 0 = at rest, negative = dragged left toward cancel.
     let dragX: CGFloat
+    var isDiscarding = false
     var onCancel: () -> Void
-
-    /// Past this the release discards. Matched by the button's own threshold.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .caption) private var captionSize = 12.0
     static let cancelThreshold: CGFloat = -90
-
     private var willCancel: Bool { dragX <= Self.cancelThreshold }
-
-    /// 0…1 across the cancel travel, for anything that should respond CONTINUOUSLY rather
-    /// than flipping at the threshold. A gesture that only shows its outcome once it is
-    /// decided gives the user no chance to change their mind.
-    private var cancelProgress: CGFloat {
-        min(1, max(0, dragX / Self.cancelThreshold))
-    }
-
-    private var timeString: String {
-        String(format: "%01d:%02d", Int(seconds) / 60, Int(seconds) % 60)
-    }
+    private var cancelProgress: CGFloat { min(1, max(0, dragX / Self.cancelThreshold)) }
 
     var body: some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            // A pulsing dot reads as "live" the way a static icon cannot.
-            Circle()
-                .fill(VoiidColor.error)
-                .frame(width: 9, height: 9)
-                .opacity(0.55)
-                .scaleEffect(1.25)
-                .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: seconds)
-
-            Text(timeString)
-                .font(VoiidFont.rounded(14, .semibold))
-                .monospacedDigit()
-                .foregroundColor(willCancel ? VoiidColor.error : VoiidColor.textPrimary)
-
-            LiveWaveform(tint: willCancel ? VoiidColor.error : VoiidColor.primary)
-                .frame(maxWidth: .infinity)
-
-            // The affordance has to be VISIBLE — a hidden gesture is not a feature. It flips
-            // to "Release to cancel" past the threshold so the outcome is never a guess.
-            HStack(spacing: 4) {
-                Image(systemName: willCancel ? "trash.fill" : "chevron.left")
-                    .font(.system(size: 11, weight: .semibold))
-                Text(willCancel ? "Release to cancel" : "Slide to cancel")
-                    .font(VoiidFont.rounded(12, .medium))
+        HStack(spacing: 10) {
+            Button(action: onCancel) {
+                Image(systemName: isDiscarding ? "trash.fill" : "trash")
+                    .symbolEffect(.bounce, value: isDiscarding && !reduceMotion)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(VoiidColor.error)
+                    .rotationEffect(.degrees(reduceMotion ? 0 : -12 * cancelProgress))
+                    .scaleEffect(reduceMotion ? 1 : 1 + 0.1 * cancelProgress)
+                    .frame(width: 44, height: 44)
+                    .background(VoiidColor.error.opacity(0.08 + 0.1 * cancelProgress), in: Circle())
+                    .overlay {
+                        Circle().trim(from: 0, to: cancelProgress)
+                            .stroke(VoiidColor.error, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .allowsHitTesting(false)
+                    }
+                    .contentShape(Circle())
             }
-            .foregroundColor(willCancel ? VoiidColor.error : VoiidColor.textSecondary)
-            .fixedSize()
-            // Follows the finger, damped — 1:1 tracking over-travels and looks loose.
-            .offset(x: max(dragX * 0.35, -26))
+            .buttonStyle(.plain)
+            .accessibilityLabel("Delete recording")
+            .accessibilityIdentifier("voice.recording.delete")
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Circle().fill(VoiidColor.error).frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
+                    Text(VoiceNotePlayback.time(seconds))
+                        .font(VoiidFont.rounded(14, .semibold)).monospacedDigit().fixedSize()
+                    LiveWaveform(tint: willCancel ? VoiidColor.error : VoiidColor.primary)
+                        .frame(maxWidth: .infinity)
+                }
+                Text(willCancel ? "Release to delete" : "Slide left to delete · release to send")
+                    .font(VoiidFont.rounded(captionSize, .medium))
+                    .foregroundStyle(willCancel ? VoiidColor.error : VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .contentTransition(.opacity)
+                    .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.15), value: willCancel)
+            }
+            .opacity(isDiscarding ? 0 : 1)
+            .scaleEffect(isDiscarding && !reduceMotion ? 0.85 : 1, anchor: .leading)
+            .offset(x: isDiscarding && !reduceMotion ? -16 : 0)
+            .animation(.easeOut(duration: 0.18), value: isDiscarding)
         }
-        .padding(.horizontal, VoiidSpacing.md)
-        // 52pt, the reference's height — the bar replaces a 46pt mic and a pill, so at 40
-        // the composer visibly SHRANK the moment recording began.
-        .frame(height: 52)
-        .background(VoiidColor.fieldFill)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: VoiidRadius.pill)
-                // The stroke DEEPENS with the drag rather than flipping at the threshold.
-                // A binary change gives no warning: you learn you are about to cancel at the
-                // moment it is already decided. Progressive tint makes the gesture legible
-                // while it is still reversible.
-                .stroke(VoiidColor.error.opacity(0.15 + cancelProgress * 0.75), lineWidth: 1.5)
-        )
-        .animation(.easeOut(duration: 0.15), value: willCancel)
-        .accessibilityLabel("Recording, \(timeString). Slide left to cancel.")
-        .accessibilityAction(named: "Cancel recording") { onCancel() }
+        .allowsHitTesting(!isDiscarding)
+        .padding(.horizontal, 12).padding(.vertical, 4)
+        .frame(minHeight: 52)
+        .background(VoiidColor.fieldFill, in: RoundedRectangle(cornerRadius: 26))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26)
+                .stroke(VoiidColor.error.opacity(cancelProgress * 0.6), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .onChange(of: willCancel) { _, _ in Haptics.selection() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("voice.recording.bar")
     }
 }

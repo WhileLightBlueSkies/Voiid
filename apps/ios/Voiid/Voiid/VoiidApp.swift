@@ -11,11 +11,31 @@ import FirebaseAuth
 import FirebaseMessaging
 import UIKit
 import UserNotifications
+import Combine
 
-extension Notification.Name {
-    /// Posted when the user taps a message notification. `object` is the
-    /// `conversation_id` to deep-link to. ChatsHomeView observes this.
-    static let voiidOpenConversation = Notification.Name("voiidOpenConversation")
+/// Retains notification destinations across cold launch, sign-in, and tab changes.
+@MainActor
+final class NotificationMessageRouter: ObservableObject {
+    struct Destination: Equatable, Identifiable {
+        let id = UUID()
+        let conversationId: String
+        let messageId: String?
+    }
+    static let shared = NotificationMessageRouter()
+    @Published private(set) var pendingConversation: Destination?
+    @Published private(set) var pendingMessage: Destination?
+    func open(conversationId: String, messageId: String?) {
+        guard !conversationId.isEmpty else { return }
+        let destination = Destination(conversationId: conversationId, messageId: messageId)
+        pendingMessage = messageId?.isEmpty == false ? destination : nil
+        pendingConversation = destination
+    }
+    func consumeConversation(_ destination: Destination) {
+        if pendingConversation == destination { pendingConversation = nil }
+    }
+    func consumeMessage(_ destination: Destination) {
+        if pendingMessage == destination { pendingMessage = nil }
+    }
 }
 
 /// AppDelegate forwards APNs + URL callbacks to Firebase Auth AND handles message
@@ -130,7 +150,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             return
         }
         if let conversationId = userInfo["conversation_id"] as? String {
-            NotificationCenter.default.post(name: .voiidOpenConversation, object: conversationId)
+            let messageId = userInfo["message_id"] as? String
+            Task { @MainActor in
+                NotificationMessageRouter.shared.open(conversationId: conversationId, messageId: messageId)
+            }
         }
         completionHandler()
     }

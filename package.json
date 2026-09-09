@@ -19,6 +19,11 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present && node tools/check-ludo-assets.js"
   },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.28"
+    }
+  },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.108.2"

@@ -28,6 +28,20 @@ import androidx.annotation.RequiresApi
 @RequiresApi(Build.VERSION_CODES.O)
 class VoiidConnectionService : ConnectionService() {
 
+    @RequiresApi(Build.VERSION_CODES.P)
+    override fun onConnectionServiceFocusGained() {
+        val callIds = allConnections.filterIsInstance<VoiidConnection>().map { it.callId }.toSet()
+        CallManager.onTelecomAudioFocusChanged(callIds, interrupted = false)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.P)
+    override fun onConnectionServiceFocusLost() {
+        val callIds = allConnections.filterIsInstance<VoiidConnection>().map { it.callId }.toSet()
+        CallManager.onTelecomAudioFocusChanged(callIds, interrupted = true) {
+            connectionServiceFocusReleased()
+        }
+    }
+
     override fun onCreateOutgoingConnection(
         connectionManagerPhoneAccount: PhoneAccountHandle?,
         request: ConnectionRequest?,

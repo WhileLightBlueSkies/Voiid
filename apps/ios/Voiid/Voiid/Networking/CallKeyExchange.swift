@@ -111,6 +111,8 @@ final class CallKeyExchange: ObservableObject {
     private var localTags: [String: String] = [:]
     /// call_id -> the peer tag we received before we could compute ours.
     private var remoteTags: [String: String] = [:]
+    private var remoteTagGenerations: [String: Int] = [:]
+    private var verificationTasks: [String: Task<Void, Never>] = [:]
 
     /// Verified-keying state per call (§3.8). Published so the call screen can show it.
     @Published private(set) var verification: [String: CallKeyVerification] = [:]
@@ -132,8 +134,13 @@ final class CallKeyExchange: ObservableObject {
 
     /// The 32-byte media key both sides derive from the call secret. Deterministic and
     /// symmetric: same secret in, same key out, on both devices.
-    private func frameMediaKey(_ secret: CallSecret) -> SymmetricKey {
-        let ikm = Data(base64Encoded: secret.secret) ?? Data(secret.secret.utf8)
+    private func frameMediaKey(_ secret: CallSecret) -> SymmetricKey? {
+        // e2e-core uses vodozemac's STANDARD_NO_PAD encoding. Foundation requires
+        // padding; deriving from the encoded text on failure creates a different
+        // audio key from Android even when the Rust SRTP commitment verifies.
+        let encoded = secret.secret
+        let padded = encoded + String(repeating: "=", count: (4 - encoded.utf8.count % 4) % 4)
+        guard let ikm = Data(base64Encoded: padded), ikm.count == 32 else { return nil }
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: ikm),
             salt: Self.frameKeySalt,
@@ -146,7 +153,7 @@ final class CallKeyExchange: ObservableObject {
     /// if needed. CallService hands this to its RTCFrameCryptors. Returns nil only when
     /// we hold no secret yet — the caller retries once `secretRotated` fires.
     func frameKeyProvider(callId: String) -> LKRTCFrameCryptorKeyProvider? {
-        guard let secret = secrets[callId] else { return nil }
+        guard let secret = secrets[callId], let mediaKey = frameMediaKey(secret) else { return nil }
         if let existing = frameProviders[callId] { return existing }
         let provider = LKRTCFrameCryptorKeyProvider(
             ratchetSalt: Self.frameKeySalt,
@@ -157,7 +164,7 @@ final class CallKeyExchange: ObservableObject {
             keyRingSize: 16,
             discardFrameWhenCryptorNotReady: true
         )
-        let key = frameMediaKey(secret).withUnsafeBytes { Data($0) }
+        let key = mediaKey.withUnsafeBytes { Data($0) }
         provider.setSharedKey(key, with: 0)
         frameProviders[callId] = provider
         providerGeneration[callId] = generations[callId]
@@ -312,7 +319,10 @@ final class CallKeyExchange: ObservableObject {
             install(secret: CallSecret(secret: raw), callId: callId,
                     generation: generation, minter: fromUserId)
         case "verify":
-            guard let tag = env.tag, !tag.isEmpty else { return }
+            guard let tag = env.tag, Data(base64Encoded: tag)?.count == 32,
+                  let generation = env.gen, generation > 0,
+                  secrets[callId] == nil || generations[callId] == generation else { return }
+            remoteTagGenerations[callId] = generation
             remoteTags[callId] = tag
             evaluateVerification(callId: callId)
         default:
@@ -333,13 +343,20 @@ final class CallKeyExchange: ObservableObject {
     }
 
     private func install(secret: CallSecret, callId: String, generation: Int, minter: String) {
+        guard let mediaKey = frameMediaKey(secret) else {
+            NSLog("[VOIID] call-key: invalid media secret rejected")
+            return
+        }
         let previous = secrets[callId]?.secret
         secrets[callId] = secret
         generations[callId] = generation
         minters[callId] = minter
-        // A rotation invalidates the old commitment on both sides.
+        // Keep a same-generation commitment that arrived before its secret.
+        verificationTasks[callId]?.cancel(); verificationTasks[callId] = nil
         localTags[callId] = nil
-        remoteTags[callId] = nil
+        if remoteTagGenerations[callId] != generation {
+            remoteTags[callId] = nil; remoteTagGenerations[callId] = nil
+        }
         if verification[callId] != nil { verification[callId] = .pending }
         // Roll the frame key with the secret. setSharedKey at the same index triggers the
         // provider's ratchet on every cryptor attached to it; the window size is 0 and
@@ -347,7 +364,7 @@ final class CallKeyExchange: ObservableObject {
         // briefly across the switch instead of shredding live audio.
         if let provider = frameProviders[callId],
            providerGeneration[callId] != generation {
-            let key = frameMediaKey(secret).withUnsafeBytes { Data($0) }
+            let key = mediaKey.withUnsafeBytes { Data($0) }
             provider.setSharedKey(key, with: 0)
             providerGeneration[callId] = generation
         }
@@ -364,6 +381,8 @@ final class CallKeyExchange: ObservableObject {
         minters[callId] = nil
         localTags[callId] = nil
         remoteTags[callId] = nil
+        remoteTagGenerations[callId] = nil
+        verificationTasks[callId]?.cancel(); verificationTasks[callId] = nil
         verification[callId] = nil
         frameProviders[callId] = nil
         providerGeneration[callId] = nil
@@ -376,6 +395,9 @@ final class CallKeyExchange: ObservableObject {
         minters.removeAll()
         localTags.removeAll()
         remoteTags.removeAll()
+        remoteTagGenerations.removeAll()
+        for task in verificationTasks.values { task.cancel() }
+        verificationTasks.removeAll()
         verification.removeAll()
         frameProviders.removeAll()
         providerGeneration.removeAll()
@@ -413,16 +435,29 @@ final class CallKeyExchange: ObservableObject {
                                 secret: nil, gen: generations[callId], tag: tag)
         guard let body = try? JSONEncoder().encode(envelope) else { return }
         let myDevice = E2EManager.shared.deviceId
-        Task {
-            do {
-                let parts = try await ChatEngine.shared.encryptCallKeyEnvelope(body, toUserId: peerUserId)
-                guard !parts.isEmpty else { return }
-                var byDevice: [String: String] = [:]
-                for p in parts { byDevice[p.deviceId] = p.ciphertext }
-                WebSocketClient.shared.sendCallKey(toUserId: peerUserId, callId: callId,
-                                                   senderDeviceId: myDevice, ciphertexts: byDevice)
-            } catch {
-                NSLog("[VOIID] call-key: verify tag send failed for \(callId): \(error.localizedDescription)")
+        let generation = generations[callId]
+        verificationTasks[callId]?.cancel()
+        verificationTasks[callId] = Task { [weak self] in
+            guard let self else { return }
+            // Fresh ratchet ciphertext on each attempt; never replay an Olm packet.
+            for attempt in 0..<3 {
+                if attempt > 0 {
+                    do { try await Task.sleep(nanoseconds: UInt64(1 << attempt) * 1_000_000_000) }
+                    catch { return }
+                }
+                guard !Task.isCancelled, self.generations[callId] == generation,
+                      self.secrets[callId]?.secret == secret.secret else { return }
+                do {
+                    let parts = try await ChatEngine.shared.encryptCallKeyEnvelope(body, toUserId: peerUserId)
+                    guard !Task.isCancelled, self.generations[callId] == generation,
+                          self.secrets[callId]?.secret == secret.secret else { return }
+                    var byDevice: [String: String] = [:]
+                    for p in parts { byDevice[p.deviceId] = p.ciphertext }
+                    WebSocketClient.shared.sendCallKey(toUserId: peerUserId, callId: callId,
+                                                       senderDeviceId: myDevice, ciphertexts: byDevice)
+                } catch {
+                    NSLog("[VOIID] call-key: verification delivery failed")
+                }
             }
         }
     }

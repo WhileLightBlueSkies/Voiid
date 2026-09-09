@@ -387,6 +387,8 @@ object TelecomBridge {
     /** Non-null only while Telecom actually owns this call. */
     fun connection(callId: String): VoiidConnection? = connections[callId]
 
+    fun ownsCall(callId: String): Boolean = connections.containsKey(callId)
+
     /**
      * A better caller name finished resolving after the ring was already raised (see
      * [CallManager.refinePeerName]). No-op when Telecom never took the call.
@@ -441,6 +443,22 @@ object TelecomBridge {
         val conn = connections[callId] ?: return false
         return runCatching { conn.applyRoutePreference(speaker) }.getOrDefault(false)
     }
+
+    fun selectAudioRoute(callId: String, route: CallManager.AudioRoute): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        val conn = connections[callId] ?: return false
+        // A Telecom-owned call must not fall through to a competing AudioManager
+        // request if the system rejects an endpoint change.
+        runCatching { conn.applyExplicitRoute(route) }
+            .onFailure { android.util.Log.w("VOIID", "call-route: Telecom selection failed") }
+        return true
+    }
+
+    fun availableAudioRoutes(callId: String): List<CallManager.AudioRoute>? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) connections[callId]?.availableRoutes() else null
+
+    fun currentAudioRoute(callId: String): CallManager.AudioRoute? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) connections[callId]?.currentRoute() else null
 }
 
 /** DisconnectCause codes, kept next to the mapping that produces them. */

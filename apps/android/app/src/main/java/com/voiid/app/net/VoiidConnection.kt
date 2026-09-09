@@ -2,7 +2,10 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.os.Build
+import android.os.OutcomeReceiver
 import android.telecom.CallAudioState
+import android.telecom.CallEndpoint
+import android.telecom.CallEndpointException
 import android.telecom.Connection
 import android.telecom.DisconnectCause
 import androidx.annotation.RequiresApi
@@ -41,6 +44,8 @@ class VoiidConnection(
      * Bluetooth headset's own controls.
      */
     @Volatile private var pendingSpeaker: Boolean? = null
+    @Volatile private var pendingExplicitRoute: CallManager.AudioRoute? = null
+    @Volatile private var endpoints: List<CallEndpoint> = emptyList()
 
     // ---- OS -> engine ----------------------------------------------------------
 
@@ -114,6 +119,11 @@ class VoiidConnection(
     @Deprecated("CallAudioState superseded by CallEndpoint in API 34; kept for minSdk 24 coverage")
     @Suppress("DEPRECATION")
     override fun onCallAudioStateChanged(state: CallAudioState) {
+        if (Build.VERSION.SDK_INT >= 34) return
+        pendingExplicitRoute?.let { requested ->
+            pendingExplicitRoute = null
+            applyExplicitRoute(requested)
+        }
         pendingSpeaker?.let { want ->
             pendingSpeaker = null
             runCatching { route(state, want) }
@@ -136,6 +146,13 @@ class VoiidConnection(
      */
     @Suppress("DEPRECATION")   // see onCallAudioStateChanged: CallAudioState is our minSdk-24 path
     fun applyRoutePreference(speaker: Boolean): Boolean {
+        if (Build.VERSION.SDK_INT >= 34) {
+            // Initial defaults may follow a headset; explicit picker choices do not.
+            if (pendingExplicitRoute != null) return true
+            pendingSpeaker = speaker
+            applyPendingEndpoint()
+            return true
+        }
         val state = callAudioState
         if (state == null) {
             // Telecom hasn't published the audio state yet. Own the route anyway (returning
@@ -145,6 +162,98 @@ class VoiidConnection(
         }
         route(state, speaker)
         return true
+    }
+
+    /** A user selection must win over the automatic headset-first default. */
+    @Suppress("DEPRECATION")
+    fun applyExplicitRoute(requested: CallManager.AudioRoute): Boolean {
+        if (terminated) return true
+        pendingSpeaker = null
+        if (Build.VERSION.SDK_INT >= 34) {
+            pendingExplicitRoute = requested
+            applyPendingEndpoint()
+            return true
+        }
+        val state = callAudioState
+        if (state == null) {
+            pendingExplicitRoute = requested
+            return true
+        }
+        val target = when (requested) {
+            CallManager.AudioRoute.Earpiece -> CallAudioState.ROUTE_EARPIECE
+            CallManager.AudioRoute.Speaker -> CallAudioState.ROUTE_SPEAKER
+            is CallManager.AudioRoute.Bluetooth -> CallAudioState.ROUTE_BLUETOOTH
+            is CallManager.AudioRoute.Wired -> CallAudioState.ROUTE_WIRED_HEADSET
+        }
+        if (state.supportedRouteMask and target != 0) setAudioRoute(target)
+        return true
+    }
+
+    @RequiresApi(34)
+    override fun onAvailableCallEndpointsChanged(availableEndpoints: MutableList<CallEndpoint>) {
+        endpoints = availableEndpoints.toList()
+        applyPendingEndpoint()
+    }
+
+    @RequiresApi(34)
+    override fun onCallEndpointChanged(callEndpoint: CallEndpoint) {
+        if (terminated || CallManager.state.value?.callId != callId) return
+        CallManager.onSystemAudioRouteChanged(callEndpoint.endpointType == CallEndpoint.TYPE_SPEAKER)
+        android.util.Log.i("VOIID", "call-route: endpoint changed type=${callEndpoint.endpointType}")
+    }
+
+    @RequiresApi(34)
+    override fun onMuteStateChanged(isMuted: Boolean) {
+        val call = CallManager.state.value
+        if (!terminated && call?.callId == callId && call.muted != isMuted) CallManager.toggleMute()
+    }
+
+    @RequiresApi(34)
+    private fun endpointRoute(endpoint: CallEndpoint): CallManager.AudioRoute? = when (endpoint.endpointType) {
+        CallEndpoint.TYPE_EARPIECE -> CallManager.AudioRoute.Earpiece
+        CallEndpoint.TYPE_SPEAKER -> CallManager.AudioRoute.Speaker
+        CallEndpoint.TYPE_BLUETOOTH -> CallManager.AudioRoute.Bluetooth(endpoint.identifier.hashCode(), endpoint.endpointName.toString())
+        CallEndpoint.TYPE_WIRED_HEADSET -> CallManager.AudioRoute.Wired(endpoint.identifier.hashCode(), endpoint.endpointName.toString())
+        else -> null
+    }
+
+    fun availableRoutes(): List<CallManager.AudioRoute>? =
+        if (Build.VERSION.SDK_INT >= 34) endpoints.mapNotNull { endpointRoute(it) }.takeIf { it.isNotEmpty() } else null
+
+    @Suppress("DEPRECATION")
+    fun currentRoute(): CallManager.AudioRoute? {
+        if (Build.VERSION.SDK_INT >= 34) return currentCallEndpoint?.let { endpointRoute(it) }
+        return when (callAudioState?.route) {
+            CallAudioState.ROUTE_EARPIECE -> CallManager.AudioRoute.Earpiece
+            CallAudioState.ROUTE_SPEAKER -> CallManager.AudioRoute.Speaker
+            CallAudioState.ROUTE_BLUETOOTH -> CallManager.AudioRoute.Bluetooth(-1, "Bluetooth")
+            CallAudioState.ROUTE_WIRED_HEADSET -> CallManager.AudioRoute.Wired(-1, "Headphones")
+            else -> null
+        }
+    }
+
+    @RequiresApi(34)
+    private fun applyPendingEndpoint() {
+        if (terminated || endpoints.isEmpty()) return
+        val explicit = pendingExplicitRoute
+        val target = if (explicit != null) {
+            endpoints.firstOrNull { endpointRoute(it)?.id == explicit.id }
+                ?: endpoints.firstOrNull { endpointRoute(it)?.javaClass == explicit.javaClass }
+        } else {
+            val speaker = pendingSpeaker ?: return
+            endpoints.firstOrNull { it.endpointType == CallEndpoint.TYPE_BLUETOOTH }
+                ?: endpoints.firstOrNull { it.endpointType == CallEndpoint.TYPE_WIRED_HEADSET }
+                ?: endpoints.firstOrNull { it.endpointType == if (speaker) CallEndpoint.TYPE_SPEAKER else CallEndpoint.TYPE_EARPIECE }
+        } ?: return
+        pendingExplicitRoute = null
+        pendingSpeaker = null
+        if (currentCallEndpoint?.identifier == target.identifier) return
+        requestCallEndpointChange(target, appContext.mainExecutor, object : OutcomeReceiver<Void, CallEndpointException> {
+            override fun onResult(result: Void?) { /* Actual route comes through onCallEndpointChanged. */ }
+            override fun onError(error: CallEndpointException) {
+                android.util.Log.w("VOIID", "call-route: endpoint request failed code=${error.code}")
+            }
+        })
     }
 
     @Suppress("DEPRECATION")   // see onCallAudioStateChanged

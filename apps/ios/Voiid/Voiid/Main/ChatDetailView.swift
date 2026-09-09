@@ -37,6 +37,8 @@ struct ChatDetailView: View {
     @State private var jumpTargetId: String?
     /// Briefly marks the message a jump landed on.
     @State private var highlightedId: String?
+    @ObservedObject private var notificationRouter = NotificationMessageRouter.shared
+    @State private var notificationPositioned = false
     @State private var showInfo = false       // group info / contact profile
     @State private var showSafetyNumber = false
     @State private var showAttach = false     // attach menu (photo / poll)
@@ -53,6 +55,9 @@ struct ChatDetailView: View {
     @State private var isRecording = false
     @State private var recordSeconds: TimeInterval = 0
     @State private var recordDragX: CGFloat = 0
+    @State private var cancelRecordingRequest = 0
+    @State private var recordingDeleted = false
+    @State private var recordingDiscarding = false
     @State private var replyingTo: VMessage?  // reply preview above input
     @State private var infoMessage: VMessage? // Message Info sheet
     @State private var forwardMessage: VMessage? // forward chat-picker
@@ -201,6 +206,28 @@ struct ChatDetailView: View {
             }
             .presentationDetents([.medium])
         }
+        .alert("Reaction not sent", isPresented: Binding(
+            get: { chat.reactionError != nil },
+            set: { if !$0 { chat.reactionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { chat.reactionError = nil }
+        } message: {
+            Text(chat.reactionError ?? "")
+        }
+        .alert("Message not sent", isPresented: Binding(
+            get: { chat.mediaSendError != nil },
+            set: { if !$0 { chat.mediaSendError = nil } }
+        )) {
+            Button("OK", role: .cancel) { chat.mediaSendError = nil }
+        } message: {
+            Text(chat.mediaSendError ?? "")
+        }
+        .alert("Couldn’t delete", isPresented: Binding(
+            get: { chat.deletionError != nil },
+            set: { if !$0 { chat.deletionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { chat.deletionError = nil }
+        } message: { Text(chat.deletionError ?? "") }
         .sheet(item: $infoMessage) { msg in
             MessageInfoSheet(message: msg, isGroup: conversation.type == .group)
                 .presentationDetents([.medium])
@@ -215,7 +242,7 @@ struct ChatDetailView: View {
             get: { deleteMessage != nil }, set: { if !$0 { deleteMessage = nil } }),
             titleVisibility: .visible) {
             if let m = deleteMessage {
-                if m.isMine {
+                if m.isMine && conversation.type != .group && !m.deletedForEveryone && m.status != .sending && m.status != .failed {
                     Button("Delete for everyone", role: .destructive) {
                         chat.deleteMessage(m.id, in: conversation.id, forEveryone: true)
                     }
@@ -228,12 +255,18 @@ struct ChatDetailView: View {
         }
         // Bulk delete — alert modal
         .alert("Delete \(selectedIDs.count) message\(selectedIDs.count == 1 ? "" : "s")?", isPresented: $showBulkDelete) {
-            Button("Delete", role: .destructive) {
-                for id in selectedIDs { chat.deleteMessage(id, in: conversation.id, forEveryone: false) }
+            if canDeleteSelectionForEveryone {
+                Button("Delete for everyone", role: .destructive) {
+                    chat.deleteMessages(selectedIDs, in: conversation.id, forEveryone: true)
+                    exitSelection()
+                }
+            }
+            Button("Delete for me", role: .destructive) {
+                chat.deleteMessages(selectedIDs, in: conversation.id, forEveryone: false)
                 exitSelection()
             }
             Button("Cancel", role: .cancel) {}
-        } message: { Text("This will delete the selected messages.") }
+        } message: { Text("Choose who the selected messages are deleted for.") }
         // Bulk forward
         .sheet(isPresented: $forwardBulk) {
             ForwardSheet(message: chat.messages(for: conversation.id).first(where: { selectedIDs.contains($0.id) }) ?? VMessage(id: "", conversationId: "", senderId: "", text: "", createdAt: .now)) { targets in
@@ -454,12 +487,23 @@ struct ChatDetailView: View {
         }
     }
 
+    private var canDeleteSelectionForEveryone: Bool {
+        let rows = chat.messages(for: conversation.id).filter { selectedIDs.contains($0.id) }
+        return conversation.type != .group && !rows.isEmpty && rows.allSatisfy {
+            $0.isMine && !$0.deletedForEveryone && $0.status != .sending && $0.status != .failed
+        }
+    }
+
     private var selectionHeader: some View {
         HStack(spacing: VoiidSpacing.md) {
             Button { exitSelection() } label: {
                 Text("Cancel").font(VoiidFont.rounded(16, .regular)).foregroundColor(VoiidColor.primary)
             }
             Text("\(selectedIDs.count) selected")
+            Button("All") {
+                selectedIDs = Set(chat.messages(for: conversation.id).filter { $0.call == nil && $0.kind != .system }.map(\.id))
+            }
+            .accessibilityLabel("Select all messages")
                 .font(VoiidFont.rounded(16, .semibold)).foregroundColor(VoiidColor.textPrimary)
             Spacer()
             Button { if !selectedIDs.isEmpty { forwardBulk = true } } label: {
@@ -569,7 +613,25 @@ struct ChatDetailView: View {
             .padding(.top, VoiidSpacing.sm)
                 .padding(.bottom, VoiidSpacing.md)
             }
+            .task(id: "\(notificationRouter.pendingMessage?.id.uuidString ?? "")-\(chat.messages(for: conversation.id).count)") {
+                guard let target = notificationRouter.pendingMessage,
+                      target.conversationId == conversation.id, let messageId = target.messageId,
+                      chat.messages(for: conversation.id).contains(where: { $0.id == messageId }) else { return }
+                notificationPositioned = true
+                await Task.yield()
+                guard !Task.isCancelled, notificationRouter.pendingMessage == target else { return }
+                proxy.scrollTo(messageId, anchor: .center)
+                highlightedId = messageId
+                notificationRouter.consumeMessage(target)
+            }
+            .task(id: highlightedId) {
+                guard let id = highlightedId else { return }
+                try? await Task.sleep(for: .milliseconds(1800))
+                guard !Task.isCancelled, highlightedId == id else { return }
+                highlightedId = nil
+            }
             .onChange(of: chat.messages(for: conversation.id).count) { old, new in
+                guard !notificationPositioned, notificationRouter.pendingMessage?.conversationId != conversation.id else { return }
                 // The FIRST load is not an arrival — it is the transcript appearing. Landing
                 // on it without animation is what makes a chat open AT the newest message
                 // rather than at the top and then visibly scrolling down.
@@ -586,9 +648,11 @@ struct ChatDetailView: View {
                 }
             }
             .onChange(of: chat.typingConversations) { _, _ in
+                guard !notificationPositioned, notificationRouter.pendingMessage?.conversationId != conversation.id else { return }
                 withAnimation { proxy.scrollTo("typing", anchor: .bottom) }
             }
             .onAppear {
+                guard notificationRouter.pendingMessage?.conversationId != conversation.id else { return }
                 // Covers the case where messages were ALREADY in the store when the view
                 // appeared (reopening a chat you just left), which the count change above
                 // will not fire for.
@@ -792,10 +856,15 @@ struct ChatDetailView: View {
     @ViewBuilder private func messageRow(_ msg: VMessage) -> some View {
         HStack(spacing: VoiidSpacing.sm) {
             if selectionMode {
-                Image(systemName: selectedIDs.contains(msg.id) ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 22))
-                    .foregroundColor(selectedIDs.contains(msg.id) ? VoiidColor.primary : VoiidColor.textSecondary.opacity(0.5))
-                    .transition(.move(edge: .leading).combined(with: .opacity))
+                Button { toggleSelect(msg.id) } label: {
+                    Image(systemName: selectedIDs.contains(msg.id) ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 22))
+                        .foregroundColor(selectedIDs.contains(msg.id) ? VoiidColor.primary : VoiidColor.textSecondary.opacity(0.5))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(selectedIDs.contains(msg.id) ? "Deselect message" : "Select message")
+                .transition(.move(edge: .leading).combined(with: .opacity))
             }
             MessageBubble(message: msg,
                           isGroup: conversation.type == .group,
@@ -825,46 +894,13 @@ struct ChatDetailView: View {
     private var lastID: String { chat.messages(for: conversation.id).last?.id ?? "" }
     private var lastMineID: String { chat.messages(for: conversation.id).last(where: { $0.isMine })?.id ?? "" }
 
-    /// Group messages by calendar day for separators.
-    /// The transcript, grouped by day.
-    ///
-    /// ── WHY THIS IS CACHED ──────────────────────────────────────────────────────
-    /// This is a computed property read by the LazyVStack, so SwiftUI evaluates it on EVERY
-    /// body pass — and the body re-runs on every keystroke, every typing-indicator tick,
-    /// every 4-second sync, every scroll-driven state change. Each evaluation did four
-    /// passes over the whole history: `messages(for:)` merges and sorts messages with call
-    /// logs, then this groups them, sorts the keys, and sorts inside every group again.
-    ///
-    /// On a thread of any length that is the roughness on open and while typing — not the
-    /// network, not decryption, just the same sort running dozens of times a second.
-    ///
-    /// The cache is keyed on a cheap fingerprint (count + the newest timestamp), so it
-    /// rebuilds when the transcript actually changes and is a dictionary lookup otherwise.
-    /// `Calendar.current` is hoisted out of the loop for the same reason: it is a computed
-    /// property that resolves the user's calendar on every access.
+    @State private var dayGroups = MessageDayGroups<VMessage>(date: \.createdAt)
+
     private var groupedByDay: [(String, [VMessage])] {
-        let msgs = chat.messages(for: conversation.id)
-        let stamp = GroupCache.Stamp(count: msgs.count, newest: msgs.last?.createdAt)
-        if let hit = Self.groupCache[conversation.id], hit.stamp == stamp { return hit.value }
-
-        let cal = Calendar.current
-        let groups = Dictionary(grouping: msgs) { cal.startOfDay(for: $0.createdAt) }
-        // No inner sort: `messages(for:)` already returns them in time order, and
-        // `Dictionary(grouping:)` preserves the order it read them in.
-        let built = groups.keys.sorted().map { (VoiidDate.separator($0), groups[$0]!) }
-        Self.groupCache[conversation.id] = GroupCache(stamp: stamp, value: built)
-        return built
+        dayGroups.groups(chat.messages(for: conversation.id)).map {
+            (VoiidDate.separator($0.0), $0.1)
+        }
     }
-
-    private struct GroupCache {
-        struct Stamp: Equatable { let count: Int; let newest: Date? }
-        let stamp: Stamp
-        let value: [(String, [VMessage])]
-    }
-
-    /// Static so it survives the struct being recreated on every body pass — a SwiftUI View
-    /// is a value type and any instance storage would be thrown away with it.
-    private static var groupCache: [String: GroupCache] = [:]
 
     // MARK: input bar (text + attach image + voice note)
 
@@ -893,6 +929,17 @@ struct ChatDetailView: View {
     // Input bar — ⊕ · pink pill field · send/voice (matches design)
     private var inputBar: some View {
         VStack(spacing: 0) {
+            if recordingDeleted {
+                Label("Recording deleted", systemImage: "trash")
+                    .font(VoiidFont.rounded(12, .medium))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .padding(.vertical, 6)
+                    .transition(.opacity)
+                    .task {
+                        do { try await Task.sleep(for: .seconds(1.4)) } catch { return }
+                        withAnimation(.easeOut(duration: 0.15)) { recordingDeleted = false }
+                    }
+            }
             // Reply preview
             if let r = replyingTo {
                 HStack(spacing: VoiidSpacing.sm) {
@@ -969,19 +1016,19 @@ struct ChatDetailView: View {
                 // the secondary actions INSIDE the capsule (see `messageField`). Ours had a
                 // second 44pt disc for GIF sitting next to it, which gave the row a
                 // three-control left cluster and squeezed the field it exists to serve.
-                if !isRecording {
+                if !(isRecording || recordingDiscarding) {
                     attachButton
                 }
                 ZStack(alignment: .leading) {
-                    if isRecording {
-                        RecordingBar(seconds: recordSeconds, dragX: recordDragX) {
-                            withAnimation { isRecording = false }
+                    if (isRecording || recordingDiscarding) {
+                        RecordingBar(seconds: recordSeconds, dragX: recordDragX, isDiscarding: recordingDiscarding) {
+                            cancelRecordingRequest += 1
                         }
                     } else {
                         messageField
                     }
                 }
-                if !isRecording && hasText { sendButton }
+                if !(isRecording || recordingDiscarding) && hasText { sendButton }
             }
             .frame(maxWidth: .infinity)
 
@@ -995,9 +1042,9 @@ struct ChatDetailView: View {
             // exactly the bug described above: the active gesture dies with the instance.
             // Collapsing to zero width is indistinguishable on screen and keeps identity.
             micButton
-                .opacity(isRecording || hasText ? 0 : 1)
-                .frame(width: isRecording || hasText ? 0 : 46)
-                .allowsHitTesting(!hasText)
+                .opacity((isRecording || recordingDiscarding) || hasText ? 0 : 1)
+                .frame(width: (isRecording || recordingDiscarding) || hasText ? 0 : 46)
+                .allowsHitTesting(!hasText && !recordingDiscarding)
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.top, 6)
@@ -1011,7 +1058,7 @@ struct ChatDetailView: View {
         // makes the bottom of the thread legible.
         .background(VoiidColor.background)
         .overlay(VoiidColor.divider.frame(height: 0.5), alignment: .top)
-        .animation(.easeOut(duration: 0.18), value: isRecording)
+        .animation(.easeOut(duration: 0.18), value: (isRecording || recordingDiscarding))
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hasText)
     }
 
@@ -1022,11 +1069,24 @@ struct ChatDetailView: View {
                                caption: "Voice · \(Int(duration))s", to: conversation.id)
             },
             onRecordingChange: { active in
+                if active { recordingDeleted = false; recordSeconds = 0; recordDragX = 0 }
                 withAnimation(.easeOut(duration: 0.18)) { isRecording = active }
-                if !active { recordSeconds = 0; recordDragX = 0 }
             },
             onDrag: { recordDragX = $0 },
-            onTick: { recordSeconds = $0 })
+            onTick: { recordSeconds = $0 },
+            cancelRequest: cancelRecordingRequest,
+            onDiscard: {
+                withAnimation(.easeOut(duration: 0.18)) { recordingDiscarding = true }
+            })
+        .task(id: recordingDiscarding) {
+            guard recordingDiscarding else { return }
+            try? await Task.sleep(for: .milliseconds(240))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.16)) {
+                recordingDiscarding = false
+                recordingDeleted = true
+            }
+        }
     }
 
     private var attachButton: some View {
@@ -1159,8 +1219,8 @@ struct ChatDetailView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(VoiidColor.fieldFill)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(VoiidColor.divider, lineWidth: 1))
         .animation(.easeOut(duration: 0.15), value: hasText)
     }
 
@@ -1185,10 +1245,8 @@ struct ChatDetailView: View {
         TextField("Message", text: $draft, axis: .vertical)
             .font(VoiidFont.rounded(16, .regular))
             .foregroundColor(VoiidColor.textPrimary)
-            // Grows to 6 lines, then SCROLLS INTERNALLY instead of pushing the composer up
-            // the screen. `lineLimit(1...5)` alone caps the visible height but leaves the
-            // field scrollless, so a long paragraph became unreadable — you could not see
-            // what you had typed above the cap.
+            // Native vertical TextField grows to six lines, then scrolls its content
+            // and follows the insertion point without expanding the composer further.
             .lineLimit(1...6)
             .fixedSize(horizontal: false, vertical: false)
             .frame(minHeight: 20)
@@ -1405,10 +1463,11 @@ struct MessageBubble: View {
     var onCallBack: (Bool) -> Void = { _ in }
 
     @State private var swipeX: CGFloat = 0
-    @State private var showReactions = false
+    @State private var voiceScrubbing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .body) private var bodyFontSize = 16.0
     @State private var showEmojiPicker = false
 
-    static let reactionSet = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
     var body: some View {
         // A finished call (WhatsApp-style): its own sided, tappable bubble — NOT a centered
@@ -1430,7 +1489,7 @@ struct MessageBubble: View {
         }
     }
 
-    private var bubble: some View {
+    private var bubbleRow: some View {
         HStack(alignment: .bottom, spacing: 6) {
             if message.isMine { Spacer(minLength: 24) }
             // Group, incoming: the sender's real profile photo beside the bubble, so you can
@@ -1439,7 +1498,114 @@ struct MessageBubble: View {
                 ProfileAvatarButton(photoURL: UserDirectory.shared.photoURL(message.senderId),
                                     name: message.senderName, size: 28)
             }
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
+                if selectionMode {
+                    bubbleContent
+                        .overlay { Color.clear.contentShape(Rectangle()).onTapGesture(perform: onSelectTap) }
+                } else {
+                    MessageContextMenu(message: message,
+                        isEnabled: !voiceScrubbing,
+                        canReact: canReact,
+                        myReaction: message.reactions[TokenStore.shared.userId ?? ""],
+                        onForward: onForward, onMoreEmoji: { showEmojiPicker = true },
+                        onReact: onReact, onReply: onReply, onCopy: onCopy,
+                        onSelect: onSelect, onDelete: onDelete, onInfo: onInfo,
+                        onSwipe: nativeVoiceSwipe) {
+                            bubbleContent
+                        }
+                }
+                if !message.deletedForEveryone && !message.reactions.isEmpty {
+                    MessageReactionBadges(reactions: message.reactions,
+                        myUserId: TokenStore.shared.userId, messageId: message.id,
+                        isEnabled: canReact && !selectionMode, onReact: onReact)
+                }
+            }
+            .frame(maxWidth: 300, alignment: message.isMine ? .trailing : .leading)
+            .sheet(isPresented: $showEmojiPicker) {
+                EmojiPickerSheet(onPick: onReact)
+            }
+            if !message.isMine { Spacer(minLength: 24) }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private var bubble: some View {
+        bubbleRow
+        // Swipe-to-reply
+        .overlay(alignment: message.isMine ? .trailing : .leading) {
+            // A chip that FILLS as the pull crosses the threshold, not a bare fading glyph.
+            // The bare arrow said "something is happening"; the chip says how close you are
+            // to the thing happening, and confirms the moment it will fire.
+            let progress = Double(min(abs(swipeX) / 44, 1))
+            let armed = abs(swipeX) > 44
+            Image(systemName: "arrowshape.turn.up.left.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(armed ? VoiidColor.textOnAccent : VoiidColor.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(armed ? VoiidColor.accent : VoiidColor.surfaceCard))
+                .scaleEffect(0.6 + 0.4 * progress)
+                .opacity(progress)
+                .animation(reduceMotion ? nil : .snappy(duration: 0.15), value: armed)
+                .padding(.horizontal, VoiidSpacing.md)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .offset(x: swipeX)
+        .simultaneousGesture(replyGesture, including: allowsReplyGesture ? .all : .subviews)
+        .transition(.opacity)
+    }
+
+    private var allowsReplyGesture: Bool {
+        !selectionMode && !message.deletedForEveryone && message.kind != .voice
+    }
+
+    private var replyGesture: some Gesture {
+            DragGesture(minimumDistance: 32)
+                .onChanged { v in
+                    guard !voiceScrubbing else { swipeX = 0; return }
+                    guard abs(v.translation.width) > abs(v.translation.height) * 1.5 else {
+                        swipeX = 0
+                        return
+                    }
+                    // received: swipe right (+), sent: swipe left (-)
+                    //
+                    // DAMPED to 0.55, the reference's constant. Tracking 1:1 let the bubble
+                    // run the full 80pt for 80pt of finger, which reads as the bubble having
+                    // come loose. Resistance says "this moves, but it is going to spring
+                    // back" — the same thing a UIScrollView says at its edge.
+                    let dx = v.translation.width * 0.55
+                    if message.isMine { swipeX = min(0, max(dx, -58)) }
+                    else { swipeX = max(0, min(dx, 58)) }
+                }
+                .onEnded { value in
+                    // 58pt of DAMPED travel ≈ 105pt of finger, so the threshold is a
+                    // deliberate pull rather than something a scroll can trip.
+                    let dx = value.translation.width * 0.55
+                    let horizontal = abs(value.translation.width) > abs(value.translation.height) * 1.5
+                    let passedThreshold = message.isMine ? dx < -44 : dx > 44
+                    if horizontal && passedThreshold && !voiceScrubbing { Haptics.tap(); onReply() }
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.9)) { swipeX = 0 }
+                }
+    }
+
+    private var nativeVoiceSwipe: ((CGFloat, Bool) -> Void)? {
+        guard message.kind == .voice, !message.deletedForEveryone else { return nil }
+        return { offset, ended in handleVoiceSwipe(offset, ended: ended) }
+    }
+
+    private func handleVoiceSwipe(_ offset: CGFloat, ended: Bool) {
+        if ended {
+            if abs(offset) > 44 { Haptics.tap(); onReply() }
+            withAnimation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.9)) { swipeX = 0 }
+        } else { swipeX = offset }
+    }
+
+    private var canReact: Bool {
+        !isGroup && !message.deletedForEveryone && message.status != .sending && message.status != .failed
+    }
+
+    private var bubbleContent: some View {
+        VStack(alignment: .leading, spacing: 5) {
                 // "Forwarded" tag
                 if message.forwarded {
                     Label("Forwarded", systemImage: "arrowshape.turn.up.right")
@@ -1536,6 +1702,7 @@ struct MessageBubble: View {
                 } else {
                     content
                     metaRow.padding(.top, 2)
+                        .frame(maxWidth: message.kind == .voice ? .infinity : nil, alignment: .trailing)
                 }
             }
             // 14/10, the reference's numbers. At 12/8 the text sat tight against the fill
@@ -1555,150 +1722,26 @@ struct MessageBubble: View {
                 message.isMine ? nil :
                     BubbleShape(isMine: false).stroke(VoiidColor.divider, lineWidth: 0.5)
             )
-            // A HARD 300pt CAP — AFTER the background, which is the whole point.
-            //
-            // Applied BEFORE it, `.frame(maxWidth:)` proposes 300pt to the content, so the
-            // FILL stretched to 300 and every one-word message drew as a 300pt slab with
-            // the text tucked in one corner. That is the "not proper" bubble.
-            //
-            // Outside the fill it constrains only how wide the bubble may GROW: a short
-            // message stays as wide as its text, a long one stops at 300 and wraps. Ours
-            // was previously bounded only by the opposite gutter, so width scaled with the
-            // device — 305pt on a 393pt screen, 342pt on a 430pt one.
-            .frame(maxWidth: 300, alignment: message.isMine ? .trailing : .leading)
-            // ON THE SPEAKER'S OWN SIDE, not the opposite corner — the reference aligns the
-            // chip with `isMine`, so a reaction reads as attached to the bubble it belongs
-            // to rather than floating off its far edge.
-            .overlay(alignment: message.isMine ? .bottomTrailing : .bottomLeading) {
-                if let r = message.reaction {
-                    // A CAPSULE with a 2pt knock-out ring in the page colour — the
-                    // reference's chip. A circle with a hairline read as a sticker dropped
-                    // on the bubble; the thick background-coloured ring is what lifts it off
-                    // and keeps it legible over either fill.
-                    //
-                    // 13pt, not 15: the chip sits ON the bubble and competed with the text
-                    // beneath it at the larger size.
-                    Text(r).font(.system(size: 13))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(VoiidColor.surfaceCard))
-                        .overlay(Capsule().stroke(VoiidColor.background, lineWidth: 2))
-                        .offset(x: message.isMine ? -8 : 8, y: 10)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-            // In selection mode, a tap selects; otherwise long-press opens the reaction/actions pill.
-            .onTapGesture { if selectionMode { onSelectTap() } }
-            .onLongPressGesture(minimumDuration: 0.3) {
-                guard !selectionMode else { return }
-                Haptics.rigid(); showReactions = true
-            }
-            .popover(isPresented: $showReactions, arrowEdge: .top) {
-                VStack(spacing: 8) {
-                    // reaction row + "+" for the full emoji picker
-                    HStack(spacing: 8) {
-                        ForEach(Self.reactionSet, id: \.self) { e in
-                            Button { onReact(e); showReactions = false } label: {
-                                Text(e).font(.system(size: 28))
-                            }
-                            .buttonStyle(BouncyEmojiStyle())
-                        }
-                        Button {
-                            showReactions = false
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { showEmojiPicker = true }
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(VoiidColor.textSecondary)
-                                .frame(width: 34, height: 34)
-                                .background(VoiidColor.fieldFill).clipShape(Circle())
-                        }
-                    }
-                    Divider()
-                    // actions
-                    HStack(spacing: 0) {
-                        actionBtn("Reply", "arrowshape.turn.up.left") { showReactions = false; onReply() }
-                        actionBtn("Forward", "arrowshape.turn.up.right") { showReactions = false; onForward() }
-                        actionBtn("Copy", "doc.on.doc") { showReactions = false; onCopy() }
-                        if message.isMine { actionBtn("Info", "info.circle") { showReactions = false; onInfo() } }
-                        actionBtn("Select", "checkmark.circle") { showReactions = false; onSelect() }
-                        actionBtn("Delete", "trash", tint: VoiidColor.error) { showReactions = false; onDelete() }
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                .presentationCompactAdaptation(.popover)
-            }
-            .sheet(isPresented: $showEmojiPicker) {
-                EmojiPickerSheet { e in onReact(e) }
-            }
-            if !message.isMine { Spacer(minLength: 24) }
-        }
-        .padding(.vertical, message.reaction != nil ? 8 : 1)
-        // A reacted row draws ABOVE its neighbours. The chip is offset 10pt below the
-        // bubble, outside its bounds, so the following row would otherwise paint over it.
-        .zIndex(message.reaction == nil ? 0 : 1)
-        // Swipe-to-reply
-        .overlay(alignment: message.isMine ? .trailing : .leading) {
-            // A chip that FILLS as the pull crosses the threshold, not a bare fading glyph.
-            // The bare arrow said "something is happening"; the chip says how close you are
-            // to the thing happening, and confirms the moment it will fire.
-            let progress = Double(min(abs(swipeX) / 44, 1))
-            let armed = abs(swipeX) > 44
-            Image(systemName: "arrowshape.turn.up.left.fill")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(armed ? VoiidColor.textOnAccent : VoiidColor.textSecondary)
-                .frame(width: 32, height: 32)
-                .background(Circle().fill(armed ? VoiidColor.accent : VoiidColor.surfaceCard))
-                .scaleEffect(0.6 + 0.4 * progress)
-                .opacity(progress)
-                .animation(.spring(response: 0.22, dampingFraction: 0.7), value: armed)
-                .padding(.horizontal, VoiidSpacing.md)
-        }
-        .offset(x: swipeX)
-        .gesture(selectionMode ? nil :
-            // minimumDistance 32, not 20: at 20 a slightly diagonal scroll flick started
-            // dragging bubbles sideways down the whole transcript.
-            DragGesture(minimumDistance: 32)
-                .onChanged { v in
-                    // received: swipe right (+), sent: swipe left (-)
-                    //
-                    // DAMPED to 0.55, the reference's constant. Tracking 1:1 let the bubble
-                    // run the full 80pt for 80pt of finger, which reads as the bubble having
-                    // come loose. Resistance says "this moves, but it is going to spring
-                    // back" — the same thing a UIScrollView says at its edge.
-                    let dx = v.translation.width * 0.55
-                    if message.isMine { swipeX = min(0, max(dx, -58)) }
-                    else { swipeX = max(0, min(dx, 58)) }
-                }
-                .onEnded { _ in
-                    // 58pt of DAMPED travel ≈ 105pt of finger, so the threshold is a
-                    // deliberate pull rather than something a scroll can trip.
-                    if abs(swipeX) > 44 { Haptics.tap(); onReply() }
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { swipeX = 0 }
-                }
-        )
-        .transition(.asymmetric(
-            insertion: .scale(scale: 0.9, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity),
-            removal: .opacity))
+
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityElement(children: message.kind == .text ? .combine : .contain)
+            .accessibilityIdentifier("message.\(message.id).bubble")
     }
 
-    private func actionBtn(_ title: String, _ icon: String, tint: Color = VoiidColor.primary, _ tap: @escaping () -> Void) -> some View {
-        Button(action: tap) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 18)).foregroundColor(tint)
-                Text(title).font(VoiidFont.rounded(11, .regular)).foregroundColor(VoiidColor.textPrimary)
-            }
-            .frame(width: 60)
-        }
-        .buttonStyle(.plain)
-    }
-
-    // Text bubble: message + (time · tick) flowing at the end, compact like WhatsApp.
+    // Short messages keep time inline. Longer text gets the full line width, with
+    // metadata on its own trailing line instead of squeezing every line of prose.
     private var textWithMeta: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            styledText(message.text)
-                .foregroundColor(bubbleText)
-            metaRow
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .bottom, spacing: 8) {
+                styledText(message.text).fixedSize(horizontal: true, vertical: true)
+                metaRow
+            }
+            VStack(alignment: .trailing, spacing: 4) {
+                styledText(message.text)
+                    .lineSpacing(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                metaRow
+            }
         }
     }
 
@@ -1724,7 +1767,7 @@ struct MessageBubble: View {
                 let piece = Text(space + String(word))
                     // 16pt — the reference's body size. 15 read noticeably smaller against
                     // the same bubble geometry.
-                    .font(VoiidFont.rounded(16, isMention ? .semibold : .regular))
+                    .font(VoiidFont.rounded(bodyFontSize, isMention ? .semibold : .regular))
                     .foregroundColor(isMention ? mention : base)
                 return acc + piece
             }
@@ -1756,6 +1799,7 @@ struct MessageBubble: View {
                 .foregroundColor(bubbleTextSecondary)
             if message.isMine { statusView }
         }
+        .fixedSize()
     }
 
     /// Delivery state as a WORD — Sent · Delivered · Seen — not a tick.
@@ -1837,7 +1881,11 @@ struct MessageBubble: View {
             }
         case .voice:
             AsyncVoiceNote(ref: message.mediaRef, label: message.text,
-                           onOwnBubble: message.isMine)
+                           onOwnBubble: message.isMine,
+                           onScrubbingChanged: { editing in
+                               voiceScrubbing = editing
+                               if editing { swipeX = 0 }
+                           })
         case .poll:
             if let poll = message.poll { PollBubble(poll: poll, onVote: onVote) }
         case .location:
@@ -2258,10 +2306,24 @@ struct AsyncMediaImage: View {
                     }
             }
         }
+        .overlay {
+            if ref.mime.hasPrefix("video/"), image != nil {
+                Image(systemName: "play.circle.fill").font(.system(size: 44))
+                    .foregroundStyle(.white).shadow(radius: 4).allowsHitTesting(false)
+            }
+        }
         .task(id: ref.mediaUrl) { await load() }
     }
 
     private func load() async {
+        if ref.mime.hasPrefix("video/") {
+            let item = ChatMediaItem(id: "bubble:" + ref.mediaUrl, chatId: "", type: .video,
+                ref: ref, sentAt: .distantPast, senderId: "", senderName: nil,
+                isOutgoing: false, caption: nil, durationMs: nil)
+            image = await ChatMediaThumbnails.shared.thumbnail(for: item, side: Self.width)
+            failed = image == nil
+            return
+        }
         // Local-first: memory → disk → (only then) network. Offline, a photo seen once or
         // one you sent renders straight from disk with no spinner.
         if let cached = MediaCache.shared.image(ref.mediaUrl) { image = cached; return }
@@ -2271,239 +2333,6 @@ struct AsyncMediaImage: View {
             if let ui = UIImage(data: data) { MediaCache.shared.set(ui, ref.mediaUrl); image = ui }
             else { failed = true }
         } catch { failed = true }
-    }
-}
-
-/// A voice-note bubble that fetches + decrypts its audio and plays it back.
-/// A sent/received voice note.
-///
-/// The previous version was barely a player: a static formula-drawn waveform with no progress,
-/// no elapsed time, no way to seek, and colours that assumed a light bubble — on YOUR filled
-/// teal bubble the play button used `VoiidColor.primary`, the same teal, so it nearly
-/// disappeared. Pause-then-resume was also broken: a delayed reset was scheduled from the
-/// ORIGINAL start, so resuming a paused note reset the button early.
-struct AsyncVoiceNote: View {
-    let ref: MediaRef?
-    let label: String
-    /// Drawn on the sender's filled bubble, so every element has to invert.
-    var onOwnBubble: Bool = false
-
-    @State private var data: Data?
-    @State private var player: AVAudioPlayer?
-    @State private var playing = false
-    @State private var progress: Double = 0
-    @State private var elapsed: TimeInterval = 0
-    @State private var duration: TimeInterval = 0
-    @State private var ticker: Timer?
-    @State private var scrubbing = false
-
-    /// Deterministic per-message bar heights, seeded from the media key.
-    ///
-    /// Not `Int.random`: a random pattern reshuffles on every redraw, so the waveform of a
-    /// message you are looking at visibly changes as the list scrolls. Seeding from the ref
-    /// means one message always draws the same shape — and different messages differ, which is
-    /// the only thing the pattern is really for.
-    /// The waveform's drawn width. Everything — bar count, hit testing, the playhead —
-    /// derives from this one number so they cannot disagree.
-    static let waveformWidth: CGFloat = 168
-    private static let barWidth: CGFloat = 2.5
-    private static let barGap: CGFloat = 2
-
-    /// As many bars as actually FIT, rather than a fixed 26 that overflowed the slot.
-    private var barCount: Int {
-        Int((Self.waveformWidth + Self.barGap) / (Self.barWidth + Self.barGap))
-    }
-
-    private var bars: [CGFloat] {
-        let seed = abs((ref?.mediaUrl ?? label).hashValue)
-        return (0..<barCount).map { i in
-            let v = (seed &>> (i % 12)) &+ (i &* 37)
-            // 5…22 against a 30pt track: tall enough to read as a waveform, short enough
-            // that the peaks do not touch the bubble's padding.
-            return CGFloat(5 + (v % 18))
-        }
-    }
-
-    private var tint: Color { onOwnBubble ? VoiidColor.textOnBubble : VoiidColor.primary }
-    private var trackTint: Color {
-        onOwnBubble ? VoiidColor.textOnBubble.opacity(0.35) : VoiidColor.primary.opacity(0.28)
-    }
-    private var metaTint: Color {
-        onOwnBubble ? VoiidColor.textOnBubble.opacity(0.75) : VoiidColor.textSecondary
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            // A FILLED disc, so the control reads as a button on either bubble colour.
-            Button { toggle() } label: {
-                ZStack {
-                    Circle()
-                        .fill(onOwnBubble ? VoiidColor.textOnBubble.opacity(0.18)
-                                          : VoiidColor.primary.opacity(0.12))
-                        .frame(width: 34, height: 34)
-                    if data == nil {
-                        ProgressView().scaleEffect(0.6).tint(tint)
-                    } else {
-                        Image(systemName: playing ? "pause.fill" : "play.fill")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(tint)
-                            // Nudge the play triangle right so it sits optically centred —
-                            // a centred triangle always reads as left-heavy.
-                            .offset(x: playing ? 0 : 1)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(data == nil)
-
-            // ONE ROW, the reference's layout: play → waveform → time, all on the same
-            // baseline. Ours stacked the time UNDER the waveform, which made the bubble two
-            // rows tall for a control that is conceptually one strip, and left the time
-            // floating under a scrubber it was not aligned to.
-            waveform
-
-            // A FIXED-WIDTH, TRAILING-ALIGNED countdown.
-            //
-            // Two changes: the width stops the waveform resizing as the digits change —
-            // without it the whole strip jitters every second while playing — and it counts
-            // DOWN. Remaining time is the useful number ("11 seconds left"); elapsed time
-            // only answers a question you did not ask.
-            Text(timeLabel)
-                .font(VoiidFont.rounded(12, .medium))
-                .monospacedDigit()
-                .foregroundColor(metaTint)
-                .frame(width: 34, alignment: .trailing)
-        }
-        // A FIXED 168pt WAVEFORM, so the strip has a definite width.
-        //
-        // The bars were 26 × 2.5pt with 2pt gaps — 115pt of ink — laid inside a
-        // GeometryReader that was handed whatever the bubble had left. At the bubble's own
-        // minWidth that slot was 80pt, so the bars overflowed it by 35pt: clipped on screen,
-        // and the scrubber mapped taps against a width the bars did not actually occupy, so
-        // dragging to the middle jumped somewhere else.
-        //
-        // Sizing the waveform explicitly and letting the bubble total up from it means the
-        // ink, the hit area and the playhead all agree on one number.
-        .task(id: ref?.mediaUrl) { await load() }
-        .onDisappear { ticker?.invalidate(); player?.pause(); playing = false }
-    }
-
-    /// Tappable and draggable — the waveform IS the scrubber. Previously it was decoration.
-    private var waveform: some View {
-        // A DEFINITE width, not a GeometryReader that takes what it is given. The bars are
-        // sized to fit it exactly, so the ink, the scrub mapping and the playhead all
-        // measure against the same 168pt.
-        let w = Self.waveformWidth
-        return Group {
-            HStack(alignment: .center, spacing: Self.barGap) {
-                ForEach(bars.indices, id: \.self) { i in
-                    Capsule()
-                        .fill(Double(i) / Double(bars.count) <= progress ? tint : trackTint)
-                        .frame(width: Self.barWidth, height: bars[i])
-                }
-            }
-            .frame(width: w, height: 30, alignment: .leading)
-            // A PLAYHEAD, tracking progress across the bars.
-            //
-            // Coloured bars alone tell you roughly how far in you are; they do not give the
-            // eye a point to follow, and while scrubbing there is nothing under the finger
-            // to say exactly where it has landed. The reference draws a marker for both
-            // reasons. It only appears once there is something to track.
-            .overlay(alignment: .leading) {
-                if duration > 0 {
-                    Capsule()
-                        .fill(tint)
-                        .frame(width: 2, height: 30)
-                        .offset(x: max(0, min(w - 2, progress * w)))
-                        .opacity(playing || scrubbing ? 1 : 0)
-                }
-            }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { v in
-                        guard duration > 0 else { return }
-                        scrubbing = true
-                        progress = min(1, max(0, v.location.x / w))
-                        elapsed = progress * duration
-                    }
-                    .onEnded { _ in
-                        guard duration > 0, let player else { scrubbing = false; return }
-                        player.currentTime = progress * duration
-                        scrubbing = false
-                    }
-            )
-        }
-        .frame(width: w, height: 30)
-    }
-
-    /// Elapsed while playing or scrubbing, total otherwise — the same convention as the
-    /// system music controls, and it means the bubble always shows a real number rather than
-    /// the hardcoded "0:03" the old one fell back to.
-    /// REMAINING while playing, total while idle.
-    ///
-    /// It showed ELAPSED, which answers a question nobody asks of a voice note — you want
-    /// to know how much is left, not how far you have come. Idle still shows the full
-    /// length, so the bubble states its duration before you commit to listening.
-    private var timeLabel: String {
-        let total = duration > 0 ? duration : elapsed
-        let t = (playing || scrubbing) ? max(0, total - elapsed) : total
-        return String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
-    }
-
-    private func load() async {
-        guard let ref else { return }
-        if let cached = MediaCache.shared.data(ref.mediaUrl) { data = cached; prepare(cached); return }
-        if let d = try? await ChatEngine.shared.fetchMedia(ref) {
-            MediaCache.shared.setData(d, ref.mediaUrl)
-            data = d
-            prepare(d)
-        }
-    }
-
-    /// Build the player as soon as the bytes land, so the DURATION shows before first play.
-    private func prepare(_ d: Data) {
-        guard player == nil else { return }
-        player = try? AVAudioPlayer(data: d)
-        duration = player?.duration ?? 0
-    }
-
-    private func toggle() {
-        guard let data else { return }
-        if playing {
-            player?.pause()
-            ticker?.invalidate()
-            playing = false
-            return
-        }
-        if player == nil { prepare(data) }
-        // `.playback` so a voice note is audible with the ringer switch off, and
-        // `.duckOthers` so it lowers music instead of stopping it.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
-        // Finished? Start over rather than resuming at the very end.
-        if let p = player, p.currentTime >= p.duration - 0.05 { player?.currentTime = 0 }
-        player?.play()
-        playing = true
-
-        // POLL the player instead of scheduling a reset from the start time. The old
-        // asyncAfter(now + duration) fired on the original schedule, so pausing and resuming
-        // reset the button early and left it out of sync with the audio.
-        ticker?.invalidate()
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            guard let p = player else { return }
-            if !scrubbing {
-                elapsed = p.currentTime
-                progress = p.duration > 0 ? p.currentTime / p.duration : 0
-            }
-            if !p.isPlaying && p.currentTime >= p.duration - 0.05 {
-                playing = false
-                progress = 0
-                elapsed = 0
-                ticker?.invalidate()
-                ticker = nil
-            }
-        }
     }
 }
 

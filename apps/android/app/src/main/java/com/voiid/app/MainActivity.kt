@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.withResumed
 import com.voiid.app.net.ConfigService
 import com.voiid.app.net.DeepLinkRouter
 import com.voiid.app.net.UpdateGate
@@ -187,7 +188,9 @@ class MainActivity : ComponentActivity() {
             // resume, so a lingering extra re-fires its action every time the app is
             // foregrounded.
             intent.removeExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)
-            DeepLinkRouter.open(it)
+            val messageId = intent.getStringExtra(DeepLinkRouter.EXTRA_MESSAGE_ID)
+            intent.removeExtra(DeepLinkRouter.EXTRA_MESSAGE_ID)
+            DeepLinkRouter.open(it, messageId)
         }
         intent?.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION)?.let { conv ->
             val video = intent.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND) == "video"
@@ -198,6 +201,10 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION)
             intent.removeExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND)
             DeepLinkRouter.joinGroupCall(conv, video)
+        }
+        intent?.getStringExtra(com.voiid.app.net.IncomingCallPresentation.EXTRA_OPEN_CALL_ID)?.let { callId ->
+            intent.removeExtra(com.voiid.app.net.IncomingCallPresentation.EXTRA_OPEN_CALL_ID)
+            com.voiid.app.net.IncomingCallPresentation.open(callId)
         }
         // Accept from the ring notification lands here, not in a BroadcastReceiver — see
         // CallForegroundService.acceptActivityIntent. The extra is removed as it is read: a
@@ -265,14 +272,17 @@ private fun VoiidRoot() {
     // than in the Activity's intent handling: by the time this composes the window is up, so
     // the foreground service the answer starts is a legal foreground start.
     val pendingAnswer by DeepLinkRouter.pendingCallAnswer.collectAsState()
-    LaunchedEffect(pendingAnswer) {
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(pendingAnswer, lifecycleOwner) {
         val answer = pendingAnswer ?: return@LaunchedEffect
-        DeepLinkRouter.consumeCallAnswer()
-        val calls = com.voiid.app.net.CallManager
-        if (answer.waiting) calls.acceptWaiting(answer.callId) else calls.accept(answer.callId)
-        // The process may have been killed between the ring and the tap, leaving nothing to
-        // answer — the ongoing ring notification would then sit there forever.
-        com.voiid.app.net.CallForegroundService.cancelIncoming(context)
+        lifecycleOwner.lifecycle.withResumed {
+            if (DeepLinkRouter.pendingCallAnswer.value == answer) {
+                DeepLinkRouter.consumeCallAnswer()
+                val calls = com.voiid.app.net.CallManager
+                if (answer.waiting) calls.acceptWaiting(answer.callId) else calls.accept(answer.callId)
+                com.voiid.app.net.CallForegroundService.cancelIncoming(context)
+            }
+        }
     }
 
     val updateRequired by UpdateGate.required.collectAsState()

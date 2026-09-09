@@ -65,7 +65,8 @@ struct VMessage: Identifiable, Hashable {
     var status: MessageStatus = .sent
     var isMine: Bool = false
     var poll: VPoll? = nil          // set when kind == .poll
-    var reaction: String? = nil     // single emoji reaction on this message
+    /// One reaction per authenticated user; never infer ownership from the displayed emoji.
+    var reactions: [String: String] = [:]
     var deliveredAt: Date? = nil    // for Message Info
     var readAt: Date? = nil         // for Message Info
     var forwarded: Bool = false     // "Forwarded" tag

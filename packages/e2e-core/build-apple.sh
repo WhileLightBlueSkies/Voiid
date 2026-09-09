@@ -56,15 +56,18 @@ xcodebuild -create-xcframework \
 # The bindings and the library are generated together and must be installed together.
 APP_FRAMEWORKS=../../apps/ios/Voiid/Frameworks
 APP_SWIFT=../../apps/ios/Voiid/Voiid/voiid.swift
-if [ -d "$APP_FRAMEWORKS" ]; then
+if [ -d "$(dirname "$APP_SWIFT")" ]; then
   echo "==> Installing into the iOS app…"
+  # Frameworks is ignored and absent in a clean checkout. Test for the app's
+  # source directory, then create the build destination before installing.
+  mkdir -p "$APP_FRAMEWORKS"
   rm -rf "$APP_FRAMEWORKS/Voiid.xcframework"
   cp -R "$BUILD/Voiid.xcframework" "$APP_FRAMEWORKS/Voiid.xcframework"
   cp "$OUT/voiid.swift" "$APP_SWIFT"
   echo "    Framework -> $APP_FRAMEWORKS/Voiid.xcframework"
   echo "    Bindings  -> $APP_SWIFT"
 else
-  echo "==> Skipping app install: $APP_FRAMEWORKS not found"
+  echo "==> Skipping app install: iOS app source directory not found"
 fi
 
 echo "==> Done."

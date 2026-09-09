@@ -403,6 +403,26 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # JNI libraries and UniFFI Kotlin are ignored build products. Generate both
+      # from this commit before Gradle, including every ABI shipped by the app.
+      - name: Install Android Rust toolchain and NDK
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
+            --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          rustup default "$RUST_TOOLCHAIN"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/e2e-core
+          key: android-ndk-28.2.13676358
+
+      - name: Build JNI libraries and Kotlin bindings
+        run: |
+          cargo install cargo-ndk --version 4.1.2 --locked
+          bash packages/e2e-core/build-android.sh
+
       # Explicit, for the lint-ratchet step below. The runner image happens to ship a Node,
       # but "whatever the image has today" is exactly the unpinned dependency this workflow
       # is meant to stop relying on.
@@ -533,12 +553,8 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-          # FROM THE CRATE DIRECTORY. build-apple.sh resolves its install targets relatively
-          # (APP_FRAMEWORKS=../../apps/ios/Voiid/Frameworks), so running it from the repo root
-          # points those at paths that do not exist — and the script's own guard then SKIPS
-          # the install and still exits 0. The step went green while copying nothing, and the
-          # xcframework error was unchanged.
-          cd packages/e2e-core && bash build-apple.sh
+          bash packages/e2e-core/build-apple.sh
+          test -d apps/ios/Voiid/Frameworks/Voiid.xcframework
 
       - name: Build for simulator (unsigned)
         working-directory: apps/ios/Voiid

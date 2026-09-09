@@ -165,12 +165,25 @@ private fun CallTypeCard(label: String, icon: ImageVector, modifier: Modifier, o
 @Composable
 fun CallOverlay(state: CallManager.CallState) {
     val minimized by CallManager.minimized.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val keyguard = context.getSystemService(android.app.KeyguardManager::class.java)
+    var locked by remember(state.callId) { mutableStateOf(keyguard?.isKeyguardLocked == true) }
+    DisposableEffect(lifecycleOwner, state.callId) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, _ -> locked = keyguard?.isKeyguardLocked == true }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val presentation by com.voiid.app.net.IncomingCallPresentation.state.collectAsState()
+    val ringCapability by com.voiid.app.net.CallRingCapability.state.collectAsState()
     when {
-        state.incoming && state.phase == CallManager.Phase.RINGING_IN -> IncomingCallUi(state)
+        state.incoming && state.phase == CallManager.Phase.RINGING_IN -> {
+            if (locked || presentation.showsCall(state.callId, ringCapability.notificationsBlocked)) IncomingCallUi(state)
+        }
         // MINIMIZED: a compact pill instead of the full screen, so the rest of the app is
         // usable during a call. Never for a RINGING call — a call you have not answered must
         // not be dismissable into a pill.
-        minimized -> MinimizedCallPill(state)
+        minimized && !locked -> MinimizedCallPill(state)
         else -> InCallUi(state)
     }
 }
@@ -710,7 +723,7 @@ private fun VideoCenter(state: CallManager.CallState) {
 @Composable
 private fun LocalVideoSurface(modifier: Modifier) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val renderer = remember { makeRenderer(context, mirror = true) }
+    val renderer = remember { makeRenderer(context, mirror = true, mediaOverlay = true) }
     val state by CallManager.state.collectAsState()
 
     DisposableEffect(renderer) {
@@ -739,8 +752,13 @@ private fun makeRenderer(
     context: android.content.Context,
     mirror: Boolean,
     events: RendererCommon.RendererEvents? = null,
+    mediaOverlay: Boolean = false,
 ): SurfaceViewRenderer =
     SurfaceViewRenderer(context).apply {
+        // SurfaceViews have their own compositor order. The answering phone's
+        // remote surface can be created after its preview and cover it unless
+        // the preview explicitly occupies the media-overlay layer.
+        setZOrderMediaOverlay(mediaOverlay)
         init(CallManager.eglBaseContext, events)
         setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
         setEnableHardwareScaler(true)
@@ -922,7 +940,7 @@ private fun AudioRouteControl(speaker: Boolean, isVideo: Boolean, onToggleSpeake
     // rather than up to 2s later.
     LaunchedEffect(speaker) { current = CallManager.currentAudioRoute() }
 
-    if (routes.size > 2) {
+    if (routes.any { it is CallManager.AudioRoute.Bluetooth || it is CallManager.AudioRoute.Wired }) {
         Box {
             Ctrl(routeIcon(current), current !is com.voiid.app.net.CallManager.AudioRoute.Earpiece, isVideo) {
                 // Refresh on open too — the poll may be up to 2s stale.

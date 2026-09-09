@@ -324,12 +324,16 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
 
     // Notification deep-link: when MainActivity publishes a conversation id, switch to the
     // Chats tab and open that conversation (resolving/reloading it from the server if needed).
-    val pendingConversationId by com.voiid.app.net.DeepLinkRouter.pendingConversationId.collectAsState()
-    androidx.compose.runtime.LaunchedEffect(pendingConversationId) {
-        val cid = pendingConversationId ?: return@LaunchedEffect
-        val conv = chat.conversationById(cid)
-        if (conv != null) { tab = Tab.CHAT; openConversation = conv }
-        com.voiid.app.net.DeepLinkRouter.consume()
+    val pendingConversation by com.voiid.app.net.DeepLinkRouter.pendingConversation.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(pendingConversation) {
+        val destination = pendingConversation ?: return@LaunchedEffect
+        val conv = chat.conversationById(destination.conversationId)
+        if (com.voiid.app.net.DeepLinkRouter.pendingConversation.value != destination) return@LaunchedEffect
+        if (conv != null) {
+            tab = Tab.CHAT
+            openConversation = conv
+            com.voiid.app.net.DeepLinkRouter.consume(destination)
+        }
     }
 
     Box(Modifier.fillMaxSize().background(VoiidColor.background)) {

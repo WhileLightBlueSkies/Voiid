@@ -30,6 +30,8 @@ object AppPresence {
     /** The conversation whose thread is on screen, or null. */
     private val openConversation = AtomicReference<String?>(null)
 
+    fun isForeground(): Boolean = foreground.get()
+
     /** Called from MainActivity's onStart/onStop. */
     fun setForeground(value: Boolean) {
         foreground.set(value)

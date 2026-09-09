@@ -223,6 +223,7 @@ final class CallService: NSObject, ObservableObject {
     private var localAudioTrack: LKRTCAudioTrack?
     private var videoCapturer: LKRTCCameraVideoCapturer?
     private var videoSource: LKRTCVideoSource?
+    private var cameraRequestGeneration = 0
     private var usingFrontCamera = true
 
     // Buffer remote ICE that arrives before the remote description is set.
@@ -312,7 +313,7 @@ final class CallService: NSObject, ObservableObject {
     // moment BOTH of these hold: tracks exist AND the shared key provider is ready
     // (i.e. we hold the call secret). Until then frames are DISCARDED, never sent in
     // the clear (discardFrameWhenCryptorNotReady).
-    private var frameCryptors: [ObjectIdentifier: LKRTCFrameCryptor] = [:]
+    private var frameCryptors: [String: LKRTCFrameCryptor] = [:]
     private var keyRotatedCancellable: AnyCancellable?
 
     /// Attach (or top-up) frame cryptors for the ACTIVE call. Idempotent: senders and
@@ -327,20 +328,26 @@ final class CallService: NSObject, ObservableObject {
             return
         }
         var covered = Set(frameCryptors.keys)
-        for sender in pc.senders where !covered.contains(ObjectIdentifier(sender)) {
+        for sender in pc.senders where sender.track != nil && !covered.contains("sender:\(sender.senderId)") {
             guard let c = LKRTCFrameCryptor(factory: Self.factory, rtpSender: sender,
                                             participantId: call.peerUserId,
                                             algorithm: .aesGcm, keyProvider: provider) else { continue }
+            #if DEBUG
+            c.delegate = self
+            #endif
             c.enabled = true
-            frameCryptors[ObjectIdentifier(sender)] = c
-            covered.insert(ObjectIdentifier(sender))
+            frameCryptors["sender:\(sender.senderId)"] = c
+            covered.insert("sender:\(sender.senderId)")
         }
-        for receiver in pc.receivers where !covered.contains(ObjectIdentifier(receiver)) {
+        for receiver in pc.receivers where receiver.track != nil && !covered.contains("receiver:\(receiver.receiverId)") {
             guard let c = LKRTCFrameCryptor(factory: Self.factory, rtpReceiver: receiver,
                                             participantId: call.peerUserId,
                                             algorithm: .aesGcm, keyProvider: provider) else { continue }
+            #if DEBUG
+            c.delegate = self
+            #endif
             c.enabled = true
-            frameCryptors[ObjectIdentifier(receiver)] = c
+            frameCryptors["receiver:\(receiver.receiverId)"] = c
         }
         NSLog("[VOIID] e2ee: %d frame cryptor(s) live for %@", frameCryptors.count, callId)
     }
@@ -355,8 +362,11 @@ final class CallService: NSObject, ObservableObject {
     /// Re-run attachment whenever a fresh secret lands mid-call (rekey / late delivery).
     private func watchForKeyRotation() {
         keyRotatedCancellable = CallKeyExchange.shared.secretRotated.sink { [weak self] callId in
-            guard self?.active?.id == callId else { return }
-            self?.attachFrameCryptorsIfReady()
+            guard let self, let call = self.active, call.id == callId, let pc = self.pc else { return }
+            self.attachFrameCryptorsIfReady()
+            // A key can arrive after both SDP callbacks have already run.
+            CallKeyExchange.shared.sendVerificationTag(callId: callId, peerUserId: call.peerUserId,
+                localSDP: pc.localDescription?.sdp, remoteSDP: pc.remoteDescription?.sdp)
         }
     }
 
@@ -488,7 +498,7 @@ final class CallService: NSObject, ObservableObject {
         // CallKit's didActivate/didDeactivate will also drive this, and both
         // paths are idempotent, so they can't fight.
         LKRTCAudioSession.sharedInstance().isAudioEnabled = !held
-        if held, let capturer = videoCapturer { capturer.stopCapture() }
+        if held, let capturer = videoCapturer { stopCapture(capturer: capturer) }
         else if !held, let capturer = videoCapturer, active?.isVideo == true, !captureSuspendedForBackground {
             startCapture(capturer: capturer, front: usingFrontCamera)
         }
@@ -546,6 +556,10 @@ final class CallService: NSObject, ObservableObject {
             guard let self else { return }
             self.quality = quality
             self.latestStats = sample
+            #if DEBUG
+            let rtc = LKRTCAudioSession.sharedInstance()
+            NSLog("[VOIID] call-media: enabled=%d active=%d mic=%d rxKbps=%.2f txKbps=%.2f", rtc.isAudioEnabled ? 1 : 0, rtc.isActive ? 1 : 0, self.localAudioTrack?.isEnabled == true ? 1 : 0, sample.inboundBitrateKbps ?? -1, sample.outboundBitrateKbps ?? -1)
+            #endif
         }
     }
 
@@ -588,7 +602,7 @@ final class CallService: NSObject, ObservableObject {
         guard let call = active, call.state != .ended, call.isVideo else { return }
         guard let capturer = videoCapturer, !captureSuspendedForBackground else { return }
         captureSuspendedForBackground = true
-        capturer.stopCapture()
+        stopCapture(capturer: capturer)
         // Publish "no video" rather than a frozen last frame while we're away.
         localVideoTrack?.isEnabled = false
     }
@@ -616,7 +630,7 @@ final class CallService: NSObject, ObservableObject {
             socket.sendCallHangup(toUserId: call.peerUserId, callId: call.id)
         }
         CallManager.shared.endCall(uuid: call.uuid)
-        videoCapturer?.stopCapture()
+        if let capturer = videoCapturer { stopCapture(capturer: capturer) }
         pc?.close()
         LKRTCAudioSession.sharedInstance().isAudioEnabled = false
     }
@@ -1871,6 +1885,10 @@ final class CallService: NSObject, ObservableObject {
                 drainPendingCandidates()
                 // Receivers exist now — finish covering the connection.
                 attachFrameCryptorsIfReady()
+                // The initial key can beat the receiver's offer/call state. Re-send
+                // the SAME generation once their answer proves the call exists.
+                await CallKeyExchange.shared.redistribute(callId: callId, to: [call.peerUserId])
+                guard isCurrentCall(callId), self.pc === pc, !Task.isCancelled else { return }
                 // Both SDPs are known: commit to the fingerprint pair. This is what
                 // flips the call badge to VERIFIED once the peer's tag matches.
                 CallKeyExchange.shared.sendVerificationTag(
@@ -1974,7 +1992,7 @@ final class CallService: NSObject, ObservableObject {
         recoveryDeadlineTask?.cancel(); recoveryDeadlineTask = nil
         disconnectGraceTask?.cancel(); disconnectGraceTask = nil
         restartBackoffTask?.cancel(); restartBackoffTask = nil
-        videoCapturer?.stopCapture()
+        if let capturer = videoCapturer { stopCapture(capturer: capturer) }
         videoCapturer = nil
         videoSource = nil
         localVideoTrack = nil
@@ -2179,7 +2197,7 @@ final class CallService: NSObject, ObservableObject {
         connectedSeconds = 0
         captureSuspendedForBackground = false
         callUIMinimized = false
-        videoCapturer?.stopCapture()
+        if let capturer = videoCapturer { stopCapture(capturer: capturer) }
         videoCapturer = nil
         videoSource = nil
         localVideoTrack = nil
@@ -2244,6 +2262,12 @@ final class CallService: NSObject, ObservableObject {
     func toggleVideo() {
         videoEnabled.toggle()
         localVideoTrack?.isEnabled = videoEnabled && !isOnHold
+        guard let capturer = videoCapturer else { return }
+        if videoEnabled {
+            startCapture(capturer: capturer, front: usingFrontCamera)
+        } else {
+            stopCapture(capturer: capturer)
+        }
     }
 
     func switchCamera() {
@@ -2289,6 +2313,9 @@ final class CallService: NSObject, ObservableObject {
     }
 
     private func startCapture(capturer: LKRTCCameraVideoCapturer, front: Bool) {
+        guard let call = active, call.isVideo, call.state != .ended,
+              videoCapturer === capturer, videoEnabled, !isOnHold,
+              !captureSuspendedForBackground else { return }
         let position: AVCaptureDevice.Position = front ? .front : .back
         guard let device = LKRTCCameraVideoCapturer.captureDevices().first(where: { $0.position == position })
                 ?? LKRTCCameraVideoCapturer.captureDevices().first else { return }
@@ -2301,7 +2328,31 @@ final class CallService: NSObject, ObservableObject {
         }) ?? formats.first
         guard let format = target else { return }
         let fps = format.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 30
-        capturer.startCapture(with: device, format: format, fps: Int(min(fps, 30)))
+        cameraRequestGeneration &+= 1
+        let request = cameraRequestGeneration
+        let callId = call.id
+        // The native MultiCam capturer retains its old output connection until
+        // stop completes. Starting again first throws an Objective-C exception.
+        // Coalesce rapid flips and discard callbacks after hold/end/background.
+        capturer.stopCapture { [weak self, weak capturer] in
+            Task { @MainActor in
+                guard let self, let capturer,
+                      self.cameraRequestGeneration == request,
+                      self.videoCapturer === capturer,
+                      self.isCurrentCall(callId), self.videoEnabled,
+                      !self.isOnHold, !self.captureSuspendedForBackground else { return }
+                capturer.startCapture(with: device, format: format, fps: Int(min(fps, 30))) { error in
+                    if let error {
+                        NSLog("[VOIID] camera: start failed code=%ld", (error as NSError).code)
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopCapture(capturer: LKRTCCameraVideoCapturer) {
+        cameraRequestGeneration &+= 1
+        capturer.stopCapture()
     }
 
     private func fetchIceServers() async -> [LKRTCIceServer] {
@@ -2407,12 +2458,12 @@ extension CallService: LKRTCPeerConnectionDelegate {
     }
 
     nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didAdd rtpReceiver: LKRTCRtpReceiver, streams: [LKRTCMediaStream]) {
-        // Unified-plan remote track arrival.
-        if let video = rtpReceiver.track as? LKRTCVideoTrack {
-            Task { @MainActor in
-                guard self.pc === pc, let call = self.active, call.state != .ended else { return }
-                self.remoteVideoTrack = video
-            }
+        let video = rtpReceiver.track as? LKRTCVideoTrack
+        Task { @MainActor in
+            guard self.pc === pc, let call = self.active, call.state != .ended else { return }
+            if let video { self.remoteVideoTrack = video }
+            // Audio receivers can arrive after setRemoteDescription completes too.
+            self.attachFrameCryptorsIfReady()
         }
     }
 
@@ -2425,3 +2476,14 @@ extension CallService: LKRTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didRemove candidates: [LKRTCIceCandidate]) {}
     nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didOpen dataChannel: LKRTCDataChannel) {}
 }
+
+#if DEBUG
+extension CallService: LKRTCFrameCryptorDelegate {
+    nonisolated func frameCryptor(_ frameCryptor: LKRTCFrameCryptor,
+                                  didStateChangeWithParticipantId participantId: String,
+                                  with state: LKRTCFrameCryptorState) {
+        // Bounded state only: never log keys, participant identities, or media.
+        NSLog("[VOIID] call-media: cryptor state=%ld", state.rawValue)
+    }
+}
+#endif

@@ -283,16 +283,38 @@ final class ChatStore: ObservableObject {
     /// SQLite, so this only ever gates the genuinely-empty case.
     @Published var didLoadConversations = false
     @Published var groupConversations: [VConversation] = []
-    @Published var messagesByConversation: [String: [VMessage]] = [:]
+    @Published var messagesByConversation: [String: [VMessage]] = [:] {
+        didSet { mergeCache.removeAll(keepingCapacity: true) }
+    }
     /// Finished calls per conversation, as transcript bubbles. Kept SEPARATE from the message
     /// map and merged on read: a call log is not a message, is never sent over the wire, and
     /// must not be persisted into the message store, previewed, or counted as unread.
-    @Published var callLogsByConversation: [String: [VMessage]] = [:]
+    @Published var callLogsByConversation: [String: [VMessage]] = [:] {
+        didSet { mergeCache.removeAll(keepingCapacity: true) }
+    }
     @Published var typingConversations: Set<String> = []
     /// Pending auto-clears, one per conversation. See the onTyping handler: a "stop" that
     /// never arrives would otherwise strand the indicator forever.
     private var typingExpiry: [String: DispatchWorkItem] = [:]
     @Published var loadError: String?
+    @Published var reactionError: String?
+    @Published var mediaSendError: String?
+    @Published var deletionError: String?
+    private var deletingMessages: Set<ReactionKey> = []
+    // Uploads have no engine row until the server accepts them. Keep their UI rows
+    // separately so incoming messages/receipts cannot erase an in-flight or failed send.
+    private var pendingMediaMessages: [String: VMessage] = [:]
+    private struct ReactionKey: Hashable {
+        let conversationId: String
+        let messageId: String
+    }
+    private struct PendingReaction {
+        let id = UUID()
+        let userId: String
+        let emoji: String?
+    }
+    private var pendingReactions: [ReactionKey: PendingReaction] = [:]
+    private var reactionTasks: [ReactionKey: Task<Void, Never>] = [:]
 
     init() {
         // Sign-out has to empty this store. It is a @StateObject on ContentView, so it
@@ -316,6 +338,14 @@ final class ChatStore: ObservableObject {
         typingExpiry = [:]
         typingConversations = []
         loadError = nil
+        reactionError = nil
+        mediaSendError = nil
+        deletionError = nil
+        deletingMessages = []
+        pendingMediaMessages = [:]
+        reactionTasks.values.forEach { $0.cancel() }
+        reactionTasks = [:]
+        pendingReactions = [:]
     }
 
     /// Load conversations LOCAL-FIRST, then reconcile with the server.
@@ -443,6 +473,8 @@ final class ChatStore: ObservableObject {
         return merged
     }
 
+    // The published source dictionaries invalidate this cache on every mutation,
+    // including status/reaction/call-outcome updates that preserve count and date.
     private struct MergeStamp: Equatable {
         let messages: Int
         let calls: Int
@@ -649,7 +681,7 @@ final class ChatStore: ObservableObject {
 
     /// Rebuild a conversation's UI messages from the local (decrypted) store.
     private func refresh(_ convId: String) {
-        let mapped = ChatEngine.shared.messages(conversationId: convId).compactMap { d -> VMessage? in
+        var mapped = ChatEngine.shared.messages(conversationId: convId).compactMap { d -> VMessage? in
             // A location envelope: decode the stored (key-stripped) JSON into a LocationRef.
             // Rows in the location tables are RECONCILED from the message store here (the
             // store is the source of truth; the tables are a derived cache). pin / live_start
@@ -668,7 +700,8 @@ final class ChatStore: ObservableObject {
             // delivery status so it never regresses on rebuild. Inbound: shown as read.
             let status: MessageStatus
             if d.isMine {
-                if d.pending { status = .sending }
+                if d.failed { status = .failed }
+                else if d.pending { status = .sending }
                 else {
                     switch d.deliveryStatus {
                     case "read": status = .read
@@ -706,14 +739,17 @@ final class ChatStore: ObservableObject {
                 // keeps this working for Android senders too, whose envelope is identical.
                 vm.isStoryReaction = VMessage.isSoloEmoji(d.text)
             }
-            // Reactions: display the peer's reaction if any, else our own. (Per-user map is
-            // persisted in the engine; single-emoji display is a UI simplification.)
-            if let reactions = d.reactions, !reactions.isEmpty {
-                let myId = TokenStore.shared.userId
-                vm.reaction = reactions.first(where: { $0.key != myId })?.value ?? reactions.first?.value
+            vm.reactions = d.reactions ?? [:]
+            // A periodic sync must not overwrite a reaction still being sent.
+            let key = ReactionKey(conversationId: convId, messageId: vm.id)
+            if let pending = pendingReactions[key] {
+                vm.reactions[pending.userId] = pending.emoji
             }
+            if vm.deletedForEveryone { vm.reactions = [:] }
             return vm
         }
+        mapped.append(contentsOf: pendingMediaMessages.values.filter { $0.conversationId == convId })
+        mapped.sort { $0.createdAt < $1.createdAt }
         if !mapped.isEmpty || messagesByConversation[convId] != nil {
             messagesByConversation[convId] = mapped
         }
@@ -751,23 +787,32 @@ final class ChatStore: ObservableObject {
         let tempId = UUID().uuidString
         let msg = VMessage(id: tempId, conversationId: conversationId, senderId: "me",
                            kind: kind, text: caption, createdAt: .now, status: .sending, isMine: true)
+        let senderId = TokenStore.shared.userId
+        pendingMediaMessages[tempId] = msg
         messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
         bumpPreview(conversationId, preview: previewFor(kind))
 
         guard let conv = directConversations.first(where: { $0.id == conversationId }) else {
-            markStatus(tempId, in: conversationId, to: .sent)   // group: not supported yet
+            pendingMediaMessages[tempId]?.status = .failed
+            refresh(conversationId)
+            mediaSendError = "Media sending isn’t available in this conversation."
             return
         }
         Task {
             do {
                 let peer = try await peerUserId(for: conv)
+                guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
                 _ = try await ChatEngine.shared.sendMedia(data, mime: mime, caption: caption,
                                                           conversationId: conversationId, peerUserId: peer)
+                guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
+                pendingMediaMessages[tempId] = nil
                 removeMessage(tempId, in: conversationId)
                 refresh(conversationId)
             } catch {
-                markStatus(tempId, in: conversationId, to: .failed)
-                loadError = (error as? APIError)?.errorDescription ?? "Couldn’t send media."
+                guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
+                pendingMediaMessages[tempId]?.status = .failed
+                refresh(conversationId)
+                mediaSendError = (error as? APIError)?.errorDescription ?? "Couldn’t send media. Please try again."
             }
         }
     }
@@ -867,6 +912,7 @@ final class ChatStore: ObservableObject {
     private func startRealtime() {
         guard !realtimeInstalled else { return }
         realtimeInstalled = true
+        ChatEngine.shared.onMessageStateChanged = { [weak self] cid in self?.refresh(cid) }
         WebSocketClient.shared.onMessageRef = { [weak self] cid in
             Task { await self?.handleIncoming(cid) }
         }
@@ -1007,25 +1053,48 @@ final class ChatStore: ObservableObject {
     /// Delete a message. forEveryone=true tombstones it AND tells the peer to do the same;
     /// otherwise removes it only from this device.
     func deleteMessage(_ messageId: String, in convId: String, forEveryone: Bool) {
-        guard var arr = messagesByConversation[convId] else { return }
-        if forEveryone {
-            if let i = arr.firstIndex(where: { $0.id == messageId }) {
-                arr[i].deletedForEveryone = true
-                arr[i].reaction = nil
-                withAnimation { messagesByConversation[convId] = arr }
-            }
-            // Deliver the delete over E2EE so the peer erases it too (direct chats).
-            if let conv = directConversations.first(where: { $0.id == convId }) {
-                Task {
-                    guard let peer = try? await peerUserId(for: conv) else { return }
-                    try? await ChatEngine.shared.sendDeleteForEveryone(
-                        targetServerId: messageId, conversationId: convId, peerUserId: peer)
-                }
-            }
-        } else {
-            withAnimation { arr.removeAll { $0.id == messageId }; messagesByConversation[convId] = arr }
+        deleteMessages([messageId], in: convId, forEveryone: forEveryone)
+    }
+
+    func deleteMessages(_ messageIds: Set<String>, in convId: String, forEveryone: Bool) {
+        let rows = messages(for: convId).filter { messageIds.contains($0.id) }
+        guard !rows.isEmpty else { return }
+        let conv = directConversations.first { $0.id == convId }
+        if forEveryone && (conv == nil || rows.contains(where: {
+            !$0.isMine || $0.deletedForEveryone || $0.status == .sending || $0.status == .failed
+        })) {
+            deletionError = "Only your sent messages can be deleted for everyone."
+            return
         }
-        Haptics.rigid()
+        let keys = Set(rows.map { ReactionKey(conversationId: convId, messageId: $0.id) })
+        guard deletingMessages.isDisjoint(with: keys) else { return }
+        deletingMessages.formUnion(keys)
+        let userId = TokenStore.shared.userId
+        Task {
+            defer { deletingMessages.subtract(keys) }
+            do {
+                if forEveryone, let conv {
+                    let peer = try await peerUserId(for: conv)
+                    for row in rows {
+                        guard TokenStore.shared.userId == userId else { return }
+                        try await ChatEngine.shared.sendDeleteForEveryone(targetServerId: row.id,
+                            conversationId: convId, peerUserId: peer)
+                    }
+                } else {
+                    try await ChatEngine.shared.deleteForMe(messageIds: Set(rows.map(\.id)), in: convId)
+                    guard TokenStore.shared.userId == userId else { return }
+                    for row in rows { pendingMediaMessages[row.id] = nil }
+                    callLogsByConversation[convId]?.removeAll { messageIds.contains($0.id) }
+                }
+                guard TokenStore.shared.userId == userId else { return }
+                refresh(convId)
+                Haptics.rigid()
+            } catch {
+                guard TokenStore.shared.userId == userId else { return }
+                refresh(convId)
+                deletionError = "Couldn’t delete the message. Please try again."
+            }
+        }
     }
 
     /// Delete an entire conversation from the list.
@@ -1040,32 +1109,49 @@ final class ChatStore: ObservableObject {
 
     /// Clear all messages in a conversation but keep it in the list.
     func clearChat(_ convId: String) {
-        withAnimation { messagesByConversation[convId] = [] }
-        if let i = directConversations.firstIndex(where: { $0.id == convId }) {
-            directConversations[i].lastMessagePreview = nil
-        } else if let i = groupConversations.firstIndex(where: { $0.id == convId }) {
-            groupConversations[i].lastMessagePreview = nil
-        }
-        Haptics.rigid()
+        deleteMessages(Set(messages(for: convId).map(\.id)), in: convId, forEveryone: false)
     }
 
-    /// Toggle an emoji reaction on a message — and DELIVER it to the peer over E2EE.
+    /// Optimistic, per-user reactions. Serialize sends per message so quick changes arrive
+    /// in order, and retain the latest choice while sync rebuilds the transcript.
     func react(messageId: String, emoji: String, in convId: String) {
-        guard var arr = messagesByConversation[convId],
-              let idx = arr.firstIndex(where: { $0.id == messageId }) else { return }
-        let cleared = (arr[idx].reaction == emoji)
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-            arr[idx].reaction = cleared ? nil : emoji     // optimistic local
-            messagesByConversation[convId] = arr
-        }
+        guard let userId = TokenStore.shared.userId,
+              let conv = directConversations.first(where: { $0.id == convId }),
+              var arr = messagesByConversation[convId],
+              let idx = arr.firstIndex(where: { $0.id == messageId }),
+              !arr[idx].deletedForEveryone,
+              arr[idx].status != .sending, arr[idx].status != .failed else { return }
+        let key = ReactionKey(conversationId: convId, messageId: messageId)
+        let pending = PendingReaction(userId: userId,
+            emoji: MessageReactions.toggled(emoji, by: userId, in: arr[idx].reactions))
+        pendingReactions[key] = pending
+        arr[idx].reactions[userId] = pending.emoji
+        // No transcript-wide spring: UIKit is dismissing the lifted message preview.
+        messagesByConversation[convId] = arr
         Haptics.tap()
-        // Send over the real E2EE path (direct chats). emoji=nil clears our reaction.
-        guard let conv = directConversations.first(where: { $0.id == convId }) else { return }
-        Task {
-            guard let peer = try? await peerUserId(for: conv) else { return }
-            try? await ChatEngine.shared.sendReaction(targetServerId: messageId,
-                                                      emoji: cleared ? nil : emoji,
-                                                      conversationId: convId, peerUserId: peer)
+        let previous = reactionTasks[key]
+        reactionTasks[key] = Task { [weak self] in
+            await previous?.value
+            guard let self, !Task.isCancelled, TokenStore.shared.userId == userId else { return }
+            do {
+                let peer = try await self.peerUserId(for: conv)
+                try Task.checkCancellation()
+                guard TokenStore.shared.userId == userId else { return }
+                try await ChatEngine.shared.sendReaction(targetServerId: messageId,
+                    emoji: pending.emoji, conversationId: convId, peerUserId: peer)
+            } catch {
+                guard !Task.isCancelled, TokenStore.shared.userId == userId else { return }
+                if self.pendingReactions[key]?.id == pending.id {
+                    self.reactionError = "Your reaction couldn’t be sent. Check your connection and try again."
+                }
+            }
+            guard !Task.isCancelled, TokenStore.shared.userId == userId else { return }
+            if self.pendingReactions[key]?.id == pending.id {
+                self.pendingReactions[key] = nil
+                self.reactionTasks[key] = nil
+            }
+            // Reads the last confirmed state on failure; preserves a newer pending choice.
+            self.refresh(convId)
         }
     }
 

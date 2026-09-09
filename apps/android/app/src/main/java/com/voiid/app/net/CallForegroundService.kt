@@ -216,8 +216,18 @@ class CallForegroundService : Service() {
                 android.util.Log.w("VOIID", "full-screen intent revoked — ring degrades to a heads-up")
             }
             ensureIncomingChannel(context)
+            val manager = context.getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                manager?.getNotificationChannel(INCOMING_CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE) {
+                IncomingCallPresentation.useFallback(callId)
+                CallTones.startIncomingRinger(context)
+                return
+            }
 
             val full = Intent(context, MainActivity::class.java).apply {
+                putExtra(IncomingCallPresentation.EXTRA_OPEN_CALL_ID, callId)
+                // PendingIntent identity must include the call, so an old tap cannot open a new ring.
+                data = android.net.Uri.Builder().scheme("voiid").authority("call").appendPath(callId ?: "").build()
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
             val fullPi = PendingIntent.getActivity(
@@ -239,7 +249,10 @@ class CallForegroundService : Service() {
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setOngoing(true)
                 .setAutoCancel(false)
-                .setFullScreenIntent(fullPi, true)
+                .apply {
+                    val locked = context.getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true
+                    if (!AppPresence.isForeground() || locked) setFullScreenIntent(fullPi, true)
+                }
                 .setContentIntent(fullPi)
                 .addAction(0, "Decline", declinePi)
                 .addAction(0, "Accept", acceptPi)
@@ -251,10 +264,15 @@ class CallForegroundService : Service() {
                     // The channel is silent by design, so this is the whole ring.
                     CallTones.startIncomingRinger(context)
                 }
-                .onFailure { android.util.Log.e("VOIID", "incoming-call notify failed", it) }
+                .onFailure {
+                    IncomingCallPresentation.useFallback(callId)
+                    CallTones.startIncomingRinger(context)
+                    android.util.Log.e("VOIID", "incoming-call notify failed", it)
+                }
         }
 
         fun cancelIncoming(context: Context) {
+            IncomingCallPresentation.clear()
             incomingShown = false
             CallTones.stopIncomingRinger()
             runCatching { NotificationManagerCompat.from(context).cancel(INCOMING_ID) }
@@ -277,6 +295,7 @@ class CallForegroundService : Service() {
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra(DeepLinkRouter.EXTRA_ACCEPT_CALL_ID, callId)
+                data = android.net.Uri.Builder().scheme("voiid").authority("call-answer").appendPath(callId ?: "").build()
             }
 
         /**
@@ -318,6 +337,7 @@ class CallForegroundService : Service() {
                 Intent(context, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                     putExtra(DeepLinkRouter.EXTRA_ACCEPT_WAITING_CALL_ID, call.callId)
+                    data = android.net.Uri.Builder().scheme("voiid").authority("call-waiting-answer").appendPath(call.callId).build()
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )

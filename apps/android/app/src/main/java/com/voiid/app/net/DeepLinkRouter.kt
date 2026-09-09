@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 object DeepLinkRouter {
     /** Intent extra carrying the conversation id to open. */
     const val EXTRA_CONVERSATION_ID = "voiid.conversation_id"
+    const val EXTRA_MESSAGE_ID = "voiid.message_id"
     /** Intent extras for a "join group call" deep link (from a group_call push). */
     const val EXTRA_GROUP_CALL_CONVERSATION = "voiid.group_call.conversation_id"
     const val EXTRA_GROUP_CALL_KIND = "voiid.group_call.kind"
@@ -23,11 +24,19 @@ object DeepLinkRouter {
     /** Intent extra: the *waiting* call the user chose over the one in progress. */
     const val EXTRA_ACCEPT_WAITING_CALL_ID = "voiid.call.accept_waiting_id"
 
-    /** Set when a notification asks the app to open a conversation; null once handled. */
-    val pendingConversationId = MutableStateFlow<String?>(null)
-
-    fun open(conversationId: String) { pendingConversationId.value = conversationId }
-    fun consume() { pendingConversationId.value = null }
+    data class MessageDestination(
+        val conversationId: String, val messageId: String?,
+        val requestId: String = java.util.UUID.randomUUID().toString(),
+    )
+    val pendingConversation = MutableStateFlow<MessageDestination?>(null)
+    val pendingMessage = MutableStateFlow<MessageDestination?>(null)
+    fun open(conversationId: String, messageId: String? = null) {
+        val destination = MessageDestination(conversationId, messageId?.takeIf { it.isNotBlank() })
+        pendingMessage.value = destination.takeIf { it.messageId != null }
+        pendingConversation.value = destination
+    }
+    fun consume(destination: MessageDestination) { pendingConversation.compareAndSet(destination, null) }
+    fun consumeMessage(destination: MessageDestination) { pendingMessage.compareAndSet(destination, null) }
 
     /**
      * A call the user answered from the ring notification.

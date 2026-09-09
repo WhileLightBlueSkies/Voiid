@@ -1,7 +1,6 @@
 package com.voiid.app.main
 
 import android.content.Context
-import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.media.MediaPlayer
@@ -14,9 +13,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
@@ -98,11 +99,13 @@ object MediaCache {
     fun image(ctx: Context, k: String): ImageBitmap? {
         images[k]?.let { return it }
         val b = data(ctx, k) ?: return null
-        val bmp = BitmapFactory.decodeByteArray(b, 0, b.size) ?: return null
+        val bmp = ChatImageDecoder.decode(b) ?: return null
         val ib = bmp.asImageBitmap()
         images[k] = ib
         return ib
     }
+
+    fun playbackFile(ctx: Context, key: String): File = fileFor(ctx, key)
 
     /** Drop every decrypted byte, memory AND disk (called on sign-out). */
     fun clear(ctx: Context) {
@@ -122,9 +125,16 @@ suspend fun loadMediaBitmap(
 ): androidx.compose.ui.graphics.ImageBitmap? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
     MediaCache.image(context, ref.mediaUrl)?.let { return@withContext it }
     runCatching {
-        val bytes = ChatEngine.get(context).fetchMedia(ref)
-        MediaCache.putData(context, ref.mediaUrl, bytes)
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        val bytes = MediaCache.data(context, ref.mediaUrl) ?: ChatEngine.get(context).fetchMedia(ref).also {
+            MediaCache.putData(context, ref.mediaUrl, it)
+        }
+        if (ref.mime.startsWith("video/")) {
+            val retriever = android.media.MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(MediaCache.playbackFile(context, ref.mediaUrl).path)
+                retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.asImageBitmap()
+            } finally { retriever.release() }
+        } else ChatImageDecoder.decode(bytes)?.asImageBitmap()
     }.getOrNull()?.also { ib -> MediaCache.putImage(ref.mediaUrl, ib) }
 }
 
@@ -135,17 +145,8 @@ fun AsyncMediaImage(ref: ChatEngine.MediaRef, onTap: (() -> Unit)? = null) {
     var failed by remember(ref.mediaUrl) { mutableStateOf(false) }
 
     LaunchedEffect(ref.mediaUrl) {
-        if (bitmap != null) return@LaunchedEffect
-        // Local-first: disk (off the main thread) → only then network. Offline, a photo seen
-        // once or one you sent renders straight from disk with no spinner.
-        withContext(Dispatchers.IO) { MediaCache.image(context, ref.mediaUrl) }?.let { bitmap = it; return@LaunchedEffect }
-        runCatching {
-            val bytes = ChatEngine.get(context).fetchMedia(ref)
-            MediaCache.putData(context, ref.mediaUrl, bytes)   // persist the plaintext bytes
-            val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-            if (bmp != null) { val ib = bmp.asImageBitmap(); MediaCache.putImage(ref.mediaUrl, ib); bitmap = ib }
-            else failed = true
-        }.onFailure { failed = true }
+        if (bitmap == null) bitmap = loadMediaBitmap(context, ref)
+        failed = bitmap == null
     }
 
     Box(
@@ -159,6 +160,34 @@ fun AsyncMediaImage(ref: ChatEngine.MediaRef, onTap: (() -> Unit)? = null) {
             b != null -> Image(b, null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             failed -> Icon(Icons.Default.Image, null, tint = VoiidColor.primary, modifier = Modifier.size(40.dp))
             else -> CircularProgressIndicator(color = VoiidColor.primary)
+        }
+        if (b != null && ref.mime.startsWith("video/")) {
+            Icon(Icons.Default.PlayArrow, "Play video", tint = androidx.compose.ui.graphics.Color.White,
+                modifier = Modifier.size(44.dp).clip(CircleShape).background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.4f)))
+        }
+    }
+}
+
+/** Plays already decrypted media with Android's native transport controls. */
+@Composable
+fun ChatVideoViewer(ref: ChatEngine.MediaRef, onClose: () -> Unit) {
+    val context = LocalContext.current
+    var video by remember { mutableStateOf<android.widget.VideoView?>(null) }
+    DisposableEffect(Unit) { onDispose { video?.stopPlayback() } }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black)) {
+            androidx.compose.ui.viewinterop.AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
+                android.widget.VideoView(ctx).apply {
+                    video = this
+                    setMediaController(android.widget.MediaController(ctx).also { it.setAnchorView(this) })
+                    setVideoPath(MediaCache.playbackFile(context, ref.mediaUrl).path)
+                    setOnPreparedListener { start() }
+                }
+            })
+            IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd).size(48.dp)) {
+                Icon(androidx.compose.material.icons.Icons.Default.Close, "Close video", tint = androidx.compose.ui.graphics.Color.White)
+            }
         }
     }
 }
@@ -204,11 +233,16 @@ fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String, onOwnBubble: Boolea
         val data = bytes ?: return null
         player?.let { return it }
         return runCatching {
-            val f = File.createTempFile("vn", ".m4a", context.cacheDir).apply { writeBytes(data) }
-            MediaPlayer().apply {
-                setDataSource(f.path); prepare()
-                setOnCompletionListener { playing = false; progress = 0f; elapsedMs = 0 }
-            }.also { player = it; durationMs = it.duration }
+            val f = File.createTempFile("voice-", ".m4a", context.cacheDir)
+            val candidate = MediaPlayer()
+            try {
+                f.writeBytes(data)
+                candidate.setDataSource(f.path); candidate.prepare()
+                candidate.setOnCompletionListener { playing = false; progress = 0f; elapsedMs = 0 }
+                player = candidate; durationMs = candidate.duration
+                candidate
+            } catch (e: Exception) { candidate.release(); throw e }
+            finally { f.delete() }
         }.getOrNull()
     }
 
@@ -227,11 +261,11 @@ fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String, onOwnBubble: Boolea
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.width(210.dp),
+        modifier = Modifier.widthIn(max = 260.dp).fillMaxWidth(),
     ) {
         Box(
             Modifier
-                .size(34.dp)
+                .size(44.dp)
                 .clip(CircleShape)
                 .background(if (onOwnBubble) VoiidColor.textOnBubble.copy(alpha = 0.18f) else VoiidColor.primary.copy(alpha = 0.12f))
                 .clickable(enabled = bytes != null) {
@@ -245,13 +279,13 @@ fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String, onOwnBubble: Boolea
                 CircularProgressIndicator(Modifier.size(16.dp), color = tint, strokeWidth = 2.dp)
             } else {
                 Icon(
-                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null,
+                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (playing) "Pause voice message" else "Play voice message",
                     tint = tint, modifier = Modifier.size(17.dp),
                 )
             }
         }
 
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Box(Modifier.weight(1f)) {
             val barCount = 26
             // Deterministic per-message pattern, seeded from the URL: bars that change on
             // every recomposition read as noise, and two different notes that look identical
@@ -264,7 +298,7 @@ fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String, onOwnBubble: Boolea
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(22.dp)
+                    .height(44.dp)
                     .pointerInput(bytes) {
                         if (bytes == null) return@pointerInput
                         // Tap AND drag both seek. Tap-to-jump is what people try first;
@@ -278,6 +312,7 @@ fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String, onOwnBubble: Boolea
                     .pointerInput(bytes) {
                         if (bytes == null) return@pointerInput
                         detectHorizontalDragGestures { change, _ ->
+                            change.consume()
                             val p = ensurePlayer() ?: return@detectHorizontalDragGestures
                             val f = (change.position.x / size.width).coerceIn(0f, 1f)
                             p.seekTo((f * p.duration).toInt()); progress = f; elapsedMs = p.currentPosition
@@ -297,14 +332,9 @@ fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String, onOwnBubble: Boolea
                     )
                 }
             }
-            Text(
-                // Elapsed once it has started, total before — the number is only useful if it
-                // answers "how much is left".
-                if (elapsedMs > 0) timeLabel(elapsedMs) else timeLabel(durationMs),
-                style = VoiidFont.rounded(10),
-                color = metaTint,
-            )
         }
+        Text(timeLabel((durationMs - elapsedMs).coerceAtLeast(0)),
+            style = VoiidFont.rounded(11), color = metaTint, maxLines = 1)
     }
 }
 

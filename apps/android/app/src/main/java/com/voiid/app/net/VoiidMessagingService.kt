@@ -236,10 +236,17 @@ class VoiidMessagingService : FirebaseMessagingService() {
         }
 
         val after = engine.messages(conversationId)
-        // Prefer the exact pushed message; else the newest new inbound; else newest inbound.
-        val target = after.firstOrNull { it.id == messageId && !it.isMine }
-            ?: after.lastOrNull { !it.isMine && it.id !in before }
-            ?: after.lastOrNull { !it.isMine }
+        // A linked-device echo belongs on our sent side, never in a notification
+        // attributed to the peer (including the old-message fallback below).
+        if (messageId != null && after.any { (it.id == messageId || it.serverId == messageId) && it.isMine }) {
+            return Preview(title = null, body = null, isControl = true)
+        }
+        // A message-specific push must never preview a different message after a failed sync.
+        val target = if (messageId != null) {
+            after.firstOrNull { (it.id == messageId || it.serverId == messageId) && !it.isMine }
+        } else {
+            after.lastOrNull { !it.isMine && it.id !in before } ?: after.lastOrNull { !it.isMine }
+        }
 
         // Same precedence as everywhere else: the address-book name wins over the name the
         // sender chose for themselves, so a notification says "Mum" too.
@@ -331,6 +338,9 @@ object Notifier {
         val intent = Intent(ctx, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID, conversationId)
+            putExtra(DeepLinkRouter.EXTRA_MESSAGE_ID, messageId)
+            data = android.net.Uri.Builder().scheme("voiid").authority("message")
+                .appendPath(conversationId).appendPath(messageId ?: "conversation").build()
         }
         val pi = PendingIntent.getActivity(
             ctx,
@@ -389,6 +399,7 @@ object Notifier {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION, conversationId)
             putExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND, if (video) "video" else "voice")
+            data = android.net.Uri.Builder().scheme("voiid").authority("group-call").appendPath(conversationId).build()
         }
         val pi = PendingIntent.getActivity(
             ctx, ("gc_$conversationId").hashCode(), intent,

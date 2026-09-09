@@ -146,6 +146,7 @@ class ChatEngine private constructor(context: Context) {
         val reactions: Map<String, String>? = null,
         /** Delete-for-everyone tombstone from the original author. */
         val deletedForEveryone: Boolean = false,
+        val deletedForMe: Boolean = false,
         /** Quoted-reply snapshot (server id + short preview + who), so it renders even if
          *  the original was deleted. */
         val quotedId: String? = null,
@@ -155,11 +156,30 @@ class ChatEngine private constructor(context: Context) {
         val forwarded: Boolean = false,
         /** A control message (reaction/delete signal): kept for dedup, never rendered. */
         val control: Boolean = false,
-    )
+    ) {
+        fun hiddenForMe(): DecryptedMessage = copy(deletedForMe = true, text = "", media = null, reactions = null, pending = false)
+
+        fun reacting(userId: String, emoji: String?): DecryptedMessage {
+            if (deletedForEveryone || deletedForMe) return this
+            val next = (reactions ?: emptyMap()).toMutableMap()
+            if (emoji == null) next.remove(userId) else next[userId] = emoji
+            return copy(reactions = next.ifEmpty { null })
+        }
+
+        /** Fix linked-device ownership without replaying an already consumed ciphertext. */
+        fun resolvingOwnership(userId: String?): DecryptedMessage =
+            if (!isMine && !userId.isNullOrEmpty() && senderId.equals(userId, ignoreCase = true))
+                copy(isMine = true) else this
+    }
 
     /** The E2EE plaintext of a media message: the reference + an optional caption. */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     @Serializable
-    private data class MediaEnvelope(val v: Int = 1, val media: MediaRef, val caption: String)
+    internal data class MediaEnvelope(
+        @EncodeDefault val v: Int = 1,
+        val media: MediaRef,
+        @EncodeDefault val caption: String = "",
+    )
 
     // MARK: - Public API
 
@@ -184,7 +204,8 @@ class ChatEngine private constructor(context: Context) {
     /** Locally-stored (already decrypted) messages for a conversation, oldest-first. */
     fun messages(conversationId: String): List<DecryptedMessage> {
         ensureLoaded()
-        return (store[conversationId] ?: emptyList()).filter { !it.control }.sortedBy { it.createdAt }
+        return (store[conversationId] ?: emptyList()).map { it.resolvingOwnership(tokens.userId) }
+            .filter { !it.control && !it.deletedForMe }.sortedBy { it.createdAt }
     }
 
     /** Queue a text message as PENDING locally (instant + offline + survives restart),
@@ -203,7 +224,7 @@ class ChatEngine private constructor(context: Context) {
      *  — the message stays pending and is retried on the next flush. */
     suspend fun flushPending(conversationId: String, peerUserId: String) {
         ensureLoaded()
-        val pendings = (store[conversationId] ?: emptyList()).filter { it.isMine && it.pending && it.media == null }
+        val pendings = (store[conversationId] ?: emptyList()).filter { it.isMine && it.pending && !it.deletedForMe && it.media == null }
         for (p in pendings) {
             try {
                 // Fan-out: encrypt ONCE PER TARGET DEVICE (peer's devices + our own other
@@ -332,6 +353,13 @@ class ChatEngine private constructor(context: Context) {
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId$devParam")
         android.util.Log.i("VOIID", "sync conv=$conversationId: server has ${env.messages.size} msgs")
         val myId = tokens.userId
+        // Correct cached sibling sends before the decrypt-once dedup check skips them.
+        store[conversationId]?.let { cached ->
+            for (i in cached.indices) {
+                val corrected = cached[i].resolvingOwnership(myId)
+                if (corrected != cached[i]) { cached[i] = corrected; markDirty(conversationId) }
+            }
+        }
         // "seen" = ALL stored ids INCLUDING tombstones. A decrypt-once Olm message that
         // failed can NEVER be re-decrypted (recovery comes from the peer RE-SENDING a new
         // message, not retrying the dead id). Retrying tombstones every sync just re-fails
@@ -346,6 +374,9 @@ class ChatEngine private constructor(context: Context) {
         // make the server hold it forever and hand it back on every sync.
         val stored = mutableListOf<String>()
         for (m in env.messages.asReversed()) {        // server DESC -> process ASC
+            val authoredByMe = myId != null && m.sender_id.equals(myId, ignoreCase = true)
+            // Advance receipts even when this sibling message was already decrypted.
+            if (authoredByMe) m.receipt_status?.let { applyReceipt(m.id, it) }
             // Our OWN sent message: can't decrypt our ratchet output, but the server
             // reports the recipient's receipt state — advance Sent→Delivered→Seen even
             // if the live WS receipt push was missed (WS-independent status).
@@ -358,10 +389,9 @@ class ChatEngine private constructor(context: Context) {
             //  * Sent from ANOTHER of my devices — the fan-out addressed a real per-device
             //    ciphertext to this device precisely so it could sync. Decrypting it is the
             //    entire point; skipping it threw that ciphertext away.
-            if (m.sender_id == myId) {
+            if (authoredByMe) {
                 val fromThisDevice = m.sender_device_id == null || m.sender_device_id == e2e.deviceId
                 if (fromThisDevice || m.ciphertext == null) {
-                    m.receipt_status?.let { applyReceipt(m.id, it) }
                     continue
                 }
                 // Falls through to the normal decrypt path below: a sibling device's message
@@ -397,7 +427,7 @@ class ChatEngine private constructor(context: Context) {
                     handleLocationInbound(plain, m.sender_id, conversationId, parseIso(m.created_at))
                     LocationRelay.dispatchControl(plain, m.sender_id, conversationId)
                     markControlSeen(m.id)
-                    newlyReceived.add(m.id)
+                    if (!authoredByMe) newlyReceived.add(m.id)
                     return@runCatching
                 }
                 // ACTION envelopes decorate an EXISTING message rather than adding a bubble.
@@ -413,30 +443,33 @@ class ChatEngine private constructor(context: Context) {
                         if (t != null && t.senderId == m.sender_id) applyDeleteForEveryone(conversationId, e.target)
                     }
                     // Keep the control id in the store (seen) but hidden from the UI.
-                    append(conversationId, DecryptedMessage(m.id, m.sender_id, "", parseIso(m.created_at), false, control = true))
-                    newlyReceived.add(m.id)
+                    append(conversationId, DecryptedMessage(m.id, m.sender_id, "", parseIso(m.created_at), authoredByMe, control = true))
+                    if (!authoredByMe) newlyReceived.add(m.id)
                     return@runCatching
                 }
                 if (probeT == "msg_reply") {
                     val e = ApiClient.json.decodeFromString(ReplyWire.serializer(), plain)
-                    replace(conversationId, DecryptedMessage(m.id, m.sender_id, e.text, parseIso(m.created_at), false,
+                    replace(conversationId, DecryptedMessage(m.id, m.sender_id, e.text, parseIso(m.created_at), authoredByMe,
                         quotedId = e.quotedId, quotedPreview = e.quotedPreview, quotedSender = e.quotedSender))
-                    newlyReceived.add(m.id)
+                    if (!authoredByMe) newlyReceived.add(m.id)
                     return@runCatching
                 }
                 // A media message's plaintext is a JSON MediaEnvelope; text is just
                 // the string. Detect via the server's content_type hint.
                 val (caption, ref) = decodeEnvelope(plain, m.content_type)
-                replace(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref))
-                newlyReceived.add(m.id)
-            }.onSuccess { stored.add(m.id) }.onFailure {
+                replace(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), authoredByMe, ref))
+                if (!authoredByMe) newlyReceived.add(m.id)
+            }.onSuccess {
+                stored.add(m.id)
+                if (authoredByMe) m.receipt_status?.let { applyReceipt(m.id, it) }
+            }.onFailure {
                 android.util.Log.e("VOIID", "❌ inbound decrypt FAILED id=${m.id} senderDev=${m.sender_device_id}", it)
                 // Tombstone it (failed==true) so the chat shows a placeholder, asks the
                 // sender to re-establish the session, and RETRIES on the next sync.
                 if (e2e.identity != null) {
                     lastSyncHadDecryptFailure = true
                     replace(conversationId, DecryptedMessage(m.id, m.sender_id,
-                        "🔒 Message couldn’t be decrypted", parseIso(m.created_at), false, failed = true))
+                        "🔒 Message couldn’t be decrypted", parseIso(m.created_at), authoredByMe, failed = true))
                     stored.add(m.id)
                 }
             }
@@ -654,7 +687,7 @@ class ChatEngine private constructor(context: Context) {
     suspend fun markRead(conversationId: String) = readLock.withLock {
         ensureLoaded()
         val inbound = (store[conversationId] ?: emptyList())
-            .filter { !it.isMine && !it.control && !it.failed }
+            .filter { !it.resolvingOwnership(tokens.userId).isMine && !it.control && !it.failed }
         val ids = inbound.map { it.id }.filter { readReported.add(it) }
         // Diagnostic: distinguishes "nothing inbound to read" from "already reported this
         // session" from "sent". Without it, a silent no-op here is indistinguishable from a
@@ -1009,25 +1042,28 @@ class ChatEngine private constructor(context: Context) {
     suspend fun sendReaction(targetServerId: String, emoji: String?, conversationId: String, peerUserId: String) {
         val json = ApiClient.json.encodeToString(ReactionWire.serializer(), ReactionWire(target = targetServerId, emoji = emoji))
         val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
-        if (bcast.isEmpty()) return
+        if (bcast.isEmpty() && peerUserId != tokens.userId) throw ApiError.Http(409, "peer has no available prekeys")
         val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
         val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
             SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reaction",
                            client_message_id = java.util.UUID.randomUUID().toString()))
-        api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
+        if (messages.isNotEmpty()) api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
         applyReaction(conversationId, targetServerId, tokens.userId ?: "me", emoji)
     }
 
     /** Ask recipients to tombstone [targetServerId] (honoured only from the original author). */
     suspend fun sendDeleteForEveryone(targetServerId: String, conversationId: String, peerUserId: String) {
+        ensureLoaded()
+        val target = store[conversationId]?.firstOrNull { it.serverId == targetServerId || it.id == targetServerId }
+        require(target?.resolvingOwnership(tokens.userId)?.isMine == true) { "Only your messages can be deleted for everyone" }
         val json = ApiClient.json.encodeToString(DeleteWire.serializer(), DeleteWire(target = targetServerId))
         val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
-        if (bcast.isEmpty()) return
+        if (bcast.isEmpty() && peerUserId != tokens.userId) throw ApiError.Http(409, "peer has no available prekeys")
         val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
         val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
             SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_delete",
                            client_message_id = java.util.UUID.randomUUID().toString()))
-        api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
+        if (messages.isNotEmpty()) api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
         applyDeleteForEveryone(conversationId, targetServerId)
     }
 
@@ -1072,13 +1108,22 @@ class ChatEngine private constructor(context: Context) {
     fun applyReaction(convId: String, target: String, fromUserId: String, emoji: String?) {
         val arr = store[convId] ?: return
         val i = arr.indexOfFirst { it.serverId == target || it.id == target }
-        if (i < 0) return
-        val map = (arr[i].reactions ?: emptyMap()).toMutableMap()
-        if (emoji != null) map[fromUserId] = emoji else map.remove(fromUserId)
-        arr[i] = arr[i].copy(reactions = map.ifEmpty { null })
+        if (i < 0 || arr[i].deletedForEveryone || arr[i].deletedForMe) return
+        arr[i] = arr[i].reacting(fromUserId, emoji)
         markDirty(convId)
         persist()
     }
+    /** Keep hidden ids for decrypt-once dedup so refresh/relaunch cannot resurrect them. */
+    fun deleteForMe(convId: String, messageIds: Set<String>) {
+        ensureLoaded()
+        val arr = store[convId] ?: return
+        for (i in arr.indices) if ((arr[i].serverId ?: arr[i].id) in messageIds) {
+            arr[i] = arr[i].hiddenForMe()
+        }
+        markDirty(convId)
+        check(persist()) { "Couldn’t save deletion" }
+    }
+
     fun applyDeleteForEveryone(convId: String, target: String) {
         val arr = store[convId] ?: return
         val i = arr.indexOfFirst { it.serverId == target || it.id == target }
@@ -1305,7 +1350,7 @@ class ChatEngine private constructor(context: Context) {
         ensureLoaded()   // never mutate/persist an unloaded store (would clobber on-disk history)
         val arr = store.getOrPut(convId) { mutableListOf() }
         if (arr.any { it.id == m.id }) return
-        arr.add(m)
+        arr.add(m.resolvingOwnership(tokens.userId))
         markDirty(convId)
         if (persist) persist()
     }
@@ -1316,7 +1361,8 @@ class ChatEngine private constructor(context: Context) {
         ensureLoaded()
         val arr = store.getOrPut(convId) { mutableListOf() }
         val i = arr.indexOfFirst { it.id == m.id }
-        if (i >= 0) arr[i] = m else arr.add(m)
+        val owned = m.resolvingOwnership(tokens.userId)
+        if (i >= 0) arr[i] = owned else arr.add(owned)
         markDirty(convId)
     }
 

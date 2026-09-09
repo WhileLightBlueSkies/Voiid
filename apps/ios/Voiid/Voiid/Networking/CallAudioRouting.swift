@@ -110,6 +110,7 @@ extension CallService {
         audioRoutes = routes.filter { seen.insert($0.id).inserted }
 
         currentRoute = liveRoute(session)
+        speakerOnChanged(currentRoute == .speaker)
     }
 
     /// Which route the session is ACTUALLY on right now, read from its output port.
@@ -135,19 +136,30 @@ extension CallService {
         defer { rtc.unlockForConfiguration() }
 
         do {
+            // A2DP permits Bluetooth OUTPUT with the built-in microphone. In that
+            // mode selecting the phone's input does not select its receiver.
+            // Calls use bidirectional HFP; keep stereo playback routing out of this
+            // session and remove any inherited speaker default before selecting.
+            var options = session.categoryOptions
+            options.remove(.allowBluetoothA2DP)
+            options.remove(.defaultToSpeaker)
+            options.insert(.allowBluetoothHFP)
+            if session.category != .playAndRecord || session.categoryOptions != options {
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: options)
+            }
             switch route {
             case .speaker:
-                // The loudspeaker is the one output with no input to steer by.
+                if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+                    try session.setPreferredInput(builtIn)
+                }
                 try session.overrideOutputAudioPort(.speaker)
-                speakerOnChanged(true)
             case .earpiece:
-                try session.overrideOutputAudioPort(.none)
                 // Force the built-in mic so output falls back to the receiver rather than
                 // sticking on a still-connected Bluetooth device.
                 if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
                     try session.setPreferredInput(builtIn)
                 }
-                speakerOnChanged(false)
+                try session.overrideOutputAudioPort(.none)
             case .bluetooth(_, let uid):
                 try session.overrideOutputAudioPort(.none)
                 if let bt = session.availableInputs?.first(where: {
@@ -155,7 +167,6 @@ extension CallService {
                 }) {
                     try session.setPreferredInput(bt)
                 }
-                speakerOnChanged(false)
             case .wired(let name):
                 try session.overrideOutputAudioPort(.none)
                 if let wired = session.availableInputs?.first(where: {
@@ -163,10 +174,9 @@ extension CallService {
                 }) {
                     try session.setPreferredInput(wired)
                 }
-                speakerOnChanged(false)
             }
         } catch {
-            NSLog("[VOIID] audio route change to \(route.label) failed: \(error.localizedDescription)")
+            NSLog("[VOIID] audio route change failed code=%ld", (error as NSError).code)
         }
         refreshAudioRoutes()
     }
