@@ -29,7 +29,7 @@ export const WS_CLOSE_REVOKED = 4403;
 export const WS_CLOSE_UNAVAILABLE = 4503;
 
 export type Authorization =
-  | { ok: true; userId: string; deviceId?: string; sid?: string; expiresAt: number }
+  | { ok: true; userId: string; deviceId?: string; sid?: string; expiresAt: number; client?: 'web' }
   | { ok: false; code: number; reason: string };
 
 let pool: Pool | null = null;
@@ -134,7 +134,7 @@ async function accountIsLive(userId: string): Promise<boolean> {
 }
 
 export async function authorizeConnection(token: string | null | undefined): Promise<Authorization> {
-  let claims: { user_id?: string; device_id?: string; sid?: string; scope?: string; exp?: number };
+  let claims: { user_id?: string; device_id?: string; sid?: string; scope?: string; client?: string; exp?: number };
   try {
     claims = jwt.verify(token ?? '', process.env.JWT_SECRET ?? 'dev-only-change-me') as typeof claims;
   } catch {
@@ -143,6 +143,7 @@ export async function authorizeConnection(token: string | null | undefined): Pro
   if (!claims || typeof claims !== 'object' || claims.scope && claims.scope !== 'session' || typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) {
     return { ok: false, code: WS_CLOSE_UNAUTHORIZED, reason: 'unauthorized' };
   }
+  if (claims.client === 'web' && !claims.sid) return { ok: false, code: WS_CLOSE_UNAUTHORIZED, reason: 'web session required' };
   const expiresAt = claims.exp * 1000;
   const userId = claims.user_id;
   if (!userId || !UUID_RE.test(userId)) {
@@ -157,7 +158,7 @@ export async function authorizeConnection(token: string | null | undefined): Pro
       if (!(await sessionIsActive(claims.sid, userId, claims.device_id!))) {
         return { ok: false, code: WS_CLOSE_REVOKED, reason: 'session revoked' };
       }
-      return { ok: true, userId, deviceId: claims.device_id, sid: claims.sid, expiresAt };
+      return { ok: true, userId, deviceId: claims.device_id, sid: claims.sid, expiresAt, ...(claims.client === 'web' ? { client: 'web' as const } : {}) };
     }
 
     if (sessionCutoffPassed()) {

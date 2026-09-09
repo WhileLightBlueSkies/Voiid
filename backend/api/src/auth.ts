@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
 import { query } from './db';
 import { redis } from './redis';
+import { companionAllows } from './webCompanion';
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-only-change-me';
 const JWT_EXPIRY = process.env.JWT_EXPIRY ?? '30d';
@@ -23,6 +24,7 @@ const JWT_BOOTSTRAP_EXPIRY = process.env.JWT_BOOTSTRAP_EXPIRY ?? '1h';
 export type TokenScope = 'bootstrap' | 'session';
 
 export interface AuthClaims {
+  client?: 'web';
   user_id: string;
   device_id?: string;
   /** device_sessions.id — the row a revoke can invalidate. Session tokens only. */
@@ -197,14 +199,15 @@ async function sessionIsActive(sid: string, userId: string, deviceId: string): P
 export async function createDeviceSession(
   user_id: string,
   device_id: string,
-  execute: typeof query = query
+  execute: typeof query = query,
+  client?: 'web'
 ): Promise<{ sid: string; token: string }> {
   const rows = await execute<{ id: string }>(
     `insert into device_sessions (user_id, device_id) values ($1, $2) returning id`,
     [user_id, device_id]
   );
   const sid = rows[0].id;
-  return { sid, token: issueToken({ user_id, device_id, sid, scope: 'session' }) };
+  return { sid, token: issueToken({ user_id, device_id, sid, scope: 'session', ...(client ? { client } : {}) }) };
 }
 
 /**
@@ -297,6 +300,13 @@ function authenticate(allowUnbound: boolean) {
       // The DB is unreachable. Every route behind this middleware needs it too, so a 503 is
       // the honest answer — and guessing "active" here would reopen the hole this closes.
       return res.status(503).json({ error: 'service unavailable' });
+    }
+
+    if (claims.client === 'web') {
+      const routePath = req.originalUrl.split('?')[0].replace(/^\/v1(?=\/)/, '').replace(/\/$/, '');
+      if (!claims.sid || !claims.device_id || !companionAllows(req.method, routePath, claims.device_id, req.body)) {
+        return res.status(403).json({ error: 'operation unavailable to a web companion', code: 'companion_scope' });
+      }
     }
 
     (req as any).auth = claims;

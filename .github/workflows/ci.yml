@@ -96,6 +96,42 @@ jobs:
           npm run build -w @voiid/web
           npm run build -w @voiid/admin-web
 
+  # Browser crypto needs generated WASM and a native interop executable. Keep this
+  # preparation out of the existing Node-only suite so a clean npm test still works.
+  web-companion:
+    name: Web companion crypto and browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install browser Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/e2e-core/bindings/wasm
+      - name: Build native and browser crypto
+        run: |
+          cargo install wasm-pack --version 0.15.0 --locked
+          ./packages/e2e-core/build-web.sh
+          cargo build --locked --manifest-path packages/e2e-core/bindings/wasm/Cargo.toml --example interop
+      - name: Check and build companion
+        run: |
+          npm run typecheck -w @voiid/web-client
+          npm run build -w @voiid/web-client
+          npm run test:crypto -w @voiid/web-client
+      - name: Browser regressions
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test --config apps/web-client/playwright.config.ts
+
   # ── Rust: the encryption core ──────────────────────────────────────────────────────────
   #
   # Separate job because this is the one suite whose failure must never be interpreted as a

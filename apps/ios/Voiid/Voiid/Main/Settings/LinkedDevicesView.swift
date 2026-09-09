@@ -13,19 +13,9 @@
 //     `if device.isCurrent { }` guarding a shared row builder, because that guard is one careless refactor away from letting a user sign their own
 //     handset out of an account they are actively using.
 //
-//  2. No device id ever reaches the screen. `DELETE /v1/devices/:device_id` is not
-//     ownership-scoped on the backend (routes/devices.ts:104), so a rendered — worse, a
-//     selectable — device id is a live handle for revoking someone else's device. The id
-//     exists in this file solely as `ForEach` identity and as the argument to
-//     `DeviceDirectoryService.revoke`.
-//
-//  3. There is no "Link a Device" button, and this is not an oversight. The backend's
-//     linking routes (routes/linking.ts) pair a *web companion*: the web client posts its
-//     own keys for a `link_token`, shows it as a QR, and an existing device scans and
-//     approves it. iOS can only ever be the approver, and approving means scanning a QR —
-//     camera capture, a permission string, a scanner surface, an approval screen. Until
-//     that exists, a button here would open nothing. See the long note in
-//     `DeviceDirectoryService.swift`.
+//  2. Browser linking has its own scanner and explicit approval sheet. The general
+//     profile scanner cannot grant account access. The current phone authenticates
+//     locally, then the server validates its active device and the previewed key.
 //
 //  What the screen does NOT claim: nothing here reports whether a device is currently
 //  online, because the server exposes no such field. "Last active" is `last_seen_at` and
@@ -46,6 +36,7 @@ struct LinkedDevicesView: View {
 
     @State private var phase: Phase = .loading
     @State private var devices: [LinkedDevice] = []
+    @State private var showingLinkBrowser = false
 
     /// Set when a swipe asks to remove a device; drives the confirmation dialog.
     @State private var deviceToRemove: LinkedDevice?
@@ -83,6 +74,17 @@ struct LinkedDevicesView: View {
                     badge: (icon: "lock.fill", text: "End-to-end encrypted")
                 )
 
+                Button {
+                    showingLinkBrowser = true
+                } label: {
+                    Label("Link a Browser", systemImage: "qrcode.viewfinder")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(VoiidColor.primary)
+                .disabled(currentDeviceID == nil)
+
                 switch phase {
                 case .loading:
                     loadingSection
@@ -95,6 +97,9 @@ struct LinkedDevicesView: View {
             .padding(VoiidSpacing.md)
         }
         .voiidSettingsPage()
+        .sheet(isPresented: $showingLinkBrowser, onDismiss: {
+            Task { await load(showingSpinner: false) }
+        }) { LinkBrowserView() }
         .task { await load(showingSpinner: true) }
         .refreshable { await load(showingSpinner: false) }
         .confirmationDialog(

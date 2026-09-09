@@ -17,6 +17,8 @@
 	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan Voiid QR codes, take photos and videos for your chats, and set your profile picture.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Confirm it is you before linking a browser to your Voiid account.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Find friends already on Voiid. Your contacts are matched privately on your device and are never uploaded.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

@@ -3,7 +3,9 @@
 > A WhatsApp-Web-style companion: link a browser to an existing account by QR, then read and
 > send end-to-end encrypted messages from it.
 >
-> Status: **not started**. This is the plan, written 2026-09-09 against the code as it stands.
+> Status: **implementation in progress — local 1:1 text preview built and tested (2026-09-09)**.
+> The original phases below remain the production roadmap. Current scope, security changes,
+> validation evidence and deployment gates: [WEB_CLIENT_IMPLEMENTATION_2026-09-09.md](WEB_CLIENT_IMPLEMENTATION_2026-09-09.md).
 
 ## What already exists, and what does not
 
@@ -11,14 +13,14 @@ The expensive half is done. This is not a greenfield project.
 
 | Piece | State |
 |---|---|
-| Linking protocol (`backend/api/src/routes/linking.ts`) | **Built and hardened** — S06 |
+| Linking protocol (`backend/api/src/routes/linking.ts`) | **Extended** — independent redemption proof, phone-only preview/approval, companion capabilities; migration 065 required |
 | `device_link_requests` table (migration 061) | **Built** |
 | Conversations / messages / receipts / media APIs | **Built**, used by both native apps |
 | WebSocket relay (presence, typing, delivery) | **Built** |
 | Rust E2E core (`packages/e2e-core`) | **Built** — 81 exported functions across `ffi.rs` + `api.rs` |
 | Swift + Kotlin bindings | **Built** |
-| **WASM binding** | **Missing** — this is the project |
-| **A web client** | **Missing** — `apps/web` is a marketing site |
+| **WASM binding** | **Built** — same native Olm/media sources; native ↔ WASM tests pass |
+| **A web client** | **Local preview** in `apps/web-client`; `apps/web` remains the marketing site |
 | Node binding (`bindings/node/`) | A README. Deliberately deferred, and **not** what a browser needs |
 
 `apps/web/app/messaging/page.tsx` is 170 lines of marketing copy with a phone mockup. There is
@@ -38,7 +40,7 @@ That means compiling `e2e-core` to **WebAssembly**. The existing `node` binding 
 be reused: napi-rs produces a native `.node` addon for a Node process, not something a browser
 can load.
 
-Everything else in this project is a React app talking to APIs that already work.
+The browser also needs backend authorization changes: the original QR token alone could collect a session, and no phone approval UI existed. Migration 065 and the new API/relay checks address these gaps.
 
 ## Why this is not simply "port the iOS client"
 
@@ -72,7 +74,7 @@ honest that a browser is not a phone: it catches up, it does not stay caught up.
    └──────────┬─────────────┘
               │ HTTPS + WSS
         ┌─────▼──────┐
-        │ Voiid API  │  (unchanged)
+        │ Voiid API  │  (companion authorization)
         └────────────┘
 ```
 
@@ -80,6 +82,9 @@ honest that a browser is not a phone: it catches up, it does not stay caught up.
 IndexedDB writes and the socket. Others render from a shared read model and post intents to
 the leader. This is the single most important structural decision — get it wrong and sessions
 corrupt in ways that are invisible until a message fails to decrypt days later.
+
+The current preview holds a Web Lock before starting a dedicated crypto worker. A second tab
+shows a blocked state; forwarding intents from follower tabs remains future work.
 
 ## Phases
 
@@ -156,5 +161,5 @@ unverified message-delivery bugs means debugging three clients against one movin
 3–6 weeks for one developer to Phase 4. Phase 1 carries most of the uncertainty: if vodozemac
 compiles to WASM cleanly it is days, and if it does not, that is the whole schedule.
 
-Nothing here needs backend changes. That is the good news, and it is because the linking
+Implementation review found backend changes are required for safe linking and browser capabilities. The existing linking
 protocol was designed for this case before the client existed.

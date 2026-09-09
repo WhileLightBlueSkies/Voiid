@@ -1,3 +1,4 @@
+import { redeemWebTicket } from './webTicket';
 import { callKeyCopies, callKeyDeliveryFrames, CALL_DEVICE_CLAIM_SCRIPT } from './callSignaling';
 import { randomUUID } from 'node:crypto';
 import { boundedSend, PRESENCE_SCRIPT, FRAME_BUDGET_SCRIPT } from './transport';
@@ -407,7 +408,13 @@ wss.on('connection', async (ws, req) => {
 
   // JWT via ?token=; reject if absent, unverifiable, or naming a revoked session.
   const url = new URL(req.url ?? '', 'http://localhost');
-  const token = req.headers.authorization?.replace(/^Bearer /i, '') ?? url.searchParams.get('token');
+  let token = req.headers.authorization?.replace(/^Bearer /i, '') ?? url.searchParams.get('token');
+  const ticket = url.searchParams.get('ticket');
+  const webOrigin = process.env.VOIID_WEB_ORIGIN;
+  if (ticket) {
+    try { token = await redeemWebTicket(ticket, req.headers.origin, webOrigin, pub); }
+    catch { ws.close(4503, 'service unavailable'); ws.resume(); return; }
+  }
   req.url = url.pathname; // Do not retain URL credentials for service access logging.
 
   // AWAITED BEFORE THE SOCKET IS REGISTERED. The previous check was a floating promise: the
@@ -421,6 +428,7 @@ wss.on('connection', async (ws, req) => {
     ws.resume();
     return;
   }
+  if (auth.client === 'web' && (!ticket || req.headers.origin !== webOrigin)) { ws.close(4401, 'unauthorized'); ws.resume(); return; }
   const userId = auth.userId;
 
   // The client may have closed or the server shut down during the round-trip above.
@@ -531,6 +539,7 @@ wss.on('connection', async (ws, req) => {
     try {
       const msg = JSON.parse(raw.toString());
 
+      if (auth.client === 'web' && !['heartbeat', 'typing'].includes(msg.type)) return;
       if (msg.type === 'heartbeat') {
         // Server ping/pong owns the lease; client heartbeats cannot keep a stale session alive.
         return;

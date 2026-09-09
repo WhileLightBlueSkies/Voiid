@@ -7,7 +7,8 @@
     "backend/*",
     "packages/*",
     "apps/web",
-    "apps/admin-web"
+    "apps/admin-web",
+    "apps/web-client"
   ],
   "engines": {
     "node": ">=20"

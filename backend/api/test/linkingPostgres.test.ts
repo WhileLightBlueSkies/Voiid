@@ -13,13 +13,14 @@
 // write left a registered device with a link token stuck on "pending" forever.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
 import express from 'express';
 
 process.env.NODE_ENV = 'test';
+process.env.VOIID_WEB_LINKING_ENABLED = '1';
 
 import { pool } from '../src/db';
 import { redis, publisher } from '../src/redis';
@@ -52,26 +53,36 @@ test('device linking against PostgreSQL', { skip: !url }, async (t) => {
   const base = `http://127.0.0.1:${(server.address() as any).port}`;
 
   const ana = randomUUID(), ben = randomUUID();
-  const anaDev = randomUUID();
+  const anaDev = randomUUID(), benDev = randomUUID();
+  const proofs = new Map<string, string>();
+  const keys = new Map<string, string>();
+  // Limiter behavior is covered separately; these tests exercise real SQL transactions.
+  const originalEval = redis.eval;
+  (redis as any).eval = async () => [1, 300000];
   let seed = 5000;
 
-  async function call(method: string, path: string, user?: string, body?: any) {
+  async function call(method: string, path: string, user?: string, body?: any, headers: Record<string, string> = {}) {
     const res = await fetch(`${base}${path}`, {
       method,
       headers: {
-        'content-type': 'application/json',
-        ...(user ? { authorization: `Bearer ${issueToken({ user_id: user, device_id: anaDev })}` } : {}),
+        'content-type': 'application/json', ...headers,
+        ...(user ? { authorization: `Bearer ${issueToken({ user_id: user, device_id: user === ben ? benDev : anaDev })}` } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     return { status: res.status, body: await res.json().catch(() => ({})) as any };
   }
-  const request = () => call('POST', '/linking/request', undefined, {
-    platform: 'web', registration_id: ++seed,
-    identity_public_key: Buffer.from(`web-key-${seed}`).toString('base64'),
-  });
-  const approve = (token: string, user = ana) => call('POST', '/linking/approve', user, { link_token: token });
-  const poll = (token: string) => call('GET', `/linking/poll/${token}`);
+  const request = async (overrides: any = {}) => {
+    const key = randomBytes(32).toString('base64');
+    const result = await call('POST', '/linking/request', undefined, {
+      platform: 'web', registration_id: ++seed, identity_public_key: key, ...overrides,
+    });
+    proofs.set(result.body.link_token, result.body.poll_secret);
+    keys.set(result.body.link_token, overrides.identity_public_key || key);
+    return result;
+  };
+  const approve = (token: string, user = ana) => call('POST', '/linking/approve', user, { link_token: token, identity_public_key: keys.get(token) });
+  const poll = (token: string, secret = proofs.get(token) || randomBytes(32).toString('base64url')) => call('GET', `/linking/poll/${token}`, undefined, undefined, { 'X-Link-Proof': secret });
   const deviceCount = async () =>
     Number((await db.query('select count(*)::int as n from devices')).rows[0].n);
 
@@ -84,7 +95,14 @@ test('device linking against PostgreSQL', { skip: !url }, async (t) => {
       await db.query('insert into users(id, phone_number) values($1,$2)', [id, `+1999000900${i}`]);
     }
     await db.query(`insert into devices(id,user_id,platform,registration_id,identity_public_key)
-      values($1,$2,'ios',1,$3)`, [anaDev, ana, Buffer.from('key')]);
+      values($1,$2,'ios',1,$3)`, [anaDev, ana, randomBytes(32)]);
+    await db.query(`insert into devices(id,user_id,platform,registration_id,identity_public_key) values($1,$2,'android',1,$3)`, [benDev, ben, randomBytes(32)]);
+
+    await t.test('new linking is disabled until deployment explicitly enables it', async () => {
+      delete process.env.VOIID_WEB_LINKING_ENABLED;
+      try { assert.equal((await request()).status, 503); }
+      finally { process.env.VOIID_WEB_LINKING_ENABLED = '1'; }
+    });
 
     await t.test('the happy path: request, approve, collect the credential once', async () => {
       const { body: made } = await request();
@@ -99,6 +117,62 @@ test('device linking against PostgreSQL', { skip: !url }, async (t) => {
       assert.ok(collected.body.token, 'the companion gets its session token');
       assert.equal(collected.body.user_id, ana);
       assert.equal(collected.body.device_id, approved.body.device_id);
+    });
+
+    await t.test('the QR token alone and a wrong proof cannot steal or consume a session', async () => {
+      const { body: made } = await request();
+      await approve(made.link_token);
+      assert.equal((await call('GET', `/linking/poll/${made.link_token}`)).status, 404);
+      assert.equal((await poll(made.link_token, randomBytes(32).toString('base64url'))).status, 404);
+      assert.equal((await poll(made.link_token)).body.status, 'approved');
+    });
+    await t.test('preview grants nothing and approval binds the previewed public key', async () => {
+      const { body: made } = await request();
+      const preview = await call('POST', '/linking/preview', ana, { link_token: made.link_token });
+      assert.equal(preview.status, 200);
+      assert.equal(preview.body.identity_public_key, keys.get(made.link_token));
+      assert.match(preview.body.verification_code, /^[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}$/);
+      assert.equal(preview.body.poll_secret, undefined);
+      assert.equal((await poll(made.link_token)).body.status, 'pending');
+      assert.equal((await call('POST', '/linking/approve', ana, { link_token: made.link_token, identity_public_key: randomBytes(32).toString('base64') })).status, 409);
+      assert.equal((await approve(made.link_token)).status, 200);
+    });
+    await t.test('invalid platform and malformed identity cannot create a link', async () => {
+      assert.equal((await request({ platform: 'ios' })).status, 400);
+      assert.equal((await request({ identity_public_key: 'abcd' })).status, 400);
+      assert.equal((await request({ registration_id: 1.5 })).status, 400);
+    });
+    await t.test('a registration collision cannot overwrite or un-revoke a phone', async () => {
+      const before = (await db.query('select identity_public_key from devices where id=$1', [anaDev])).rows[0].identity_public_key;
+      const { body: made } = await request({ registration_id: 1 });
+      assert.equal((await approve(made.link_token)).status, 409);
+      assert.deepEqual((await db.query('select identity_public_key from devices where id=$1', [anaDev])).rows[0].identity_public_key, before);
+    });
+    await t.test('a device with a legacy web token still cannot approve another browser', async () => {
+      const { body: first } = await request();
+      const approved = await approve(first.link_token);
+      const { body: next } = await request();
+      const token = issueToken({ user_id: ana, device_id: approved.body.device_id });
+      for (const route of ['preview', 'approve']) {
+        const result = await call('POST', `/linking/${route}`, undefined, { link_token: next.link_token, identity_public_key: keys.get(next.link_token) }, { authorization: `Bearer ${token}` });
+        assert.equal(result.status, 403);
+      }
+    });
+
+    await t.test('a signed browser capability cannot preview or approve links', async () => {
+      const { body: first } = await request(); await approve(first.link_token);
+      const collected = await poll(first.link_token);
+      const { body: next } = await request();
+      for (const route of ['preview', 'approve']) {
+        const response = await call('POST', `/linking/${route}`, undefined, { link_token: next.link_token, identity_public_key: keys.get(next.link_token) }, { authorization: `Bearer ${collected.body.token}` });
+        assert.equal(response.status, 403);
+        assert.equal(response.body.code, 'companion_scope');
+      }
+    });
+    await t.test('simultaneous redemption gives the credential to only one request', async () => {
+      const { body: made } = await request(); await approve(made.link_token);
+      const results = await Promise.all([poll(made.link_token), poll(made.link_token)]);
+      assert.deepEqual(results.map(r => r.status).sort(), [200, 404]);
     });
 
     await t.test('the credential is handed over exactly once', async () => {
@@ -207,6 +281,7 @@ test('device linking against PostgreSQL', { skip: !url }, async (t) => {
     });
   } finally {
     await new Promise<void>((done, fail) => server.close((e) => (e ? fail(e) : done())));
+    (redis as any).eval = originalEval;
     (pool as any).query = originalQuery;
     (pool as any).connect = originalConnect;
     await db.end();

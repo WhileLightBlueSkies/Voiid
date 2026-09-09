@@ -20,33 +20,10 @@
 //   * `DELETE /v1/devices/:device_id` → sets `revoked_at = now()` and drops the device's
 //     one-time prekeys.
 //
-//  TWO THINGS DELIBERATELY NOT MODELLED HERE
-//  -----------------------------------------
-//  1. `identity_public_key` is returned by the route and is NOT decoded. It has exactly
-//     one legitimate consumer — the session-establishment path — and a Settings screen
-//     that never displays it has no business holding it.
-//
-//  2. Device LINKING (`POST /linking/request`, `POST /linking/approve`,
-//     `GET /linking/poll/:link_token` in backend/api/src/routes/linking.ts) is not
-//     implemented here. That flow is the WhatsApp-Web-style companion pairing: an
-//     unauthenticated web client posts its own freshly generated `registration_id` +
-//     `identity_public_key` to get a `link_token`, renders it as a QR, and an existing
-//     signed-in device scans that QR and approves it. iOS could only ever be the
-//     *approver*, and approving requires reading a `link_token` out of a QR code — i.e.
-//     AVFoundation capture, a camera-permission string in Info.plist, a scanner surface,
-//     and an approval screen that names the device being admitted to the account. That is
-//     a feature build, not a settings row (spec §5.3), and a "Link a Device" button with
-//     no scanner behind it is exactly the kind of lie this rebuild exists to remove.
-//     When the scanner ships, `approve(linkToken:)` belongs on this type.
-//
-//  SECURITY NOTE FOR THE BACKEND (release blocker there, not here)
-//  --------------------------------------------------------------
-//  `DELETE /devices/:device_id` is NOT scoped to the caller: it revokes by id alone
-//  (devices.ts:104), unlike `POST /devices/voip-token` at :70 which correctly adds
-//  `and user_id = $2`. Any authenticated user who learns another user's device id can
-//  therefore revoke it. iOS's mitigation is to never render or expose a raw device id —
-//  see `LinkedDevice.id` below — but the real fix is one `and user_id = $2` on that
-//  query and it must be filed.
+//  Browser pairing is approved only from Linked Devices after a preview and local
+//  device authentication. The server also requires an active phone device and binds
+//  approval to the exact public key shown in the preview.
+//  Device revocation is ownership-scoped by the server.
 //
 
 import Foundation
@@ -57,7 +34,7 @@ import Foundation
 struct LinkedDevice: Identifiable, Hashable, Sendable {
     /// The server's device id. Used ONLY as a `ForEach` identity and as the path
     /// component of a revoke request. It must never be rendered, logged, put in an
-    /// accessibility label or made selectable — see the security note above.
+    /// accessibility label or made selectable — never exposed as account credentials.
     let id: String
 
     /// `device_name` from the server, or a platform-derived stand-in when the column is
@@ -140,6 +117,28 @@ final class DeviceDirectoryService {
     func revoke(deviceID: String) async throws {
         let encoded = deviceID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? deviceID
         _ = try await api.request("DELETE", "devices/\(encoded)", as: EmptyResponse.self)
+    }
+
+    struct LinkPreview: Decodable {
+        let device_name: String
+        let platform: String
+        let identity_public_key: String
+        let verification_code: String
+        let expires_at: String
+    }
+
+    private struct PreviewBody: Encodable { let link_token: String }
+    private struct ApproveBody: Encodable { let link_token: String; let identity_public_key: String }
+    private struct Approval: Decodable { let approved: Bool; let device_id: String }
+
+    func preview(linkToken: String) async throws -> LinkPreview {
+        try await api.request("POST", "linking/preview", body: PreviewBody(link_token: linkToken))
+    }
+
+    func approve(linkToken: String, identityKey: String) async throws {
+        let response: Approval = try await api.request("POST", "linking/approve",
+            body: ApproveBody(link_token: linkToken, identity_public_key: identityKey))
+        guard response.approved else { throw APIError.http(status: 409, message: "This browser could not be linked.") }
     }
 
     // MARK: Helpers

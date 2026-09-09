@@ -73,6 +73,14 @@ test('relay connect authorization against PostgreSQL', { skip: !url }, async (t)
       assert.equal((result as any).deviceId, device);
     });
 
+    await t.test('a web capability requires a durable session and survives authorization', async () => {
+      cache.clear();
+      assert.equal((await authorizeConnection(token({ user_id: user, device_id: device, client: 'web' }))).ok, false);
+      const result = await authorizeConnection(token({ user_id: user, device_id: device, sid: live, scope: 'session', client: 'web' }));
+      assert.equal(result.ok, true);
+      assert.equal((result as any).client, 'web');
+    });
+
     await t.test('a revoked session is refused, and a flushed cache keeps refusing it', async () => {
       cache.clear();
       assert.equal((await authorizeConnection(sessionToken)).ok, true); // warms the cache

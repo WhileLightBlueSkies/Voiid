@@ -1,0 +1,28 @@
+{
+  "name": "@voiid/web-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node server.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/protocol.test.ts",
+    "test:browser": "playwright test",
+    "test:crypto:prepare": "cargo build --manifest-path ../../packages/e2e-core/bindings/wasm/Cargo.toml --example interop",
+    "test:crypto": "node --import tsx --test test/crypto.test.ts"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}
