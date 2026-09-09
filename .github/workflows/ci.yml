@@ -22,7 +22,18 @@ on:
 concurrency:
   # Per ref, and DO cancel superseded runs — unlike a deploy, an obsolete CI run has no value
   # and only delays the one the author is waiting on.
-  group: ci-${{ github.ref }}
+  #
+  # `github.workflow` IS PART OF THE KEY, and that is the whole point. This file runs two ways
+  # on a push to main: on its own via the `push` trigger above, and again as a `workflow_call`
+  # from deploy-main.yml's quality gate. With a group of `ci-<ref>` alone those two shared one
+  # slot, so every push cancelled one of them — and because the deploy's copy is the one whose
+  # result gates the deploy, a cancel there could take the deploy down with it. Every CI run
+  # on main has been `cancelled` for exactly this reason.
+  #
+  # When called from the deploy, `github.workflow` is the CALLER's name, so the two runs land
+  # in different groups and neither cancels the other. Superseding still works within each:
+  # a second push still cancels the first push's standalone CI, and the first deploy's gate.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -52,6 +63,16 @@ jobs:
       # errors, and CI must not reproduce that confusion.
       - name: Install (locked)
         run: npm ci --no-audit --no-fund
+
+      # BUILD THE SHARED PACKAGE FIRST. Every backend service imports @voiid/common-utils,
+      # and a workspace dependency resolves through its `dist/` — which `npm ci` does not
+      # create, because building is not installing. Without this the typecheck failed with
+      # "Cannot find module '@voiid/common-utils'" in five files and blocked every deploy,
+      # while the same code compiled locally for anyone who had built the package once.
+      #
+      # The migration job below already did this; the typecheck job did not.
+      - name: Build shared package
+        run: npm run build -w @voiid/common-utils
 
       - name: Typecheck backend and shared packages
         run: |
@@ -143,7 +164,12 @@ jobs:
           # fails to load, so `cargo audit` scans nothing and exits non-zero — a hard
           # failure rather than a silent pass, but it means this step had stopped
           # being an audit. Verified 2026-09-06 against RUSTSEC-2026-0073.
-          cargo install cargo-audit --locked --version ^0.22
+          # `--force` so a cached ~/.cargo/bin from rust-cache cannot leave an older
+          # binary in place and silently change what this gate enforces. Building
+          # cargo-audit from source is also the slowest part of this job and the part that
+          # failed intermittently on a cold runner — a partial build left a broken binary
+          # and the step exited 1 with nothing about advisories in the log at all.
+          cargo install cargo-audit --locked --version ^0.22 --force
           # Keep the report even when it passes: E01 requires retained scan evidence,
           # and an exception that is never re-examined is how a liability becomes a
           # silent acceptance.
@@ -348,6 +374,42 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # google-services.json IS GITIGNORED — it carries the Firebase project's client ids and
+      # is provisioned per-machine, so CI has no copy and `processDebugGoogleServices` fails
+      # before any Kotlin is compiled. That failure blocked every deploy while telling us
+      # nothing about the code.
+      #
+      # A PLACEHOLDER, NOT THE REAL FILE. The plugin only needs a well-formed document whose
+      # package_name matches applicationId; nothing in a lint, unit-test or debug-compile run
+      # talks to Firebase. Writing a dummy keeps the real credentials out of CI entirely,
+      # which is better than a secret that would have to be rotated and could leak in a log.
+      #
+      # A build that must actually REACH Firebase (a release artifact, an instrumented test)
+      # needs the real file from a secret and must not use this.
+      - name: Placeholder google-services.json
+        run: |
+          cat > apps/android/app/google-services.json <<'JSON'
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "voiid-ci-placeholder",
+              "storage_bucket": "voiid-ci-placeholder.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
+                  "android_client_info": { "package_name": "in.voiid.app" }
+                },
+                "oauth_client": [],
+                "api_key": [ { "current_key": "AIzaSyCIplaceholderCIplaceholderCIplace" } ],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          JSON
+
       - name: Unit tests
         working-directory: apps/android
         run: ./gradlew testDebugUnitTest --stacktrace
@@ -417,6 +479,25 @@ jobs:
           path: apps/ios/Voiid/build/SourcePackages
           key: spm-${{ runner.os }}-${{ hashFiles('apps/ios/Voiid/Voiid.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-
+
+      # THE XCFRAMEWORK IS NOT IN THE REPO. `Frameworks/Voiid.xcframework` is the compiled
+      # Rust E2E core and is gitignored — a build product, correctly kept out of git. But
+      # nothing in CI built it, so every iOS job failed with "There is no XCFramework found
+      # at .../Voiid.xcframework" before compiling a line of Swift, and that failure gated
+      # every deploy.
+      #
+      # build-apple.sh compiles the crate for the simulator and device slices, assembles the
+      # xcframework, and installs it plus the generated Swift bindings into the app — the
+      # same script a developer runs locally, so CI cannot drift from what they build.
+      - name: Build the Rust E2E core (xcframework)
+        run: |
+          set -euxo pipefail
+          # Same pin as the Rust jobs above, so the core CI compiles and the one the app
+          # links cannot be built by different compilers.
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+          bash packages/e2e-core/build-apple.sh
 
       - name: Build for simulator (unsigned)
         working-directory: apps/ios/Voiid
