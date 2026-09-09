@@ -16,10 +16,15 @@
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<!-- Both track the BUILD SETTINGS rather than being written here, so the extension
+	     cannot drift from its containing app. App Store Connect REFUSES an upload whose
+	     extension version differs from the parent's, and the values had already diverged
+	     (1.0 here against the app's 0.1) — a hardcoded literal only stays correct until
+	     the next time the app's version moves without someone remembering this file. -->
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>

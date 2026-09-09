@@ -30,6 +30,31 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         FirebaseApp.configure()
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategories()
+        // ASK FIRST. `registerForRemoteNotifications()` below is not enough on its own:
+        // until the user has granted notification authorization, APNs issues NO alert
+        // token, `didRegisterForRemoteNotificationsWithDeviceToken` is never called, and
+        // `devices.push_token` stays NULL for the life of the install.
+        //
+        // That is exactly what shipped. Authorization was requested from ONE place —
+        // MissedCallNotifier, on a missed call — so a user who had not yet missed a call
+        // had never been asked, and every iOS device in the database carried
+        // push_token = NULL while voip_token was populated. The asymmetry is the tell:
+        // PushKit tokens do NOT require user authorization, alert tokens do. Calls rang
+        // (VoIP) and messages never woke the app (alert), which is precisely the symptom.
+        //
+        // Registering unconditionally afterwards is still correct: it is what delivers the
+        // token once permission exists, it is required for Firebase Auth's silent
+        // verification push, and it is harmless when permission is refused.
+        // Deferred to didBecomeActive rather than called here: `ensureAuthorization`
+        // deliberately prompts only while the app is frontmost (prompting from a
+        // background wake burns the one-shot system dialog unseen), and during
+        // didFinishLaunching the state is still .inactive — so calling it directly here
+        // would hit that guard and do nothing, which is the bug it is meant to fix.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in
+            MissedCallNotifier.ensureAuthorization()
+        }
         // Register for remote notifications so the server can send the NSE-triggering
         // message push (and Firebase Auth's silent verification push).
         application.registerForRemoteNotifications()
