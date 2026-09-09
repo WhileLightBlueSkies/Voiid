@@ -30,26 +30,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         FirebaseApp.configure()
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategories()
-        // ASK FIRST. `registerForRemoteNotifications()` below is not enough on its own:
-        // until the user has granted notification authorization, APNs issues NO alert
-        // token, `didRegisterForRemoteNotificationsWithDeviceToken` is never called, and
-        // `devices.push_token` stays NULL for the life of the install.
+        // A SAFETY NET, NOT THE ASK. Onboarding's PermissionsScreen is where this app
+        // primes notifications, alongside contacts/camera/mic/photos — that is the right
+        // place and it stays the only place a first-run user is prompted.
         //
-        // That is exactly what shipped. Authorization was requested from ONE place —
-        // MissedCallNotifier, on a missed call — so a user who had not yet missed a call
-        // had never been asked, and every iOS device in the database carried
-        // push_token = NULL while voip_token was populated. The asymmetry is the tell:
-        // PushKit tokens do NOT require user authorization, alert tokens do. Calls rang
-        // (VoIP) and messages never woke the app (alert), which is precisely the symptom.
+        // This covers the installs that never went through it: an upgrade from a build
+        // that predates the screen, and an account signed in before the prompt existed.
+        // Those devices are stuck with authorizationStatus == .notDetermined forever, so
+        // iOS issues NO alert token, didRegisterForRemoteNotificationsWithDeviceToken is
+        // never called, and devices.push_token stays NULL for the life of the install —
+        // which is the state every iOS row in the database is in right now, with
+        // voip_token populated beside it. That asymmetry is the diagnosis: PushKit tokens
+        // need no user authorization, alert tokens do. Calls rang; messages never woke
+        // the app.
         //
-        // Registering unconditionally afterwards is still correct: it is what delivers the
-        // token once permission exists, it is required for Firebase Auth's silent
-        // verification push, and it is harmless when permission is refused.
-        // Deferred to didBecomeActive rather than called here: `ensureAuthorization`
-        // deliberately prompts only while the app is frontmost (prompting from a
-        // background wake burns the one-shot system dialog unseen), and during
-        // didFinishLaunching the state is still .inactive — so calling it directly here
-        // would hit that guard and do nothing, which is the bug it is meant to fix.
+        // ensureAuthorization prompts ONLY when the status is still .notDetermined, so a
+        // user who already answered — either way — is never asked again by this.
+        //
+        // On didBecomeActive rather than inline: it also guards on the app being frontmost
+        // (prompting from a background wake burns the one-shot dialog unseen), and the
+        // state during didFinishLaunching is still .inactive, so an inline call would hit
+        // that guard and silently do nothing.
         NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
