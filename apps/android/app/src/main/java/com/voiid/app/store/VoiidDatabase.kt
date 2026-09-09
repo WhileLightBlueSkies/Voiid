@@ -41,7 +41,7 @@ import androidx.room.Transaction
         // AFTER location so two concurrent table-adding features don't both own "1 -> 2".
         StoryRow::class, StoryAudienceRow::class, StoryViewRow::class,
     ],
-    version = 4,
+    version = 5,
     // EXPORTED (A04). Room writes schemas/<db>/<version>.json at build time, and it is the only
     // record of what actually shipped. Without it a migration can only be checked against the
     // current code's idea of the old schema — which is the one thing guaranteed to agree with
@@ -87,7 +87,7 @@ abstract class VoiidDatabase : RoomDatabase() {
                     // every version bump from here on MUST ship an explicit additive Migration
                     // (see MIGRATION_1_2). The fallback stays only as the last-resort guard for
                     // a genuinely corrupt file.
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     // NO DESTRUCTIVE FALLBACK (A04).
                     //
                     // It used to be here, next to a comment that already described exactly why
@@ -209,6 +209,7 @@ data class CallHistoryRow(
     @ColumnInfo(name = "outcome") val outcome: String = "missed",   // answered | missed | declined | failed
     @ColumnInfo(name = "started_at") val startedAt: Long,
     @ColumnInfo(name = "ended_at") val endedAt: Long? = null,
+    @ColumnInfo(name = "connected_at") val connectedAt: Long? = null,
 )
 
 // MARK: - DAOs
@@ -439,13 +440,13 @@ abstract class CallHistoryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertIgnore(row: CallHistoryRow)
 
-    @Query("UPDATE call_history SET outcome = :outcome, ended_at = COALESCE(:endedAt, ended_at) WHERE id = :id")
-    abstract fun merge(id: String, outcome: String, endedAt: Long?)
+    @Query("UPDATE call_history SET outcome = CASE WHEN :endedAt IS NULL AND ended_at IS NOT NULL THEN outcome ELSE :outcome END, started_at = MIN(started_at, :startedAt), connected_at = COALESCE(connected_at, :connectedAt), ended_at = COALESCE(:endedAt, ended_at), conversation_id = COALESCE(conversation_id, :conversationId), peer_user_id = COALESCE(peer_user_id, :peerUserId) WHERE id = :id")
+    abstract fun merge(id: String, outcome: String, startedAt: Long, endedAt: Long?, connectedAt: Long?, conversationId: String?, peerUserId: String?)
 
     /** Idempotent by call id: the same call may be recorded twice (ring push, then teardown). */
     @Transaction
     open fun record(row: CallHistoryRow) {
         insertIgnore(row)
-        merge(row.id, row.outcome, row.endedAt)
+        merge(row.id, row.outcome, row.startedAt, row.endedAt, row.connectedAt, row.conversationId, row.peerUserId)
     }
 }

@@ -132,6 +132,7 @@ object LocalStore {
         outcome: String,
         startedAtMs: Long,
         endedAtMs: Long? = null,
+        connectedAtMs: Long? = null,
     ) {
         val row = CallHistoryRow(
             id = id,
@@ -142,6 +143,7 @@ object LocalStore {
             outcome = outcome,
             startedAt = startedAtMs / 1000,
             endedAt = endedAtMs?.let { it / 1000 },
+            connectedAt = connectedAtMs?.let { it / 1000 },
         )
         scope.launch { runCatching { db(context).calls().record(row) } }
     }

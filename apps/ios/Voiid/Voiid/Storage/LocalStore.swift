@@ -262,18 +262,24 @@ enum LocalStore {
 
     static func recordCall(id: String, conversationId: String?, peerUserId: String?,
                            kind: String, direction: String, outcome: String,
-                           startedAt: Date, endedAt: Date? = nil) {
+                           startedAt: Date, endedAt: Date? = nil, connectedAt: Date? = nil) {
         db.write { database in
             try database.execute(sql: """
                 INSERT INTO call_history
-                    (id, conversation_id, peer_user_id, kind, direction, outcome, started_at, ended_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, conversation_id, peer_user_id, kind, direction, outcome, started_at, ended_at, connected_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
-                    outcome  = excluded.outcome,
-                    ended_at = COALESCE(excluded.ended_at, call_history.ended_at)
+                    outcome = CASE WHEN excluded.ended_at IS NULL AND call_history.ended_at IS NOT NULL
+                                   THEN call_history.outcome ELSE excluded.outcome END,
+                    started_at = MIN(call_history.started_at, excluded.started_at),
+                    connected_at = COALESCE(call_history.connected_at, excluded.connected_at),
+                    ended_at = COALESCE(excluded.ended_at, call_history.ended_at),
+                    conversation_id = COALESCE(call_history.conversation_id, excluded.conversation_id),
+                    peer_user_id = COALESCE(call_history.peer_user_id, excluded.peer_user_id)
                 """, arguments: [id, conversationId, peerUserId, kind, direction, outcome,
                                  Int64(startedAt.timeIntervalSince1970),
-                                 endedAt.map { Int64($0.timeIntervalSince1970) }])
+                                 endedAt.map { Int64($0.timeIntervalSince1970) },
+                                 connectedAt.map { Int64($0.timeIntervalSince1970) }])
         }
     }
 
@@ -284,7 +290,7 @@ enum LocalStore {
     static func callsForConversation(_ conversationId: String) -> [CallHistoryEntry] {
         (try? db.read { database in
             try Row.fetchAll(database, sql: """
-                SELECT id, kind, direction, outcome, started_at, ended_at
+                SELECT id, kind, direction, outcome, started_at, ended_at, connected_at
                   FROM call_history
                  WHERE conversation_id = ?
                  ORDER BY started_at ASC
@@ -295,7 +301,8 @@ enum LocalStore {
                     direction: row["direction"],
                     outcome: row["outcome"],
                     startedAt: Date(timeIntervalSince1970: TimeInterval(row["started_at"] as Int64)),
-                    endedAt: (row["ended_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) }
+                    endedAt: (row["ended_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                    connectedAt: (row["connected_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) }
                 )
             }
         }) ?? []
@@ -316,7 +323,7 @@ enum LocalStore {
         (try? db.read { database in
             try Row.fetchAll(database, sql: """
                 SELECT id, conversation_id, peer_user_id, kind, direction, outcome,
-                       started_at, ended_at
+                       started_at, ended_at, connected_at
                   FROM call_history
                  ORDER BY started_at DESC
                  LIMIT ?
@@ -329,7 +336,8 @@ enum LocalStore {
                     direction: row["direction"],
                     outcome: row["outcome"],
                     startedAt: Date(timeIntervalSince1970: TimeInterval(row["started_at"] as Int64)),
-                    endedAt: (row["ended_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) }
+                    endedAt: (row["ended_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                    connectedAt: (row["connected_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) }
                 )
             }
         }) ?? []
@@ -353,6 +361,7 @@ enum LocalStore {
         let outcome: String     // answered | missed | declined | failed
         let startedAt: Date
         let endedAt: Date?
+        var connectedAt: Date? = nil
 
         var isVideo: Bool { kind == "video" }
         var incoming: Bool { direction == "incoming" }
@@ -363,7 +372,7 @@ enum LocalStore {
         /// Seconds, or nil when the call never connected.
         var duration: TimeInterval? {
             guard outcome == "answered", let endedAt else { return nil }
-            return max(0, endedAt.timeIntervalSince(startedAt))
+            return max(0, endedAt.timeIntervalSince(connectedAt ?? startedAt))
         }
     }
 
@@ -375,6 +384,7 @@ enum LocalStore {
         let outcome: String     // answered | missed | declined | failed
         let startedAt: Date
         let endedAt: Date?
+        var connectedAt: Date? = nil
     }
 
     // MARK: - Legacy import

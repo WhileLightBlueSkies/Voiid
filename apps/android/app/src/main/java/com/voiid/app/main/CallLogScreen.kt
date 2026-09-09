@@ -176,7 +176,7 @@ fun CallLogScreen(chat: ChatStore, onBack: () -> Unit, onOpenConversation: (VCon
             else -> {
                 // Grouped by day with section labels — Today / Yesterday / weekday / date.
                 // Mirrors iOS `CallLogView` grouping; the 76dp inset divider is preserved.
-                val grouped = visible.groupBy { VoiidDate.separator(it.startedAt) }
+                val grouped = visible.groupBy { VoiidDate.separator(it.startedAt * 1000) }
                 LazyColumn(Modifier.fillMaxSize()) {
                     grouped.forEach { (dayLabel, rows) ->
                         item(key = "hdr_$dayLabel") { DayHeader(dayLabel) }
@@ -297,7 +297,7 @@ private fun callSubtitle(row: CallHistoryRow): String {
         "answered" -> {
             parts += if (row.direction == "incoming") "Incoming" else "Outgoing"
             row.endedAt?.let { end ->
-                val s = ((end - row.startedAt) / 1000).coerceAtLeast(0)
+                val s = (end - (row.connectedAt ?: row.startedAt)).coerceAtLeast(0)
                 val m = s / 60
                 parts += if (m >= 60) "%d:%02d:%02d".format(m / 60, m % 60, s % 60)
                          else "%d:%02d".format(m, s % 60)
@@ -307,7 +307,7 @@ private fun callSubtitle(row: CallHistoryRow): String {
         "failed" -> parts += "Failed"
         else -> parts += if (row.direction == "incoming") "Missed" else "No answer"
     }
-    parts += VoiidDate.bubbleTime(row.startedAt)
+    parts += VoiidDate.bubbleTime(row.startedAt * 1000)
     return parts.joinToString(" · ")
 }
 

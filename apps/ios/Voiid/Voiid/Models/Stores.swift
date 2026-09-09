@@ -502,7 +502,7 @@ final class ChatStore: ObservableObject {
                                incoming: incoming,
                                outcome: r.outcome,
                                startedAt: r.startedAt,
-                               endedAt: r.endedAt)
+                               endedAt: r.endedAt, connectedAt: r.connectedAt)
             )
         }
     }

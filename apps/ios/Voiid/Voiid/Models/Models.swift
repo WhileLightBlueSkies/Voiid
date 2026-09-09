@@ -44,12 +44,13 @@ struct VCallLog: Hashable {
     var outcome: String
     var startedAt: Date
     var endedAt: Date?
+    var connectedAt: Date? = nil
 
     var answered: Bool { outcome == "answered" }
     /// Seconds of connected time; nil unless the call was actually answered.
     var durationSeconds: Int? {
         guard answered, let endedAt else { return nil }
-        return max(0, Int(endedAt.timeIntervalSince(startedAt)))
+        return max(0, Int(endedAt.timeIntervalSince(connectedAt ?? startedAt)))
     }
 }
 

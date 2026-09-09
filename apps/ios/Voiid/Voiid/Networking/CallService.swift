@@ -556,6 +556,7 @@ final class CallService: NSObject, ObservableObject {
             guard let self else { return }
             self.quality = quality
             self.latestStats = sample
+            if self.isReconnecting || self.restartInFlight { self.reconcileRecoveredConnection() }
             #if DEBUG
             let rtc = LKRTCAudioSession.sharedInstance()
             NSLog("[VOIID] call-media: enabled=%d active=%d mic=%d rxKbps=%.2f txKbps=%.2f", rtc.isAudioEnabled ? 1 : 0, rtc.isActive ? 1 : 0, self.localAudioTrack?.isEnabled == true ? 1 : 0, sample.inboundBitrateKbps ?? -1, sample.outboundBitrateKbps ?? -1)
@@ -873,12 +874,18 @@ final class CallService: NSObject, ObservableObject {
     /// Reset per-call counters. Called for both outgoing and incoming calls at
     /// the moment the call becomes real, so `setup_ms` measures the same thing
     /// on both sides: intent-to-call until media actually flows.
-    private func beginCallTelemetry() {
+    private func beginCallTelemetry(startedAt: Date = Date()) {
         stats.reset()
         quality = .unknown
         latestStats = nil
-        callStartedAt = Date()
+        callStartedAt = startedAt
         callConnectedAt = nil
+        if let call = active {
+            LocalStore.recordCall(id: call.id, conversationId: call.conversationId,
+                                  peerUserId: call.peerUserId, kind: call.isVideo ? "video" : "voice",
+                                  direction: call.isOutgoing ? "outgoing" : "incoming", outcome: "missed",
+                                  startedAt: callStartedAt!)
+        }
         everConnected = false
         localAnswerGiven = false
         pendingEndReason = .unknown
@@ -947,7 +954,7 @@ final class CallService: NSObject, ObservableObject {
         // avoids needing full rollback/perfect-negotiation glare handling.
         guard call.isOutgoing else {
             NSLog("[VOIID] ICE restart needed (\(reason)) but we're the answerer — awaiting peer's offer")
-            isReconnecting = true
+            isReconnecting = pc?.iceConnectionState != .connected && pc?.iceConnectionState != .completed
             if recoveryDeadlineTask == nil { armRecoveryDeadline(for: call.id, seconds: 30, retry: false) }
             return
         }
@@ -956,7 +963,7 @@ final class CallService: NSObject, ObservableObject {
         iceRestartAttempts += 1
         iceRestartsTotal += 1
         restartInFlight = true
-        isReconnecting = true
+        isReconnecting = pc?.iceConnectionState != .connected && pc?.iceConnectionState != .completed
         NSLog("[VOIID] ICE restart attempt \(attempt + 1)/\(Self.maxIceRestarts): \(reason)")
 
         armRecoveryDeadline(for: call.id, seconds: Double(attempt + 1) * 10, retry: true)
@@ -1015,6 +1022,17 @@ final class CallService: NSObject, ObservableObject {
             // Don't end the call here — the ICE state handlers will trigger
             // another attempt, and the cap decides when to actually give up.
         }
+    }
+
+    /// Stats sampling also reconciles recovery when the SDK emits no new ICE event.
+    private func reconcileRecoveredConnection() {
+        guard let call = active, call.state == .connected || call.state == .connecting,
+              let pc,
+              pc.iceConnectionState == .connected || pc.iceConnectionState == .completed else { return }
+        // Media and signaling are separate: a pending SDP answer must not leave
+        // a reconnect banner over working audio or cancel its own negotiation.
+        if pc.signalingState == .stable { handleIceRecovered() }
+        else { isReconnecting = false }
     }
 
     /// A restart worked: clear the reconnect UI and let the call earn a fresh
@@ -1433,6 +1451,7 @@ final class CallService: NSObject, ObservableObject {
                 socket.sendCallAnswer(toUserId: from.isEmpty ? current.peerUserId : from,
                                       callId: current.id, sdp: tuned.sdp)
                 stats.resetRateBaseline()
+                reconcileRecoveredConnection()
                 iceRestartsTotal += 1
             } catch {
                 // A failed renegotiation is NOT a reason to drop a call whose
@@ -1695,7 +1714,7 @@ final class CallService: NSObject, ObservableObject {
                                 conversationId: nil, isConferenceInvite: true)
             videoEnabled = waiting.isVideo
             callUIMinimized = false
-            beginCallTelemetry()
+            beginCallTelemetry(startedAt: waiting.startedAt)
             callKitAnswer(uuid: waiting.uuid)
             return
         }
@@ -1728,7 +1747,7 @@ final class CallService: NSObject, ObservableObject {
                             isOutgoing: false, state: .incomingRinging)
         videoEnabled = waiting.isVideo
         callUIMinimized = false
-        beginCallTelemetry()
+        beginCallTelemetry(startedAt: waiting.startedAt)
         pendingIncomingOfferSDP = sdp
         callKitAnswer(uuid: waiting.uuid)
     }
@@ -1898,6 +1917,7 @@ final class CallService: NSObject, ObservableObject {
                 // clear the in-flight flag so a later handover can restart again.
                 // The attempt budget is only refunded once ICE actually connects.
                 restartInFlight = false
+                reconcileRecoveredConnection()
             } catch {
                 guard isCurrentCall(callId), self.pc === pc, !Task.isCancelled else { return }
                 NSLog("[VOIID] setRemoteDescription(answer) failed: \(error.localizedDescription)")
@@ -2169,7 +2189,8 @@ final class CallService: NSObject, ObservableObject {
             direction: call.isOutgoing ? "outgoing" : "incoming",
             outcome: outcome,
             startedAt: callStartedAt ?? Date(),
-            endedAt: Date()
+            endedAt: Date(),
+            connectedAt: callConnectedAt
         )
 
         // The missed-call banner. The scheduled request is only a backstop for the app
@@ -2384,6 +2405,10 @@ final class CallService: NSObject, ObservableObject {
         CallToneService.shared.stopRingback()
         if callConnectedAt == nil { callConnectedAt = Date() }
         everConnected = true
+        LocalStore.recordCall(id: call.id, conversationId: call.conversationId,
+                              peerUserId: call.peerUserId, kind: call.isVideo ? "video" : "voice",
+                              direction: call.isOutgoing ? "outgoing" : "incoming", outcome: "answered",
+                              startedAt: callStartedAt ?? callConnectedAt!, connectedAt: callConnectedAt)
         if let pc { stats.start(pc: pc) }
         CallManager.shared.reportOutgoingConnected(uuid: call.uuid)
         // A video call held at arm's length belongs on the speaker, not the earpiece —

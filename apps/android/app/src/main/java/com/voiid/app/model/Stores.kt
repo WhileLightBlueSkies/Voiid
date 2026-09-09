@@ -311,6 +311,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                         outcome = r.outcome,
                         startedAt = r.startedAt * 1000L,
                         endedAt = r.endedAt?.let { it * 1000L },
+                        connectedAt = r.connectedAt?.let { it * 1000L },
                     ),
                 )
             }

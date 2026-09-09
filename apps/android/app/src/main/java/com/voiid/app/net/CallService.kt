@@ -129,6 +129,7 @@ object CallManager {
         val kind: CallKind,
         /** Ad-hoc CONFERENCE invite: answer/decline route via ConferenceManager. */
         val isConferenceInvite: Boolean = false,
+        val startedAtMs: Long = System.currentTimeMillis(),
     )
 
     private const val STREAM_ID = "voiid_stream"
@@ -340,6 +341,7 @@ object CallManager {
             outcome = outcome,
             startedAtMs = callStartedAtMs.takeIf { it > 0 } ?: System.currentTimeMillis(),
             endedAtMs = endedAtMs,
+            connectedAtMs = s.connectedAtMs,
         )
     }
 
@@ -1069,6 +1071,7 @@ object CallManager {
                         remoteDescSet = true
                         hasNegotiated = true
                         restartInFlight = false
+                        reconcileRecoveredConnection(sig.callId)
                         drainCandidates()
                         attachFrameCryptorsIfReady()
                         resendCallSecretAfterAnswer(sig.callId)
@@ -1187,7 +1190,7 @@ object CallManager {
         com.voiid.app.store.LocalStore.recordCall(
             context = appContext, id = w.callId, conversationId = w.conversationId,
             peerUserId = w.peerUserId, kind = if (w.kind == CallKind.VIDEO) "video" else "voice",
-            direction = "incoming", outcome = outcome, startedAtMs = now,
+            direction = "incoming", outcome = outcome, startedAtMs = w.startedAtMs,
             endedAtMs = if (outcome == "missed") null else now,
         )
     }
@@ -1220,6 +1223,7 @@ object CallManager {
                 kotlinx.coroutines.delay(250)
                 if (_state.value != null) return@launch   // something else claimed the slot
                 // Build the active state the way onConferenceInvitePush would have.
+                callStartedAtMs = w.startedAtMs
                 _state.value = CallState(
                     callId = w.callId, peerUserId = w.peerUserId, peerName = w.peerName,
                     conversationId = null, kind = w.kind, incoming = true,
@@ -1262,6 +1266,7 @@ object CallManager {
                     conversationId = w.conversationId,
                 ),
             )
+            if (isCurrentCall(w.callId)) callStartedAtMs = w.startedAtMs
             // The offer path raises the incoming UI; the user already said yes, so answer it.
             if (sdp != null) accept()
         }
@@ -1920,7 +1925,8 @@ object CallManager {
         // and leave the banner stuck on.
         markReconnecting(false)
         if (s.phase == Phase.CONNECTED) return
-        update { it.copy(phase = Phase.CONNECTED, connectedAtMs = System.currentTimeMillis()) }
+        update(s.callId) { it.copy(phase = Phase.CONNECTED, connectedAtMs = it.connectedAtMs ?: System.currentTimeMillis()) }
+        _state.value?.takeIf { it.callId == s.callId }?.let { recordCall(it, outcome = "answered") }
         // Telling Telecom the call is up is what starts the duration the call log records,
         // and what makes the OS treat this as a real call for arbitration purposes.
         TelecomBridge.setActive(s.callId)
@@ -2289,7 +2295,11 @@ object CallManager {
             // StateFlow.collect never completes, so this job is cancelled in endCallSession.
             qualityJob?.cancel()
             qualityJob = scope.launch {
-                runCatching { collector.snapshot.collect { _quality.value = it } }
+                runCatching { collector.snapshot.collect {
+                    _quality.value = it
+                    val current = _state.value
+                    if (current != null && (current.reconnecting || restartInFlight)) exec.execute { reconcileRecoveredConnection(current.callId) }
+                } }
             }
         }
     }
@@ -2341,8 +2351,30 @@ object CallManager {
     private fun requestIceRestart(reason: String) {
         val s = _state.value ?: return
         if (s.phase != Phase.CONNECTING && s.phase != Phase.CONNECTED) return
-        markReconnecting(true)
-        exec.execute { if (isCurrentCall(s.callId)) doIceRestart(reason) }
+        exec.execute {
+            if (!isCurrentCall(s.callId)) return@execute
+            // A transport-change hint can arrive while media still works. Only show
+            // reconnecting for a lost ICE path, not merely a refreshed offer.
+            if (pc?.iceConnectionState() !in setOf(PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED)) markReconnecting(true)
+            doIceRestart(reason)
+        }
+    }
+
+    /** Runs on the media executor; also catches recovery without a new ICE callback. */
+    private fun reconcileRecoveredConnection(callId: String): Boolean {
+        if (!isCurrentCall(callId)) return false
+        val p = pc ?: return false
+        if (p.iceConnectionState() !in setOf(PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED)) return false
+        markReconnecting(false)
+        // Media can recover while an SDP answer is still pending. Keep that
+        // negotiation intact; a healthy call must not be ended by its watchdog.
+        if (p.signalingState() != PeerConnection.SignalingState.STABLE) return true
+        cancelDisconnectGrace()
+        cancelRestartWatchdog()
+        restartInFlight = false
+        iceRestartAttempts = 0
+        markReconnecting(false)
+        return true
     }
 
     /** Publish/clear the UI's "Reconnecting…" flag. Callable from any thread. */
@@ -2352,7 +2384,7 @@ object CallManager {
             if (!isCurrentCall(callId)) return@post
             val s = _state.value ?: return@post
             if (s.phase == Phase.ENDED || s.reconnecting == on) return@post
-            _state.value = s.copy(reconnecting = on)
+            update(callId) { it.copy(reconnecting = on) }
         }
     }
 
@@ -2432,7 +2464,7 @@ object CallManager {
                 val s = _state.value ?: return@execute
                 if (s.phase == Phase.ENDED) return@execute
                 if (!isCurrentCall(callId)) return@execute
-                if (pc?.iceConnectionState() in setOf(PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED)) return@execute
+                if (reconcileRecoveredConnection(callId)) return@execute
                 restartInFlight = false
                 if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
                     mainHandler.post { endInternal(notifyPeer = true, reason = "ice-failed") }

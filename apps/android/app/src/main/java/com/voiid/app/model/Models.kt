@@ -43,11 +43,12 @@ data class VCallLog(
     val outcome: String,
     val startedAt: Long,
     val endedAt: Long?,
+    val connectedAt: Long? = null,
 ) {
     val answered: Boolean get() = outcome == "answered"
     /** Seconds of connected time; null unless the call was actually answered. */
     val durationSeconds: Long?
-        get() = if (answered && endedAt != null) ((endedAt - startedAt) / 1000).coerceAtLeast(0) else null
+        get() = if (answered && endedAt != null) ((endedAt - (connectedAt ?: startedAt)) / 1000).coerceAtLeast(0) else null
 }
 
 data class VMessage(

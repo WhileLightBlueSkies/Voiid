@@ -261,6 +261,9 @@ final class VoiidDatabase {
             try db.execute(sql: "insert or ignore into chat_media\n                    (message_id, chat_id, type, media_json, sent_at, sender_id, is_outgoing)\n                select id, conversation_id, 'image', media_json, created_at, sender_id, is_mine\n                  from messages\n                 where media_json is not null and media_json <> ''")
         }
 
+        m.registerMigration("v5_call_connected_at") { db in
+            try db.execute(sql: "ALTER TABLE call_history ADD COLUMN connected_at INTEGER")
+        }
         return m
     }
 

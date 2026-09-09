@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 5,
-    "identityHash": "f873d46d7ceffdf59aaffa11a85fc0b3",
+    "identityHash": "44417b91e968af339251c307d1fb1cd2",
     "entities": [
       {
         "tableName": "users",
@@ -255,7 +255,7 @@
       },
       {
         "tableName": "call_history",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `conversation_id` TEXT, `peer_user_id` TEXT, `kind` TEXT NOT NULL, `direction` TEXT NOT NULL, `outcome` TEXT NOT NULL, `started_at` INTEGER NOT NULL, `ended_at` INTEGER, PRIMARY KEY(`id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `conversation_id` TEXT, `peer_user_id` TEXT, `kind` TEXT NOT NULL, `direction` TEXT NOT NULL, `outcome` TEXT NOT NULL, `started_at` INTEGER NOT NULL, `ended_at` INTEGER, `connected_at` INTEGER, PRIMARY KEY(`id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -302,6 +302,12 @@
           {
             "fieldPath": "endedAt",
             "columnName": "ended_at",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "connectedAt",
+            "columnName": "connected_at",
             "affinity": "INTEGER",
             "notNull": false
           }
@@ -687,7 +693,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'f873d46d7ceffdf59aaffa11a85fc0b3')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '44417b91e968af339251c307d1fb1cd2')"
     ]
   }
 }

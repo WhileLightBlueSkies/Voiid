@@ -71,3 +71,10 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
         db.execSQL("ALTER TABLE `conversations` ADD COLUMN `last_message_preview` TEXT")
     }
 }
+
+/** Preserve existing history while adding the first media-connected timestamp. */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `call_history` ADD COLUMN `connected_at` INTEGER")
+    }
+}
