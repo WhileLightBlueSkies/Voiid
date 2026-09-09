@@ -63,6 +63,24 @@ internal object ProfileLink {
         if (!HANDLE.matches(handle)) return null
         return "https://voiid.app/u/$handle"
     }
+
+    /**
+     * The reverse: a scanned string → the handle it names, or null.
+     *
+     * HTTPS and voiid.app only, and the handle must satisfy the same rule [urlFor] enforces
+     * when writing one. A scanner that followed whatever URL a code contained would be an
+     * attack surface — this one either recognises a Voiid profile link or ignores the code.
+     */
+    fun handleFrom(scanned: String): String? {
+        val uri = runCatching { android.net.Uri.parse(scanned.trim()) }.getOrNull() ?: return null
+        if (!uri.scheme.equals("https", ignoreCase = true)) return null
+        val host = uri.host?.lowercase()?.removePrefix("www.") ?: return null
+        if (host != "voiid.app") return null
+        val segments = uri.pathSegments ?: return null
+        if (segments.size != 2 || segments[0] != "u") return null
+        val handle = segments[1].lowercase()
+        return if (HANDLE.matches(handle)) handle else null
+    }
 }
 
 /**

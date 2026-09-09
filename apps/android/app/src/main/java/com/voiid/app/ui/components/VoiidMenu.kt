@@ -202,21 +202,13 @@ fun ColumnScopeMarker.VoiidMenuItem(
             .alpha(if (pressed) 0.9f else 1f)
             .clip(RoundedCornerShape(VoiidRadius.sm))
             .pressableRow(interaction, enabled) { onClick() }
-            .padding(horizontal = 14.dp, vertical = 11.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // A selected row swaps its own icon for a tick — the checkmark IS the state, so it
-        // takes the icon's place rather than crowding in beside it.
-        val leading = if (selected == true) Icons.Default.Check else icon
-        if (leading != null) {
-            Icon(
-                leading,
-                contentDescription = null,
-                tint = if (selected == true) VoiidColor.primary else tint,
-                modifier = Modifier.size(19.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-        }
+        // LABEL FIRST, ICON TRAILING — the order iOS uses in a Menu, and the reason this
+        // menu read as cramped and left-heavy before: a leading icon column pushes every
+        // label right and leaves a ragged gutter on the other side. Reading a menu is
+        // reading its words; the glyph is confirmation, not the entry point.
         Text(
             text,
             style = VoiidFont.rounded(
@@ -224,7 +216,20 @@ fun ColumnScopeMarker.VoiidMenuItem(
                 if (selected == true) FontWeight.SemiBold else FontWeight.Medium,
             ),
             color = tint,
+            modifier = Modifier.weight(1f),
         )
+        // A selected row swaps its own icon for a tick — the checkmark IS the state, so it
+        // takes the icon's place rather than crowding in beside it.
+        val trailing = if (selected == true) Icons.Default.Check else icon
+        if (trailing != null) {
+            Spacer(Modifier.width(16.dp))
+            Icon(
+                trailing,
+                contentDescription = null,
+                tint = if (selected == true) VoiidColor.primary else tint,
+                modifier = Modifier.size(19.dp),
+            )
+        }
     }
 }
 

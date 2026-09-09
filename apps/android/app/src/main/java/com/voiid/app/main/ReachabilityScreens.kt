@@ -75,6 +75,12 @@ import kotlinx.coroutines.launch
 @Composable
 fun FindByUsernameScreen(
     onClose: () -> Unit,
+    /**
+     * Handle supplied by a QR scan, so the field arrives filled and the lookup has already
+     * run. Null when the user opened this screen to type one themselves. The scan skips the
+     * TYPING only — the PIN step and the accept-a-request step below are unchanged.
+     */
+    prefilledHandle: String? = null,
     /** (conversationId, pending) once a chat is opened. */
     onOpen: (String, Boolean) -> Unit,
 ) {
@@ -82,7 +88,7 @@ fun FindByUsernameScreen(
     val haptics = LocalVoiidHaptics.current
     val scope = rememberCoroutineScope()
 
-    var handle by remember { mutableStateOf("") }
+    var handle by remember { mutableStateOf(prefilledHandle ?: "") }
     var profile by remember { mutableStateOf<ContactPinService.PublicProfile?>(null) }
     var pin by remember { mutableStateOf("") }
     var looking by remember { mutableStateOf(false) }
@@ -102,6 +108,12 @@ fun FindByUsernameScreen(
                 .onFailure { error = "No one found with that username." }
             looking = false
         }
+    }
+
+    // A scanned handle has already been "typed" — run the lookup immediately so the scan
+    // lands on the PIN step rather than on a filled field the user must press Enter on.
+    androidx.compose.runtime.LaunchedEffect(prefilledHandle) {
+        if (!prefilledHandle.isNullOrBlank()) lookup()
     }
 
     fun send(p: ContactPinService.PublicProfile) {

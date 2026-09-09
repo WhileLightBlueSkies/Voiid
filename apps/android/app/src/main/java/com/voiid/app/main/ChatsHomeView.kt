@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Wifi
@@ -159,6 +160,9 @@ fun ChatsHomeView(
     /** Set by the menu so the sheet knows whether to build a GROUP, independent of the tab. */
     var forceGroup by remember { mutableStateOf(false) }
     var showFindByUsername by remember { mutableStateOf(false) }
+    var showScanner by remember { mutableStateOf(false) }
+    /** Handle carried from a scan into Find by username, cleared when that screen closes. */
+    var scannedHandle by remember { mutableStateOf<String?>(null) }
     var showRequests by remember { mutableStateOf(false) }
     /** Inbound requests waiting to be accepted. Zero hides the banner entirely rather than
      *  showing an affordance to an empty screen. */
@@ -205,6 +209,7 @@ fun ChatsHomeView(
             // missed — a stale `true` would then turn the next "New chat" into a group.
             onNewGroup = { forceGroup = true; showNewChat = true },
             onFindByUsername = { showFindByUsername = true },
+            onScanCode = { showScanner = true },
             onOpenCallLog = { showCallLog = true },
             onOpenSettings = { settingsNav.push("settings") },
         )
@@ -273,6 +278,7 @@ fun ChatsHomeView(
                     isGroups = tab == ChatTab.GROUPS,
                     onNewChat = { haptics.tap(); showNewChat = true },
                     onFindByUsername = { haptics.tap(); showFindByUsername = true },
+                    onScanCode = { haptics.tap(); showScanner = true },
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
                 ChatLayoutPreference.layout == ChatLayout.GRID -> DraggableChatGrid(
@@ -454,7 +460,8 @@ fun ChatsHomeView(
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
             FindByUsernameScreen(
-                onClose = { showFindByUsername = false },
+                prefilledHandle = scannedHandle,
+                onClose = { showFindByUsername = false; scannedHandle = null },
                 onOpen = { conversationId, pending ->
                     showFindByUsername = false
                     reachScope.launch {
@@ -466,6 +473,23 @@ fun ChatsHomeView(
                                 ?.let(onOpenConversation)
                         }
                     }
+                },
+            )
+        }
+    }
+    if (showScanner) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showScanner = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            ScanQrCodeScreen(
+                onBack = { showScanner = false },
+                // HAND OFF, don't act: the scan supplies a handle and the PIN step plus the
+                // accept-a-request step still happen on the screen typing would have reached.
+                onScanned = { handle ->
+                    showScanner = false
+                    scannedHandle = handle
+                    showFindByUsername = true
                 },
             )
         }
@@ -803,6 +827,7 @@ private fun Header(
     onNewChat: () -> Unit,
     onNewGroup: () -> Unit,
     onFindByUsername: () -> Unit,
+    onScanCode: () -> Unit,
     onOpenCallLog: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -874,11 +899,17 @@ private fun Header(
             var menuOpen by remember { mutableStateOf(false) }
             HeaderGlyph(Icons.Default.MoreVert, "More") { haptics.tap(); menuOpen = true }
             VoiidMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                VoiidMenuItem("New chat", Icons.Default.PersonAdd) {
-                    menuOpen = false; haptics.tap(); onNewChat()
-                }
+                // "New chat" is NOT here, matching iOS: it is the accent pill in the title
+                // row, one tap instead of two. Duplicating it in the overflow teaches two
+                // paths to the same action and makes neither feel canonical.
                 VoiidMenuItem("Find by username", Icons.Default.AlternateEmail) {
                     menuOpen = false; haptics.tap(); onFindByUsername()
+                }
+                // Directly beneath Find by username, because it IS find-by-username with the
+                // typing removed: a scan supplies the handle and then hands over to the same
+                // screen, PIN step and request included.
+                VoiidMenuItem("Scan code", Icons.Default.QrCode2) {
+                    menuOpen = false; haptics.tap(); onScanCode()
                 }
                 VoiidMenuItem("New group", Icons.Default.Groups) {
                     menuOpen = false; haptics.tap(); onNewGroup()
@@ -1210,6 +1241,7 @@ private fun ChatsEmptyState(
     isGroups: Boolean,
     onNewChat: () -> Unit,
     onFindByUsername: () -> Unit,
+    onScanCode: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
