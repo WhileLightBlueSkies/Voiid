@@ -497,7 +497,12 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-          bash packages/e2e-core/build-apple.sh
+          # FROM THE CRATE DIRECTORY. build-apple.sh resolves its install targets relatively
+          # (APP_FRAMEWORKS=../../apps/ios/Voiid/Frameworks), so running it from the repo root
+          # points those at paths that do not exist — and the script's own guard then SKIPS
+          # the install and still exits 0. The step went green while copying nothing, and the
+          # xcframework error was unchanged.
+          cd packages/e2e-core && bash build-apple.sh
 
       - name: Build for simulator (unsigned)
         working-directory: apps/ios/Voiid
