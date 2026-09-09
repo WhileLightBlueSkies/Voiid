@@ -66,8 +66,8 @@ struct ContentView: View {
                 onDefer: { consentDeferred = true },
                 onAccepted: { consentDeferred = false })
         }
-        // Global incoming-call surface: an inbound 1:1 call (offer received over the
-        // socket) presents the call screen over whatever is on screen.
+        // CallKit owns incoming ringing. Present our call controls only after the
+        // user answers, without covering the current screen with a second ring UI.
         .fullScreenCover(isPresented: incomingCallPresented) {
             if let c = call.active {
                 CallScreen(request: CallRequest(
@@ -146,6 +146,7 @@ struct ContentView: View {
         Binding(
             get: {
                 guard let active = call.active, active.state != .ended,
+                      active.state != .incomingRinging,
                       !call.callUIMinimized else { return false }
                 return !active.isOutgoing || restoreCallUIRequested
             },

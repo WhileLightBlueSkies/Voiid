@@ -1,0 +1,201 @@
+{"kind":"deck","id":"pr/k07w8l","name":"Deck"}
+{"kind":"layout","layoutId":"3d5a151d-7b95-451d-a624-2e041f4df095","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"f4c89a9d-ccee-4be1-9cb6-e3937fe0669d","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/33k6zg","slide":1,"title":"V","textShapes":7}
+{"kind":"shape","id":"sh/exo3ixsn","slide":1,"bbox":[790,0,490,720]}
+{"kind":"shape","id":"sh/10f2dcry","slide":1,"bbox":[900,155,270,270]}
+{"kind":"textbox","id":"sh/gz6lk7at","slide":1,"text":"V","textPreview":"V","textChars":1,"textLines":1,"bbox":[900,205,270,165]}
+{"kind":"textbox","id":"sh/rudk729w","slide":1,"text":"VOIID","textPreview":"VOIID","textChars":5,"textLines":1,"bbox":[72,64,480,35]}
+{"kind":"textbox","id":"sh/694jexsb","slide":1,"text":"Private connection,\nwithout compromise.","textPreview":"Private connection, | without compromise.","textChars":39,"textLines":2,"bbox":[72,158,650,190]}
+{"kind":"textbox","id":"sh/twf29sr2","slide":1,"text":"A privacy-first communications super-app built in India for a global generation.","textPreview":"A privacy-first communications super-app built in India for a global generation.","textChars":80,"textLines":1,"bbox":[72,380,610,84]}
+{"kind":"shape","id":"sh/sv6lg7ah","slide":1,"bbox":[72,520,138,42]}
+{"kind":"textbox","id":"sh/j6dk3i90","slide":1,"text":"PRE-SEED","textPreview":"PRE-SEED","textChars":8,"textLines":1,"bbox":[84,529,114,23]}
+{"kind":"shape","id":"sh/i54jadsf","slide":1,"bbox":[226,520,184,42]}
+{"kind":"textbox","id":"sh/sz6d0nid","slide":1,"text":"PILOT TESTING","textPreview":"PILOT TESTING","textChars":13,"textLines":1,"bbox":[238,529,160,23]}
+{"kind":"textbox","id":"sh/t0zetsjy","slide":1,"text":"Sampath Kumar  •  Founder & CEO","textPreview":"Sampath Kumar  •  Founder & CEO","textChars":31,"textLines":1,"bbox":[72,626,510,28]}
+{"kind":"notes","id":"nt/33k6zg","slide":1,"text":"[Sources]\nProduct positioning and brand assets: Voiid repository README.md and docs/LANDING_PAGE_BRIEF.md."}
+{"kind":"slide","id":"sl/qtacnm","slide":2,"title":"VOIID • PRE-SEED","textShapes":13}
+{"kind":"textbox","id":"sh/idczqp0j","slide":2,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/5gni14ja","slide":2,"text":"Digital life is fragmented—and trust is the casualty.","textPreview":"Digital life is fragmented—and trust is the casualty.","textChars":53,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/4fehszip","slide":2,"bbox":[72,169,1136,2]}
+{"kind":"textbox","id":"sh/vqlgvu18","slide":2,"text":"People switch between apps to message, call, share moments, meet communities and play. Each handoff adds friction; each platform asks for more data.","textPreview":"People switch between apps to message, call, share moments, meet communities and play. Each handoff adds friction; each platform asks for...","textChars":148,"textLines":1,"bbox":[72,202,710,86]}
+{"kind":"textbox","id":"sh/upczmp0n","slide":2,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[72,330,54,40]}
+{"kind":"textbox","id":"sh/hc3yxkje","slide":2,"text":"FRAGMENTATION","textPreview":"FRAGMENTATION","textChars":13,"textLines":1,"bbox":[142,330,220,28]}
+{"kind":"textbox","id":"sh/gbuhozit","slide":2,"text":"Too many apps for one social life.","textPreview":"Too many apps for one social life.","textChars":34,"textLines":1,"bbox":[365,330,760,34]}
+{"kind":"textbox","id":"sh/fm507ehc","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[72,426,54,40]}
+{"kind":"textbox","id":"sh/elwzy90r","slide":2,"text":"SURVEILLANCE","textPreview":"SURVEILLANCE","textChars":12,"textLines":1,"bbox":[142,426,220,28]}
+{"kind":"textbox","id":"sh/03mtgfax","slide":2,"text":"Convenience often trades against privacy.","textPreview":"Convenience often trades against privacy.","textChars":41,"textLines":1,"bbox":[365,426,760,34]}
+{"kind":"textbox","id":"sh/14vapkri","slide":2,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[72,522,54,40]}
+{"kind":"textbox","id":"sh/e1kbe5s7","slide":2,"text":"WEAK CONTEXT","textPreview":"WEAK CONTEXT","textChars":12,"textLines":1,"bbox":[142,522,220,28]}
+{"kind":"textbox","id":"sh/z2dsna9c","slide":2,"text":"Chats, communities and shared experiences live apart.","textPreview":"Chats, communities and shared experiences live apart.","textChars":53,"textLines":1,"bbox":[365,522,760,34]}
+{"kind":"textbox","id":"sh/sz29cfa1","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/qtacnm","slide":2,"text":"[Sources]\nProblem framing: founder-provided positioning and product scope in docs/LANDING_PAGE_BRIEF.md."}
+{"kind":"slide","id":"sl/2huywi","slide":3,"title":"VOIID • PRE-SEED","textShapes":16}
+{"kind":"textbox","id":"sh/e1cjylc3","slide":3,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/1o3it0vu","slide":3,"text":"Voiid brings the social stack into one private home.","textPreview":"Voiid brings the social stack into one private home.","textChars":52,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/03u10vu9","slide":3,"bbox":[72,169,1136,2]}
+{"kind":"textbox","id":"sh/nq50vqd0","slide":3,"text":"One identity. One trusted graph. Multiple ways to connect.","textPreview":"One identity. One trusted graph. Multiple ways to connect.","textChars":58,"textLines":1,"bbox":[72,196,780,46]}
+{"kind":"shape","id":"sh/mpcj25cf","slide":3,"bbox":[72,294,252,300]}
+{"kind":"shape","id":"sh/9snix0vq","slide":3,"bbox":[148,326,100,100]}
+{"kind":"textbox","id":"sh/8re14vul","slide":3,"text":"C","textPreview":"C","textChars":1,"textLines":1,"bbox":[148,348,100,52]}
+{"kind":"textbox","id":"sh/vu50zadw","slide":3,"text":"MESSAGING","textPreview":"MESSAGING","textChars":9,"textLines":1,"bbox":[92,455,212,28]}
+{"kind":"textbox","id":"sh/atwj65cb","slide":3,"text":"Encrypted chats & groups","textPreview":"Encrypted chats & groups","textChars":24,"textLines":1,"bbox":[94,500,208,58]}
+{"kind":"shape","id":"sh/8fy50nmh","slide":3,"bbox":[356,294,252,300]}
+{"kind":"shape","id":"sh/9g769snm","slide":3,"bbox":[432,326,100,100]}
+{"kind":"textbox","id":"sh/mdgnyx4b","slide":3,"text":"M","textPreview":"M","textChars":1,"textLines":1,"bbox":[432,348,100,52]}
+{"kind":"textbox","id":"sh/nepo725w","slide":3,"text":"MOMENTS","textPreview":"MOMENTS","textChars":7,"textLines":1,"bbox":[376,455,212,28]}
+{"kind":"textbox","id":"sh/wjy547md","slide":3,"text":"Share with the people who matter","textPreview":"Share with the people who matter","textChars":32,"textLines":1,"bbox":[378,500,208,58]}
+{"kind":"shape","id":"sh/h476dcny","slide":3,"bbox":[640,294,252,300]}
+{"kind":"shape","id":"sh/ahgn2x47","slide":3,"bbox":[716,326,100,100]}
+{"kind":"textbox","id":"sh/vipob25s","slide":3,"text":"▶","textPreview":"▶","textChars":1,"textLines":1,"bbox":[716,348,100,52]}
+{"kind":"textbox","id":"sh/47i587m9","slide":3,"text":"CLIPS","textPreview":"CLIPS","textChars":5,"textLines":1,"bbox":[660,455,212,28]}
+{"kind":"textbox","id":"sh/58r6hcnu","slide":3,"text":"Discover creators and culture","textPreview":"Discover creators and culture","textChars":29,"textLines":1,"bbox":[662,500,208,58]}
+{"kind":"shape","id":"sh/don61cvy","slide":3,"bbox":[924,294,252,300]}
+{"kind":"shape","id":"sh/s3e5s7et","slide":3,"bbox":[1000,326,100,100]}
+{"kind":"textbox","id":"sh/r25oz2x8","slide":3,"text":"G","textPreview":"G","textChars":1,"textLines":1,"bbox":[1000,348,100,52]}
+{"kind":"textbox","id":"sh/q1wnqhwn","slide":3,"text":"GAMES","textPreview":"GAMES","textChars":5,"textLines":1,"bbox":[944,455,212,28]}
+{"kind":"textbox","id":"sh/1s765wva","slide":3,"text":"Play inside the conversation","textPreview":"Play inside the conversation","textChars":28,"textLines":1,"bbox":[946,500,208,58]}
+{"kind":"textbox","id":"sh/0ry5wrep","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/2huywi","slide":3,"text":"[Sources]\nFeature scope: docs/LANDING_PAGE_BRIEF.md and product assets in apps/ios/Voiid/Voiid/Assets.xcassets."}
+{"kind":"slide","id":"sl/1qkokm","slide":4,"title":"VOIID • PRE-SEED","textShapes":11}
+{"kind":"textbox","id":"sh/y94jexcn","slide":4,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/lcv2pcvy","slide":4,"text":"Privacy is the architecture—not a setting.","textPreview":"Privacy is the architecture—not a setting.","textChars":42,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/kbm1g7ud","slide":4,"bbox":[72,169,1136,2]}
+{"kind":"shape","id":"sh/b6tkj2dw","slide":4,"bbox":[72,214,490,386]}
+{"kind":"textbox","id":"sh/alkjaxwb","slide":4,"text":"THE SERVER\nNEVER SEES\nPLAINTEXT","textPreview":"THE SERVER | NEVER SEES | PLAINTEXT","textChars":31,"textLines":3,"bbox":[112,266,410,174]}
+{"kind":"textbox","id":"sh/x8v2lsv2","slide":4,"text":"Private keys stay on-device. Critical dependencies remain swappable.","textPreview":"Private keys stay on-device. Critical dependencies remain swappable.","textChars":68,"textLines":1,"bbox":[112,480,380,72]}
+{"kind":"textbox","id":"sh/w7m1cnuh","slide":4,"text":"End-to-end encrypted core","textPreview":"End-to-end encrypted core","textChars":25,"textLines":1,"bbox":[620,222,520,32]}
+{"kind":"textbox","id":"sh/nitkfidk","slide":4,"text":"Messages and sensitive connection data are designed around ciphertext-only infrastructure.","textPreview":"Messages and sensitive connection data are designed around ciphertext-only infrastructure.","textChars":90,"textLines":1,"bbox":[620,264,520,66]}
+{"kind":"textbox","id":"sh/mhkj6dwf","slide":4,"text":"Honest privacy boundaries","textPreview":"Honest privacy boundaries","textChars":25,"textLines":1,"bbox":[620,348,520,32]}
+{"kind":"textbox","id":"sh/8ji58jmd","slide":4,"text":"Public clips, creator profiles and games are identified as public—not hidden behind vague claims.","textPreview":"Public clips, creator profiles and games are identified as public—not hidden behind vague claims.","textChars":97,"textLines":1,"bbox":[620,390,520,66]}
+{"kind":"textbox","id":"sh/tkr61o3y","slide":4,"text":"Built for resilience","textPreview":"Built for resilience","textChars":20,"textLines":1,"bbox":[620,474,520,32]}
+{"kind":"textbox","id":"sh/6x0n694n","slide":4,"text":"Plain Postgres and replaceable interfaces reduce platform lock-in.","textPreview":"Plain Postgres and replaceable interfaces reduce platform lock-in.","textChars":66,"textLines":1,"bbox":[620,516,520,66]}
+{"kind":"textbox","id":"sh/7y9ozel8","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/1qkokm","slide":4,"text":"[Sources]\nArchitecture claims: README.md Golden rules; privacy boundaries: docs/LANDING_PAGE_BRIEF.md."}
+{"kind":"slide","id":"sl/d1p6om","slide":5,"title":"VOIID • PRE-SEED","textShapes":16}
+{"kind":"textbox","id":"sh/18bud4ru","slide":5,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/e5kb2p83","slide":5,"text":"Trusted communication unlocks shared experiences.","textPreview":"Trusted communication unlocks shared experiences.","textChars":49,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/z6tcbu9o","slide":5,"bbox":[72,169,1136,2]}
+{"kind":"shape","id":"sh/ov2t8jq5","slide":5,"bbox":[72,238,252,326]}
+{"kind":"textbox","id":"sh/9wvuhorq","slide":5,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[94,260,56,40]}
+{"kind":"textbox","id":"sh/m9kb698f","slide":5,"text":"CONNECT","textPreview":"CONNECT","textChars":7,"textLines":1,"bbox":[94,330,208,28]}
+{"kind":"textbox","id":"sh/nutcfe9k","slide":5,"text":"Encrypted messaging & calls","textPreview":"Encrypted messaging & calls","textChars":27,"textLines":1,"bbox":[94,382,208,84]}
+{"kind":"shape","id":"sh/4zitwfq1","slide":5,"bbox":[94,512,208,6]}
+{"kind":"shape","id":"sh/p0ru5krm","slide":5,"bbox":[356,238,252,326]}
+{"kind":"textbox","id":"sh/lcbmx0j2","slide":5,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[378,260,56,40]}
+{"kind":"textbox","id":"sh/kb2l4vih","slide":5,"text":"ENGAGE","textPreview":"ENGAGE","textChars":6,"textLines":1,"bbox":[378,330,208,28]}
+{"kind":"textbox","id":"sh/zat4va1w","slide":5,"text":"Moments, clips & games","textPreview":"Moments, clips & games","textChars":22,"textLines":1,"bbox":[378,382,208,84]}
+{"kind":"shape","id":"sh/y9k3250r","slide":5,"bbox":[378,512,208,6]}
+{"kind":"shape","id":"sh/9gvm1kje","slide":5,"bbox":[640,238,252,326]}
+{"kind":"textbox","id":"sh/8f258fit","slide":5,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[662,260,56,40]}
+{"kind":"textbox","id":"sh/7et4za18","slide":5,"text":"BELONG","textPreview":"BELONG","textChars":6,"textLines":1,"bbox":[662,330,208,28]}
+{"kind":"textbox","id":"sh/mdk3650n","slide":5,"text":"Communities & events","textPreview":"Communities & events","textChars":20,"textLines":1,"bbox":[662,382,208,84]}
+{"kind":"shape","id":"sh/h4vm5kza","slide":5,"bbox":[662,512,208,6]}
+{"kind":"shape","id":"sh/w3m5cfip","slide":5,"bbox":[924,238,252,326]}
+{"kind":"textbox","id":"sh/gnup83q1","slide":5,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[946,260,56,40]}
+{"kind":"textbox","id":"sh/h836187m","slide":5,"text":"MONETISE","textPreview":"MONETISE","textChars":8,"textLines":1,"bbox":[946,330,208,28]}
+{"kind":"textbox","id":"sh/ulc76t8v","slide":5,"text":"Tickets and creator commerce","textPreview":"Tickets and creator commerce","textChars":28,"textLines":1,"bbox":[946,382,208,84]}
+{"kind":"shape","id":"sh/fmlozypg","slide":5,"bbox":[946,512,208,6]}
+{"kind":"textbox","id":"sh/4bepc3qx","slide":5,"text":"The same trusted identity compounds across every surface.","textPreview":"The same trusted identity compounds across every surface.","textChars":57,"textLines":1,"bbox":[72,620,900,32]}
+{"kind":"textbox","id":"sh/pcn6587i","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/d1p6om","slide":5,"text":"[Sources]\nProduct sequence: repository feature set and docs/COMMUNITY_COMMERCE_PLAN.md."}
+{"kind":"slide","id":"sl/7j91g9","slide":6,"title":"VOIID • PRE-SEED","textShapes":10}
+{"kind":"textbox","id":"sh/7a5srq1k","slide":6,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/8ve90vip","slide":6,"text":"India is the launchpad; the need is global.","textPreview":"India is the launchpad; the need is global.","textChars":43,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/tw7at0ja","slide":6,"bbox":[72,169,1136,2]}
+{"kind":"textbox","id":"sh/y5wrul0n","slide":6,"text":"Voiid targets a universal tension: people want richer digital connection without surrendering control of their private lives.","textPreview":"Voiid targets a universal tension: people want richer digital connection without surrendering control of their private lives.","textChars":125,"textLines":1,"bbox":[72,202,870,86]}
+{"kind":"shape","id":"sh/j65snq18","slide":6,"bbox":[72,352,346,214]}
+{"kind":"textbox","id":"sh/k7e9wvit","slide":6,"text":"MOBILE-FIRST","textPreview":"MOBILE-FIRST","textChars":12,"textLines":1,"bbox":[96,382,298,28]}
+{"kind":"textbox","id":"sh/l8napgje","slide":6,"text":"Designed around the phone as the primary social layer.","textPreview":"Designed around the phone as the primary social layer.","textChars":54,"textLines":1,"bbox":[96,432,298,82]}
+{"kind":"shape","id":"sh/i1gr6507","slide":6,"bbox":[450,352,346,214]}
+{"kind":"textbox","id":"sh/32psza1c","slide":6,"text":"INDIA-BUILT","textPreview":"INDIA-BUILT","textChars":11,"textLines":1,"bbox":[474,382,298,28]}
+{"kind":"textbox","id":"sh/be10bad4","slide":6,"text":"Local product intuition with global product ambition.","textPreview":"Local product intuition with global product ambition.","textChars":53,"textLines":1,"bbox":[474,432,298,82]}
+{"kind":"shape","id":"sh/adsz25cj","slide":6,"bbox":[828,352,346,214]}
+{"kind":"textbox","id":"sh/xg3idkvu","slide":6,"text":"GENERATIONAL","textPreview":"GENERATIONAL","textChars":12,"textLines":1,"bbox":[852,382,298,28]}
+{"kind":"textbox","id":"sh/wfah4fup","slide":6,"text":"Privacy expectations are rising as social behaviour keeps expanding.","textPreview":"Privacy expectations are rising as social behaviour keeps expanding.","textChars":68,"textLines":1,"bbox":[852,432,298,82]}
+{"kind":"textbox","id":"sh/j2l0fud0","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/7j91g9","slide":6,"text":"[Sources]\nNo external market-size claim used. Geographic positioning: founder line in docs/LANDING_PAGE_BRIEF.md."}
+{"kind":"slide","id":"sl/28p39v","slide":7,"title":"VOIID • PRE-SEED","textShapes":13}
+{"kind":"textbox","id":"sh/apg7mhsr","slide":7,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/xs7qhwbi","slide":7,"text":"Monetisation grows with community activity.","textPreview":"Monetisation grows with community activity.","textChars":43,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/cry9orax","slide":7,"bbox":[72,169,1136,2]}
+{"kind":"textbox","id":"sh/nm58bmt0","slide":7,"text":"Voiid can earn when hosts and creators earn—without putting core private communication behind a paywall.","textPreview":"Voiid can earn when hosts and creators earn—without putting core private communication behind a paywall.","textChars":104,"textLines":1,"bbox":[72,202,930,68]}
+{"kind":"shape","id":"sh/21w7ihsv","slide":7,"bbox":[72,314,1136,72]}
+{"kind":"textbox","id":"sh/ponqdcb6","slide":7,"text":"PAID EVENTS","textPreview":"PAID EVENTS","textChars":11,"textLines":1,"bbox":[96,337,255,26]}
+{"kind":"textbox","id":"sh/onepkral","slide":7,"text":"Commission on tickets and passes","textPreview":"Commission on tickets and passes","textChars":32,"textLines":1,"bbox":[386,334,490,30]}
+{"kind":"textbox","id":"sh/fy5872t4","slide":7,"text":"Near-term wedge","textPreview":"Near-term wedge","textChars":15,"textLines":1,"bbox":[960,337,210,26]}
+{"kind":"shape","id":"sh/exw7exsj","slide":7,"bbox":[72,406,1136,72]}
+{"kind":"textbox","id":"sh/czmh0jed","slide":7,"text":"COMMUNITY COMMERCE","textPreview":"COMMUNITY COMMERCE","textChars":18,"textLines":1,"bbox":[96,429,255,26]}
+{"kind":"textbox","id":"sh/d0vy9ofy","slide":7,"text":"Transaction fee on products and experiences","textPreview":"Transaction fee on products and experiences","textChars":43,"textLines":1,"bbox":[386,426,490,30]}
+{"kind":"textbox","id":"sh/qx4zy9w7","slide":7,"text":"Expansion","textPreview":"Expansion","textChars":9,"textLines":1,"bbox":[960,429,210,26]}
+{"kind":"shape","id":"sh/rydg7exs","slide":7,"bbox":[72,498,1136,72]}
+{"kind":"textbox","id":"sh/4vmhwze1","slide":7,"text":"CREATOR ECONOMY","textPreview":"CREATOR ECONOMY","textChars":15,"textLines":1,"bbox":[96,521,255,26]}
+{"kind":"textbox","id":"sh/pwvy54fm","slide":7,"text":"Tips, subscriptions and services","textPreview":"Tips, subscriptions and services","textChars":32,"textLines":1,"bbox":[386,518,490,30]}
+{"kind":"textbox","id":"sh/2tkfu9gv","slide":7,"text":"Longer-term","textPreview":"Longer-term","textChars":11,"textLines":1,"bbox":[960,521,210,26]}
+{"kind":"textbox","id":"sh/3udg3uxg","slide":7,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/28p39v","slide":7,"text":"[Sources]\nBusiness-model roadmap: docs/COMMUNITY_COMMERCE_PLAN.md. Paid payment provider is not yet live."}
+{"kind":"slide","id":"sl/gum40k","slide":8,"title":"VOIID • PRE-SEED","textShapes":13}
+{"kind":"textbox","id":"sh/yx4fahgb","slide":8,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/lkfe5wf2","slide":8,"text":"The product is in pilot; the learning loop is active.","textPreview":"The product is in pilot; the learning loop is active.","textChars":53,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/kz6xcryh","slide":8,"bbox":[72,169,1136,2]}
+{"kind":"shape","id":"sh/7mxw7mxs","slide":8,"bbox":[72,238,346,292]}
+{"kind":"textbox","id":"sh/6lofe1g7","slide":8,"text":"NOW","textPreview":"NOW","textChars":3,"textLines":1,"bbox":[98,268,294,24]}
+{"kind":"textbox","id":"sh/tofe9wfy","slide":8,"text":"Pilot testing","textPreview":"Pilot testing","textChars":13,"textLines":1,"bbox":[98,318,294,42]}
+{"kind":"textbox","id":"sh/sn6xgryd","slide":8,"text":"Validate reliability, privacy flows and core engagement.","textPreview":"Validate reliability, privacy flows and core engagement.","textChars":56,"textLines":1,"bbox":[98,388,286,84]}
+{"kind":"shape","id":"sh/nqtwb2xo","slide":8,"bbox":[450,238,346,292]}
+{"kind":"textbox","id":"sh/mpkv2xg3","slide":8,"text":"NEXT","textPreview":"NEXT","textChars":4,"textLines":1,"bbox":[476,268,294,24]}
+{"kind":"textbox","id":"sh/o365knq1","slide":8,"text":"Waitlist launch","textPreview":"Waitlist launch","textChars":15,"textLines":1,"bbox":[476,318,294,42]}
+{"kind":"textbox","id":"sh/94fmts76","slide":8,"text":"Build an owned audience and measure intent by cohort.","textPreview":"Build an owned audience and measure intent by cohort.","textChars":53,"textLines":1,"bbox":[476,388,286,84]}
+{"kind":"shape","id":"sh/m1o3ix8v","slide":8,"bbox":[828,238,346,292]}
+{"kind":"textbox","id":"sh/n2x4r2pg","slide":8,"text":"THEN","textPreview":"THEN","textChars":4,"textLines":1,"bbox":[854,268,294,24]}
+{"kind":"textbox","id":"sh/w7q5o7qx","slide":8,"text":"Focused rollout","textPreview":"Focused rollout","textChars":15,"textLines":1,"bbox":[854,318,294,42]}
+{"kind":"textbox","id":"sh/x8zmxc7i","slide":8,"text":"Convert early communities into repeat usage and referrals.","textPreview":"Convert early communities into repeat usage and referrals.","textChars":58,"textLines":1,"bbox":[854,388,286,84]}
+{"kind":"textbox","id":"sh/a5onmx8r","slide":8,"text":"Next investor update: waitlist conversion, activation, retention and referral.","textPreview":"Next investor update: waitlist conversion, activation, retention and referral.","textChars":78,"textLines":1,"bbox":[72,592,1000,34]}
+{"kind":"textbox","id":"sh/b6x4v2pc","slide":8,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/gum40k","slide":8,"text":"[Sources]\nStage and traction provided directly by founder: pre-seed, pilot testing, waitlist starting soon."}
+{"kind":"slide","id":"sl/258ucq","slide":9,"title":"VOIID • PRE-SEED","textShapes":10}
+{"kind":"textbox","id":"sh/wbqp8v6x","slide":9,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/vahofqpc","slide":9,"text":"An 18-month path to repeatable growth.","textPreview":"An 18-month path to repeatable growth.","textChars":38,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/a9876lo7","slide":9,"bbox":[72,169,1136,2]}
+{"kind":"textbox","id":"sh/5gj6l07u","slide":9,"text":"0–3 MONTHS","textPreview":"0–3 MONTHS","textChars":10,"textLines":1,"bbox":[72,230,230,28]}
+{"kind":"shape","id":"sh/kfapcv69","slide":9,"bbox":[320,225,888,78]}
+{"kind":"textbox","id":"sh/je1ojqpo","slide":9,"text":"Complete pilot hardening • open waitlist • instrument activation","textPreview":"Complete pilot hardening • open waitlist • instrument activation","textChars":64,"textLines":1,"bbox":[350,247,824,38]}
+{"kind":"textbox","id":"sh/id87alo3","slide":9,"text":"3–9 MONTHS","textPreview":"3–9 MONTHS","textChars":10,"textLines":1,"bbox":[72,354,230,28]}
+{"kind":"shape","id":"sh/lkf69g7a","slide":9,"bbox":[320,349,888,78]}
+{"kind":"textbox","id":"sh/0j650b6p","slide":9,"text":"Launch focused cohorts • strengthen calls, clips and games • prove retention","textPreview":"Launch focused cohorts • strengthen calls, clips and games • prove retention","textChars":76,"textLines":1,"bbox":[350,371,824,38]}
+{"kind":"textbox","id":"sh/axoned07","slide":9,"text":"9–18 MONTHS","textPreview":"9–18 MONTHS","textChars":11,"textLines":1,"bbox":[72,478,230,28]}
+{"kind":"shape","id":"sh/byx4ni1s","slide":9,"bbox":[320,473,888,78]}
+{"kind":"textbox","id":"sh/cz65gnid","slide":9,"text":"Scale communities • activate paid events • prepare creator monetisation","textPreview":"Scale communities • activate paid events • prepare creator monetisation","textChars":71,"textLines":1,"bbox":[350,495,824,38]}
+{"kind":"shape","id":"sh/x0fmp8jy","slide":9,"bbox":[72,612,430,42]}
+{"kind":"textbox","id":"sh/y1onid0j","slide":9,"text":"NORTH STAR: WEEKLY TRUSTED CONNECTIONS","textPreview":"NORTH STAR: WEEKLY TRUSTED CONNECTIONS","textChars":38,"textLines":1,"bbox":[84,621,406,23]}
+{"kind":"textbox","id":"sh/z2x4ri14","slide":9,"text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/258ucq","slide":9,"text":"[Sources]\nRoadmap synthesis based on current pilot stage and repository plans; timing is a planning assumption for discussion."}
+{"kind":"slide","id":"sl/cy5bil","slide":10,"title":"VOIID • PRE-SEED","textShapes":8}
+{"kind":"textbox","id":"sh/kzalozix","slide":10,"text":"VOIID • PRE-SEED","textPreview":"VOIID • PRE-SEED","textChars":16,"textLines":1,"bbox":[72,42,500,26]}
+{"kind":"textbox","id":"sh/jy1kfuhc","slide":10,"text":"Founder-led, product-first execution.","textPreview":"Founder-led, product-first execution.","textChars":37,"textLines":1,"bbox":[72,82,1136,76]}
+{"kind":"shape","id":"sh/yds3mp0r","slide":10,"bbox":[72,169,1136,2]}
+{"kind":"shape","id":"sh/xcz2dkz6","slide":10,"bbox":[72,222,230,230]}
+{"kind":"textbox","id":"sh/wbq1kfil","slide":10,"text":"SK","textPreview":"SK","textChars":2,"textLines":1,"bbox":[72,296,230,78]}
+{"kind":"textbox","id":"sh/bahkbah0","slide":10,"text":"Sampath Kumar","textPreview":"Sampath Kumar","textChars":13,"textLines":1,"bbox":[354,236,650,48]}
+{"kind":"textbox","id":"sh/a98jip0f","slide":10,"text":"Founder & CEO","textPreview":"Founder & CEO","textChars":13,"textLines":1,"bbox":[354,296,650,34]}
+{"kind":"textbox","id":"sh/p8z29kza","slide":10,"text":"Leading Voiid from product vision through pilot execution—with a clear ambition to build in India for the world.","textPreview":"Leading Voiid from product vision through pilot execution—with a clear ambition to build in India for the world.","textChars":112,"textLines":1,"bbox":[354,370,730,108]}
+{"kind":"shape","id":"sh/o7q1gfip","slide":10,"bbox":[354,520,650,2]}
+{"kind":"textbox","id":"sh/mpsv2lsj","slide":10,"text":"Pre-seed priorities: product • growth • engineering","textPreview":"Pre-seed priorities: product • growth • engineering","textChars":51,"textLines":1,"bbox":[354,548,650,32]}
+{"kind":"textbox","id":"sh/nq1wbq94","slide":10,"text":"10","textPreview":"10","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/cy5bil","slide":10,"text":"[Sources]\nFounder name and role supplied directly by the user. No unverified biography claims added."}
+{"kind":"slide","id":"sl/dc2dmt","slide":11,"title":"THE PRE-SEED ROUND","textShapes":13}
+{"kind":"textbox","id":"sh/gni107yd","slide":11,"text":"THE PRE-SEED ROUND","textPreview":"THE PRE-SEED ROUND","textChars":18,"textLines":1,"bbox":[72,60,520,26]}
+{"kind":"textbox","id":"sh/fm90r2hs","slide":11,"text":"Help build the trusted\nsocial layer for the\nnext generation.","textPreview":"Help build the trusted | social layer for the | next generation.","textChars":60,"textLines":3,"bbox":[72,132,720,230]}
+{"kind":"shape","id":"sh/e1gjyxgn","slide":11,"bbox":[820,92,388,478]}
+{"kind":"textbox","id":"sh/t07ipsz2","slide":11,"text":"USE OF FUNDS","textPreview":"USE OF FUNDS","textChars":12,"textLines":1,"bbox":[856,130,316,26]}
+{"kind":"textbox","id":"sh/szy1w7yh","slide":11,"text":"PRODUCT","textPreview":"PRODUCT","textChars":7,"textLines":1,"bbox":[856,198,124,25]}
+{"kind":"textbox","id":"sh/ryp0n2hw","slide":11,"text":"Pilot → reliable public launch","textPreview":"Pilot → reliable public launch","textChars":30,"textLines":1,"bbox":[856,232,300,50]}
+{"kind":"textbox","id":"sh/6xgjuxgb","slide":11,"text":"GROWTH","textPreview":"GROWTH","textChars":6,"textLines":1,"bbox":[856,303,124,25]}
+{"kind":"textbox","id":"sh/5w7ilszq","slide":11,"text":"Waitlist → focused early cohorts","textPreview":"Waitlist → focused early cohorts","textChars":32,"textLines":1,"bbox":[856,337,300,50]}
+{"kind":"textbox","id":"sh/4vyhsny5","slide":11,"text":"TEAM","textPreview":"TEAM","textChars":4,"textLines":1,"bbox":[856,408,124,25]}
+{"kind":"textbox","id":"sh/e9cfmhg7","slide":11,"text":"Core engineering and product hires","textPreview":"Core engineering and product hires","textChars":34,"textLines":1,"bbox":[856,442,300,50]}
+{"kind":"textbox","id":"sh/zalwfmxc","slide":11,"text":"Raise amount: to be finalised","textPreview":"Raise amount: to be finalised","textChars":29,"textLines":1,"bbox":[856,506,300,26]}
+{"kind":"textbox","id":"sh/0buxoryx","slide":11,"text":"Sampath Kumar  •  Founder & CEO","textPreview":"Sampath Kumar  •  Founder & CEO","textChars":31,"textLines":1,"bbox":[72,606,610,30]}
+{"kind":"textbox","id":"sh/1c3ehwfi","slide":11,"text":"VOIID","textPreview":"VOIID","textChars":5,"textLines":1,"bbox":[72,656,220,24]}
+{"kind":"textbox","id":"sh/qlsvihgv","slide":11,"text":"11","textPreview":"11","textChars":2,"textLines":1,"bbox":[1150,674,58,20]}
+{"kind":"notes","id":"nt/dc2dmt","slide":11,"text":"[Sources]\nRound stage provided by founder. Raise amount intentionally left to be finalised."}

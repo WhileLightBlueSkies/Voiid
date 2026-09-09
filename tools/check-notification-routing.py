@@ -88,6 +88,40 @@ swift_checks = '''
     }
 }
 '''
+ui_source = (ios / 'ContentView.swift').read_text()
+ui_start = ui_source.index('    private var incomingCallPresented:')
+getter_start = ui_source.index('            get: {', ui_start) + len('            get: {')
+getter_end = ui_source.index('            },', getter_start)
+swift_checks = '''
+enum RingPhase { case incomingRinging, outgoingRinging, connecting, connected, ended }
+struct RingCall { var state: RingPhase; var isOutgoing = false }
+struct RingModel { var active: RingCall?; var callUIMinimized = false }
+struct RingUIHarness {
+    var call = RingModel()
+    var restoreCallUIRequested = false
+    func presented() -> Bool {
+''' + ui_source[getter_start:getter_end] + '''
+    }
+}
+''' + swift_checks
+swift_checks = swift_checks.replace('        let router = NotificationMessageRouter.shared', '''        var ui = RingUIHarness()
+        precondition(!ui.presented())
+        ui.call.active = RingCall(state: .incomingRinging)
+        precondition(!ui.presented())
+        ui.restoreCallUIRequested = true
+        precondition(!ui.presented())
+        ui.call.active?.state = .connecting
+        precondition(ui.presented())
+        ui.call.active?.state = .connected
+        precondition(ui.presented())
+        ui.call.callUIMinimized = true
+        precondition(!ui.presented())
+        ui.call.callUIMinimized = false
+        ui.call.active?.state = .ended
+        precondition(!ui.presented())
+        print("PASS: iOS CallKit-only ringing, accepted-call presentation, restore, minimized and ended guards")
+        let router = NotificationMessageRouter.shared''')
+
 with tempfile.TemporaryDirectory(prefix='voiid-notification-routing-') as directory:
     temp = Path(directory)
     files = [android / 'net/DeepLinkRouter.kt', android / 'net/IncomingCallPresentation.kt']

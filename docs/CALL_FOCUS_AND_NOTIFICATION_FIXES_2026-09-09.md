@@ -13,6 +13,7 @@ Android's audio-service history at 21:00:04 and 21:00:32 showed Voiid requesting
 - Microphone capture consistently respects user mute, hold, and genuine interruptions, including track creation and later unmute/unhold. Telecom focus lost/gained callbacks now drive the Telecom interruption gate; resource release is acknowledged after the media executor applies it.
 - Notification answers wait for the Activity's RESUMED lifecycle before starting microphone foreground services. Locked-screen calls retain full call controls; ended calls release lock-screen window flags.
 - While Android is unlocked and foregrounded, incoming calls use the system notification without automatically replacing the current app screen. Tapping the notification explicitly opens its call; Answer opens the active call. Blocked notification permissions/channels and posting failures retain the in-app answer fallback. Background/locked calls retain full-screen notification intents.
+- iOS incoming ringing uses CallKit alone. The global in-app call screen appears after acceptance transitions the call to connecting/connected, preserving native lock-screen answering and avoiding a duplicate foreground ring surface.
 - Message PendingIntents include both conversation and message IDs in their identity and extras. Call answer intents similarly include the call ID, including waiting-call answers.
 - Android message previews cannot substitute an unrelated older message when a specific pushed message is unavailable.
 - Both Android and iOS retain the exact message destination through cold launch, tab navigation, conversation loading, and transcript loading. Repeated taps have separate request identities; stale async completions cannot consume a newer destination. iOS previously used a transient NotificationCenter event, which could be missed before the chat screen existed.
@@ -23,14 +24,19 @@ The backend already sends opaque `conversation_id`, `message_id`, and call routi
 ## Validation
 
 - `python3 tools/check-android-call-state.py`: production state/mute methods plus the actual microphone reconciliation and focus callback methods. Covers the observed handoff, late/queued losses, true interruption, mute/hold, replacement/hangup, and track creation after interruption.
-- `python3 tools/check-notification-routing.py`: production Kotlin and Swift destination routers; delayed transcript consumption, rapid/repeated taps, stale completion, conversation-only fallback, incoming notification presentation, exact preview selection, and transport/UI wiring.
+- `python3 tools/check-notification-routing.py`: production Kotlin and Swift destination routers; delayed transcript consumption, rapid/repeated taps, stale completion, conversation-only fallback, incoming notification presentation, exact preview selection, and transport/UI wiring. The September 10 follow-up also executes the actual iOS presentation getter for ringing, answered, restored, minimized, and ended calls; all checks pass.
+- September 10: the follow-up iOS CallKit-only incoming-ring build passed.
 - Existing audio-routing, camera lifecycle, and cross-platform call-key regression checks pass.
 - Android Debug build and selected call-key/message-ownership unit tests passed. The final installable build also passed after including the other agent’s current shared-media changes.
 - iOS Debug device build passed; app-bundle Firebase-resource checks and strict code-signature verification passed.
 - Both builds were installed successfully on the connected Android and iPhone. Android launched successfully, and fresh app-specific diagnostic captures were started for the physical checks below.
 - `python3 tools/check-call-lifecycle.py`: five production CallKit handler regressions passed.
 
-## Physical checks still required
+## Device follow-up
+
+After installation, fresh Android diagnostics showed its microphone remaining enabled through the Telecom handoff, with sender and receiver cryptors OK. iPhone inbound audio samples and nonzero audio energy increased during the subsequent calls, confirming that Android audio reached and decoded on iPhone. Android's restart between tests was recorded as user removal of the task, not a new crash. The user then reported “working perfectly now.” The notification-specific cases and the broader repetition matrix below were not individually confirmed.
+
+## Further physical regression checks
 
 1. iPhone → Android, Android locked: answer the system notification and speak on both sides for at least 30 seconds.
 2. Android → iPhone, iPhone locked: answer CallKit and repeat.
