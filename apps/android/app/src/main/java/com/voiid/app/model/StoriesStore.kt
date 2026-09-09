@@ -90,7 +90,15 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
         //
         // The frame carries no payload on purpose: it is a nudge to re-sync through the
         // authenticated feed, never story data over the socket.
-        WebSocketClient.get(app).onStorySignal = { refresh() }
+        WebSocketClient.get(app).onStorySignal = { type, storyId ->
+            viewModelScope.launch {
+                if (type == "story_deleted" && storyId.isNotBlank()) {
+                    StoryLocalStore.deleteStory(appContext, storyId)
+                    loadLocal()
+                }
+                refresh()
+            }
+        }
     }
 
     // MARK: - Load / sync
@@ -102,6 +110,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
             engine.sweep()
             loadLocal()
             runCatching { engine.syncFeed() }
+                .onSuccess { loadError = null }
                 .onFailure { loadError = "Couldn't refresh moments." }
             loadLocal()
             runCatching { deliveredCounts.putAll(engine.mineCounts()) }
@@ -194,6 +203,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
         audienceUserIds: List<String>,
     ) {
         val myId = com.voiid.app.net.TokenStore.get(appContext).userId ?: return
+        if (posting) return
         posting = true
         // Optimistic local echo with a temp id + cached bytes, so it appears immediately.
         val tempId = "pending-" + UUID.randomUUID()
@@ -213,9 +223,11 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
                     downloadState = StoryDownloadState.READY, uploadState = StoryUploadState.UPLOADING,
                 ),
             )
+            StoryLocalStore.saveAudience(appContext, tempId, audienceUserIds)
             loadLocal()
             try {
                 engine.postStory(bytes, mime, caption, width, height, durationMs, allowsReplies, audienceUserIds)
+                loadError = engine.deliveryWarning
                 StoryLocalStore.deleteStory(appContext, tempId)   // real row replaces the placeholder
             } catch (e: Exception) {
                 StoryLocalStore.setUpload(appContext, tempId, StoryUploadState.FAILED)
@@ -224,6 +236,23 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
                 posting = false
                 loadLocal()
             }
+        }
+    }
+
+    fun retry(story: Story) {
+        if (posting || !story.isMine || story.uploadState != StoryUploadState.FAILED) return
+        viewModelScope.launch {
+            val audience = StoryLocalStore.audience(appContext, story.id)
+            val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { story.localPath?.let { File(it).readBytes() } }.getOrNull()
+            }
+            if (bytes == null || audience.isEmpty()) {
+                loadError = "Please create a new moment and choose its audience again."
+                return@launch
+            }
+            if (posting) return@launch
+            post(bytes, story.media.mime, story.caption, story.width, story.height, story.durationMs, story.allowsReplies, audience)
+            StoryLocalStore.deleteStory(appContext, story.id)
         }
     }
 

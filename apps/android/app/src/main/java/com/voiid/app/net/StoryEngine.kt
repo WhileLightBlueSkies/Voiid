@@ -13,6 +13,8 @@ import uniffi.voiid.decryptMedia
 import uniffi.voiid.encryptMedia
 import java.io.File
 import java.util.UUID
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Stories crypto + sync orchestration — the seam between [StoryService] (dumb transport),
@@ -37,6 +39,9 @@ class StoryEngine private constructor(context: Context) {
         private const val TWENTY_FOUR_HOURS_MS = 24L * 60 * 60 * 1000
     }
 
+    var deliveryWarning: String? = null
+        private set
+    private val feedMutex = Mutex()
     private val appContext = context.applicationContext
     private val tokens = TokenStore.get(appContext)
     private val e2e = E2EManager.get(appContext)
@@ -90,6 +95,7 @@ class StoryEngine private constructor(context: Context) {
     ): Story {
         val myId = tokens.userId ?: throw ApiError.NotAuthenticated
         val storyId = UUID.randomUUID().toString()
+        deliveryWarning = null
 
         // 1. Encrypt the blob → ciphertext + fresh random media key. 2. PUT ciphertext to R2.
         val enc = encryptMedia(bytes)
@@ -117,8 +123,12 @@ class StoryEngine private constructor(context: Context) {
         // 5. POST — server computes expires_at and returns it. Bounded at 1000 keys/POST by the API.
         val resp = service.postStory(
             storyId, r2Key, mediaMime = "application/octet-stream",
-            byteSize = enc.ciphertext.size.toLong(), senderDeviceId = e2e.deviceId, keys = keys,
+            byteSize = enc.ciphertext.size.toLong(), senderDeviceId = e2e.deviceId, keys = keys.take(1000),
         )
+        for (batch in keys.drop(1000).chunked(1000)) {
+            runCatching { service.appendKeys(storyId, batch) }
+                .onFailure { deliveryWarning = "Your moment was shared, but some devices could not be reached." }
+        }
         val expiresAt = parseTs(resp.expires_at) ?: claimExpiry
 
         // 6. Cache the plaintext we already hold so "Your story" renders with no download.
@@ -144,7 +154,9 @@ class StoryEngine private constructor(context: Context) {
 
     /** Fetch this device's pending story keys, decrypt+validate each, persist. Local-first: a failed
      *  network call throws to the caller but never touches the already-stored feed. */
-    suspend fun syncFeed(): SyncResult {
+    suspend fun syncFeed(): SyncResult = feedMutex.withLock { syncFeedLocked() }
+
+    private suspend fun syncFeedLocked(): SyncResult {
         val myId = tokens.userId
         // The address book loads ASYNCHRONOUSLY on Android; without awaiting it the "known
         // author" gate below runs against an empty directory and DROPS every story (the
@@ -252,6 +264,7 @@ class StoryEngine private constructor(context: Context) {
      * can POST a story targeting your device id. Returns the Story to store, or null to DROP.
      */
     private fun validate(env: StoryEnvelope, row: StoryService.FeedStory, myId: String?, reachable: Set<String>): Story? {
+        if ((env.v ?: 1) != 1 || (env.t ?: "story") != "story") return null
         // Each drop is LOGGED. A silent `return null` here made "the story never arrived"
         // indistinguishable from "it was rejected by rule 1/2/3", with nothing in logcat.
         // UUIDs are compared CASE-INSENSITIVELY. A UUID's canonical form is case-insensitive by

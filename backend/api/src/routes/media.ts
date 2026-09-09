@@ -45,6 +45,10 @@ router.post('/presign-download', requireAuth, asyncHandler(async (req, res) => {
   if (typeof key !== 'string' || !key.startsWith('media/')) {
     return res.status(400).json({ error: 'valid media key required' });
   }
+  // Story expiry and audience authorization belong to the story-specific endpoint.
+  if (key.startsWith('media/stories/')) {
+    return res.status(403).json({ error: 'use the story download endpoint' });
+  }
   try {
     const download_url = await presignGet(key);
     res.json({ download_url });

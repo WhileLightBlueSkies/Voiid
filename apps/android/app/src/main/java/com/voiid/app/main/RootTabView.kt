@@ -116,27 +116,8 @@ private enum class Tab(
     ;
 
     companion object {
-        /**
-         * ── THE TESTFLIGHT CUT ──────────────────────────────────────────────────────
-         * Chats only, deliberately, for the first test round. Mirrors iOS `Tab.shipped`.
-         *
-         * Every other tab is BUILT — Moments, Communities, Map, Games and Clips all work
-         * and all have server-backed data. They are hidden because a test round answers
-         * one question well or five questions badly: testers who can wander into six
-         * surfaces report a scattering of issues across all of them, and the messaging
-         * path — the thing this build exists to exercise — gets a fraction of the
-         * attention it needs.
-         *
-         * Hidden, not deleted. Every screen still compiles and ships inside the binary, so
-         * restoring one is adding its entry back to this set and nothing else. AI stays out
-         * for its own older reason — see the note on its screen being unwired.
-         *
-         * Settings is unaffected: it is reached from the Chats header, not from a tab.
-         *
-         * DECLARED BEFORE `visible`, which reads it: companion properties initialise in
-         * declaration order, so the other way round leaves this null when `visible` runs.
-         */
-        private val SHIPPED = setOf(CHAT)
+        // Keep declaration before visible: companion properties initialize in order.
+        private val SHIPPED = setOf(CHAT, STORIES)
 
         /**
          * The tabs the bar actually shows, and the order it steps through.

@@ -95,23 +95,8 @@ struct RootTabView: View {
         /// reached by any route.
         static var visible: [Tab] { allCases.filter { shipped.contains($0) } }
 
-        /// ── THE TESTFLIGHT CUT ──────────────────────────────────────────────────
-        /// Chats only, deliberately, for the first TestFlight round.
-        ///
-        /// Every other tab is BUILT — Moments, Communities, Map, Games and Clips all work
-        /// and all have server-backed data. They are hidden because a test round answers
-        /// one question well or five questions badly: testers who can wander into six
-        /// surfaces report a scattering of issues across all of them, and the messaging
-        /// path — the thing this build exists to exercise — gets a fraction of the
-        /// attention it needs.
-        ///
-        /// Hidden, not deleted. Every screen still compiles and still ships inside the
-        /// binary, so restoring one is adding its case back to this array and nothing
-        /// else. `ai` stays out for its own older reason: its screens are mid-refactor
-        /// (see the note below).
-        ///
-        /// Settings is unaffected — it is reached from the Chats header, not from a tab.
-        private static let shipped: Set<Tab> = [.chat]
+        /// Memories (Moments) and Chats are enabled for the current test round.
+        private static let shipped: Set<Tab> = [.chat, .stories]
 
         /// SF Symbols, OUTLINE weight — the inactive state.
         ///

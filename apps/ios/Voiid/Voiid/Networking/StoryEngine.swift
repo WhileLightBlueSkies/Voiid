@@ -26,6 +26,8 @@ final class StoryEngine: ObservableObject {
 
     private let svc = StoryService.shared
     private let chat = ChatEngine.shared
+    private var refreshTask: Task<Bool, Never>?
+    @Published var actionError: String?
 
     /// Live contexts (others' stories), rebuilt from StoryStore after every sync.
     @Published private(set) var contexts: [StoryContext] = []
@@ -82,17 +84,26 @@ final class StoryEngine: ObservableObject {
 
     /// Foreground refresh: sweep, pull the feed, pull receipts, rebuild published state.
     /// Never throws to the UI — a failure leaves the tray as it was.
-    func refresh() async {
-        reloadFromStore()
-        await syncFeed()
-        await syncReceipts()
-        reloadFromStore()
-        autoDownloadEligible()
+    @discardableResult
+    func refresh() async -> Bool {
+        if let refreshTask { return await refreshTask.value }
+        let task = Task { @MainActor in
+            reloadFromStore()
+            let succeeded = await syncFeed()
+            await syncReceipts()
+            reloadFromStore()
+            autoDownloadEligible()
+            return succeeded
+        }
+        refreshTask = task
+        let succeeded = await task.value
+        refreshTask = nil
+        return succeeded
     }
 
     /// Pull this device's pending story key blobs, decrypt + validate each, persist.
-    private func syncFeed() async {
-        guard let deviceId = myDeviceId else { return }
+    private func syncFeed() async -> Bool {
+        guard let deviceId = myDeviceId else { return false }
         let rows: [StoryService.FeedStory]
         // RECOVERY: with no live stories held locally, re-fetch already-delivered rows too, so a
         // lost local DB (or a past dropped key) still recovers the live feed instead of staying
@@ -102,11 +113,11 @@ final class StoryEngine: ObservableObject {
         // you posted anything, a story previously lost to a dropped key became unrecoverable.
         let includeDelivered = !StoryStore.liveContexts().contains { !$0.isMine }
         do { rows = try await svc.feed(deviceId: deviceId, includeDelivered: includeDelivered) }
-        catch { NSLog("[VOIID] story feed fetch failed: \(error)"); return }
+        catch { NSLog("[VOIID] story feed fetch failed: \(error)"); return false }
 
         // Computed ONCE for the whole batch: it reads the conversations table, and doing that
         // per row would be a DB hit per story.
-        let reachable = UserDirectory.shared.storyReachableUserIds()
+        let reachable = Set(UserDirectory.shared.storyReachableUserIds().map { $0.lowercased() })
 
         for row in rows {
             if StoryStore.exists(row.story_id) { continue }   // dedup / decrypt-once (§1.5.6)
@@ -128,11 +139,12 @@ final class StoryEngine: ObservableObject {
             }
 
             // Receiver-side validation (§1.5) — the server does none of this for us.
-            guard env.story_id == row.story_id else {
+            guard (env.v ?? 1) == 1, (env.t ?? "story") == "story" else { continue }
+            guard env.story_id.lowercased() == row.story_id.lowercased() else {
                 NSLog("[VOIID] story DROPPED id=\(row.story_id): envelope story_id mismatch (\(env.story_id))")
                 continue
             }
-            guard env.author_id == row.author_id else {
+            guard env.author_id.lowercased() == row.author_id.lowercased() else {
                 NSLog("[VOIID] story DROPPED id=\(row.story_id): author mismatch (\(env.author_id) vs \(row.author_id))")
                 continue
             }
@@ -172,8 +184,8 @@ final class StoryEngine: ObservableObject {
             // real contact's moment permanently. Empty means "not synced yet", not "stranger".
             // (Android's equivalent gate carries the same carve-out.)
             guard reachable.isEmpty
-                    || reachable.contains(env.author_id)
-                    || env.author_id == myUserId else {
+                    || reachable.contains(env.author_id.lowercased())
+                    || env.author_id.lowercased() == myUserId?.lowercased() else {
                 NSLog("[VOIID] story DROPPED id=\(row.story_id): author=\(env.author_id) is neither a contact nor someone you have a chat with")
                 continue
             }
@@ -182,10 +194,10 @@ final class StoryEngine: ObservableObject {
             }
 
             let story = Story(
-                id: env.story_id,
-                authorId: env.author_id,
+                id: row.story_id,
+                authorId: row.author_id,
                 authorDeviceId: row.author_device_id,
-                isMine: env.author_id == myUserId,
+                isMine: env.author_id.lowercased() == myUserId?.lowercased(),
                 createdAt: created,
                 expiresAt: serverExpires,
                 media: env.media,
@@ -203,6 +215,7 @@ final class StoryEngine: ObservableObject {
                 downloadState: .none)
             StoryStore.upsert(story)
         }
+        return true
     }
 
     // MARK: - Posting
@@ -219,9 +232,9 @@ final class StoryEngine: ObservableObject {
     /// not to delete it. Nothing extra is uploaded and the audience is unaffected.
     func postStory(mediaData: Data, mime: String, caption: String,
                    width: Int?, height: Int?, durationMs: Int?,
-                   audienceUserIds: [String], archive: Bool) async {
-        guard let myUserId else { return }
-        let storyId = UUID().uuidString
+                   audienceUserIds: [String], archive: Bool) async throws {
+        guard let myUserId else { throw StoryError.noRecipients }
+        let storyId = UUID().uuidString.lowercased()
         let createdMs = Int64(Date().timeIntervalSince1970 * 1000)
         let expiresMs = createdMs + 24 * 60 * 60 * 1000
 
@@ -264,7 +277,10 @@ final class StoryEngine: ObservableObject {
                                               mediaMime: "application/octet-stream",
                                               byteSize: enc.ciphertext.count,
                                               senderDeviceId: myDeviceId, keys: batches.first ?? [])
-            for extra in batches.dropFirst() { try? await svc.addKeys(storyId: storyId, keys: extra) }
+            for extra in batches.dropFirst() {
+                do { try await svc.addKeys(storyId: storyId, keys: extra) }
+                catch { actionError = "Your moment was shared, but some devices could not be reached." }
+            }
 
             // Persist the authoritative row (server expiry wins) with the plaintext already cached.
             let story = Story(id: storyId, authorId: myUserId, authorDeviceId: myDeviceId,
@@ -301,6 +317,8 @@ final class StoryEngine: ObservableObject {
             posting.remove(storyId)
             failedPosts.insert(storyId)
             NSLog("[VOIID] ❌ post story failed \(storyId): \(error)")
+            try? FileManager.default.removeItem(atPath: localPath)
+            throw error
         }
         reloadFromStore()
     }
@@ -402,27 +420,41 @@ final class StoryEngine: ObservableObject {
 
     /// Reply to a story: an ordinary 1:1 message into the chat with the author (§5). Creates
     /// the conversation if absent. `reaction` is a single emoji for the quick-tap rail.
-    func reply(to story: Story, text: String, reaction: String?) async {
+    @discardableResult
+    func reply(to story: Story, text: String, reaction: String?) async -> Bool {
+        guard story.allowsReplies, !story.isExpired else { return false }
         let env = StoryReplyEnvelope(storyId: story.id, storyAuthorId: story.authorId,
                                      storyCreatedAt: Int64(story.createdAt.timeIntervalSince1970 * 1000),
                                      text: text, reaction: reaction)
-        // Reuse ChatService's create-or-fetch (returns the existing conversation if any).
-        var convId = LocalStore.conversationId(forPeer: story.authorId)
-        if convId == nil {
-            convId = try? await ChatService.shared.createDirect(memberId: story.authorId)
+        do {
+            let convId: String
+            if let existing = LocalStore.conversationId(forPeer: story.authorId) { convId = existing }
+            else { convId = try await ChatService.shared.createDirect(memberId: story.authorId) }
+            _ = try await chat.sendStoryReply(env, conversationId: convId, peerUserId: story.authorId)
+            return true
+        } catch {
+            actionError = "Couldn't send your reply. Please try again."
+            return false
         }
-        guard let convId else { return }
-        _ = try? await chat.sendStoryReply(env, conversationId: convId, peerUserId: story.authorId)
     }
 
     // MARK: - Delete
 
     /// Author-only delete. Removes the R2 object + rows server-side and locally. NOT a
     /// security operation — anyone who already downloaded keeps the media (§1.6).
-    func deleteStory(_ story: Story) async {
-        try? await svc.delete(storyId: story.id)
+    @discardableResult
+    func deleteStory(_ story: Story) async -> Bool {
+        do { try await svc.delete(storyId: story.id) }
+        catch {
+            if case APIError.http(let status, _, _) = error, status == 404 { /* already gone */ }
+            else {
+                actionError = "Couldn't delete this moment. Please try again."
+                return false
+            }
+        }
         StoryStore.delete(story.id)
         reloadFromStore()
+        return true
     }
 
     // MARK: - R2 transport (ciphertext only; the key/nonce never touch this path)

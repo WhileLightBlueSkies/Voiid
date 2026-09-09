@@ -146,6 +146,7 @@ private struct StoryContextPlayer: View {
     @State private var backdrop: UIImage?
     @State private var loadState: LoadState = .loading
     @State private var showReply = false
+    @State private var sendingReply = false
     @State private var showViewers = false
     @State private var replyText = ""
     @State private var toast: String?
@@ -259,8 +260,17 @@ private struct StoryContextPlayer: View {
         // A page the pager has recycled must not keep a decoder — or an audio session — alive.
         .onDisappear { stop() }
         .onReceive(tick) { _ in advanceProgress() }
+        .onReceive(NotificationCenter.default.publisher(for: .voiidStorySignal)) { note in
+            if isActive, note.userInfo?["type"] as? String == "story_deleted",
+               let id = note.userInfo?["story_id"] as? String, id.lowercased() == current?.id.lowercased() {
+                stop(); onDismiss()
+            }
+        }
         .sheet(isPresented: $showViewers) { if let s = current { StoryViewersSheet(story: s) } }
         .sheet(isPresented: $showReply) { replySheet }
+        .alert("Moment unavailable", isPresented: Binding(get: { isActive && !showReply && engine.actionError != nil }, set: { if !$0 { engine.actionError = nil } })) {
+            Button("OK") { engine.actionError = nil }
+        } message: { Text(engine.actionError ?? "") }
     }
 
     // MARK: - Content
@@ -440,7 +450,7 @@ private struct StoryContextPlayer: View {
             }
             if context.isMine, let s = current {
                 Menu {
-                    Button(role: .destructive) { Task { await engine.deleteStory(s); onDismiss() } } label: {
+                    Button(role: .destructive) { Task { if await engine.deleteStory(s) { onDismiss() } } } label: {
                         Label("Delete", systemImage: "trash")
                     }
                 } label: { Image(systemName: "ellipsis").foregroundColor(.white).padding(8) }
@@ -542,13 +552,18 @@ private struct StoryContextPlayer: View {
             Text("Reply to \(UserDirectory.shared.displayName(context.authorId))")
                 .font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
             VoiidTextField(placeholder: "Message", text: $replyText)
-            VoiidPrimaryButton(title: "Send", enabled: !replyText.trimmingCharacters(in: .whitespaces).isEmpty) {
+            VoiidPrimaryButton(title: sendingReply ? "Sending…" : "Send", enabled: !sendingReply && !replyText.trimmingCharacters(in: .whitespaces).isEmpty) {
                 if let s = current {
                     let body = replyText
-                    Task { await engine.reply(to: s, text: body, reaction: nil) }
+                    sendingReply = true
+                    Task {
+                        let sent = await engine.reply(to: s, text: body, reaction: nil)
+                        sendingReply = false
+                        if sent { replyText = ""; showReply = false; toastThenDismiss("Sent") }
+                    }
                 }
-                replyText = ""; showReply = false; toastThenDismiss("Sent")
             }
+            if let error = engine.actionError { Text(error).font(VoiidFont.caption).foregroundColor(VoiidColor.error) }
             Spacer()
         }
         .padding(VoiidSpacing.lg)
@@ -558,8 +573,13 @@ private struct StoryContextPlayer: View {
 
     private func sendReaction(_ emoji: String) {
         guard let s = current else { return }
-        Task { await engine.reply(to: s, text: "", reaction: emoji) }
-        toastThenDismiss("Sent")
+        guard !sendingReply else { return }
+        sendingReply = true
+        Task {
+            let sent = await engine.reply(to: s, text: "", reaction: emoji)
+            sendingReply = false
+            if sent { toastThenDismiss("Sent") }
+        }
     }
 
     // MARK: - Playback lifecycle
@@ -696,7 +716,9 @@ private struct StoryContextPlayer: View {
     }
 
     private func advanceProgress() {
-        guard isActive, !paused, loadState == .ready, let s = current else { return }
+        guard isActive, let s = current else { return }
+        if s.isExpired && !(s.isMine && s.isArchived) { stop(); onDismiss(); return }
+        guard !paused, loadState == .ready else { return }
         let dur = s.segmentDuration
         // Video advances on natural end; images on the 5s timer. For video we track the
         // player's own time so pause/seek stays exact.

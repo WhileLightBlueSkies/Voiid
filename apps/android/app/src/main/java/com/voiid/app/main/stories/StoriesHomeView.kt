@@ -86,6 +86,7 @@ fun StoriesHomeView(
                     showPlus = true,
                     onClick = {
                         if (mine == null) onCompose()
+                        else if (mine.newest?.uploadState == StoryUploadState.FAILED) mine.newest?.let { stories.retry(it) }
                         else onOpenContext(stories.contexts.indexOf(mine).coerceAtLeast(0))
                     },
                 )

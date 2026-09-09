@@ -143,8 +143,8 @@ private fun ContextPage(
     var index by remember(context.authorId) { mutableIntStateOf(context.startIndex) }
     var progress by remember { mutableFloatStateOf(0f) }
     var paused by remember { mutableStateOf(false) }
-    var localPath by remember(context.authorId, index) { mutableStateOf<String?>(null) }
-    var loadState by remember(context.authorId, index) { mutableStateOf(StoryDownloadState.NONE) }
+    var localPath by remember(context.authorId, index, context.stories.getOrNull(index)?.id) { mutableStateOf<String?>(null) }
+    var loadState by remember(context.authorId, index, context.stories.getOrNull(index)?.id) { mutableStateOf(StoryDownloadState.NONE) }
     var showViewers by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var replyText by remember(index) { mutableStateOf("") }
@@ -157,7 +157,7 @@ private fun ContextPage(
 
     // Download the current story. This one stays on the PAGE's scope on purpose — its result
     // writes this page's state, so a page the pager recycles should take it down with it.
-    LaunchedEffect(context.authorId, index, active) {
+    LaunchedEffect(story.id, active) {
         if (!active) return@LaunchedEffect
         progress = 0f
         loadState = StoryDownloadState.DOWNLOADING
@@ -174,7 +174,7 @@ private fun ContextPage(
     // Handed to the STORE so it survives the index change that fires the next one — this
     // LaunchedEffect is cancelled on every step, and that cancellation is exactly what used to
     // kill each warm before it landed.
-    LaunchedEffect(context.authorId, index, active, nextContextStories) {
+    LaunchedEffect(story.id, active, nextContextStories) {
         if (!active) return@LaunchedEffect
         val ahead = context.stories.drop(index + 1).take(StoriesStore.PREFETCH_DEPTH)
         val window = ahead + nextContextStories.take(StoriesStore.PREFETCH_DEPTH - ahead.size)
@@ -187,15 +187,21 @@ private fun ContextPage(
     // `active` MUST be a key: HorizontalPager pre-composes neighbours, so without it an adjacent
     // (not-yet-shown) page would either fire a receipt for a story never seen, or — once swiped to —
     // never restart and never record the view at all.
-    LaunchedEffect(context.authorId, index, active) {
-        if (!active) return@LaunchedEffect
+    LaunchedEffect(story.id, active, loadState, paused) {
+        if (!active || paused || loadState != StoryDownloadState.READY) return@LaunchedEffect
         kotlinx.coroutines.delay(1000)
         stories.onViewed(story)
     }
 
+    LaunchedEffect(story.id, active) {
+        if (!active) return@LaunchedEffect
+        kotlinx.coroutines.delay((story.expiresAt - System.currentTimeMillis()).coerceAtLeast(0))
+        onClose()
+    }
+
     // The timer: advance `progress` at ~30 Hz while active, ready, and not paused. Do NOT start
     // until the media is downloaded (a spinner shows instead), so the bar never races an empty frame.
-    LaunchedEffect(context.authorId, index, active, paused, loadState) {
+    LaunchedEffect(story.id, active, paused, loadState) {
         if (!active || paused || loadState != StoryDownloadState.READY) return@LaunchedEffect
         val duration = if (story.isVideo) (story.durationMs ?: IMAGE_DURATION_MS).coerceAtMost(30_000L) else IMAGE_DURATION_MS
         val step = 33L

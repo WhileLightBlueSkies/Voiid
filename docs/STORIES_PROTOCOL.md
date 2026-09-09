@@ -240,15 +240,13 @@ stale id in a bundle must not fail the whole story.
 
 ### 7.1 Why stories get their own download endpoint
 
-`POST /v1/media/presign-download` authorizes on *"authenticated AND key starts
-with `media/`"* only. A leaked `(mediaKey, objectKey)` pair therefore lets **any
-logged-in Voiid user** fetch and decrypt. `POST /v1/stories/presign-download`
-checks actual entitlement instead.
+`POST /v1/media/presign-download` rejects `media/stories/` objects. Story clients
+must use `POST /v1/stories/presign-download`, which checks live expiry, author or
+recipient entitlement, active recipient devices, and blocking before signing a URL.
 
-**This is defence in depth, NOT a guarantee.** The object still sits under the
-`media/` prefix, so the generic endpoint would still serve it to anyone who
-learned the key. Access control is ultimately the E2E media key. Do not describe
-it otherwise in UI or docs.
+These checks protect new downloads. Already-issued signed URLs remain usable until
+they expire, and already-downloaded plaintext cannot be revoked. The media key remains
+end-to-end encrypted; server access checks supplement it.
 
 ---
 

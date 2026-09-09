@@ -119,6 +119,9 @@ struct StoriesHomeView: View {
             }
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Moments")
+            .alert("Moment unavailable", isPresented: Binding(get: { engine.actionError != nil }, set: { if !$0 { engine.actionError = nil } })) {
+                Button("OK") { engine.actionError = nil }
+            } message: { Text(engine.actionError ?? "") }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink { StoryArchiveView() } label: {
@@ -142,35 +145,10 @@ struct StoriesHomeView: View {
         }
     }
 
-    /// Wraps the engine's refresh purely to drive `phase`. The engine's own contract is
-    /// UNCHANGED — `refresh()` still swallows its errors and stays local-first; this only
-    /// decides which of the three empty-screen messages is honest.
-    ///
-    /// The distinction is only ever needed when the screen would otherwise be blank, so the
-    /// reachability probe runs ONLY in that case. It re-issues the same read-only
-    /// `GET /stories/feed` the engine just made: a 2xx means the server genuinely has nothing
-    /// for us (empty), a throw means we never got an answer (failed). `include_delivered` is
-    /// left at its default so this consumes nothing — the deliver-once semantics are untouched,
-    /// and the rows it returns are DISCARDED here; the engine remains the only thing that ever
-    /// decrypts or persists them.
+    /// Only the engine consumes feed envelopes. A health probe must never discard them.
     private func load() async {
-        let wasBlank = engine.contexts.isEmpty && engine.myStories.isEmpty
-        // Only show the spinner when there is nothing on screen to keep. With content already
-        // rendered, a refresh is silent and local-first, exactly as before.
-        if wasBlank { phase = .loading }
-
-        await engine.refresh()
-
-        guard engine.contexts.isEmpty && engine.myStories.isEmpty else { phase = .loaded; return }
-
-        // Still blank. Ask whether that is the truth or a network failure.
-        guard let deviceId = E2EManager.shared.deviceId else { phase = .failed; return }
-        do {
-            _ = try await StoryService.shared.feed(deviceId: deviceId)
-            phase = .loaded
-        } catch {
-            phase = .failed
-        }
+        if engine.contexts.isEmpty && engine.myStories.isEmpty { phase = .loading }
+        phase = await engine.refresh() ? .loaded : .failed
     }
 
     // MARK: - Grid

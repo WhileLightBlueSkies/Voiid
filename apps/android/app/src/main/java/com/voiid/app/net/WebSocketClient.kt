@@ -93,7 +93,7 @@ class WebSocketClient private constructor(context: Context) {
      * Carries no payload because the client re-fetches through the authenticated feed anyway —
      * the frame is a nudge, not data.
      */
-    var onStorySignal: (() -> Unit)? = null
+    var onStorySignal: ((String, String) -> Unit)? = null
     /** A call-signaling frame (offer/answer/ice/hangup/decline/busy/ringing/hold) was relayed to us. */
     var onCallSignal: ((CallSignal) -> Unit)? = null
     /**
@@ -544,7 +544,7 @@ class WebSocketClient private constructor(context: Context) {
                     endReason = obj["end_reason"]?.jsonPrimitive?.contentOrNull,
                 )
             }
-            "story", "story_receipt", "story_deleted" -> onStorySignal?.invoke()
+            "story", "story_receipt", "story_deleted" -> onStorySignal?.invoke(t, obj["story_id"]?.jsonPrimitive?.contentOrNull.orEmpty())
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
             // Conference escalation (§3.2). Routed to their own seam — exactly as loc_* goes to

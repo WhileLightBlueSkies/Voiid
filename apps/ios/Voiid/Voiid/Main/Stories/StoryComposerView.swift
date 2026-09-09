@@ -3,8 +3,8 @@
 //  Voiid
 //
 //  Capture-or-pick → preview + caption → audience chip → Share. The story posts
-//  optimistically (StoryEngine handles the background upload + fan-out), so Share dismisses
-//  immediately and never blocks on a 50 MB upload.
+//  asynchronously. Keep the composer and selected media until sharing succeeds, so a
+//  failed upload can be retried without losing the draft.
 //
 //  HARD CAPS are enforced HERE, before any bytes reach the engine (§8.2): the crypto holds
 //  the blob in memory twice and copies it across the FFI twice, there is no streaming
@@ -60,13 +60,14 @@ struct StoryComposerView: View {
                         .multilineTextAlignment(.center)
                 }
                 Spacer()
-                VoiidPrimaryButton(title: processing ? "Preparing…" : "Share",
+                VoiidPrimaryButton(title: processing ? "Sharing…" : "Share",
                                    enabled: hasMedia && !audience.isEmpty && !processing) { share() }
             }
             .padding(VoiidSpacing.lg)
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("New Moment").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
+            .interactiveDismissDisabled(processing)
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() }.disabled(processing) } }
             .onAppear {
                 if audience.isEmpty { audience = Set(StorySettings.shared.lastCustomAudience ?? Array(everyoneIds)) }
                 keepThis = StorySettings.shared.archiveByDefault
@@ -183,12 +184,12 @@ struct StoryComposerView: View {
             do {
                 if let img = previewImage {
                     let (data, w, h) = try encodeImage(img)
-                    await StoryEngine.shared.postStory(mediaData: data, mime: "image/jpeg", caption: cap,
+                    try await StoryEngine.shared.postStory(mediaData: data, mime: "image/jpeg", caption: cap,
                                                        width: w, height: h, durationMs: nil, audienceUserIds: ids,
                                                        archive: keepThis)
                 } else if let video = pickedVideoURL {
                     let (data, w, h, ms) = try await encodeVideo(video)
-                    await StoryEngine.shared.postStory(mediaData: data, mime: "video/mp4", caption: cap,
+                    try await StoryEngine.shared.postStory(mediaData: data, mime: "video/mp4", caption: cap,
                                                        width: w, height: h, durationMs: ms, audienceUserIds: ids,
                                                        archive: keepThis)
                 }
@@ -196,7 +197,7 @@ struct StoryComposerView: View {
             } catch let e as CapError {
                 processing = false; errorText = e.message
             } catch {
-                processing = false; errorText = "Couldn't prepare that media."
+                processing = false; errorText = "Couldn't share your moment. Your media is still here—please try again."
             }
         }
     }

@@ -139,12 +139,15 @@ async function storeKeysAndRelay(
   authorId: string,
   entries: { recipient_device_id: string; ciphertext: string }[]
 ): Promise<number> {
+  // UUIDs are case-insensitive in Postgres; normalize before JavaScript map lookups.
+  entries = entries.map((entry) => ({ ...entry, recipient_device_id: entry.recipient_device_id.toLowerCase() }));
   const requested = [...new Set(entries.map((e) => e.recipient_device_id))];
   const owners = await query<{ id: string; user_id: string }>(
     `select id, user_id from devices where id = any($1::uuid[]) and revoked_at is null`,
     [requested]
   );
-  const live = new Map(owners.map((o) => [o.id, o.user_id]));
+  const blocked = await blockedUserIds(authorId);
+  const live = new Map(owners.filter((o) => !blocked.has(o.user_id)).map((o) => [o.id, o.user_id]));
 
   const stored: string[] = [];
   for (const entry of entries) {
@@ -179,7 +182,7 @@ async function storeKeysAndRelay(
         author_id: authorId,
         recipient_device_ids: devIds,
       })
-    );
+    ).catch((error) => console.warn('[stories] wake relay failed:', (error as Error).message));
   }
 
   // Wake offline/backgrounded TARGET devices. Content-free: type + story_id only.
@@ -219,10 +222,9 @@ router.post('/presign-upload', requireAuth, rateLimit({ max: 120, windowSeconds:
 // user fetch the ciphertext. Stories check actual entitlement: the caller must be the
 // author, or own a device that holds a `story_keys` row for this story.
 //
-// HONEST LIMIT: this is defence in depth, NOT a guarantee. The object still sits under
-// the `media/` prefix, so the generic endpoint would still serve it to anyone who
-// learned the key. Access control is ultimately the E2E media key. Do not describe it
-// otherwise in UI or docs.
+// The generic media endpoint rejects media/stories/ keys so this entitlement and
+// expiry check cannot be bypassed there. Already issued URLs and already decrypted
+// copies cannot be revoked; E2EE protects content independently of this access check.
 //
 // UPHOLDS THE RULE: returns a URL to CIPHERTEXT. The media key is not in this database.
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -235,8 +237,8 @@ router.post('/presign-download', requireAuth, rateLimit({ max: 120, windowSecond
   }
 
   // One query answers "does it exist, is it live, and may this user have it".
-  const rows = await query<{ r2_key: string; entitled: boolean }>(
-    `select s.r2_key,
+  const rows = await query<{ r2_key: string; author_id: string; entitled: boolean }>(
+    `select s.r2_key, s.author_id,
             ( s.author_id = $2
               or exists (select 1 from story_keys k
                            join devices d on d.id = k.recipient_device_id
@@ -249,7 +251,9 @@ router.post('/presign-download', requireAuth, rateLimit({ max: 120, windowSecond
   // Expired is reported as 404, identically to never-existed: distinguishing them
   // would confirm to a stranger that a given story id was real.
   if (!rows[0]) return res.status(404).json({ error: 'story not found' });
-  if (!rows[0].entitled) return res.status(403).json({ error: 'not a recipient of this story' });
+  if (!rows[0].entitled || (await blockedUserIds(user_id)).has(rows[0].author_id)) {
+    return res.status(403).json({ error: 'not a recipient of this story' });
+  }
 
   const download_url = await presignGet(rows[0].r2_key);
   return res.json({ download_url });
@@ -470,7 +474,7 @@ router.post('/', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: '
       return res.status(400).json({ error: 'sender_device_id must be a uuid' });
     }
     const own = await query<{ one: number }>(
-      `select 1 as one from devices where id = $1 and user_id = $2`,
+      `select 1 as one from devices where id = $1 and user_id = $2 and revoked_at is null`,
       [deviceId, user_id]
     );
     if (!own[0]) return res.status(400).json({ error: 'sender_device_id does not belong to this user' });
@@ -592,11 +596,14 @@ router.post('/:id/receipt', requireAuth, rateLimit({ max: 120, windowSeconds: 60
   if (bad) return res.status(400).json({ error: bad });
 
   const stories = await query<{ author_id: string }>(
-    `select author_id from stories where id = $1`,
+    `select author_id from stories where id = $1 and expires_at > now()`,
     [storyId]
   );
   if (!stories[0]) return res.status(404).json({ error: 'story not found' });
   const authorId = stories[0].author_id;
+  if ((await blockedUserIds(user_id)).has(authorId)) {
+    return res.status(403).json({ error: 'not a recipient of this story' });
+  }
 
   // AUTHORIZATION 1: you cannot claim to have viewed a story you were never sent.
   // (The author's own linked devices hold key rows too, so an author viewing their
@@ -604,7 +611,7 @@ router.post('/:id/receipt', requireAuth, rateLimit({ max: 120, windowSeconds: 60
   const entitled = await query<{ one: number }>(
     `select 1 as one from story_keys k
        join devices d on d.id = k.recipient_device_id
-      where k.story_id = $1 and d.user_id = $2
+      where k.story_id = $1 and d.user_id = $2 and d.revoked_at is null
       limit 1`,
     [storyId, user_id]
   );
@@ -612,7 +619,7 @@ router.post('/:id/receipt', requireAuth, rateLimit({ max: 120, windowSeconds: 60
 
   // AUTHORIZATION 2: every receipt target must be a live device of the story's AUTHOR.
   // Without this the endpoint would be a free write primitive into any device's queue.
-  const targets = [...new Set((receipts as any[]).map((r) => r.recipient_device_id))];
+  const targets = [...new Set((receipts as any[]).map((r) => r.recipient_device_id.toLowerCase()))];
   const authorDevices = await query<{ id: string }>(
     `select id from devices where id = any($1::uuid[]) and user_id = $2 and revoked_at is null`,
     [targets, authorId]
