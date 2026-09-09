@@ -2003,7 +2003,13 @@ object CallManager {
             /* sharedKeyMode = */ true,
             /* ratchetSalt = */ "VoiidFrameKey v1".toByteArray(),
             /* ratchetWindowSize = */ 0,
-            /* uncryptedMagicBytes = */ null,
+            // EMPTY, never null. The JNI binding reads this straight into a jarray and
+            // calls GetArrayLength on it with no null check, so passing null aborts the
+            // whole process — "JNI DETECTED ERROR IN APPLICATION: jarray was NULL" —
+            // the instant a call sets up its frame key. An empty array means exactly the
+            // same thing to the cryptor (no unencrypted magic prefix) and survives the
+            // trip across JNI.
+            /* uncryptedMagicBytes = */ ByteArray(0),
             /* failureTolerance = */ -1,
             /* keyRingSize = */ 16,
             /* discardFrameWhenCryptorNotReady = */ true,

@@ -409,6 +409,24 @@ fun ChatsHomeView(
                 onLinkedDevices = { settingsNav.push("devices") },
                 onAbout = { settingsNav.push("about") },
                 onLegal = { settingsNav.push("legal") },
+                onEditProfile = { settingsNav.push("editProfile") },
+                onShareProfile = { settingsNav.push("shareProfile") },
+                onMyQrCode = { settingsNav.push("myQrCode") },
+                // The banner STATES a fact rather than opening a door. iOS's
+                // EncryptionStatusScreen lives in PreviewSettingsScreens and is marked
+                // unwired there, so porting it would ship a screen neither platform has
+                // finished. Per-conversation verification is where the real artefact lives
+                // (SafetyNumberScreen, reached from a chat, which needs a peer).
+                onSafetyNumber = {},
+                onHelp = { settingsNav.push("help") },
+            )
+            "editProfile" -> EditProfileScreen(session = session, onBack = settingsNav::pop)
+            "shareProfile" -> ShareProfileScreen(session = session, onBack = settingsNav::pop)
+            "myQrCode" -> MyQrCodeScreen(session = session, onBack = settingsNav::pop)
+            "help" -> HelpAndSupportScreen(
+                onBack = settingsNav::pop,
+                onLinkedDevices = { settingsNav.push("devices") },
+                onBackupRecovery = { settingsNav.push("backup") },
             )
             "backup" -> BackupRecoveryScreen(onBack = settingsNav::pop)
             "blocked" -> BlockedContactsScreen(onBack = settingsNav::pop)

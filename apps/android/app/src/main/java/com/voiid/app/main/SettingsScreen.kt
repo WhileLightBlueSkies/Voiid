@@ -11,11 +11,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ChevronRight
@@ -36,6 +39,8 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
@@ -104,6 +109,11 @@ fun SettingsScreen(
     onLinkedDevices: () -> Unit,
     onAbout: () -> Unit,
     onLegal: () -> Unit,
+    onEditProfile: () -> Unit,
+    onShareProfile: () -> Unit,
+    onMyQrCode: () -> Unit,
+    onSafetyNumber: () -> Unit,
+    onHelp: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
@@ -493,52 +503,87 @@ fun SettingsScreen(
                 }
             }
 
+            // ---- quick actions + encryption banner (iOS parity)
+            //
+            // The three things people come to Settings to DO, lifted out of the list so they
+            // are one tap rather than a scan-and-push. Same trio and same order as iOS.
+            QuickActions(
+                onEditProfile = onEditProfile,
+                onShareProfile = onShareProfile,
+                onMyQrCode = onMyQrCode,
+            )
+
+            EncryptionBanner(onClick = onSafetyNumber)
+
             // ---- settings rows
-            Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.lg))
-                    .background(VoiidColor.surfaceCard),
-            ) {
-                SettingsRow(Icons.Default.VerifiedUser, "Backup & Recovery") { onClose(); onBackupRecovery() }
+            //
+            // FOUR NAMED GROUPS, matching iOS's SettingsSheet exactly: Account → Chats &
+            // notifications → Voiid ecosystem → Support & more. Order follows Apple's
+            // gradient — who you are, then what protects your account, then how the app
+            // behaves, then what it is, then how you leave. One undifferentiated card (what
+            // this was) makes ten unrelated rows read as one list and buries the account
+            // controls among the informational ones.
+            SettingsGroup("Account") {
+                SettingsRow(Icons.Default.Lock, "Privacy & security",
+                    "Visibility, blocked contacts, app lock") { onPrivacy() }
+            }
+
+            SettingsGroup("Chats & notifications") {
+                // Appearance and chat layout stay INLINE rather than becoming a pushed
+                // "Chats" screen: there are two or three options and the result is visible
+                // the instant you tap, so navigating away to choose and back to see the
+                // effect would be strictly worse. iOS pushes because its two preferences
+                // live behind a route; the preference itself is the same on both.
+                ChatLayoutRow()
+                AppearanceRow()
                 SettingsDivider()
-                SettingsRow(Icons.Default.PhoneAndroid, "Linked Devices") { onClose(); onLinkedDevices() }
+                SettingsRow(Icons.Default.Storage, "Storage & data",
+                    "Manage storage, data usage") { onStorage() }
                 SettingsDivider()
                 // Android owns Voiid's notification behaviour entirely (no in-app toggle
                 // duplicates the OS channel list) — this jumps straight to Voiid's
                 // notification settings pane, mirroring iOS's
-                // UIApplication.openNotificationSettingsURLString deep link.
-                SettingsRow(Icons.Default.Notifications, "Notifications") {
+                // UIApplication.openNotificationSettingsURLString deep link. It is not a
+                // route on either platform, which is why it carries no chevron.
+                SettingsRow(Icons.Default.Notifications, "Notifications",
+                    "Sounds, badges, previews") {
                     val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                         .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
                     runCatching { context.startActivity(intent) }
                 }
-                SettingsDivider()
-                SettingsRow(Icons.Default.Lock, "Privacy") { onClose(); onPrivacy() }
-                SettingsDivider()
-                SettingsRow(Icons.Default.Storage, "Storage") { onClose(); onStorage() }
-                SettingsDivider()
-                // Appearance is INLINE, not a pushed screen: there are three options and the
-                // result is visible the instant you tap, so navigating away to choose and back
-                // to see the effect would be strictly worse.
-                // Chat list layout — same reasoning as Appearance: two options, and the
-                // result is on the screen you just came from, so a pushed screen would mean
-                // choosing blind and navigating back to check.
-                ChatLayoutRow()
-                AppearanceRow()
                 SettingsDivider()
                 // Stories: view-receipts opt-in (default OFF). Sending one tells the SERVER you
                 // opened someone's story at time T — a fact it otherwise never learns, with no
                 // sealed sender to hide it. The opt-out is reciprocal: OFF = you send none AND see
                 // none. Written straight to the shared story prefs (see StoryPrefs).
                 StoryReceiptsRow()
+            }
+
+            SettingsGroup("Voiid ecosystem") {
+                // NO "Voiid One" and NO "Payments" row, for the same reason iOS has neither:
+                // absent features get no pixels. Voiid One is not a product, and Razorpay is
+                // wired on the server with no client surface that consumes it.
+                SettingsRow(Icons.Default.VerifiedUser, "Backup & Recovery",
+                    "Encrypted backup & restore") { onBackupRecovery() }
+                SettingsDivider()
+                SettingsRow(Icons.Default.PhoneAndroid, "Devices",
+                    "Linked devices, sessions") { onLinkedDevices() }
+            }
+
+            SettingsGroup("Support & more") {
+                SettingsRow(Icons.AutoMirrored.Filled.HelpOutline, "Help & support",
+                    "FAQ, contact us") { onHelp() }
                 SettingsDivider()
                 // Above About, not below: "what may Voiid see, and can I take that back" is
                 // a question people go looking for, and About is a terminal informational
                 // screen nobody scrolls past. It sits at root depth rather than inside
                 // Privacy because DPDP s.6(4) requires withdrawing consent to be as easy as
                 // giving it was, and giving it was one tick on one screen.
-                SettingsRow(Icons.Default.Shield, "Privacy & Legal") { onClose(); onLegal() }
+                SettingsRow(Icons.Default.Shield, "Privacy & Legal",
+                    "Notice, terms, withdraw consent") { onLegal() }
                 SettingsDivider()
-                SettingsRow(Icons.Default.Info, "About") { onClose(); onAbout() }
+                SettingsRow(Icons.Default.Info, "About Voiid",
+                    "Version, terms, privacy policy") { onAbout() }
             }
 
             // ---- danger
@@ -652,6 +697,7 @@ fun SettingsScreen(
 private fun SettingsRow(
     icon: ImageVector,
     title: String,
+    detail: String? = null,
     tint: Color = VoiidColor.textPrimary,
     enabled: Boolean = true,
     trailing: (@Composable () -> Unit)? = null,
@@ -659,9 +705,12 @@ private fun SettingsRow(
 ) {
     val haptics = LocalVoiidHaptics.current
     Row(
-        Modifier.fillMaxWidth().height(52.dp)
+        Modifier.fillMaxWidth()
+            // Taller when a subtitle is present, exactly as the iOS row grows to fit its
+            // detail line rather than compressing both into the single-line height.
+            .heightIn(min = if (detail == null) 52.dp else 60.dp)
             .softClickable(enabled = enabled) { haptics.tap(); onClick() }
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 16.dp, vertical = if (detail == null) 0.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -670,8 +719,146 @@ private fun SettingsRow(
             tint = if (tint == VoiidColor.error) VoiidColor.error else VoiidColor.primary,
             modifier = Modifier.size(22.dp),
         )
-        Text(title, style = VoiidFont.rounded(16), color = tint, modifier = Modifier.weight(1f))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = VoiidFont.rounded(16), color = tint)
+            // The subtitle is what makes the root readable as a list of DOORS rather than a
+            // list of words: it says what is actually behind the row. iOS carries one on
+            // every route row, so Android does too.
+            if (detail != null) {
+                Text(detail, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+            }
+        }
         if (trailing != null) trailing() else Icon(Icons.Default.ChevronRight, null, tint = VoiidColor.placeholder, modifier = Modifier.size(18.dp))
+    }
+}
+
+/**
+ * The three actions people open Settings to perform, as one card of equal columns —
+ * iOS's `quickActions`. Circles are STROKED rather than filled: this strip sits directly
+ * under the avatar, and three filled discs there would compete with it for the eye.
+ */
+@Composable
+private fun QuickActions(
+    onEditProfile: () -> Unit,
+    onShareProfile: () -> Unit,
+    onMyQrCode: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .background(VoiidColor.surfaceCard)
+            .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+            .padding(vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        QuickAction(Icons.Default.Person, "Edit profile", Modifier.weight(1f), onEditProfile)
+        QuickDivider()
+        QuickAction(Icons.Default.Share, "Share profile", Modifier.weight(1f), onShareProfile)
+        QuickDivider()
+        QuickAction(Icons.Default.QrCode, "My QR code", Modifier.weight(1f), onMyQrCode)
+    }
+}
+
+@Composable
+private fun QuickAction(
+    icon: ImageVector,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val haptics = LocalVoiidHaptics.current
+    Column(
+        modifier.softClickable { haptics.tap(); onClick() },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            Modifier.size(40.dp)
+                .border(1.5.dp, VoiidColor.accent, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, null, tint = VoiidColor.accentInk, modifier = Modifier.size(17.dp))
+        }
+        Text(
+            label,
+            style = VoiidFont.rounded(11),
+            color = VoiidColor.textPrimary,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun QuickDivider() {
+    Box(Modifier.width(1.dp).height(44.dp).background(VoiidColor.divider))
+}
+
+/**
+ * The one piece of reassurance on this screen, and a door to the safety number that proves
+ * it. Tinted rather than plain-carded so it reads as a STATEMENT rather than another row —
+ * the same treatment iOS gives it.
+ */
+@Composable
+private fun EncryptionBanner(onClick: () -> Unit) {
+    val haptics = LocalVoiidHaptics.current
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .background(VoiidColor.accent.copy(alpha = 0.06f))
+            .border(1.dp, VoiidColor.accent.copy(alpha = 0.30f), RoundedCornerShape(VoiidRadius.lg))
+            .softClickable { haptics.tap(); onClick() }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Box(
+            Modifier.size(44.dp).clip(CircleShape).background(VoiidColor.accent.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Default.VerifiedUser, null, tint = VoiidColor.accentInk, modifier = Modifier.size(19.dp))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                "You're protected with end-to-end encryption",
+                style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                color = VoiidColor.textPrimary,
+            )
+            Text(
+                "Your chats, calls and data are always private.",
+                style = VoiidFont.rounded(12.5f),
+                color = VoiidColor.textSecondary,
+            )
+        }
+    }
+}
+
+/**
+ * A titled card of rows — the iOS `group(_:rows:)` shape: a 13pt secondary header inset from
+ * the card's edge, then the rows inside one rounded, hairline-stroked surface.
+ *
+ * Grouping alone carries the structure at the root (no footers), which is what Settings.app,
+ * Signal and WhatsApp all do: footers are explanatory apparatus and belong on the screen where
+ * the setting lives, not on a list of doors.
+ */
+@Composable
+private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            title,
+            style = VoiidFont.rounded(13),
+            color = VoiidColor.textSecondary,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+        Column(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .background(VoiidColor.surfaceCard)
+                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg)),
+            content = content,
+        )
     }
 }
 
