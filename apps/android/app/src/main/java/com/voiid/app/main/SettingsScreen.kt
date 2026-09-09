@@ -114,6 +114,7 @@ fun SettingsScreen(
     onMyQrCode: () -> Unit,
     onSafetyNumber: () -> Unit,
     onHelp: () -> Unit,
+    onChatSettings: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
@@ -524,18 +525,27 @@ fun SettingsScreen(
             // this was) makes ten unrelated rows read as one list and buries the account
             // controls among the informational ones.
             SettingsGroup("Account") {
+                // Your identity, at the top of the list — iOS's first row. Everything it
+                // owns (name, username, photo, bio) is real and lives on Edit Profile;
+                // iOS's own `.account` route is an unwired placeholder for the parts that
+                // have no endpoint yet (changing a phone number, adding an email), so this
+                // points at the screen that works instead of porting the placeholder.
+                SettingsRow(Icons.Default.Person, "Account",
+                    "Name, username, photo") { onEditProfile() }
+                SettingsDivider()
                 SettingsRow(Icons.Default.Lock, "Privacy & security",
                     "Visibility, blocked contacts, app lock") { onPrivacy() }
             }
 
             SettingsGroup("Chats & notifications") {
-                // Appearance and chat layout stay INLINE rather than becoming a pushed
-                // "Chats" screen: there are two or three options and the result is visible
-                // the instant you tap, so navigating away to choose and back to see the
-                // effect would be strictly worse. iOS pushes because its two preferences
-                // live behind a route; the preference itself is the same on both.
-                ChatLayoutRow()
-                AppearanceRow()
+                // A "Chats" ROW, matching iOS, rather than the two toggles inline. Keeping
+                // them on the root made this group read as a different shape from every
+                // other one — two full-width segmented controls wedged between plain rows —
+                // and put appearance controls at the same depth as Storage and
+                // Notifications, which are doors. The preferences themselves are unchanged;
+                // they now live on the screen the row opens.
+                SettingsRow(Icons.Default.Edit, "Chats",
+                    "Chat list layout, appearance") { onChatSettings() }
                 SettingsDivider()
                 SettingsRow(Icons.Default.Storage, "Storage & data",
                     "Manage storage, data usage") { onStorage() }
@@ -551,12 +561,6 @@ fun SettingsScreen(
                         .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
                     runCatching { context.startActivity(intent) }
                 }
-                SettingsDivider()
-                // Stories: view-receipts opt-in (default OFF). Sending one tells the SERVER you
-                // opened someone's story at time T — a fact it otherwise never learns, with no
-                // sealed sender to hide it. The opt-out is reciprocal: OFF = you send none AND see
-                // none. Written straight to the shared story prefs (see StoryPrefs).
-                StoryReceiptsRow()
             }
 
             SettingsGroup("Voiid ecosystem") {
@@ -867,7 +871,7 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
  * verbatim from the spec so nobody softens the reciprocity.
  */
 @Composable
-private fun ChatLayoutRow() {
+internal fun ChatLayoutRow() {
     val context = LocalContext.current
     val current = com.voiid.app.ui.theme.ChatLayoutPreference.layout
     val haptics = LocalVoiidHaptics.current
@@ -912,7 +916,7 @@ private fun ChatLayoutRow() {
 }
 
 @Composable
-private fun AppearanceRow() {
+internal fun AppearanceRow() {
     val context = LocalContext.current
     val current = com.voiid.app.ui.theme.VoiidThemeStore.mode
     val haptics = LocalVoiidHaptics.current
@@ -957,7 +961,7 @@ private fun AppearanceRow() {
 }
 
 @Composable
-private fun StoryReceiptsRow() {
+internal fun StoryReceiptsRow() {
     val context = LocalContext.current
     var on by remember { mutableStateOf(com.voiid.app.model.StoryPrefs.receiptsEnabled(context)) }
     Row(

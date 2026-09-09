@@ -316,17 +316,20 @@ fun VoiidCircleBack(onBack: () -> Unit, modifier: Modifier = Modifier) {
         modifier = modifier.height(52.dp).padding(start = 16.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
+        // A BARE CHEVRON, not a floating disc. iOS's settings screens use the standard
+        // navigation back item — a chevron on the background, no circle and no shadow —
+        // and the white shadowed button this used to be read as a control dropped on top
+        // of the page rather than part of its chrome. It also hardcoded white, so in dark
+        // mode it was a bright disc on a dark screen.
         Box(
             modifier = Modifier
                 .size(38.dp)
-                .shadow(6.dp, CircleShape, clip = false)
                 .clip(CircleShape)
-                .background(Color.White)
                 .softClickable(scale = 0.9f) { haptics.tap(); onBack() },
-            contentAlignment = Alignment.Center,
+            contentAlignment = Alignment.CenterStart,
         ) {
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back",
-                tint = VoiidColor.textPrimary, modifier = Modifier.size(26.dp))
+                tint = VoiidColor.textPrimary, modifier = Modifier.size(30.dp))
         }
     }
 }

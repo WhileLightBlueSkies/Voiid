@@ -525,16 +525,30 @@ internal fun BackupScaffold(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(56.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Bare chevron on the background, matching iOS's navigation back item. The
+            // white disc this was is a floating control, and hardcoded white made it a
+            // bright circle on a dark screen in dark mode.
             Box(
-                Modifier.size(38.dp).clip(CircleShape).background(Color.White)
+                Modifier.size(38.dp).clip(CircleShape)
                     .softClickable(scale = 0.9f) { haptics.tap(); onBack() },
-                contentAlignment = Alignment.Center,
+                contentAlignment = Alignment.CenterStart,
             ) {
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back",
-                    tint = VoiidColor.textPrimary, modifier = Modifier.size(26.dp))
+                    tint = VoiidColor.textPrimary, modifier = Modifier.size(30.dp))
             }
-            Spacer(Modifier.width(12.dp))
-            Text(title, style = VoiidFont.rounded(20, FontWeight.Bold), color = VoiidColor.textPrimary)
+            // CENTRED and inline-sized: iOS's settings screens all use
+            // .navigationBarTitleDisplayMode(.inline), which is a 17pt semibold title in
+            // the middle of the bar — not a large bold heading pushed against the chevron.
+            Text(
+                title,
+                style = VoiidFont.rounded(17, FontWeight.SemiBold),
+                color = VoiidColor.textPrimary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f),
+            )
+            // Balances the chevron so the title is centred on the SCREEN, not on the
+            // space left over beside it.
+            Spacer(Modifier.width(38.dp))
         }
         Column(
             Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())

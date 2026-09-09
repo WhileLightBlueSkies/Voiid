@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -242,6 +243,115 @@ fun MyQrCodeScreen(session: AppSession, onBack: () -> Unit) {
 
             LinkActions(link = link, context = context, haptics = haptics)
         }
+
+        Spacer(Modifier.height(16.dp))
+        PinCard()
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+/**
+ * The contact PIN, shown BESIDE the code and never inside it.
+ *
+ * A QR is a photograph waiting to happen. Encoding the PIN would mean anyone who ever saw a
+ * picture of this screen could reach you, which is exactly what the PIN exists to prevent —
+ * scanning alone lands the other person on the PIN step, and the message they then send
+ * arrives as a request you still have to accept. Two gates. So the digits are here as text,
+ * to be read aloud or sent separately.
+ */
+@Composable
+private fun PinCard() {
+    val context = LocalContext.current
+    val haptics = LocalVoiidHaptics.current
+    var state by remember { mutableStateOf<com.voiid.app.net.ContactPinService.PinState?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var copied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        state = runCatching { com.voiid.app.net.ContactPinService(context).state() }.getOrNull()
+        loading = false
+    }
+
+    val pin = state?.pin
+
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            if (copied) "Copied" else "Your Contact PIN",
+            style = VoiidFont.rounded(13),
+            color = VoiidColor.textSecondary,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+        Column(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .background(VoiidColor.surfaceCard)
+                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+                .padding(16.dp),
+        ) {
+            when {
+                loading -> Text("…", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+
+                pin != null -> Row(
+                    Modifier.fillMaxWidth()
+                        // TAP TO COPY. Saying the PIN out loud is only one of the two ways to
+                        // get it to someone; the other is pasting it into whatever app you are
+                        // already talking to them in.
+                        .softClickable {
+                            haptics.tap()
+                            val clip = context.getSystemService(android.content.ClipboardManager::class.java)
+                            clip?.setPrimaryClip(android.content.ClipData.newPlainText("Voiid contact PIN", pin))
+                            copied = true
+                        },
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // One tile per digit, not one tracked string: the reading task is "say six
+                    // digits in order, out loud, to someone who is typing them", and grouping
+                    // gives the eye a place to return to after each glance at the other phone.
+                    //
+                    // SF Pro Rounded like every other glyph in the app — iOS deliberately does
+                    // NOT switch to a monospaced face here, because this is the one screen
+                    // whose whole job is to be read aloud accurately from your own app.
+                    pin.forEach { digit ->
+                        Box(
+                            Modifier.weight(1f).height(52.dp)
+                                .clip(RoundedCornerShape(VoiidRadius.md))
+                                .background(VoiidColor.fieldFill),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                digit.toString(),
+                                style = VoiidFont.rounded(24, FontWeight.SemiBold),
+                                color = VoiidColor.textPrimary,
+                            )
+                        }
+                    }
+                }
+
+                state?.has_pin == true -> Text(
+                    "Set, but not viewable. Rotate it in Privacy & security to get a PIN you can read.",
+                    style = VoiidFont.rounded(14),
+                    color = VoiidColor.textSecondary,
+                )
+
+                else -> Text(
+                    "You don't have one yet. Set it in Privacy & security — without a PIN, " +
+                        "people who scan your code can't reach you.",
+                    style = VoiidFont.rounded(14),
+                    color = VoiidColor.textSecondary,
+                )
+            }
+        }
+        Text(
+            "Scanning your code is not enough on its own — they also need these digits, " +
+                "which is why the code does not contain them. Say the PIN out loud or send " +
+                "it separately. You still choose whether to accept.",
+            style = VoiidFont.rounded(12),
+            color = VoiidColor.textSecondary,
+            modifier = Modifier.padding(start = 4.dp),
+        )
     }
 }
 

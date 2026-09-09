@@ -419,7 +419,9 @@ fun ChatsHomeView(
                 // (SafetyNumberScreen, reached from a chat, which needs a peer).
                 onSafetyNumber = {},
                 onHelp = { settingsNav.push("help") },
+                onChatSettings = { settingsNav.push("chatSettings") },
             )
+            "chatSettings" -> ChatSettingsScreen(onBack = settingsNav::pop)
             "editProfile" -> EditProfileScreen(session = session, onBack = settingsNav::pop)
             "shareProfile" -> ShareProfileScreen(session = session, onBack = settingsNav::pop)
             "myQrCode" -> MyQrCodeScreen(session = session, onBack = settingsNav::pop)

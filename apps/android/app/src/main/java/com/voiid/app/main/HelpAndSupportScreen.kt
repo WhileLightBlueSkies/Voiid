@@ -151,3 +151,72 @@ private fun HelpSection(
         }
     }
 }
+
+/**
+ * Chats — the appearance and story preferences that used to sit inline on the settings root,
+ * port of iOS `ChatSettingsView`.
+ *
+ * They are the same controls, unchanged: chat list layout and app theme still apply the
+ * instant you tap, which is why they are segmented pickers here rather than rows that push
+ * further. What moved is only where they live — on the root they made one group a different
+ * shape from every other, and put appearance at the same depth as Storage and Notifications,
+ * which are doors rather than settings.
+ */
+@Composable
+fun ChatSettingsScreen(onBack: () -> Unit) {
+    BackupScaffold(title = "Chats", onBack = onBack) {
+        Spacer(Modifier.height(8.dp))
+
+        ChatPrefGroup("Appearance") {
+            ChatLayoutRow()
+            AppearanceRow()
+        }
+
+        // Stories: view-receipts opt-in (default OFF). Sending one tells the SERVER you
+        // opened someone's story at time T — a fact it otherwise never learns, with no
+        // sealed sender to hide it. The opt-out is reciprocal: OFF = you send none AND see
+        // none. Written straight to the shared story prefs (see StoryPrefs).
+        ChatPrefGroup(
+            "Stories",
+            footer = "Reciprocal: with this off you send no view receipts and see none either.",
+        ) {
+            StoryReceiptsRow()
+        }
+
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun ChatPrefGroup(
+    title: String,
+    footer: String? = null,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            title,
+            style = VoiidFont.rounded(13),
+            color = VoiidColor.textSecondary,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+        Column(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .background(VoiidColor.surfaceCard)
+                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg)),
+            content = content,
+        )
+        if (footer != null) {
+            Text(
+                footer,
+                style = VoiidFont.rounded(12),
+                color = VoiidColor.textSecondary,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
+    }
+}
