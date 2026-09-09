@@ -244,6 +244,15 @@ struct APIClient {
             // destroy the only credential that can complete registration, turning a
             // recoverable state into a forced re-verification of the phone number.
             if status == 401, parsed?.code != "device_session_required" { tokenStore.clear() }
+            // The send conflict is RESOLVABLE, not a failure: the message already landed, and
+            // the key only conflicted because retrying re-encrypts and advances the Olm
+            // ratchet. `.alreadySent` existed for this and nothing ever threw it, so the
+            // reconcile branch in ChatEngine was dead and every retry fell through to the
+            // generic 409 = "retryable" arm — re-sending forever while the UI held the
+            // message at "sending" against a message the recipient already had.
+            if status == 409, parsed?.code == "idempotency_key_reuse", let id = parsed?.messageId {
+                throw APIError.alreadySent(messageId: id)
+            }
             throw APIError.http(status: status, message: message, code: parsed?.code)
         }
 

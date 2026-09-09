@@ -253,22 +253,59 @@ function apnsAuthToken(): string {
   return token;
 }
 
+const APNS_PROD_HOST = 'https://api.push.apple.com';
+const APNS_SANDBOX_HOST = 'https://api.sandbox.push.apple.com';
+
 function apnsHost(): string {
-  return APNS_ENV === 'sandbox'
-    ? 'https://api.sandbox.push.apple.com'
-    : 'https://api.push.apple.com';
+  return APNS_ENV === 'sandbox' ? APNS_SANDBOX_HOST : APNS_PROD_HOST;
 }
 
-// Reuse a single HTTP/2 session across pushes; re-open lazily if it drops.
-let apnsSession: http2.ClientHttp2Session | null = null;
-function getApnsSession(): http2.ClientHttp2Session {
-  if (apnsSession && !apnsSession.closed && !apnsSession.destroyed) return apnsSession;
-  const session = http2.connect(apnsHost());
-  session.on('error', (e) => console.warn('[push] apns session error:', e.message));
+function otherApnsHost(host: string): string {
+  return host === APNS_SANDBOX_HOST ? APNS_PROD_HOST : APNS_SANDBOX_HOST;
+}
+
+/**
+ * WHICH GATEWAY A GIVEN DEVICE TOKEN BELONGS TO.
+ *
+ * An APNs token carries no marker saying which environment issued it, and the two
+ * gateways do not accept each other's: production answers a sandbox token with
+ * `BadDeviceToken`, and vice versa. `APNS_ENV` is therefore a guess that is right for
+ * exactly one kind of build at a time — and a deployment serves both at once. A debug
+ * build installed from Xcode is signed `aps-environment: development` (automatic signing
+ * rewrites the entitlement) and mints a SANDBOX token, while the TestFlight and App Store
+ * builds of the same app mint PRODUCTION ones.
+ *
+ * Making that an env var to flip is a footgun: the flip has to be remembered before every
+ * release, and forgetting it breaks push for real users with no error anyone sees —
+ * `BadDeviceToken` is indistinguishable from a genuinely dead token, so the old code
+ * DELETED the token and the device went permanently silent.
+ *
+ * So the gateway is DISCOVERED instead. `APNS_ENV` remains the first guess; on a
+ * `BadDeviceToken` we retry once against the other host, and remember the answer per
+ * token. Only a token both gateways reject is treated as dead.
+ */
+const apnsHostForToken = new Map<string, string>();
+
+/** Bound so a long-lived process cannot accumulate one entry per token forever. */
+const APNS_HOST_CACHE_MAX = 20_000;
+function rememberApnsHost(token: string, host: string): void {
+  if (apnsHostForToken.size >= APNS_HOST_CACHE_MAX) apnsHostForToken.clear();
+  apnsHostForToken.set(token, host);
+}
+
+// Reuse one HTTP/2 session PER HOST across pushes; re-open lazily if it drops. Keyed by
+// host because both gateways can legitimately be in use at once (a dev build and a
+// TestFlight build of the same app), and a single shared slot would thrash between them.
+const apnsSessions = new Map<string, http2.ClientHttp2Session>();
+function getApnsSession(host: string = apnsHost()): http2.ClientHttp2Session {
+  const existing = apnsSessions.get(host);
+  if (existing && !existing.closed && !existing.destroyed) return existing;
+  const session = http2.connect(host);
+  session.on('error', (e) => console.warn(`[push] apns session error (${host}):`, e.message));
   session.on('close', () => {
-    if (apnsSession === session) apnsSession = null;
+    if (apnsSessions.get(host) === session) apnsSessions.delete(host);
   });
-  apnsSession = session;
+  apnsSessions.set(host, session);
   return session;
 }
 
@@ -297,13 +334,29 @@ async function sendApnsWake(tokens: string[], meta?: PushMeta): Promise<void> {
  * The generic "New message" title is only a placeholder; routing keys are NON-SECRET
  * top-level customs. NO ciphertext, plaintext, sender name, or body ships here (§4.14).
  */
+/**
+ * Send to the gateway this token is known (or guessed) to belong to, retrying once
+ * against the other one if APNs says the token does not belong here. See
+ * `apnsHostForToken` for why the environment is discovered rather than configured.
+ */
 function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void> {
+  const host = apnsHostForToken.get(token) ?? apnsHost();
+  return apnsSendOneTo(token, auth, host, meta);
+}
+
+function apnsSendOneTo(
+  token: string,
+  auth: string,
+  host: string,
+  meta: PushMeta | undefined,
+  isRetry = false
+): Promise<void> {
   return new Promise((resolve) => {
     // Offline TTL: hold the alert for up to 28 days (24h for a story) and deliver on
     // reconnect (absolute UNIX epoch seconds, per APNs `apns-expiration` semantics).
     let req: http2.ClientHttp2Stream;
     try {
-      const session = getApnsSession();
+      const session = getApnsSession(host);
       req = session.request(
         buildApnsAlertHeaders({ token, auth, topic: APNS_BUNDLE_ID as string, meta })
       );
@@ -327,7 +380,8 @@ function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
     });
     req.on('end', () => {
       if (status === 200) {
-        noteTokenAlive(token);   // a success ends any strike streak
+        rememberApnsHost(token, host);   // this gateway owns the token — stop guessing
+        noteTokenAlive(token);           // a success ends any strike streak
         return resolve();
       }
       let reason = '';
@@ -336,9 +390,20 @@ function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
       } catch {
         /* non-JSON error body */
       }
-      // 410 (or 400 BadDeviceToken / Unregistered) => token is dead: clear it.
+      // BadDeviceToken is AMBIGUOUS: it is what APNs says both for a malformed/dead token
+      // and for a perfectly live token sent to the wrong gateway. Retry once on the other
+      // host before believing it — clearing here is what made a sandbox-token device
+      // permanently unreachable the first time it was pushed to.
+      if (reason === 'BadDeviceToken' && !isRetry) {
+        const alt = otherApnsHost(host);
+        console.warn(`[push] apns BadDeviceToken on ${host}; retrying on ${alt}`);
+        return resolve(apnsSendOneTo(token, auth, alt, meta, true));
+      }
+      // 410 Unregistered is unambiguous (the app was uninstalled), and a BadDeviceToken
+      // that BOTH gateways refuse really is a dead token.
       if (status === 410 || reason === 'Unregistered' || reason === 'BadDeviceToken') {
         console.warn(`[push] apns dead token (${status} ${reason}); clearing`);
+        apnsHostForToken.delete(token);
         void clearDeadToken(token);
       } else {
         console.warn(`[push] apns send failed (${status} ${reason})`);
@@ -433,6 +498,16 @@ export async function sendVoipPush(tokens: string[], meta?: PushMeta): Promise<n
 
 /** Send one VoIP push; resolves regardless of outcome (never rejects). */
 function voipSendOne(token: string, auth: string, meta?: PushMeta): Promise<void> {
+  return voipSendOneTo(token, auth, apnsHostForToken.get(token) ?? apnsHost(), meta);
+}
+
+function voipSendOneTo(
+  token: string,
+  auth: string,
+  host: string,
+  meta: PushMeta | undefined,
+  isRetry = false
+): Promise<void> {
   return new Promise((resolve) => {
     // A ring is only meaningful while the caller is still waiting. Unlike the 28-day
     // message wake, expire this in ~30s so a device that comes back online tomorrow
@@ -441,7 +516,11 @@ function voipSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
     try {
       // Same APNs host as the alert path, so the HTTP/2 session is shared — APNs
       // multiplexes topics over one connection; the topic is a per-request header.
-      const session = getApnsSession();
+      //
+      // A PushKit token is a DIFFERENT token from the alert one, so it gets its own
+      // cache entry rather than borrowing the alert token's. Same environment rule
+      // applies: a development-signed build mints sandbox tokens on both channels.
+      const session = getApnsSession(host);
       req = session.request(buildVoipHeaders({ token, auth, topic: VOIP_TOPIC as string }));
     } catch (e) {
       console.warn('[push] voip request setup failed:', (e as Error).message);
@@ -462,15 +541,26 @@ function voipSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
       resolve();
     });
     req.on('end', () => {
-      if (status === 200) return resolve();
+      if (status === 200) {
+        rememberApnsHost(token, host);
+        return resolve();
+      }
       let reason = '';
       try {
         reason = JSON.parse(body)?.reason ?? '';
       } catch {
         /* non-JSON error body */
       }
+      // Ambiguous exactly as on the alert path — try the other gateway before concluding
+      // the token is dead. Losing a VoIP token silently means calls stop ringing.
+      if (reason === 'BadDeviceToken' && !isRetry) {
+        const alt = otherApnsHost(host);
+        console.warn(`[push] voip BadDeviceToken on ${host}; retrying on ${alt}`);
+        return resolve(voipSendOneTo(token, auth, alt, meta, true));
+      }
       if (status === 410 || reason === 'Unregistered' || reason === 'BadDeviceToken') {
         console.warn(`[push] voip dead token (${status} ${reason}); clearing`);
+        apnsHostForToken.delete(token);
         void clearDeadVoipToken(token);
       } else {
         console.warn(`[push] voip send failed (${status} ${reason})`);
@@ -605,7 +695,10 @@ function broadcastApnsOne(token: string, auth: string, payload: string): Promise
   return new Promise((resolve) => {
     let req: http2.ClientHttp2Stream;
     try {
-      const session = getApnsSession();
+      // Reuses whichever gateway the message path already proved for this token, so an
+      // admin announcement reaches dev builds too. No retry here: a broadcast is a bulk
+      // best-effort send, and the per-device truth is learned by the message path.
+      const session = getApnsSession(apnsHostForToken.get(token) ?? apnsHost());
       req = session.request({
         ':method': 'POST',
         ':path': `/3/device/${token}`,
