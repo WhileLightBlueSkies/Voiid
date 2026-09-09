@@ -482,13 +482,22 @@ final class ChatEngine {
         return try await CrossProcessLock.withLock {
             reloadSharedState(conversationId)
             let messages = try await encryptFanout(envelopeData, peerUserId: peerUserId)
+            // Minted ONCE per logical send, before the request, so a transport retry of this
+            // same upload reuses it and the server recognises the repeat.
+            let idempotencyKey = UUID().uuidString
             // 4. Send the per-device bundle, tagging it as media + the opaque ref for the server.
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
                                      messages: messages, content_type: "media",
-                                     media_url: key, media_mime: mime))
+                                     // WITHOUT THIS THE SERVER CANNOT DEDUPE. Its unique index is
+                                     // on (sender, device, client_message_id), and NULL never
+                                     // conflicts with NULL — so two POSTs of one action became two
+                                     // rows and two bubbles. Only the text path carried a key; this
+                                     // and every other send below did not.
+                                     media_url: key, media_mime: mime,
+                                     client_message_id: idempotencyKey))
             let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                         text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true, media: ref)
@@ -517,7 +526,8 @@ final class ChatEngine {
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
                                      messages: messages,
-                                     content_type: MessageActionContentType.reaction)) as SendResponse
+                                     content_type: MessageActionContentType.reaction,
+                                     client_message_id: UUID().uuidString)) as SendResponse
             // Apply our own reaction locally (keyed by OUR user id) and persist.
             applyReaction(target: targetServerId, from: TokenStore.shared.userId ?? "me",
                           emoji: emoji, in: conversationId)
@@ -537,7 +547,8 @@ final class ChatEngine {
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
                                      messages: messages,
-                                     content_type: MessageActionContentType.delete)) as SendResponse
+                                     content_type: MessageActionContentType.delete,
+                                     client_message_id: UUID().uuidString)) as SendResponse
             applyDeleteForEveryone(target: targetServerId, in: conversationId)
         }
     }
@@ -557,7 +568,8 @@ final class ChatEngine {
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
                                      messages: messages,
-                                     content_type: MessageActionContentType.reply))
+                                     content_type: MessageActionContentType.reply,
+                                     client_message_id: UUID().uuidString))
             var echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                         text: text, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true)
@@ -582,7 +594,8 @@ final class ChatEngine {
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
                                      messages: messages, content_type: MessageActionContentType.media,
-                                     media_url: ref.mediaUrl, media_mime: ref.mime))
+                                     media_url: ref.mediaUrl, media_mime: ref.mime,
+                                     client_message_id: UUID().uuidString))
             var echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                         text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true, media: ref)

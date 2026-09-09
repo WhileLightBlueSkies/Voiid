@@ -302,7 +302,12 @@ class ChatEngine private constructor(context: Context) {
         // 4. Send the per-device bundle, tagging it as media + the opaque ref for the server.
         val body = ApiClient.json.encodeToString(
             SendBundleBody.serializer(),
-            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "media", media_url = key, media_mime = mime))
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "media",
+                           media_url = key, media_mime = mime,
+                           // WITHOUT THIS THE SERVER CANNOT DEDUPE: its unique index is on
+                           // (sender, device, client_message_id) and NULL never conflicts with
+                           // NULL, so a retried send became a second row and a second bubble.
+                           client_message_id = java.util.UUID.randomUUID().toString()))
         val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
         val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption, res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true, ref)
         append(conversationId, echo)
@@ -969,7 +974,8 @@ class ChatEngine private constructor(context: Context) {
         val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
         val body = ApiClient.json.encodeToString(
             SendBundleBody.serializer(),
-            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "story_reply"),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "story_reply",
+                           client_message_id = java.util.UUID.randomUUID().toString()),
         )
         val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
         val display = reaction?.let { r -> if (text.isBlank()) r else "$r $text" } ?: text
@@ -1006,7 +1012,8 @@ class ChatEngine private constructor(context: Context) {
         if (bcast.isEmpty()) return
         val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
         val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
-            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reaction"))
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reaction",
+                           client_message_id = java.util.UUID.randomUUID().toString()))
         api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
         applyReaction(conversationId, targetServerId, tokens.userId ?: "me", emoji)
     }
@@ -1018,7 +1025,8 @@ class ChatEngine private constructor(context: Context) {
         if (bcast.isEmpty()) return
         val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
         val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
-            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_delete"))
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_delete",
+                           client_message_id = java.util.UUID.randomUUID().toString()))
         api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
         applyDeleteForEveryone(conversationId, targetServerId)
     }
@@ -1032,7 +1040,8 @@ class ChatEngine private constructor(context: Context) {
         if (bcast.isEmpty()) throw ApiError.Http(409, "peer has no available prekeys")
         val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
         val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
-            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reply"))
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reply",
+                           client_message_id = java.util.UUID.randomUUID().toString()))
         val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
         val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", text,
             res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true,
@@ -1049,7 +1058,9 @@ class ChatEngine private constructor(context: Context) {
         if (bcast.isEmpty()) throw ApiError.Http(409, "peer has no available prekeys")
         val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
         val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
-            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "media", media_url = ref.mediaUrl, media_mime = ref.mime))
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "media",
+                           media_url = ref.mediaUrl, media_mime = ref.mime,
+                           client_message_id = java.util.UUID.randomUUID().toString()))
         val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
         val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption,
             res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true, media = ref, forwarded = true)

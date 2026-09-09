@@ -530,7 +530,16 @@ final class ChatStore: ObservableObject {
     /// "Seen" the moment it arrived in a chat the user had never opened. That is a privacy
     /// failure as much as a correctness one: it tells the sender you read something you have
     /// not looked at.
-    private(set) var openConversationId: String?
+    private(set) var openConversationId: String? {
+        // Mirrored to a process-global so the APP DELEGATE can read it.
+        //
+        // `willPresent` decides whether an arriving notification banners, and it runs on
+        // AppDelegate — which cannot reach this store, since ChatStore is a per-view
+        // @StateObject rather than a singleton. Rather than make it one (every call site
+        // then has two ways to get at the same state, and they drift), the one field the
+        // delegate needs is published here. Mirrors Android's AppPresence.
+        didSet { ChatPresence.openConversationId = openConversationId }
+    }
 
     /// Open a conversation: show cached messages, then sync (fetch + decrypt-new) from server.
     func openConversation(_ conv: VConversation) {
@@ -1118,3 +1127,17 @@ final class ChatStore: ObservableObject {
 // REMOVED. Clips are a real, server-backed feature now — see ClipsEngine (paging,
 // uploads, optimistic-but-reconciled likes/comments) and ClipService. The old store
 // here held DummyData arrays whose likes and comments were lost on every relaunch.
+
+/// The one piece of chat UI state the app delegate needs, published where it can reach it.
+///
+/// `ChatStore` is a per-view `@StateObject`, so `AppDelegate.willPresent` — which decides
+/// whether an arriving notification draws a banner — has no way to ask it what is on screen.
+/// This holds the single field that decision needs and nothing else, so it cannot become a
+/// second source of truth for anything.
+///
+/// Written only by `ChatStore.openConversationId`'s observer. Advisory: a stale value at
+/// worst suppresses one banner for a chat just closed, which is a smaller failure than
+/// bannering over a message the user is reading.
+enum ChatPresence {
+    nonisolated(unsafe) static var openConversationId: String?
+}

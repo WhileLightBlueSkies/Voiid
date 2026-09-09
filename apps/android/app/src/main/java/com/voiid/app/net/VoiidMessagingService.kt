@@ -354,6 +354,22 @@ object Notifier {
             .setContentIntent(pi)
             .build()
 
+        // ── NOT WHILE THEY ARE READING IT ──────────────────────────────────────────
+        // A banner for a message already on screen is noise the user cannot act on, and it
+        // covers the very thread it is announcing. Every messaging app suppresses this; this
+        // one did not, because a background service cannot see Compose state — AppPresence
+        // is the bridge.
+        //
+        // Deliberately narrow: only the OPEN thread is suppressed. The app being merely
+        // foreground, on the chat list, still notifies — the message is not visible there.
+        //
+        // The decrypt and receipt work above has already happened, so the message is stored
+        // and marked delivered exactly as before. Only the banner is skipped.
+        if (AppPresence.shouldSuppressNotification(conversationId)) {
+            android.util.Log.i("VOIID", "notification suppressed: conv=$conversationId is open")
+            return
+        }
+
         // Stable per-message id so several messages in a chat stack instead of replacing.
         val notifId = (messageId ?: conversationId).hashCode()
         runCatching { NotificationManagerCompat.from(ctx).notify(notifId, notification) }

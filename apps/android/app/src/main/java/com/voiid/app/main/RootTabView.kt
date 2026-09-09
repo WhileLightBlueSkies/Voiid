@@ -180,6 +180,13 @@ private const val TAB_LABEL_LIMIT = 5
 fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
     var tab by remember { mutableStateOf(Tab.CHAT) }
     var openConversation by remember { mutableStateOf<VConversation?>(null) }
+    // Mirror the open thread into process-global state so VoiidMessagingService — a
+    // background service that cannot read Compose — can skip notifying about a message the
+    // user is already looking at. One source of truth: this effect follows every route that
+    // opens or closes a thread, so no call site has to remember to update it.
+    LaunchedEffect(openConversation?.id) {
+        com.voiid.app.net.AppPresence.setOpenConversation(openConversation?.id)
+    }
     // WHICH grid was tapped and where in it. The fullscreen player is a pager over a list,
     // and there are three lists that can produce one (explore, following, a creator's page),
     // so a bare index would not say what it indexes.

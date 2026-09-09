@@ -113,6 +113,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // Lets VoiidMessagingService — a background service with no view of Compose state —
+        // know the app is in front of the user, so it can skip notifying about a message
+        // already on screen. See AppPresence.
+        com.voiid.app.net.AppPresence.setForeground(true)
         com.voiid.app.net.CallManager.onHostForeground()
         // Re-checked on every foreground, not just at launch: both the notification permission
         // and (on Android 14+) the full-screen-intent one are user-revocable from Settings, and
@@ -133,6 +137,9 @@ class MainActivity : ComponentActivity() {
         // In PiP the activity is still "visible" and must keep capturing; only a true
         // background transition may pause the camera.
         val inPip = ::pip.isInitialized && pip.isInPipNow()
+        // Notifications resume the moment the app is not in front — including in PiP, where
+        // a chat thread is not readable even though the activity is technically visible.
+        com.voiid.app.net.AppPresence.setForeground(false)
         if (!inPip) com.voiid.app.net.CallManager.onHostBackground()
         // Step the Map down to the cheap background stream. NOT a stop — presence keeps
         // updating coarsely and can still relaunch a killed process.

@@ -108,8 +108,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         completionHandler()
     }
 
-    /// Foreground arrival: still show the banner/sound (the NSE already decrypted +
-    /// rewrote the content), so the user sees the real message even in-app.
+    /// Foreground arrival.
+    ///
+    /// Two things are suppressed here, for the same reason and by the same rule: a banner
+    /// the user cannot act on is noise, and it covers the thing it is announcing.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
@@ -126,6 +128,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             completionHandler([.list])
             return
         }
+
+        // ── NOT WHILE THEY ARE READING IT ──────────────────────────────────────────
+        // A banner for the thread that is open on screen announces a message the user is
+        // already looking at, and slides over the top of it to do so. Every messaging app
+        // suppresses this; this one banner-ed regardless, which is what made an in-app
+        // message feel like it arrived twice.
+        //
+        // Deliberately narrow — only the OPEN thread. Foreground on the chat list still
+        // banners, because the message is not visible there.
+        //
+        // `.list` is kept in every case: suppressing the banner must not hide the message
+        // from Notification Centre, exactly as the mute rule above already decided.
+        if let convoId, ChatPresence.openConversationId == convoId {
+            completionHandler([.list])
+            return
+        }
+
         completionHandler([.banner, .sound, .list])
     }
 

@@ -121,6 +121,24 @@ final class E2EManager {
             let devId = try await withTransportRetry { try await self.register(id) }
             _deviceId = devId
             NSLog("[VOIID] bootstrap: registered device=\(devId)")
+
+            // ── PUBLISH THE APNs TOKEN THAT ARRIVED BEFORE WE COULD USE IT ─────────────
+            // `registerPushToken` is called the instant APNs hands the token over, which on
+            // a normal launch is BEFORE sign-in has produced a JWT or an identity. Its
+            // upload therefore no-ops on that guard — and nothing called it again, so the
+            // token stayed in memory and `devices.push_token` stayed NULL for the life of
+            // the install.
+            //
+            // The effect was total: every alert and wake push aimed at an iOS device had
+            // nowhere to go. Messages did not wake a backgrounded app, the NSE never ran,
+            // and the call-ring alert fallback had no route. Only PushKit worked, because
+            // VoIPPushManager registers on its own path — which is exactly why calls rang
+            // and messages did not.
+            //
+            // `force` because `register` above has already sent whatever the token was at
+            // the time (usually nil), so `lastUploadedPushToken` may match the value we now
+            // want to send and would otherwise short-circuit the retry.
+            uploadPushTokenIfNeeded(force: true)
             try await withTransportRetry { try await self.ensurePrekeys(id, devId: devId) }
             NSLog("[VOIID] bootstrap: prekeys ensured")
             // Fallback key: publish it on first run and rotate it weekly. Runs alongside
