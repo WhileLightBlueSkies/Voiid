@@ -35,6 +35,22 @@
 		<string>INStartAudioCallIntent</string>
 		<string>INStartVideoCallIntent</string>
 	</array>
+	<!-- Firebase MUST NOT swizzle the app delegate.
+	     With the proxy enabled (the default when this key is absent), FirebaseMessaging
+	     replaces application(_:didRegisterForRemoteNotificationsWithDeviceToken:) at
+	     runtime, keeps the APNs token for FCM, and OUR implementation never runs. So
+	     E2EManager.registerPushToken was never called, `pushToken` stayed nil, every
+	     devices/register sent push_token = null, and the column stayed NULL for the life
+	     of the install — on every iOS device, for weeks.
+	     The tell was voip_token being populated beside it: PushKit delivers through
+	     PKPushRegistry, which Firebase does not swizzle, so calls rang while messages
+	     never woke the app.
+	     Disabling the proxy means the delegate methods in VoiidApp.swift are called
+	     directly. They already do both halves of the job — Auth.auth().setAPNSToken for
+	     Firebase Auth's silent verification push, then registerPushToken for us — which
+	     is exactly what the proxy was doing on our behalf minus the second call. -->
+	<key>FirebaseAppDelegateProxyEnabled</key>
+	<false/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>voip</string>

@@ -8,6 +8,7 @@
 import SwiftUI
 import FirebaseCore
 import FirebaseAuth
+import FirebaseMessaging
 import UIKit
 import UserNotifications
 
@@ -183,6 +184,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         Auth.auth().setAPNSToken(deviceToken, type: .unknown)
+        // Handed over EXPLICITLY because FirebaseAppDelegateProxyEnabled is false (see
+        // Info.plist). With the proxy on, Firebase swizzled this method and set both of
+        // these itself — while silently preventing our own registerPushToken below from
+        // ever running, which is what kept devices.push_token NULL. With the proxy off
+        // the swizzle is gone, so FCM must be given the token here or it would lose the
+        // APNs binding that FCM delivery depends on.
+        Messaging.messaging().apnsToken = deviceToken
         E2EManager.shared.registerPushToken(deviceToken)
     }
 

@@ -158,6 +158,7 @@ enum MissedCallNotifier {
     /// can't see it.
     static func ensureAuthorization() {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
+            NSLog("[VOIID] notification authorization status: \(settings.authorizationStatus.rawValue) (0=notDetermined 1=denied 2=authorized 3=provisional 4=ephemeral)")
             switch settings.authorizationStatus {
             case .notDetermined:
                 Task { @MainActor in

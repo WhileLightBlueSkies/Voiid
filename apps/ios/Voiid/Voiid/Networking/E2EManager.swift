@@ -346,11 +346,40 @@ final class E2EManager {
     /// register inside bootstrap and, when we already have an identity, re-registers now.
     func registerPushToken(_ deviceToken: Data) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        // Proof APNs issued a token at all. Its ABSENCE from the log is itself the
+        // finding: it means iOS never called back, which means authorization was never
+        // granted — the alert token is gated on it, the PushKit one is not.
+        NSLog("[VOIID] APNs alert token received (\(hex.count / 2) bytes)")
         if hex != pushToken {
             pushToken = hex
             lastUploadedPushToken = nil
         }
         uploadPushTokenIfNeeded()
+
+        // ── AND AGAIN ONCE THERE IS SOMETHING TO PUBLISH IT WITH ──────────────────────
+        // The call above no-ops on a cold launch, every time: APNs delivers the token in the
+        // first moments of `didFinishLaunching`, long before sign-in has produced a JWT or
+        // `bootstrap()` has loaded an identity, so `uploadPushTokenIfNeeded`'s guard returns
+        // immediately. Nothing called it again, and the result was permanent — every iOS
+        // device in production had push_token NULL, so no message could wake a backgrounded
+        // app and the call-ring alert fallback had nowhere to go. Only PushKit worked,
+        // because VoIPPushManager registers on a separate path, which is exactly why calls
+        // rang and messages never arrived.
+        //
+        // Retrying here rather than in `bootstrap()`: that opens with `if bootstrapped
+        // { return }` and, for an already-signed-in user, has usually run from
+        // ChatsHomeView.onAppear BEFORE this token exists — so a call placed inside it is
+        // skipped by the early return on precisely the launches that need it.
+        //
+        // Bounded and cheap: it stops the moment the upload succeeds, and each attempt is a
+        // guard check costing nothing until a JWT and identity both exist.
+        Task { @MainActor in
+            for _ in 0..<20 {
+                if lastUploadedPushToken == hex { return }
+                try? await Task.sleep(for: .seconds(3))
+                uploadPushTokenIfNeeded(force: true)
+            }
+        }
     }
 
     /// Re-publish the stored token when the server hasn't taken it yet. No-ops without a
@@ -358,6 +387,12 @@ final class E2EManager {
     /// `register` carries the token instead. There is no alert-token-only endpoint; the
     /// device upsert is the single place the backend accepts it.
     func uploadPushTokenIfNeeded(force: Bool = false) {
+        // Which of the three preconditions is missing, named individually. The guard below
+        // is silent by design, and that silence is exactly what made this bug survive
+        // three rounds of diagnosis: push_token stayed NULL and nothing said why.
+        if pushToken == nil || TokenStore.shared.jwt == nil || identity == nil {
+            NSLog("[VOIID] push upload skipped — token=\(pushToken == nil ? "MISSING" : "present") jwt=\(TokenStore.shared.jwt == nil ? "MISSING" : "present") identity=\(identity == nil ? "MISSING" : "present")")
+        }
         guard let hex = pushToken, TokenStore.shared.jwt != nil, let id = identity else { return }
         if !force, lastUploadedPushToken == hex { return }
         Task {
