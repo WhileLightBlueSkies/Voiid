@@ -55,6 +55,7 @@ struct GroupCallScreen: View {
             // reserves room for the controls so the grid can size itself against what is left.
             VStack(spacing: VoiidSpacing.sm) {
                 header
+                if call.state == .connected || call.state == .reconnecting { keyingBadge }
                 content
             }
             .padding(.top, VoiidSpacing.sm)
@@ -110,15 +111,9 @@ struct GroupCallScreen: View {
 
             Spacer(minLength: 0)
 
-            // Keying-state badge. The static lock this replaces asserted "end-to-end
-            // encrypted" unconditionally; the exchange machinery (CallKeyExchange) can
-            // actually FAIL to reach that state — a peer that never sends its commitment
-            // tag, or tags that disagree — and an assertion the UI never checks is a
-            // claim, not a feature (audit finding M5). The badge now reports what the
-            // keying actually settled to for THIS call.
-            if call.state == .connected {
-                keyingBadge
-            }
+            Text(participantSummary)
+                .font(VoiidFont.rounded(12, .medium))
+                .foregroundColor(fgSecondary)
         }
         .padding(.horizontal, VoiidSpacing.md)
     }
@@ -143,13 +138,13 @@ struct GroupCallScreen: View {
         let (icon, label): (String, String) = {
             switch state {
             case .verified:
-                ("lock.fill", "\(participantSummary), end-to-end encrypted, verified")
+                ("lock.fill", "End-to-end encrypted")
             case .pending:
-                ("lock.badge.clock", "\(participantSummary), checking encryption")
+                ("lock.badge.clock", "Checking encryption…")
             case .unverified:
-                ("exclamationmark.lock", "\(participantSummary), encryption not verified — an older app version may be on the call")
+                ("exclamationmark.lock", "Encryption not verified")
             case .mismatch:
-                ("exclamationmark.triangle.fill", "\(participantSummary), encryption check FAILED — verify who is on this call")
+                ("exclamationmark.triangle.fill", "Encryption check failed")
             }
         }()
         let tint: Color = {
@@ -160,12 +155,12 @@ struct GroupCallScreen: View {
             case .mismatch: return VoiidColor.error
             }
         }()
-        Label("\(call.participants.count)", systemImage: icon)
+        Label(label, systemImage: icon)
             .font(VoiidFont.rounded(12, .medium))
             .foregroundColor(state == .verified ? fgSecondary : tint)
-            .padding(.horizontal, VoiidSpacing.sm)
-            .padding(.vertical, 5)
-            .background(isVideo ? Color.white.opacity(0.15) : VoiidColor.surfaceCard)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(isVideo ? Color.black.opacity(0.65) : VoiidColor.surfaceCard)
             .clipShape(Capsule())
             .overlay(
                 // A mismatch must be findable by more than colour (never hue alone).

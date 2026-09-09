@@ -1,7 +1,12 @@
 package com.voiid.app.net
 
+enum class CallEncryptionStatus { PENDING, VERIFIED, UNVERIFIED, MISMATCH }
+
 /** Wire-compatible with iOS CallKeyExchange's v1 commitment. */
 object CallKeyProtocol {
+    fun verificationStatus(localTag: String, remoteTag: String): CallEncryptionStatus =
+        if (localTag.isNotEmpty() && localTag == remoteTag) CallEncryptionStatus.VERIFIED else CallEncryptionStatus.MISMATCH
+
     fun fingerprint(sdp: String?): String? = sdp?.lineSequence()?.map { it.trim() }
         ?.filter { it.startsWith("a=fingerprint:") }?.mapNotNull {
             val parts = it.removePrefix("a=fingerprint:").trim().split(Regex("\\s+"), limit = 2)

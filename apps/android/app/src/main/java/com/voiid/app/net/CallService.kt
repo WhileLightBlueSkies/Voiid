@@ -114,6 +114,7 @@ object CallManager {
          * the call in "Connecting…" forever (audit: escalation flow).
          */
         val isConferenceInvite: Boolean = false,
+        val encryption: CallEncryptionStatus = CallEncryptionStatus.PENDING,
     )
 
     /**
@@ -2019,6 +2020,7 @@ object CallManager {
         val remote = CallKeyProtocol.fingerprint(pc?.remoteDescription?.description) ?: return
         val tag = CallKeyCourier.srtpCommitment(secret, local, remote) ?: return
         remoteVerificationTag?.takeIf { it.first == epoch }?.let {
+            update(s.callId) { current -> current.copy(encryption = CallKeyProtocol.verificationStatus(tag, it.second)) }
             android.util.Log.i("VOIID", if (it.second == tag) "call-key: media keying VERIFIED" else "call-key: commitment MISMATCH")
         }
         if (verificationTagInFlight == tag) return
@@ -2038,6 +2040,14 @@ object CallManager {
                     for (copy in copies) ws.sendCallKey(s.peerUserId, s.callId, copy.recipientDeviceId,
                         E2EManager.get(appContext).deviceId, copy.ciphertext)
                 }.onFailure { android.util.Log.w("VOIID", "call-key: verification delivery failed") }
+            }
+            kotlinx.coroutines.delay(4000)
+            exec.execute {
+                if (isCurrentCall(s.callId) && callSecretB64 == secret && callSecretEpoch == epoch) {
+                    update(s.callId) { current ->
+                        if (current.encryption == CallEncryptionStatus.PENDING) current.copy(encryption = CallEncryptionStatus.UNVERIFIED) else current
+                    }
+                }
             }
         }
     }
@@ -2078,6 +2088,7 @@ object CallManager {
             attachFrameCryptorsIfReady(); sendVerificationTagIfReady(); return
         }
         if (callSecretB64 != secretB64 || callSecretEpoch != epoch) {
+            _state.value?.let { s -> update(s.callId) { it.copy(encryption = CallEncryptionStatus.PENDING) } }
             verificationTagJob?.cancel(); verificationTagJob = null; verificationTagInFlight = null
             if (remoteVerificationTag?.first != epoch) remoteVerificationTag = null
         }

@@ -34,6 +34,9 @@ import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Pause
@@ -68,10 +71,12 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.voiid.app.net.CallManager
+import com.voiid.app.net.CallEncryptionStatus
 import com.voiid.app.net.ConferenceManager
 import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
@@ -548,6 +553,15 @@ private fun InCallUi(state: CallManager.CallState) {
             }
 
             val waiting by CallManager.waiting.collectAsState()
+            if (state.phase == CallManager.Phase.CONNECTING || state.phase == CallManager.Phase.CONNECTED) {
+                Spacer(Modifier.height(8.dp))
+                CallEncryptionBadge(
+                    status = if (conference != null) {
+                        if (conference.e2ee) CallEncryptionStatus.VERIFIED else CallEncryptionStatus.PENDING
+                    } else state.encryption,
+                    onDark = isVideo,
+                )
+            }
             waiting?.let { CallWaitingBanner(it, haptics) }
 
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
@@ -600,6 +614,31 @@ private fun InCallUi(state: CallManager.CallState) {
                 )
             }
         }
+    }
+}
+
+@Composable
+internal fun CallEncryptionBadge(status: CallEncryptionStatus, onDark: Boolean) {
+    val (icon, label) = when (status) {
+        CallEncryptionStatus.VERIFIED -> Icons.Default.Lock to "End-to-end encrypted"
+        CallEncryptionStatus.PENDING -> Icons.Default.LockOpen to "Checking encryption…"
+        CallEncryptionStatus.UNVERIFIED -> Icons.Default.LockOpen to "Encryption not verified"
+        CallEncryptionStatus.MISMATCH -> Icons.Default.Warning to "Encryption check failed"
+    }
+    val tint = if (status == CallEncryptionStatus.MISMATCH) {
+        if (onDark) Color(0xFFFFB4AB) else VoiidColor.error
+    } else if (onDark) Color.White else VoiidColor.textSecondary
+    Row(
+        modifier = Modifier.padding(horizontal = 16.dp)
+            .clip(RoundedCornerShape(50))
+            .background(if (onDark) Color.Black.copy(alpha = 0.65f) else VoiidColor.surfaceCard)
+            .semantics(mergeDescendants = true) {}
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(13.dp))
+        Text(label, style = VoiidFont.rounded(12, FontWeight.Medium), color = tint)
     }
 }
 

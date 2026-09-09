@@ -1,9 +1,15 @@
 package com.voiid.app
 import com.voiid.app.net.CallKeyProtocol
+import com.voiid.app.net.CallEncryptionStatus
 import org.junit.Assert.*
 import org.junit.Test
 
 class CallKeyProtocolTest {
+    @Test fun encryptionBadgeRequiresMatchingNonemptyCommitments() {
+        assertEquals(CallEncryptionStatus.VERIFIED, CallKeyProtocol.verificationStatus("same-tag", "same-tag"))
+        assertEquals(CallEncryptionStatus.MISMATCH, CallKeyProtocol.verificationStatus("local-tag", "remote-tag"))
+        assertEquals(CallEncryptionStatus.MISMATCH, CallKeyProtocol.verificationStatus("", ""))
+    }
     @Test fun matchesIosV1CommitmentAndIsSymmetric() {
         val key = ByteArray(16) { it.toByte() }
         val salt = ByteArray(14) { (it + 16).toByte() }

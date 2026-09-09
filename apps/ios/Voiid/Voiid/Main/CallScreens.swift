@@ -324,7 +324,7 @@ struct CallScreen: View {
                                    value: statusText)
                     if isReconnecting { reconnectingBadge }
                     else if isRealOneToOne, call.isOnHold || call.peerOnHold { holdBadge }
-                    else if isRealOneToOne, isConnected { keyingBadge }
+                    if isRealOneToOne, liveState == .connecting || isConnected { keyingBadge }
                 }
                 .animation(.easeInOut(duration: 0.2), value: isReconnecting)
 
@@ -411,10 +411,10 @@ struct CallScreen: View {
         let state = call.active.flatMap { keyExchange.verificationState(callId: $0.id) } ?? .unverified
         let (icon, text): (String, String) = {
             switch state {
-            case .verified:   return ("lock.checkmark", "End-to-end encrypted · verified")
+            case .verified:   return ("lock.fill", "End-to-end encrypted")
             case .pending:    return ("lock.badge.clock", "Checking encryption…")
-            case .unverified: return ("exclamationmark.lock", "Not verified")
-            case .mismatch:   return ("exclamationmark.triangle.fill", "Encryption check FAILED")
+            case .unverified: return ("exclamationmark.lock", "Encryption not verified")
+            case .mismatch:   return ("exclamationmark.triangle.fill", "Encryption check failed")
             }
         }()
         let tint: Color? = {
@@ -424,18 +424,19 @@ struct CallScreen: View {
             }
         }()
         return HStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 11))
-            Text(text).font(VoiidFont.rounded(11, .medium))
+            Image(systemName: icon).font(.system(size: 12)).accessibilityHidden(true)
+            Text(text).font(VoiidFont.rounded(12, .medium))
         }
         .foregroundColor(tint ?? (request.kind == .video ? .white.opacity(0.9) : VoiidColor.textSecondary))
-        .padding(.horizontal, VoiidSpacing.sm)
-        .padding(.vertical, 4)
-        .background(request.kind == .video ? Color.white.opacity(0.18) : VoiidColor.surfaceCard)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(request.kind == .video ? Color.black.opacity(0.65) : VoiidColor.surfaceCard)
         .clipShape(Capsule())
         .overlay(
             // Mismatch is findable by more than colour (never hue alone).
             state == .mismatch ? Capsule().stroke(VoiidColor.error, lineWidth: 1.5) : nil
         )
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)
         .transition(.opacity)
     }

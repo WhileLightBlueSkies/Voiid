@@ -24,8 +24,6 @@ import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.People
@@ -53,6 +51,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.voiid.app.net.GroupCallManager
+import com.voiid.app.net.CallEncryptionStatus
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
 import com.voiid.app.ui.components.softClickable
@@ -127,12 +126,12 @@ fun GroupCallOverlay(state: GroupCallManager.GroupCallState) {
                     "${state.participants.size}",
                     style = VoiidFont.rounded(14), color = Color.White.copy(alpha = 0.85f),
                 )
-                // E2EE is the product promise — state it plainly, and flag it if ever absent.
-                Icon(
-                    if (state.e2ee) Icons.Default.Lock else Icons.Default.LockOpen,
-                    contentDescription = if (state.e2ee) "End-to-end encrypted" else "Not encrypted",
-                    tint = if (state.e2ee) Color.White.copy(alpha = 0.75f) else VoiidColor.error,
-                    modifier = Modifier.size(13.dp),
+            }
+            if (state.phase != GroupCallManager.Phase.ENDED) {
+                Spacer(Modifier.height(8.dp))
+                CallEncryptionBadge(
+                    if (state.e2ee) CallEncryptionStatus.VERIFIED else CallEncryptionStatus.PENDING,
+                    onDark = true,
                 )
             }
 
