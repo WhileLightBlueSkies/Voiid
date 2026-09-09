@@ -4,7 +4,7 @@ Memories is the existing Stories feature, named **Moments** in both native apps.
 
 ## Corrections
 
-- iOS refreshes share one in-flight task, Android feed refreshes use one mutex, including push-triggered refreshes. This avoids concurrent decrypt-once consumption.
+- iOS refreshes share one in-flight task, Android feed refreshes use one mutex, including push-triggered refreshes. This avoids concurrent decrypt-once consumption. Both app roots refresh Moments after returning to the foreground, skipping that automatic work during an active call.
 - iOS empty-state rendering uses the engine's actual refresh result; it no longer fetches and discards another deliver-once feed page as a health probe.
 - iOS canonicalizes story IDs and compares authenticated UUID bindings without case sensitivity. Both platforms reject unsupported envelope versions/types while accepting omitted legacy defaults.
 - iOS share errors retain the composer and media for retry. Replies and deletes only show success after completion; a failed delete retains the local post. Android's failed-post retry now reads the saved audience and cached media.
@@ -18,6 +18,12 @@ Memories is the existing Stories feature, named **Moments** in both native apps.
 - Backend API TypeScript build and five production-route authorization tests passed.
 - Final Android debug and iOS device builds passed; all 116 Android JVM tests passed with no failures, errors or skips. iOS bundle-resource preflight passed.
 - Kotlin-generated photo/video/view-receipt fixtures passed decoding using production Swift types, including omitted defaults and required encryption keys.
+
+## Deployment follow-up
+
+The first implementation was pushed as `7f08f88`. The preceding deployment's iOS simulator gate exposed a missing `@MainActor` annotation on `VoIPPushManager` when it accesses `E2EManager.deviceId`. The follow-up restores that annotation; PushKit delegate callbacks remain nonisolated and synchronously enter the main actor as before. This fixes the compile-time isolation boundary without delaying CallKit reporting.
+
+The Memories build was installed and launched on the paired iPhone. Android is not discoverable through ADB, so Android installation and the cross-platform physical test remain pending. Backend protection changes become live only after the gated deployment succeeds.
 
 ## Physical test matrix
 

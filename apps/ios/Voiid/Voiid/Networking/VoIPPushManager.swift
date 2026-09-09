@@ -28,6 +28,7 @@ import PushKit
 import UIKit
 
 /// Owns the `PKPushRegistry` and the VoIP-token upload to the backend.
+@MainActor
 final class VoIPPushManager: NSObject {
     static let shared = VoIPPushManager()
 

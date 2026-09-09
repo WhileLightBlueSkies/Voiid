@@ -159,6 +159,15 @@ private const val TAB_LABEL_LIMIT = 5
  */
 @Composable
 fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
+    val storyLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(storyLifecycleOwner, stories) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && com.voiid.app.net.CallManager.state.value == null) stories.refresh()
+        }
+        storyLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { storyLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     var tab by remember { mutableStateOf(Tab.CHAT) }
     var openConversation by remember { mutableStateOf<VConversation?>(null) }
     // Mirror the open thread into process-global state so VoiidMessagingService — a

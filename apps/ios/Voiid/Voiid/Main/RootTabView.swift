@@ -323,6 +323,10 @@ struct RootTabView: View {
         // Bring the Map engine to life at shell load so inbound encrypted fixes are received
         // and decrypted even when the Map tab is not the active one — otherwise a contact's
         // live position would only start updating once you happened to open the Map.
+        .task { if CallService.shared.active == nil { _ = await storyEngine.refresh() } }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            if CallService.shared.active == nil { Task { _ = await storyEngine.refresh() } }
+        }
         .onAppear { _ = MapPresenceEngine.shared }
     }
 
