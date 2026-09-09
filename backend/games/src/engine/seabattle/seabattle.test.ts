@@ -395,6 +395,15 @@ console.log('\nSerialize / restore round trip');
     JSON.stringify(secret) === JSON.stringify(restored.serializeSecret!())
   );
 
+  // deadlineAt is SERIALIZED rather than recomputed from "now". Recomputing on restore would
+  // hand an AFK player a fresh 24 hours on every process restart — the failure direction where
+  // nobody is ever forfeited. Check BEFORE the legal shot below advances the turn and
+  // legitimately replaces its deadline; comparing afterward only passes within the same millisecond.
+  check(
+    'the deadline survives a restore unchanged',
+    (restored as any).deadlineAt() === (e as any).deadlineAt()
+  );
+
   // And the restored engine must still PLAY correctly, not merely serialize identically — a
   // restore that produces a valid-looking board with no fleets underneath passes the check above.
   const turn = st(restored).turn as number;
@@ -407,14 +416,6 @@ console.log('\nSerialize / restore round trip');
   check(
     'the restored engine still rejects an already-fired square',
     restored.applyInput(P[1 - turn], { fire: 999 }).accepted === false
-  );
-
-  // deadlineAt is SERIALIZED rather than recomputed from "now". Recomputing on restore would
-  // hand an AFK player a fresh 24 hours on every process restart — the failure direction where
-  // nobody is ever forfeited.
-  check(
-    'the deadline survives a restore unchanged',
-    (restored as any).deadlineAt() === (e as any).deadlineAt()
   );
 }
 
