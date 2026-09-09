@@ -2,7 +2,7 @@ package com.voiid.app.main.stories
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import com.voiid.app.main.ChatImageDecoder
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -59,7 +59,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
 /** Prepared, capped media ready to post. */
-private data class ComposerMedia(
+internal data class ComposerMedia(
     val bytes: ByteArray, val mime: String, val width: Int?, val height: Int?,
     val durationMs: Long?, val preview: ImageBitmap?,
 )
@@ -125,9 +125,12 @@ fun StoryComposerSheet(
                         photo != null -> {
                             busy = true
                             scope.launch {
-                                val m = withContext(Dispatchers.IO) { prepareImage(photo) }
-                                media = m; error = if (m.bytes.size > MAX_IMAGE_BYTES)
-                                    "That photo is too large to share." else null
+                                val m = withContext(Dispatchers.IO) { runCatching { prepareImage(photo) }.getOrNull() }
+                                media = m; error = when {
+                                    m == null -> "Couldn’t read that photo."
+                                    m.bytes.size > MAX_IMAGE_BYTES -> "That photo is too large to share."
+                                    else -> null
+                                }
                                 busy = false
                             }
                         }
@@ -253,7 +256,8 @@ private fun prepareFromUri(context: Context, uri: Uri): Pair<ComposerMedia?, Str
     val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
         ?: return null to "Couldn't read that file."
     return when {
-        mime.startsWith("image/") -> prepareImage(bytes) to null
+        mime.startsWith("image/") -> runCatching { prepareImage(bytes) to null }
+            .getOrElse { null to "Couldn’t read that photo." }
         mime.startsWith("video/") -> prepareVideo(context, uri, bytes, mime)
         else -> null to "Unsupported file type."
     }
@@ -262,14 +266,15 @@ private fun prepareFromUri(context: Context, uri: Uri): Pair<ComposerMedia?, Str
 /** Re-encode an image to JPEG, long edge ≤1920, quality 0.8, and RE-CHECK the 10MB cap after
  *  encoding — stepping quality down until the encoded bytes fit (or giving up at q0.3, where
  *  the caller reports the size honestly instead of uploading an oversized blob). */
-private fun prepareImage(input: ByteArray): ComposerMedia {
-    val src = BitmapFactory.decodeByteArray(input, 0, input.size)
-        ?: return ComposerMedia(input, "image/jpeg", null, null, null, null)
+internal fun prepareImage(input: ByteArray): ComposerMedia {
+    // Bake EXIF/HEIF orientation into the pixels before JPEG encoding removes metadata.
+    val src = requireNotNull(ChatImageDecoder.decode(input)) { "Couldn’t read that photo." }
     val longEdge = maxOf(src.width, src.height)
     val scale = if (longEdge > 1920) 1920f / longEdge else 1f
     val scaled = if (scale < 1f) {
         Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true)
     } else src
+    if (scaled !== src) src.recycle()
     var bytes = ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }.toByteArray()
     var quality = 80
     while (bytes.size > MAX_IMAGE_BYTES && quality > 30) {
@@ -288,7 +293,10 @@ private fun prepareVideo(context: Context, uri: Uri, bytes: ByteArray, mime: Str
         if (durationMs > MAX_VIDEO_MS) return null to "Moments can be up to 30 seconds."
         val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
         val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+        val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+        val swapAxes = rotation % 180 != 0
         val frame = retriever.getFrameAtTime(0)
-        ComposerMedia(bytes, mime, w, h, durationMs, frame?.asImageBitmap()) to null
+        // Keep the original video rotation metadata; only report its displayed dimensions.
+        ComposerMedia(bytes, mime, if (swapAxes) h else w, if (swapAxes) w else h, durationMs, frame?.asImageBitmap()) to null
     }.getOrElse { null to "Couldn't read that video." }.also { runCatching { retriever.release() } }
 }

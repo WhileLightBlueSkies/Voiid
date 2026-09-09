@@ -11,6 +11,8 @@ import com.voiid.app.model.wire
 import com.voiid.app.net.ApiClient
 import com.voiid.app.net.ChatEngine
 import com.voiid.app.store.UserDirectory
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -42,6 +44,9 @@ object StoryLocalStore {
     suspend fun story(context: Context, id: String): Story? = withContext(Dispatchers.IO) {
         runCatching { dao(context).byId(id) }.getOrNull()?.toModel()
     }
+
+    fun observeStory(context: Context, id: String): Flow<Story?> =
+        dao(context).observeById(id).map { it?.toModel() }
 
     suspend fun viewers(context: Context, storyId: String): List<StoryViewer> = withContext(Dispatchers.IO) {
         runCatching { dao(context).views(storyId) }.getOrDefault(emptyList()).map {

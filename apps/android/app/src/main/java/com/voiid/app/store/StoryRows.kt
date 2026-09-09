@@ -133,6 +133,9 @@ abstract class StoryDao {
     @Query("SELECT * FROM stories WHERE id = :id")
     abstract fun byId(id: String): StoryRow?
 
+    @Query("SELECT * FROM stories WHERE id = :id COLLATE NOCASE")
+    abstract fun observeById(id: String): kotlinx.coroutines.flow.Flow<StoryRow?>
+
     /** Rows the local sweep must drop, so their cached plaintext files can be deleted too. */
     @Query("SELECT * FROM stories WHERE expires_at <= :nowSeconds")
     abstract fun expired(nowSeconds: Long): List<StoryRow>

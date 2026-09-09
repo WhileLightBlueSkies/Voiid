@@ -74,6 +74,33 @@ class ChatImageOrientationTest {
         }
     }
 
+    @Test fun momentUploadBakesAllEightOrientationsIntoJpegPixels() {
+        for (orientation in 1..8) {
+            val prepared = com.voiid.app.main.stories.prepareImage(fixture(orientation))
+            // Decode WITHOUT honoring EXIF: uploaded JPEG pixels must already be upright.
+            val uploaded = requireNotNull(BitmapFactory.decodeByteArray(prepared.bytes, 0, prepared.bytes.size))
+            try {
+                assertOrientation(uploaded, orientation)
+                assertEquals(uploaded.width, prepared.width)
+                assertEquals(uploaded.height, prepared.height)
+                assertOrientation(requireNotNull(prepared.preview).asAndroidBitmap(), orientation)
+            } finally { uploaded.recycle(); prepared.preview?.asAndroidBitmap()?.recycle() }
+        }
+    }
+
+    @Test fun momentFileDecoderPreservesOrientationAndBoundsThumbnailMemory() {
+        val file = File.createTempFile("moment-viewer-", ".jpg", context.cacheDir)
+        try {
+            for (orientation in 1..8) {
+                file.writeBytes(fixture(orientation))
+                val full = requireNotNull(ChatImageDecoder.decodeFile(file, 80, 80))
+                try { assertOrientation(full, orientation) } finally { full.recycle() }
+                val thumb = requireNotNull(ChatImageDecoder.decodeFile(file, 20, 20))
+                try { assertTrue(thumb.width <= 40 && thumb.height <= 40) } finally { thumb.recycle() }
+            }
+        } finally { file.delete() }
+    }
+
     @Test fun cachedPhotoAndViewerResolveTheSameUprightPixels() = runBlocking {
         val key = "orientation-check-" + UUID.randomUUID()
         val bytes = fixture(6)

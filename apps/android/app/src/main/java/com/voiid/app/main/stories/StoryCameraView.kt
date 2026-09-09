@@ -9,7 +9,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.ImageProxy
+import android.view.OrientationEventListener
+import androidx.camera.core.UseCase
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
@@ -102,6 +103,20 @@ fun StoryCameraView(
     }
     val videoCapture = remember { VideoCapture.Builder(recorder).build() }
     val previewView = remember { PreviewView(context) }
+
+    // Track the physical camera orientation even when the activity stays portrait-locked.
+    DisposableEffect(imageCapture, videoCapture) {
+        val listener = object : OrientationEventListener(context) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == ORIENTATION_UNKNOWN) return
+                val rotation = UseCase.snapToSurfaceRotation(orientation)
+                imageCapture.targetRotation = rotation
+                videoCapture.targetRotation = rotation
+            }
+        }
+        listener.enable()
+        onDispose { listener.disable() }
+    }
 
     var isRecording by remember { mutableStateOf(false) }
     var recordSeconds by remember { mutableIntStateOf(0) }
@@ -253,17 +268,20 @@ fun StoryCameraView(
 
 /** Take a single frame and hand back JPEG bytes; failures surface as null, not silence. */
 private fun capturePhoto(context: Context, imageCapture: ImageCapture, onResult: (ByteArray?) -> Unit) {
+    // CameraX writes the crop and rotation into a JPEG file. Raw ImageProxy planes alone
+    // omit imageInfo.rotationDegrees on some cameras, losing the capture orientation.
+    val file = runCatching { File.createTempFile("moment_capture_", ".jpg", context.cacheDir) }.getOrNull()
+        ?: return onResult(null)
     imageCapture.takePicture(
+        ImageCapture.OutputFileOptions.Builder(file).build(),
         ContextCompat.getMainExecutor(context),
-        object : ImageCapture.OnImageCapturedCallback() {
-            override fun onCaptureSuccess(image: ImageProxy) {
-                val bytes = image.use {
-                    val buffer = it.planes[0].buffer
-                    ByteArray(buffer.remaining()).also { arr -> buffer.get(arr) }
-                }
+        object : ImageCapture.OnImageSavedCallback {
+            override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                val bytes = try { runCatching { file.readBytes() }.getOrNull() } finally { file.delete() }
                 onResult(bytes)
             }
             override fun onError(exception: ImageCaptureException) {
+                file.delete()
                 onResult(null)
             }
         },

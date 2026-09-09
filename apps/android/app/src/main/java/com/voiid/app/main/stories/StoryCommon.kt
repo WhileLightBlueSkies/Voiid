@@ -1,7 +1,7 @@
 package com.voiid.app.main.stories
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import com.voiid.app.main.ChatImageDecoder
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -71,29 +71,6 @@ fun clearStoryFrameCache() {
     thumbCache.evictAll()
 }
 
-/**
- * Largest power-of-two subsample that still leaves one edge covering the target box. Fit-scaling
- * bounds the drawn size by whichever edge saturates first, so an OR (not AND) is the condition
- * that stops one step before the image would visibly soften.
- */
-private fun sampleSizeFor(width: Int, height: Int, targetW: Int, targetH: Int): Int {
-    if (targetW <= 0 || targetH <= 0) return 1
-    var sample = 1
-    while (width / (sample * 2) >= targetW || height / (sample * 2) >= targetH) sample *= 2
-    return sample
-}
-
-/** Two-pass decode: bounds only, then the real decode at the subsample the display can use. */
-private fun decodeSampled(path: String, targetW: Int, targetH: Int): Bitmap? {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-    val opts = BitmapFactory.Options().apply {
-        inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, targetW, targetH)
-    }
-    return BitmapFactory.decodeFile(path, opts)
-}
-
 private fun videoFrame(path: String, targetW: Int, targetH: Int): Bitmap? =
     MediaMetadataRetriever().use { r ->
         r.setDataSource(path)
@@ -127,7 +104,7 @@ private suspend fun loadFrame(
     if (!File(path).exists()) return null
     val decoded = withContext(Dispatchers.IO) {
         runCatching {
-            if (isVideo) videoFrame(path, targetW, targetH) else decodeSampled(path, targetW, targetH)
+            if (isVideo) videoFrame(path, targetW, targetH) else ChatImageDecoder.decodeFile(File(path), targetW, targetH)
         }.getOrNull()
     } ?: return null
     return decoded.asImageBitmap().also { thumbCache.put(key, it) }

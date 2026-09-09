@@ -341,7 +341,10 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
     }
     // Quoted reply. A translucent white scrim reads correctly on BOTH the filled teal and the
     // light card; `fieldFill` is a light token and vanished on teal. Mirrors iOS.
-    if (message.replyToText != null) {
+    if (!message.deletedForEveryone && message.storyQuoteId != null) {
+        com.voiid.app.main.stories.StoryQuoteView(message)
+    }
+    if (!message.deletedForEveryone && message.replyToText != null) {
         Row(
             Modifier
                 .clip(RoundedCornerShape(8.dp))

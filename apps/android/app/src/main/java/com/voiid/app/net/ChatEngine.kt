@@ -152,12 +152,17 @@ class ChatEngine private constructor(context: Context) {
         val quotedId: String? = null,
         val quotedPreview: String? = null,
         val quotedSender: String? = null,
+        /** Moment reference only; never retain its expiring media in the message store. */
+        val storyQuoteId: String? = null,
+        val storyQuoteAuthorId: String? = null,
+        val storyQuoteCreatedAt: Long? = null,
         /** "Forwarded" tag. */
         val forwarded: Boolean = false,
         /** A control message (reaction/delete signal): kept for dedup, never rendered. */
         val control: Boolean = false,
     ) {
-        fun hiddenForMe(): DecryptedMessage = copy(deletedForMe = true, text = "", media = null, reactions = null, pending = false)
+        fun hiddenForMe(): DecryptedMessage = copy(deletedForMe = true, text = "", media = null, reactions = null, pending = false,
+            storyQuoteId = null, storyQuoteAuthorId = null, storyQuoteCreatedAt = null)
 
         fun reacting(userId: String, emoji: String?): DecryptedMessage {
             if (deletedForEveryone || deletedForMe) return this
@@ -447,6 +452,12 @@ class ChatEngine private constructor(context: Context) {
                     if (!authoredByMe) newlyReceived.add(m.id)
                     return@runCatching
                 }
+                if (probeT == "story_reply" || (probeT == null && m.content_type == "story_reply")) {
+                    val e = ApiClient.json.decodeFromString(StoryReplyWire.serializer(), plain)
+                    replace(conversationId, e.toMessage(m.id, m.sender_id, parseIso(m.created_at), authoredByMe))
+                    if (!authoredByMe) newlyReceived.add(m.id)
+                    return@runCatching
+                }
                 if (probeT == "msg_reply") {
                     val e = ApiClient.json.decodeFromString(ReplyWire.serializer(), plain)
                     replace(conversationId, DecryptedMessage(m.id, m.sender_id, e.text, parseIso(m.created_at), authoredByMe,
@@ -639,7 +650,7 @@ class ChatEngine private constructor(context: Context) {
     /** Render a story_reply envelope as a chat bubble string (reaction prefix + text). */
     private fun decodeStoryReplyText(plain: String): String {
         val env = ApiClient.json.decodeFromString(StoryReplyWire.serializer(), plain)
-        return env.reaction?.let { r -> if (env.text.isBlank()) r else "$r ${env.text}" } ?: env.text
+        return env.displayText
     }
 
     /**
@@ -1011,9 +1022,8 @@ class ChatEngine private constructor(context: Context) {
                            client_message_id = java.util.UUID.randomUUID().toString()),
         )
         val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
-        val display = reaction?.let { r -> if (text.isBlank()) r else "$r $text" } ?: text
-        val echo = DecryptedMessage(
-            res.message_id, tokens.userId ?: "me", display,
+        val echo = env.toMessage(
+            res.message_id, tokens.userId ?: "me",
             res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true,
         )
         append(conversationId, echo)
@@ -1128,7 +1138,8 @@ class ChatEngine private constructor(context: Context) {
         val arr = store[convId] ?: return
         val i = arr.indexOfFirst { it.serverId == target || it.id == target }
         if (i < 0) return
-        arr[i] = arr[i].copy(deletedForEveryone = true, text = "", media = null, reactions = null)
+        arr[i] = arr[i].copy(deletedForEveryone = true, text = "", media = null, reactions = null,
+            storyQuoteId = null, storyQuoteAuthorId = null, storyQuoteCreatedAt = null)
         markDirty(convId)
         persist()
     }
@@ -1173,11 +1184,21 @@ class ChatEngine private constructor(context: Context) {
 
     /** Wire shape of a story_reply envelope (kept local so `net` needn't depend on `model`). */
     @Serializable
-    private data class StoryReplyWire(
-        @EncodeDefault val v: Int = 1, @EncodeDefault val t: String = "story_reply",
+    internal data class StoryReplyWire(
+        @EncodeDefault val v: Int? = 1, @EncodeDefault val t: String? = "story_reply",
         val storyId: String, val storyAuthorId: String, val storyCreatedAt: Long,
-        val text: String, val reaction: String? = null,
-    )
+        val text: String? = null, val reaction: String? = null,
+    ) {
+        val displayText: String get() = reaction?.let { r ->
+            if (text.isNullOrBlank()) r else "$r $text"
+        } ?: text.orEmpty()
+
+        fun toMessage(id: String, senderId: String, createdAt: Long, isMine: Boolean): DecryptedMessage {
+            require((v == null || v == 1) && (t == null || t == "story_reply")) { "Unsupported Moment reply" }
+            return DecryptedMessage(id, senderId, displayText, createdAt, isMine,
+                storyQuoteId = storyId, storyQuoteAuthorId = storyAuthorId, storyQuoteCreatedAt = storyCreatedAt)
+        }
+    }
 
     // MARK: - Identity pinning (anti-MITM / "safety numbers", trust-on-first-use)
 
