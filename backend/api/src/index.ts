@@ -44,6 +44,8 @@ import communityHostThreadRoutes from './routes/communityHostThreads';
 import gamesRoutes from './routes/games';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
+import baskAgentRoutes, { assertBaskAgentConfig } from './routes/baskAgent';
+import baskHealthRoutes from './routes/baskHealth';
 
 const app = express();
 
@@ -114,6 +116,30 @@ app.get('/health', async (_req, res) => {
   out.started_at = STARTED_AT;
   res.status(out.status === 'ok' ? 200 : 503).json(out);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// Bask control agent — the remote OPERATIONS plane (routes/baskAgent.ts).
+//
+// Mounted OUTSIDE `api` for the same reason /admin is, one step further: it does not
+// authenticate a Voiid user OR an admin person, it authenticates the Bask machine with a
+// static bearer token, and what it grants is process control and .env writes on this box.
+// No path from a user session or an admin session reaches it.
+//
+// MOUNTED BEFORE the global rate limit and the force-update gate, both deliberately. The
+// gate would 426 a caller that sends no app version — which Bask never will — and the
+// per-IP limiter counts the reverse proxy as one client, so an ops call could be throttled
+// by ordinary user traffic at exactly the moment someone is trying to restart a wedged
+// service. Its own protection is the token, not a ceiling.
+//
+// The agent's own tight limiter still applies: this is a bearer-token endpoint, and the
+// login-grinding argument that gives /admin a low ceiling applies to token guessing too.
+//
+// /agent/health carries NO token, matching this project's existing convention that health
+// checks are open (GET /health above is reachable by the deploy gate and Uptime Kuma with
+// no credential). It reports utilisation and dependency reachability — the same class of
+// information the existing route already publishes, and no secret.
+app.use('/agent', rateLimit({ max: 60, windowSeconds: 60, bucket: 'bask-agent' }), baskHealthRoutes);
+app.use('/agent', rateLimit({ max: 60, windowSeconds: 60, bucket: 'bask-agent' }), baskAgentRoutes);
 
 // Remote config / version negotiation — UNVERSIONED + UNGATED so the client can
 // always reach it on launch (even when it must update) to learn the version, flags
@@ -299,6 +325,12 @@ const port = Number(process.env.API_PORT) || 4000;
 // default lets anyone forge valid tokens outright. Both are fine on a laptop and
 // catastrophic deployed, so production refuses to boot rather than trusting an
 // operator to have read .env comments. Mirrored in backend/websocket/src/index.ts.
+// The Bask control agent refuses to run unauthenticated: a missing or too-short
+// BASK_AGENT_TOKEN exits here rather than exposing process control to anyone who can reach
+// the port. Checked in EVERY environment, not just production, because a laptop with a
+// weak token is how a weak token reaches the box.
+assertBaskAgentConfig();
+
 (function assertProductionSafety() {
   if (process.env.NODE_ENV !== 'production') return;
   const fatal: string[] = [];

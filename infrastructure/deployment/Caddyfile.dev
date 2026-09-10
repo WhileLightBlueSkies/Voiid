@@ -8,12 +8,43 @@
 # /ws path           -> WebSocket  (:4001), upgrade handled by Caddy automatically
 
 api-dev.voiid.app {
+	# EVERY route below is a `handle` block, and that uniformity is deliberate. Caddy orders
+	# directives by its own directive table rather than by the order they appear in the file,
+	# so a bare `reverse_proxy` mixed in with matcher blocks is sorted, not sequential — the
+	# catch-all could win over a more specific matcher and the file would still look correct.
+	# `handle` blocks are mutually exclusive and evaluated top to bottom, so what you read is
+	# what runs. The final bare `handle` is the catch-all.
+
 	# WebSocket relay — apps connect to wss://api-dev.voiid.app/ws
 	@ws path /ws /ws/*
-	reverse_proxy @ws localhost:4001
+	handle @ws {
+		reverse_proxy localhost:4001
+	}
+
+	# Bask control agent (/agent/*) -> the API process, which mounts it (routes/baskAgent.ts).
+	#
+	# NO NEW PUBLIC PORT, deliberately. The agent is part of the API service and is reached
+	# through the TLS Caddy already terminates here, so the box exposes exactly the ports it
+	# did before — 80/443 — and the agent listens only on localhost:4000 like everything else.
+	# Opening a dedicated port would mean a second cert, a second firewall rule, and a control
+	# plane whose exposure is easy to forget about.
+	#
+	# The block is written out separately from the catch-all below only to hold this comment
+	# and the header hygiene; it proxies to the same upstream.
+	@agent path /agent /agent/*
+	handle @agent {
+		# Strip any inbound X-Forwarded-* the CLIENT set before Caddy adds its own. The API
+		# trusts this hop (trust proxy = loopback in backend/api/src/index.ts), so a header
+		# arriving from outside must never survive into the rate limiter or the audit trail.
+		request_header -X-Forwarded-For
+		request_header -X-Forwarded-Proto
+		reverse_proxy localhost:4000
+	}
 
 	# Everything else -> REST API
-	reverse_proxy localhost:4000
+	handle {
+		reverse_proxy localhost:4000
+	}
 
 	encode gzip
 }
