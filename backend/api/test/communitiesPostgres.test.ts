@@ -25,7 +25,7 @@ test('community roles, official controls, invite admission and encrypted lifecyc
     [resolve(root, 'db.ts')]: { pool, query },
     [resolve(root, 'auth.ts')]: { requireAuth: (req: any, res: any, next: Function) => req.auth?.user_id ? next() : res.status(401).json({ error: 'auth required' }), invalidateAccountState: async () => {} },
     [resolve(root, 'redis.ts')]: { publisher: { publish: async (channel: string, raw: string) => { notices.push({channel, body:JSON.parse(raw)}); }, pipeline: () => ({ publish(channel: string, raw: string) { notices.push({channel,body:JSON.parse(raw)}); return this; }, exec: async () => {} }) } },
-    [resolve(root, 'security.ts')]: { rateLimit: () => noop, clientIp: () => '127.0.0.1' },
+    [resolve(root, 'security.ts')]: { rateLimit: () => noop, clientIp: () => '127.0.0.1', guardKeyMaterialFetch: async () => 'allow' },
     [resolve(root, 'r2.ts')]: { r2Configured: () => false, presignGet: async () => '', deleteObject: async () => {} },
     [resolve(root, 'push.ts')]: { sendAdminBroadcast: async () => {} },
     [resolve(root, 'blocking.ts')]: { isBlockedEitherWay: async () => false, blockedUserIds: async () => new Set() },
@@ -161,6 +161,21 @@ test('community roles, official controls, invite admission and encrypted lifecyc
       await request('POST','/mls/group-events/ack',{device_id:memberDevice,event_ids:first.body.events.map((e:any)=>e.id)},member,undefined,memberDevice);
       assert.equal((await request('GET',`/mls/group-events?ack=explicit&device_id=${memberDevice}`,undefined,member,undefined,memberDevice)).body.events.length,0);
       assert.equal((await request('POST',`/conversations/${batch.conversation_id}/members`,{user_ids:[outsider]},owner)).status,403);
+    });
+    await t.test('retrying one unready device cannot drain another device’s key packages', async () => {
+      await query('insert into mls_key_packages(user_id,device_id,key_package) values($1,$2,$3)',[member,memberDevice,Buffer.from('phone package')]);
+      const readiness = await request('POST','/communities/channel-sync',{device_id:device},owner,undefined,device);
+      const devices = readiness.body.channels.flatMap((c:any)=>c.devices);
+      assert.ok(devices.some((d:any)=>d.device_id===memberDevice && d.key_packages_available));
+      assert.ok(devices.some((d:any)=>d.device_id===memberSibling && !d.key_packages_available));
+      const count = await request('GET',`/mls/keypackages/count?device_id=${memberDevice}`,undefined,member);
+      assert.equal(count.status,200); assert.equal(count.body.available,1);
+      for (let i=0;i<3;i++) assert.equal((await request('GET',`/mls/keypackages/${member}?device_id=${memberSibling}`)).status,409);
+      assert.equal((await query('select count(*)::int n from mls_key_packages where device_id=$1 and consumed_at is null',[memberDevice]))[0].n,1);
+      const fetched = await request('GET',`/mls/keypackages/${member}?device_id=${memberDevice}`);
+      assert.equal(fetched.status,200); assert.equal(fetched.body.key_packages.length,1);
+      assert.equal(fetched.body.key_packages[0].device_id,memberDevice);
+      assert.equal(fetched.body.device_count,1); assert.equal(fetched.body.partial,false);
     });
     await t.test('private communities stay out of search; suspension freezes every channel', async () => {
       await request('PATCH',`/communities/${community}`,{discoverable:false});

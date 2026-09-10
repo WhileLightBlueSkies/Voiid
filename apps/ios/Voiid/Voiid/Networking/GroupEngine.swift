@@ -339,8 +339,9 @@ final class GroupEngine {
         }
     }
 
-    private func fetchKeyPackages(userId: String) async throws -> [KeyPackageDTO] {
-        let env: KeyPackagesResponse = try await api.request("GET", "mls/keypackages/\(userId)")
+    private func fetchKeyPackages(userId: String, deviceId: String? = nil) async throws -> [KeyPackageDTO] {
+        let suffix = deviceId.map { "?device_id=\($0)" } ?? ""
+        let env: KeyPackagesResponse = try await api.request("GET", "mls/keypackages/\(userId)\(suffix)")
         return env.key_packages
     }
 
@@ -835,6 +836,7 @@ final class GroupEngine {
     private struct CommunityDevice: Decodable {
         let user_id: String
         let device_id: String
+        var key_packages_available: Bool?
         var identity: String { "\(user_id)::\(device_id)" }
     }
     private struct CommunityChannel: Decodable {
@@ -920,10 +922,11 @@ final class GroupEngine {
                             GroupEventOut(recipient_user_id: $0.components(separatedBy: "::")[0], kind: "commit", payload: commit.base64EncodedString(), recipient_device_id: $0.components(separatedBy: "::")[1])
                         })
                     }
-                    let missingUsers = Set(channel.devices.filter { !identities().contains($0.identity) }.map(\.user_id))
-                    for user in missingUsers.sorted() {
+                    let missingDevices = channel.devices.filter { !identities().contains($0.identity) && $0.key_packages_available != false }
+                    for target in missingDevices {
+                        let user = target.user_id
                         // No KeyPackages yet is retryable; the next poll tries again after the device publishes.
-                        guard let packages = try? await fetchKeyPackages(userId: user) else { continue }
+                        guard let packages = try? await fetchKeyPackages(userId: user, deviceId: target.device_id) else { continue }
                         for kp in packages {
                             let identity = "\(user)::\(kp.device_id)"
                             guard desired.contains(identity), !identities().contains(identity), let data = decodeB64(kp.key_package) else { continue }

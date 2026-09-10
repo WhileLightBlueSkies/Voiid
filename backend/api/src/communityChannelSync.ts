@@ -19,7 +19,8 @@ export async function communityChannelSync(req: Request, res: Response) {
     from communities c where ch.community_id = c.id and c.owner_id = $1
       and c.suspended_at is null and ch.mls_coordinator_device_id is null and ch.mls_group_id is null`, [user_id, device]);
   const channels = await query(`select ch.conversation_id, ch.mls_group_id,
-      coalesce((select jsonb_agg(jsonb_build_object('user_id', m.user_id, 'device_id', d.id) order by m.user_id, d.id)
+      coalesce((select jsonb_agg(jsonb_build_object('user_id', m.user_id, 'device_id', d.id,
+          'key_packages_available', exists (select 1 from mls_key_packages kp where kp.device_id = d.id and kp.user_id = d.user_id and kp.consumed_at is null)) order by m.user_id, d.id)
         from community_members m join devices d on d.user_id = m.user_id and d.revoked_at is null
         where m.community_id = c.id and m.state = 'active'), '[]'::jsonb) as devices
     from community_channels ch join communities c on c.id = ch.community_id

@@ -43,7 +43,7 @@ Public cards, Home posts, rules, links, events and moderation metadata are serve
 ## Validation evidence
 
 - All workspace production builds and workspace tests passed (the initial sandbox run failed because tsx could not open its local IPC socket; the unrestricted rerun passed).
-- Real PostgreSQL route integration: **14 tests passed**, including roles, approval/invite limits, ban/rejoin, official scope, post editing, device-targeted MLS retries/acknowledgements and deletion boundaries. Added to CI.
+- Real PostgreSQL route integration: **15 tests passed**, including roles, approval/invite limits, ban/rejoin, official scope, post editing, device-targeted MLS retries/acknowledgements and deletion boundaries. Added to CI.
 - All **66 migrations** replayed on a new isolated database, and a second replay completed without changes.
 - The exact maintenance script was exercised against the isolated database: dry runs changed nothing, seed created exactly three names/six Spaces with the specified owner, repeated seed created no duplicates, reset preserved an unrelated conversation.
 - Rust default-feature suite: **106 passed, 4 ignored**, Clippy passed; Apple and all Android ABI libraries rebuilt from this source.
@@ -68,3 +68,6 @@ Public cards, Home posts, rules, links, events and moderation metadata are serve
 - Production currently runs API, websocket, workers and games under PM2; no admin frontend process was present there. The updated admin panel is running locally at `http://localhost:3100` with its existing authentication flow.
 
 - Final durability correction: both apps persist the private KeyPackage material before publishing public packages. Device-targeted Community Welcomes are retained on processing failure, while ordinary group Welcomes for other devices remain ignorable. Backend integration and both native builds passed again after this correction.
+
+- Multi-device key lookup now targets only the missing device; the coordinator skips devices with no available MLS package. PostgreSQL checks prove repeated attempts for an unready device do not consume a sibling phone's packages. The key-count route is declared before the dynamic user route so replenishment actually reaches the count handler.
+- Existing call checks also passed: shared Android/iOS call-key vectors, five production Swift conference encryption-recovery cases and five coordinator-election cases.

@@ -692,7 +692,7 @@ class GroupEngine private constructor(context: Context) {
             0L
         }
 
-    @Serializable private data class CommunityDevice(val user_id: String, val device_id: String) {
+    @Serializable private data class CommunityDevice(val user_id: String, val device_id: String, val key_packages_available: Boolean = true) {
         val identity: String get() = "$user_id::$device_id"
     }
     @Serializable private data class CommunityChannel(val conversation_id: String, val mls_group_id: String? = null, val devices: List<CommunityDevice>)
@@ -767,9 +767,10 @@ class GroupEngine private constructor(context: Context) {
                         val recipients = identities() intersect desired
                         queueCommunityBatchLocked(cid, session, m, recipients.sorted().map { GroupEvent(it.substringBefore("::"), "commit", Base64.encodeToString(commit, Base64.NO_WRAP), recipient_device_id = it.substringAfter("::")) })
                     }
-                    val missing = channel.devices.filter { it.identity !in identities() }.map { it.user_id }.toSet()
-                    for (user in missing.sorted()) {
-                        val packages = runCatching { api.requestAs<KeyPackagesResponse>("GET", "mls/keypackages/$user") }.getOrNull() ?: continue
+                    val missing = channel.devices.filter { it.identity !in identities() && it.key_packages_available }
+                    for (target in missing) {
+                        val user = target.user_id
+                        val packages = runCatching { api.requestAs<KeyPackagesResponse>("GET", "mls/keypackages/$user?device_id=${target.device_id}") }.getOrNull() ?: continue
                         for (kp in packages.key_packages) {
                             val identity = "$user::${kp.device_id}"
                             if (identity !in desired || identity in identities()) continue

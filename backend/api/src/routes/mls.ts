@@ -105,6 +105,31 @@ router.post('/keypackages', requireAuth, asyncHandler(async (req, res) => {
   res.json({ uploaded: blobs.length });
 }));
 
+/**
+ * GET /mls/keypackages/count?device_id= — how many unconsumed packages this device has left.
+ *
+ * Mirrors the one-time-prekey count endpoint, and exists for the same reason: a device that
+ * publishes a fixed batch at bootstrap and never checks will eventually run dry, and the
+ * failure lands on OTHER people (they cannot add you) rather than on the device that ran
+ * out. The client polls this and tops up below a low-water mark.
+ */
+router.get('/keypackages/count', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const deviceId = typeof req.query.device_id === 'string' ? req.query.device_id : null;
+  if (!deviceId) return res.status(400).json({ error: 'device_id required' });
+
+  // Scoped to the caller's own devices: the remaining-package count of someone else's
+  // device is not information this endpoint should hand out.
+  const rows = await query<{ n: string }>(
+    `select count(*)::text as n
+       from mls_key_packages kp
+       join devices d on d.id = kp.device_id
+      where kp.device_id = $1 and d.user_id = $2 and kp.consumed_at is null`,
+    [deviceId, user_id]
+  );
+  res.json({ available: Number(rows[0]?.n ?? 0) });
+}));
+
 // GET /mls/keypackages/:user_id — consume one KeyPackage per active device of the
 // target user (so the caller can add them to a group). One-time: marked consumed.
 //
@@ -116,6 +141,10 @@ router.post('/keypackages', requireAuth, asyncHandler(async (req, res) => {
 router.get('/keypackages/:user_id', requireAuth, asyncHandler(async (req, res) => {
   // Fetch guard (see security.ts): blocked callers see the empty shape, everyone
   // else is pair-throttled so one account cannot drain another's supply.
+  const requestedDevice = typeof req.query.device_id === 'string' ? req.query.device_id : null;
+  if (req.query.device_id !== undefined && (!requestedDevice || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedDevice))) {
+    return res.status(400).json({ error: 'invalid device_id' });
+  }
   const callerId: string = (req as any).auth.user_id;
   const verdict = await guardKeyMaterialFetch(callerId, req.params.user_id);
   if (verdict === 'empty') {
@@ -145,14 +174,14 @@ router.get('/keypackages/:user_id', requireAuth, asyncHandler(async (req, res) =
              limit 1
              for update skip locked
           ) p
-         where d.user_id = $1 and d.revoked_at is null
+         where d.user_id = $1 and d.revoked_at is null and ($2::uuid is null or d.id = $2)
       )
       update mls_key_packages k
          set consumed_at = now()
         from picked
        where k.id = picked.id
       returning k.device_id, k.key_package`,
-    [req.params.user_id]
+    [req.params.user_id, requestedDevice]
   );
   // base64 in JS, not Postgres' encode(): encode(...,'base64') wraps at 76 columns, and a
   // newline in the middle of a KeyPackage is a decode failure on the client.
@@ -174,8 +203,8 @@ router.get('/keypackages/:user_id', requireAuth, asyncHandler(async (req, res) =
   // implying success. Deliberately still a 200: adding someone on two devices is a real,
   // useful outcome, and failing the whole request would be worse than reporting it.
   const active = await query<{ n: string }>(
-    `select count(*)::text as n from devices where user_id = $1 and revoked_at is null`,
-    [req.params.user_id]
+    `select count(*)::text as n from devices where user_id = $1 and revoked_at is null and ($2::uuid is null or id = $2)`,
+    [req.params.user_id, requestedDevice]
   );
   const deviceCount = Number(active[0]?.n ?? 0);
   res.json({
@@ -185,31 +214,6 @@ router.get('/keypackages/:user_id', requireAuth, asyncHandler(async (req, res) =
     // surface this rather than treating the add as complete.
     partial: packages.length < deviceCount,
   });
-}));
-
-/**
- * GET /mls/keypackages/count?device_id= — how many unconsumed packages this device has left.
- *
- * Mirrors the one-time-prekey count endpoint, and exists for the same reason: a device that
- * publishes a fixed batch at bootstrap and never checks will eventually run dry, and the
- * failure lands on OTHER people (they cannot add you) rather than on the device that ran
- * out. The client polls this and tops up below a low-water mark.
- */
-router.get('/keypackages/count', requireAuth, asyncHandler(async (req, res) => {
-  const { user_id } = (req as any).auth;
-  const deviceId = typeof req.query.device_id === 'string' ? req.query.device_id : null;
-  if (!deviceId) return res.status(400).json({ error: 'device_id required' });
-
-  // Scoped to the caller's own devices: the remaining-package count of someone else's
-  // device is not information this endpoint should hand out.
-  const rows = await query<{ n: string }>(
-    `select count(*)::text as n
-       from mls_key_packages kp
-       join devices d on d.id = kp.device_id
-      where kp.device_id = $1 and d.user_id = $2 and kp.consumed_at is null`,
-    [deviceId, user_id]
-  );
-  res.json({ available: Number(rows[0]?.n ?? 0) });
 }));
 
 // POST /mls/group-events  { conversation_id, events: [{ recipient_user_id, kind, payload(b64), ratchet_tree?(b64) }] }
