@@ -81,7 +81,8 @@ import kotlin.math.min
  * and for the same reason.
  */
 @Composable
-fun ScanQrCodeScreen(onBack: () -> Unit, onScanned: (String) -> Unit) {
+fun ScanQrCodeScreen(onBack: () -> Unit, onScanned: (String) -> Unit,
+                     onCommunityScanned: ((com.voiid.app.net.CommunityLink) -> Unit)? = null) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val haptics = LocalVoiidHaptics.current
@@ -111,7 +112,8 @@ fun ScanQrCodeScreen(onBack: () -> Unit, onScanned: (String) -> Unit) {
         kotlinx.coroutines.delay(if (reduceMotion) 40 else 120)
         confirmed = true
         kotlinx.coroutines.delay(950)
-        onScanned(handle)
+        val community = com.voiid.app.net.CommunityLink.parse(android.net.Uri.parse(handle))
+        if (community != null) onCommunityScanned?.invoke(community) else onScanned(handle)
     }
 
     BackupScaffold(title = "Scan code", onBack = onBack) {
@@ -127,7 +129,10 @@ fun ScanQrCodeScreen(onBack: () -> Unit, onScanned: (String) -> Unit) {
                 CameraFeed(
                     scanning = captured == null,
                     lifecycleOwner = lifecycleOwner,
-                    onDecoded = { handle -> if (captured == null) captured = handle },
+                    onDecoded = { handle ->
+                        val community = com.voiid.app.net.CommunityLink.parse(android.net.Uri.parse(handle))
+                        if (captured == null && (community == null || onCommunityScanned != null)) captured = handle
+                    },
                 )
                 Viewfinder(captured = captured != null, confirmed = confirmed, reduceMotion = reduceMotion)
             } else {
@@ -141,7 +146,7 @@ fun ScanQrCodeScreen(onBack: () -> Unit, onScanned: (String) -> Unit) {
             }
 
             captured?.let { handle ->
-                ConfirmationCard(handle = handle, confirmed = confirmed, reduceMotion = reduceMotion)
+                ConfirmationCard(handle = com.voiid.app.net.CommunityLink.parse(android.net.Uri.parse(handle))?.handle ?: handle, confirmed = confirmed, reduceMotion = reduceMotion, community = com.voiid.app.net.CommunityLink.parse(android.net.Uri.parse(handle)) != null)
             }
         }
 
@@ -156,7 +161,7 @@ fun ScanQrCodeScreen(onBack: () -> Unit, onScanned: (String) -> Unit) {
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "Align their Voiid QR code inside the frame",
+                "Scan a Voiid profile or community code",
                 style = VoiidFont.rounded(14, FontWeight.Medium),
                 color = VoiidColor.textSecondary,
                 textAlign = TextAlign.Center,
@@ -221,7 +226,7 @@ private fun Viewfinder(captured: Boolean, confirmed: Boolean, reduceMotion: Bool
  * pulse here would say "working"; this moment is finished, and it should say so.
  */
 @Composable
-private fun ConfirmationCard(handle: String, confirmed: Boolean, reduceMotion: Boolean) {
+private fun ConfirmationCard(handle: String, confirmed: Boolean, reduceMotion: Boolean, community: Boolean = false) {
     val scale by animateFloatAsState(
         targetValue = if (confirmed || reduceMotion) 1f else 0.95f,
         animationSpec = spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow),
@@ -319,7 +324,7 @@ private fun ConfirmationCard(handle: String, confirmed: Boolean, reduceMotion: B
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Lock, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(12.dp))
             Spacer(Modifier.width(6.dp))
-            Text("Next, enter their Contact PIN", style = VoiidFont.rounded(12, FontWeight.Medium),
+            Text(if (community) "Review the community before joining" else "Next, enter their Contact PIN", style = VoiidFont.rounded(12, FontWeight.Medium),
                 color = VoiidColor.textSecondary)
         }
     }
@@ -353,7 +358,7 @@ private fun CameraFeed(
                 analysis.setAnalyzer(executor) { proxy ->
                     if (live.value) {
                         decodeQr(proxy)?.let { text ->
-                            ProfileLink.handleFrom(text)?.let { handle ->
+                            (if (com.voiid.app.net.CommunityLink.parse(android.net.Uri.parse(text)) != null) text else ProfileLink.handleFrom(text))?.let { handle ->
                                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                                     onDecoded(handle)
                                 }

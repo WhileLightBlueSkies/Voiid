@@ -11,6 +11,7 @@ import AVFoundation
 
 @MainActor
 struct ScanQRCodeView: View {
+    var onCommunityScan: ((CommunityLink) -> Void)? = nil
     var onScan: (ProfileLink) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -19,13 +20,14 @@ struct ScanQRCodeView: View {
     @State private var permission: AVAuthorizationStatus = .notDetermined
     @State private var cameraUnavailable = false
     @State private var rejected = false
+    @State private var capturedCommunity: CommunityLink?
     @State private var capturedLink: ProfileLink?
     @State private var confirmed = false
     @State private var sweeping = false
     @State private var handoffTask: Task<Void, Never>?
     @State private var rejectionTask: Task<Void, Never>?
 
-    private var captured: Bool { capturedLink != nil }
+    private var captured: Bool { capturedLink != nil || capturedCommunity != nil }
     private var motion: Animation {
         reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.3, dampingFraction: 1)
     }
@@ -138,8 +140,8 @@ struct ScanQRCodeView: View {
                 .position(center)
                 .accessibilityHidden(true)
 
-                if let link = capturedLink {
-                    confirmation(link: link)
+                if captured {
+                    confirmation(handle: capturedCommunity?.handle ?? capturedLink?.username ?? "")
                         .frame(width: min(geo.size.width - 40, 340))
                         .scaleEffect(confirmed || reduceMotion ? 1 : 0.95)
                         .opacity(confirmed ? 1 : 0)
@@ -150,7 +152,7 @@ struct ScanQRCodeView: View {
                     Text("Scan. Connect.")
                         .font(VoiidFont.rounded(25, .bold))
                         .tracking(-0.6)
-                    Text("Align their Voiid QR code inside the frame")
+                    Text("Scan a Voiid profile or community code")
                         .font(VoiidFont.rounded(14, .medium))
                         .foregroundStyle(.white.opacity(0.7))
                         .multilineTextAlignment(.center)
@@ -166,7 +168,7 @@ struct ScanQRCodeView: View {
         }
     }
 
-    private func confirmation(link: ProfileLink) -> some View {
+    private func confirmation(handle: String) -> some View {
         VStack(spacing: 0) {
             ZStack {
                 Circle()
@@ -203,13 +205,13 @@ struct ScanQRCodeView: View {
                 .padding(.top, 6)
 
             HStack(spacing: 12) {
-                Text(String(link.username.prefix(1)).uppercased())
+                Text(String(handle.prefix(1)).uppercased())
                     .font(VoiidFont.rounded(19, .bold))
                     .foregroundStyle(VoiidColor.accentInk)
                     .frame(width: 46, height: 46)
                     .background(VoiidColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 15))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("@\(link.username)")
+                    Text("@\(handle)")
                         .font(VoiidFont.rounded(17, .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
@@ -226,7 +228,7 @@ struct ScanQRCodeView: View {
             .background(VoiidColor.surfaceRaised, in: RoundedRectangle(cornerRadius: 20))
             .padding(.top, 24)
 
-            Label("Next, enter their Contact PIN", systemImage: "lock.fill")
+            Label(capturedCommunity == nil ? "Next, enter their Contact PIN" : "Review the community before joining", systemImage: "lock.fill")
                 .font(VoiidFont.rounded(12, .medium))
                 .foregroundStyle(VoiidColor.textSecondary)
                 .padding(.top, 20)
@@ -383,7 +385,9 @@ struct ScanQRCodeView: View {
 
     private func accept(_ raw: String) {
         guard !captured else { return }
-        guard let link = ProfileLink.parse(URL(string: raw)) else {
+        let community = CommunityLink.parse(URL(string: raw))
+        let profile = ProfileLink.parse(URL(string: raw))
+        guard profile != nil || (community != nil && onCommunityScan != nil) else {
             guard !rejected else { return }
             Haptics.error()
             withAnimation(.easeOut(duration: 0.2)) { rejected = true }
@@ -395,9 +399,10 @@ struct ScanQRCodeView: View {
         }
         rejectionTask?.cancel()
         rejected = false
-        capturedLink = link
+        capturedLink = profile
+        capturedCommunity = community
         Haptics.success()
-        UIAccessibility.post(notification: .announcement, argument: "Code scanned. @\(link.username).")
+        UIAccessibility.post(notification: .announcement, argument: "Code scanned. @\(community?.handle ?? profile?.username ?? "").")
         handoffTask = Task { @MainActor in
             do {
                 // Brief frame lock, then the identity card settles and the check draws.
@@ -406,7 +411,8 @@ struct ScanQRCodeView: View {
                 try await Task.sleep(for: .milliseconds(UIAccessibility.isVoiceOverRunning ? 1800 : 950))
             } catch { return }
             guard !Task.isCancelled else { return }
-            onScan(link)
+            if let community { onCommunityScan?(community) }
+            else if let profile { onScan(profile) }
             dismiss()
         }
     }

@@ -484,6 +484,10 @@ fun ChatsHomeView(
         ) {
             ScanQrCodeScreen(
                 onBack = { showScanner = false },
+                onCommunityScanned = { link ->
+                    showScanner = false
+                    com.voiid.app.net.DeepLinkRouter.openCommunityInvite(link)
+                },
                 // HAND OFF, don't act: the scan supplies a handle and the PIN step plus the
                 // accept-a-request step still happen on the screen typing would have reached.
                 onScanned = { handle ->

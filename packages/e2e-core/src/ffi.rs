@@ -524,6 +524,14 @@ impl GroupSession {
         Ok(())
     }
 
+    /// Authenticated device identities, read from the current MLS epoch.
+    pub fn member_identities(&self) -> Vec<Vec<u8>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .member_identities()
+    }
+
     /// Current member count from our view of the group state.
     pub fn member_count(&self) -> u32 {
         self.inner

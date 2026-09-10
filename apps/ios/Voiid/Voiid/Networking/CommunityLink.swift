@@ -80,6 +80,9 @@ struct CommunityLink: Identifiable, Equatable {
               host == Self.host || host == Self.hostWWW
         else { return nil }
 
+        guard components.user == nil, components.password == nil,
+              components.port == nil || components.port == 443,
+              components.fragment == nil else { return nil }
         // `pathComponents` is already percent-decoded, so this compares the real segments and
         // not their encoding; the handle pattern below is what makes the decoding safe.
         let segments = url.pathComponents.filter { $0 != "/" }
@@ -87,11 +90,13 @@ struct CommunityLink: Identifiable, Equatable {
         let handle = segments[1].lowercased()
         guard handle.range(of: handlePattern, options: .regularExpression) != nil else { return nil }
 
-        // A malformed token is dropped, NOT passed through: sending it would burn a redemption
-        // attempt and teach the user nothing. The link then behaves as a plain "look at this
-        // community" link, and the server refuses the join if one was needed.
-        let raw = components.queryItems?.first { $0.name == queryToken }?.value
-        let token = raw.flatMap { $0.range(of: tokenPattern, options: .regularExpression) != nil ? $0 : nil }
+        // Reject malformed or duplicate capabilities; never downgrade a bad invite to a public link.
+        let values = components.queryItems?.filter { $0.name == queryToken } ?? []
+        guard values.count <= 1 else { return nil }
+        let token = values.first?.value
+        if !values.isEmpty {
+            guard let token, token.range(of: tokenPattern, options: .regularExpression) != nil else { return nil }
+        }
         return CommunityLink(handle: handle, inviteToken: token)
     }
 

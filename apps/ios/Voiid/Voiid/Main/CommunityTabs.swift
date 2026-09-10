@@ -129,6 +129,7 @@ struct CommunitySpacesTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+            if let error, !channels.isEmpty { Text(error).font(VoiidFont.rounded(13)).foregroundColor(VoiidColor.error) }
             if isAdmin { createRow("Create a Space", icon: "plus.square.on.square") }
 
             if loading && channels.isEmpty {
@@ -152,7 +153,7 @@ struct CommunitySpacesTab: View {
                         Haptics.tap()
                         open(space.id)
                     } label: {
-                        SpaceCard(space: space, isAdmin: isAdmin)
+                        SpaceCard(space: space, isAdmin: false)
                     }
                     .buttonStyle(PressableButtonStyle())
                     .disabled(busy.contains(space.id))
@@ -221,6 +222,12 @@ struct CommunitySpacesTab: View {
     /// so load before failing.
     private func open(_ conversationId: String) {
         Task { @MainActor in
+            await GroupEngine.shared.syncGroupEvents()
+            guard GroupEngine.shared.hasGroup(conversationId: conversationId) else {
+                error = "This Space is preparing encryption. Its owner needs to open Voiid to finish adding your device. Please try again shortly."
+                return
+            }
+            error = nil
             if !allConversations.contains(where: { $0.id == conversationId }) {
                 await chat.loadConversations()
             }
@@ -464,6 +471,8 @@ private struct SpaceCard: View {
 struct CommunityMembersTab: View {
     let communityId: String
     let isAdmin: Bool
+    var isOwner: Bool = false
+    @State private var showManager = false
 
     @State private var members: [CommunityService.Member] = []
     @State private var pending: [CommunityService.Member] = []
@@ -518,6 +527,10 @@ struct CommunityMembersTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+            if isAdmin {
+                Button("Manage members and requests") { showManager = true }
+                    .font(VoiidFont.rounded(14, .semibold)).foregroundStyle(VoiidColor.accentInk)
+            }
             searchField
 
             ScrollView(.horizontal) {
@@ -569,11 +582,14 @@ struct CommunityMembersTab: View {
             } else {
                 VStack(spacing: 8) {
                     ForEach(visible) { member in
-                        MemberDirectoryRow(member: member, isAdmin: isAdmin,
+                        MemberDirectoryRow(member: member, isAdmin: false,
                                            pendingRequest: false)
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showManager) {
+            CommunityAdminPanel(communityId: communityId, communityName: "Manage community", isOwner: isOwner)
         }
         .task { await load() }
     }
@@ -825,7 +841,9 @@ struct CommunityAboutTab: View {
     let card: CommunityService.CommunityCard
     var isAdmin: Bool = false
 
-    var rules: [CommunityRule] = CommunityRule.samples
+    @State private var rules: [CommunityService.Rule] = []
+    @State private var editingRules = false
+    @State private var rulesError: String?
 
     /// The About tab's links, from GET /communities/:id/links (047). Server-readable by
     /// design — 047: "Shown on the public info card, to non-members, by definition".
@@ -892,10 +910,10 @@ struct CommunityAboutTab: View {
                                 .background(Circle().fill(VoiidColor.accentTint))
 
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(rule.title)
+                                Text(rule.text)
                                     .font(VoiidFont.rounded(14, .semibold))
                                     .foregroundColor(VoiidColor.textPrimary)
-                                Text(rule.detail)
+                                Text(rule.explanation)
                                     .font(VoiidFont.rounded(12.5))
                                     .foregroundColor(VoiidColor.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -913,7 +931,8 @@ struct CommunityAboutTab: View {
                     }
                 }
 
-                if isAdmin { editRow("Edit rules") }
+                if let rulesError { Text(rulesError).foregroundColor(VoiidColor.error) }
+                if isAdmin { Button("Edit rules") { editingRules = true } }
             }
 
             // The section is drawn only when there is something to say. A host who added no
@@ -942,9 +961,16 @@ struct CommunityAboutTab: View {
 
             encryptionNote
 
-            if isAdmin { dangerZone }
+
         }
-        .task(id: card.id) { await loadLinks() }
+        .task(id: card.id) {
+            await loadLinks()
+            do { rules = try await CommunityService.shared.rules(communityId: card.id); rulesError = nil }
+            catch { rulesError = error.localizedDescription }
+        }
+        .sheet(isPresented: $editingRules) {
+            CommunityRulesEditor(communityId: card.id, rules: $rules)
+        }
         .sheet(isPresented: $addingLink) {
             CommunityLinkComposer(communityId: card.id) { link in
                 // Appended, not prepended: the server puts a new link at the END of the list
@@ -1274,4 +1300,60 @@ func emptyish(icon: String, title: String, detail: String) -> some View {
     }
     .frame(maxWidth: .infinity)
     .padding(.vertical, VoiidSpacing.xl)
+}
+
+
+private struct CommunityRulesEditor: View {
+    let communityId: String
+    @Binding var rules: [CommunityService.Rule]
+    @State private var selected: CommunityService.Rule?
+    @State private var title = ""
+    @State private var detail = ""
+    @State private var saving = false
+    @State private var error: String?
+    @State private var deleting: CommunityService.Rule?
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Rules") {
+                    ForEach(rules) { rule in
+                        Button { selected = rule; title = rule.text; detail = rule.explanation } label: {
+                            VStack(alignment: .leading) { Text(rule.text); Text(rule.explanation).font(.caption).foregroundStyle(.secondary) }
+                        }
+                        .swipeActions { Button("Delete", role: .destructive) { deleting = rule } }
+                    }
+                }
+                Section(selected == nil ? "Add rule" : "Edit rule") {
+                    TextField("Title", text: $title)
+                    TextField("Details", text: $detail, axis: .vertical).lineLimit(3...6)
+                    if let error { Text(error).foregroundStyle(.red) }
+                    Button("Save rule") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || title.count > 80 || detail.count > 400)
+                    if selected != nil { Button("Add another rule") { selected = nil; title = ""; detail = "" } }
+                }
+            }
+            .disabled(saving)
+            .navigationTitle("Community rules")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .alert("Delete this rule?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+                Button("Delete", role: .destructive) { if let rule = deleting { Task { await remove(rule) } } }
+                Button("Cancel", role: .cancel) { deleting = nil }
+            }
+        }.tint(VoiidColor.accent)
+    }
+    private func save() async {
+        saving = true; defer { saving = false }
+        do {
+            let result: CommunityService.Rule
+            if let selected { result = try await CommunityService.shared.updateRule(communityId: communityId, ruleId: selected.id, title: title, detail: detail) }
+            else { result = try await CommunityService.shared.createRule(communityId: communityId, title: title, detail: detail) }
+            if let index = rules.firstIndex(where: { $0.id == result.id }) { rules[index] = result } else { rules.append(result) }
+            selected = nil; title = ""; detail = ""; error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+    private func remove(_ rule: CommunityService.Rule) async {
+        saving = true; defer { saving = false; deleting = nil }
+        do { _ = try await CommunityService.shared.deleteRule(communityId: communityId, ruleId: rule.id); rules.removeAll { $0.id == rule.id }; error = nil }
+        catch { self.error = error.localizedDescription }
+    }
 }

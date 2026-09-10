@@ -170,7 +170,13 @@ final class GroupEngine {
         let identity = Data("\(userId)::\(deviceId)".utf8)
         if let blob = kc.data(memberBlobName) {
             do {
-                member = try GroupMember.restore(blob: blob)
+                if let stored = try? JSONDecoder().decode(DurableMLSState.self, from: blob), stored.version == 1 {
+                    member = try GroupMember.restore(blob: stored.member)
+                    convGroups = stored.groups; communityOutbox = stored.outbox; appliedGroupEvents = stored.appliedEvents
+                } else {
+                    member = try GroupMember.restore(blob: blob)
+                    communityOutbox = []; appliedGroupEvents = []
+                }
                 memberBlobVersion = storedBlobVersion()   // the version this state derives from
                 return
             } catch {
@@ -271,13 +277,14 @@ final class GroupEngine {
     }
 
     /// One control message queued for /mls/group-events.
-    private struct GroupEventOut: Encodable {
+    private struct GroupEventOut: Codable {
         let recipient_user_id: String
         let kind: String                 // "welcome" | "commit"
         let payload: String              // base64
         var ratchet_tree: String? = nil  // base64 (welcome only)
+        var recipient_device_id: String? = nil
     }
-    private struct GroupEventsBody: Encodable { let conversation_id: String; let events: [GroupEventOut] }
+    private struct GroupEventsBody: Encodable { let conversation_id: String; let events: [GroupEventOut]; var sender_device_id: String? = E2EManager.shared.deviceId }
     private struct StoredResponse: Decodable { let stored: Int? }
 
     /// Build the real MLS group for a freshly-created server conversation: create the
@@ -389,6 +396,7 @@ final class GroupEngine {
     private func sendGroupMessageLocked(conversationId: String, text: String) async {
         guard let m = ensureMember() else { NSLog("[VOIID] MLS send: no member"); return }
         do {
+            try await flushCommunityOutboxLocked(conversationId: conversationId)
             let session = try loadSession(conversationId)
             let ct = try session.encrypt(member: m, plaintext: Data(text.utf8))
             persistMember()   // encrypt advanced the sender ratchet — save
@@ -446,55 +454,60 @@ final class GroupEngine {
     /// an extension killed by the ~30s watchdog before `persistMember()` loses those
     /// Welcome/Commit messages forever and the group becomes permanently undecryptable.
     func syncGroupEvents() async {
+        await syncCommunityChannels()
         await withGroupState { await syncGroupEventsLocked() }
     }
 
     private func syncGroupEventsLocked() async {
         guard let m = ensureMember() else { return }
+        if let device = E2EManager.shared.deviceId, Date().timeIntervalSince(lastKeyPackageCheck) >= 60 {
+            lastKeyPackageCheck = Date()
+            await topUpKeyPackagesIfLow(deviceId: device)
+        }
         let events: [GroupEventIn]
         do {
-            let env: GroupEventsInResponse = try await api.request("GET", "mls/group-events")
+            let env: GroupEventsInResponse = try await api.request("GET", "mls/group-events?ack=explicit&device_id=\(E2EManager.shared.deviceId ?? "")")
             events = env.events
         } catch {
             NSLog("[VOIID] MLS group-events fetch failed: \(error)")
             return
         }
+        var acknowledged: [String] = []
+        var blocked: Set<String> = []
         for e in events {
-            switch e.kind {
-            case "welcome":
-                // Already a member of this conversation's group? Skip (a Welcome for a
-                // different device / a replay would fail joinGroup anyway).
-                if convGroups[e.conversation_id] != nil { continue }
-                guard let welcome = decodeB64(e.payload),
-                      let tree = e.ratchet_tree.flatMap(decodeB64) else { continue }
-                do {
-                    let session = try m.joinGroup(welcome: welcome, ratchetTree: tree)
-                    let gid = session.groupId()
-                    sessions[e.conversation_id] = session
-                    convGroups[e.conversation_id] = gid
-                    persistConvGroups()
-                    persistMember()
-                    NSLog("[VOIID] MLS joined group conv=\(e.conversation_id)")
-                } catch {
-                    NSLog("[VOIID] MLS joinGroup skipped conv=\(e.conversation_id): \(error)")
-                }
-            case "commit":
-                guard let commit = decodeB64(e.payload) else { continue }
-                do {
+            if blocked.contains(e.conversation_id) { continue }
+            if appliedGroupEvents.contains(e.id) { acknowledged.append(e.id); continue }
+            do {
+                switch e.kind {
+                case "welcome":
+                    guard let welcome = decodeB64(e.payload), let tree = e.ratchet_tree.flatMap(decodeB64) else { continue }
+                    // A valid Welcome may be a rejoin. Trying our KeyPackage is the device binding;
+                    // another device's Welcome fails without replacing our current group.
+                    if let session = try? m.joinGroup(welcome: welcome, ratchetTree: tree) {
+                        sessions[e.conversation_id] = session; convGroups[e.conversation_id] = session.groupId()
+                    }
+                case "commit":
                     let session = try loadSession(e.conversation_id)
-                    let keyBefore = callKeyPassphraseIfAvailable(e.conversation_id)
-                    _ = try session.decrypt(member: m, message: commit)   // applies (returns nil)
-                    persistMember()
-                    // Epoch advanced → the call key rotated. Signal any live call so it can
-                    // re-derive and re-apply, else members desync after this membership change.
-                    emitEpochChangeIfKeyRotated(e.conversation_id, previous: keyBefore)
-                    NSLog("[VOIID] MLS applied commit conv=\(e.conversation_id)")
-                } catch {
-                    NSLog("[VOIID] MLS commit apply skipped conv=\(e.conversation_id): \(error)")
+                    let previous = callKeyPassphraseIfAvailable(e.conversation_id)
+                    guard let payload = decodeB64(e.payload) else { continue }
+                    _ = try session.decrypt(member: m, message: payload)
+                    emitEpochChangeIfKeyRotated(e.conversation_id, previous: previous)
+                default: continue
                 }
-            default:
-                break
+                appliedGroupEvents.append(e.id)
+                appliedGroupEvents = Array(appliedGroupEvents.suffix(4000))
+                guard persistMember() else { break }
+                acknowledged.append(e.id)
+            } catch {
+                // Stop this ordered batch: a later epoch cannot be applied before this one.
+                NSLog("[VOIID] MLS control update deferred")
+                blocked.insert(e.conversation_id)
             }
+        }
+        if !acknowledged.isEmpty {
+            struct Ack: Encodable { let device_id: String; let event_ids: [String] }
+            _ = try? await api.request("POST", "mls/group-events/ack",
+                body: Ack(device_id: E2EManager.shared.deviceId ?? "", event_ids: acknowledged), as: EmptyResponse.self)
         }
     }
 
@@ -812,6 +825,118 @@ final class GroupEngine {
         groupEpochChanged.send(conversationId)
     }
 
+    // Community roster changes are serialized by one owner device. The outbox and MLS state
+    // are one keychain value, so a process exit cannot strand an already-merged Commit.
+    private struct CommunityDevice: Decodable {
+        let user_id: String
+        let device_id: String
+        var identity: String { "\(user_id)::\(device_id)" }
+    }
+    private struct CommunityChannel: Decodable {
+        let conversation_id: String
+        let mls_group_id: String?
+        let devices: [CommunityDevice]
+    }
+    private struct CommunityChannels: Decodable { let channels: [CommunityChannel] }
+    private struct CommunityDeviceBody: Encodable { let device_id: String }
+    private struct CommunityBatch: Codable {
+        let device_id: String
+        let conversation_id: String
+        let batch_id: String
+        let group_id: String
+        let events: [GroupEventOut]
+    }
+    private struct DurableMLSState: Codable {
+        let version: Int
+        let member: Data
+        let groups: [String: Data]
+        let outbox: [CommunityBatch]
+        let appliedEvents: [String]
+    }
+    private var communityOutbox: [CommunityBatch] = []
+    private var appliedGroupEvents: [String] = []
+    private var lastCommunitySync = Date.distantPast
+    private var lastKeyPackageCheck = Date.distantPast
+
+    private func flushCommunityOutboxLocked(conversationId: String? = nil) async throws {
+        var blocked: Set<String> = []
+        for batch in communityOutbox {
+            if let conversationId, batch.conversation_id != conversationId { continue }
+            if blocked.contains(batch.conversation_id) { continue }
+            do {
+                _ = try await api.request("POST", "communities/channel-events", body: batch, as: EmptyResponse.self)
+                communityOutbox.removeAll { $0.batch_id == batch.batch_id }
+                guard persistMember() else { throw APIError.http(status: 0, message: "Could not save encryption state") }
+            } catch {
+                if conversationId != nil || Task.isCancelled { throw error }
+                blocked.insert(batch.conversation_id)
+            }
+        }
+    }
+
+    private func queueCommunityBatchLocked(_ cid: String, session: GroupSession, events: [GroupEventOut]) async throws {
+        guard let device = E2EManager.shared.deviceId else { return }
+        communityOutbox.append(CommunityBatch(device_id: device, conversation_id: cid,
+            batch_id: UUID().uuidString.lowercased(), group_id: session.groupId().base64EncodedString(), events: events))
+        guard persistMember() else { throw APIError.http(status: 0, message: "Could not save encryption state") }
+        try await flushCommunityOutboxLocked(conversationId: cid)
+    }
+
+    func syncCommunityChannels() async {
+        await withGroupState {
+            guard let m = ensureMember(), let device = E2EManager.shared.deviceId else { return }
+            do {
+                try await flushCommunityOutboxLocked()
+                guard Date().timeIntervalSince(lastCommunitySync) >= 10 else { return }
+                lastCommunitySync = Date()
+                let result: CommunityChannels = try await api.request("POST", "communities/channel-sync", body: CommunityDeviceBody(device_id: device))
+                for channel in result.channels {
+                    let cid = channel.conversation_id
+                    if communityOutbox.contains(where: { $0.conversation_id == cid }) { continue }
+                    let session: GroupSession
+                    if let existing = try? loadSession(cid) {
+                        session = existing
+                        if let registered = channel.mls_group_id, registered != session.groupId().base64EncodedString() { continue }
+                    } else {
+                        guard channel.mls_group_id == nil else { continue } // Never replace existing group keys.
+                        session = try m.createGroup()
+                        sessions[cid] = session; convGroups[cid] = session.groupId()
+                        try await queueCommunityBatchLocked(cid, session: session, events: [])
+                    }
+                    let desired = Set(channel.devices.map(\.identity))
+                    func identities() -> Set<String> {
+                        Set(session.memberIdentities().compactMap { String(data: $0, encoding: .utf8) })
+                    }
+                    let keyBefore = callKeyPassphraseIfAvailable(cid)
+                    for removed in identities().subtracting(desired).sorted() {
+                        let commit = try session.removeMember(member: m, identity: Data(removed.utf8))
+                        let recipients = identities().intersection(desired)
+                        try await queueCommunityBatchLocked(cid, session: session, events: recipients.sorted().map {
+                            GroupEventOut(recipient_user_id: $0.components(separatedBy: "::")[0], kind: "commit", payload: commit.base64EncodedString(), recipient_device_id: $0.components(separatedBy: "::")[1])
+                        })
+                    }
+                    let missingUsers = Set(channel.devices.filter { !identities().contains($0.identity) }.map(\.user_id))
+                    for user in missingUsers.sorted() {
+                        // No KeyPackages yet is retryable; the next poll tries again after the device publishes.
+                        guard let packages = try? await fetchKeyPackages(userId: user) else { continue }
+                        for kp in packages {
+                            let identity = "\(user)::\(kp.device_id)"
+                            guard desired.contains(identity), !identities().contains(identity), let data = decodeB64(kp.key_package) else { continue }
+                            let recipients = identities()
+                            let output = try session.addMember(member: m, theirKeyPackage: data)
+                            var events = recipients.sorted().map { GroupEventOut(recipient_user_id: $0.components(separatedBy: "::")[0], kind: "commit", payload: output.commit.base64EncodedString(), recipient_device_id: $0.components(separatedBy: "::")[1]) }
+                            events.append(GroupEventOut(recipient_user_id: user, kind: "welcome", payload: output.welcome.base64EncodedString(), ratchet_tree: output.ratchetTree.base64EncodedString(), recipient_device_id: kp.device_id))
+                            try await queueCommunityBatchLocked(cid, session: session, events: events)
+                        }
+                    }
+                    emitEpochChangeIfKeyRotated(cid, previous: keyBefore)
+                }
+            } catch {
+                NSLog("[VOIID] Community encryption sync deferred; will retry")
+            }
+        }
+    }
+
     // MARK: - Persistence
 
     /// Snapshot the whole MLS state back to the shared keychain.
@@ -827,16 +952,22 @@ final class GroupEngine {
     /// (An MLS epoch counter would be a stronger check than a local write counter, but
     /// `GroupSession::epoch()` exists only in the Rust core and is not on the uniffi
     /// surface — see the note in packages/e2e-core/src/group.rs.)
-    private func persistMember() {
-        guard let m = member, let blob = try? m.serialize() else { return }
+    @discardableResult
+    private func persistMember() -> Bool {
+        guard let m = member, let raw = try? m.serialize(),
+              let blob = try? JSONEncoder().encode(DurableMLSState(version: 1, member: raw, groups: convGroups,
+                outbox: communityOutbox, appliedEvents: appliedGroupEvents)) else { return false }
         let current = storedBlobVersion()
         guard current == memberBlobVersion else {
             NSLog("[VOIID] ⛔️ MLS persist REFUSED: blob moved \(memberBlobVersion)→\(current) under us — dropping this write to avoid destroying the other process's epoch")
-            return
+            return false
         }
         kc.setData(blob, memberBlobName)          // data first: a crash before the counter
+        guard kc.data(memberBlobName) == blob else { return false }
         memberBlobVersion = current + 1           // write only costs us a missed detection
         kc.set(String(memberBlobVersion), memberVersionName)
+        persistConvGroups()
+        return true
     }
 
     /// The version counter of the blob currently in the keychain (0 when never written).
@@ -867,6 +998,7 @@ final class GroupEngine {
         sessions.removeAll()
         convGroups.removeAll()
         memberBlobVersion = 0        // the counter lived in the wiped service too
+        communityOutbox = []; appliedGroupEvents = []; lastCommunitySync = .distantPast; lastKeyPackageCheck = .distantPast
         bootstrapped = false
     }
 

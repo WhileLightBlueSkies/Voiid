@@ -1,5 +1,7 @@
 package com.voiid.app.main
 
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -69,6 +71,8 @@ fun CommunitiesHomeView(
     var mine by remember { mutableStateOf<List<CommunityService.CommunityCard>>(emptyList()) }
     var results by remember { mutableStateOf<List<CommunityService.CommunityCard>>(emptyList()) }
     var query by remember { mutableStateOf("") }
+    var searchError by remember { mutableStateOf<String?>(null) }
+    var searchingNow by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var open by remember { mutableStateOf<CommunityService.CommunityCard?>(null) }
@@ -88,11 +92,14 @@ fun CommunitiesHomeView(
 
     val pull = com.voiid.app.ui.components.rememberVoiidPullRefresh { scope.launch { loadMine() } }
     LaunchedEffect(Unit) { loadMine() }
-    LaunchedEffect(query) {
-        // Failures are silent here on purpose: an error banner over a live-typing field
-        // flickers on every keystroke, and "no results" reads the same to the user.
-        results = if (searching) runCatching { svc.search(query) }.getOrDefault(emptyList())
-                  else emptyList()
+    LaunchedEffect(query, open) {
+        if (open != null) return@LaunchedEffect
+        searchingNow = true; searchError = null
+        kotlinx.coroutines.delay(250)
+        try { results = svc.search(query.trim()) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { searchError = e.message ?: "Couldn’t search communities." }
+        finally { searchingNow = false }
     }
 
     open?.let { card ->
@@ -150,13 +157,15 @@ fun CommunitiesHomeView(
         )
         Spacer(Modifier.height(12.dp))
 
-        val shown = if (searching) results else mine
+        val shown = if (searching) results else (mine + results).distinctBy { it.id }
+        if (searchError != null) Message(searchError!!)
+        if (searchingNow) Text("Finding communities…", modifier = Modifier.padding(horizontal = 16.dp), color = VoiidColor.textSecondary)
         when {
             // Error beats empty: rendering "you're in none" for a failed request is a lie
             // the user cannot act on.
             error != null && mine.isEmpty() && !searching ->
                 Message(error!!, action = "Try again") { scope.launch { loadMine() } }
-            shown.isEmpty() && !loading && searching ->
+            shown.isEmpty() && !loading && !searchingNow && searchError == null && searching ->
                 Message("No communities match that.")
             shown.isEmpty() && !loading ->
                 Message("You're not in any communities yet. Search above, or open an invite link.")
@@ -186,7 +195,8 @@ private fun CommunityRow(card: CommunityService.CommunityCard, onClick: () -> Un
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(card.name ?: "@${card.handle}",
-                    style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                    style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (card.official == true) Pill("Official", fill = VoiidColor.accentTint, textColor = VoiidColor.accentInk)
                 if (card.isMember) {
                     Text("joined", style = VoiidFont.rounded(10, FontWeight.SemiBold),
                         color = VoiidColor.primary,
@@ -245,13 +255,29 @@ private fun CommunityDetailView(
     var showHostInbox by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showInvite by remember { mutableStateOf(false) }
+    var showReport by remember { mutableStateOf(false) }
     val myUserId = remember { com.voiid.app.net.TokenStore.get(context).userId }
     /** The card carries `owner_id`, so this needs no extra request. */
     val amHost = state.owner_id != null && state.owner_id == myUserId
 
+    val amManager = amHost || state.isManager
+
     suspend fun reload() {
         runCatching { service.resolve(com.voiid.app.net.CommunityLink(state.handle, null)) }
             .onSuccess { state = it }
+            .onFailure { actionError = it.message ?: "Couldn’t refresh this community." }
+    }
+
+    val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(card.id, lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) {
+                reload()
+                com.voiid.app.net.GroupEngine.get(context).syncGroupEvents()
+                kotlinx.coroutines.delay(10000)
+            }
+        }
     }
 
     Column(
@@ -304,7 +330,6 @@ private fun CommunityDetailView(
             Box(
                 Modifier
                     .offset(y = (-34).dp)
-                    .padding(bottom = (-34).dp)
                     .size(68.dp)
                     .clip(CircleShape)
                     .background(VoiidColor.accentTint)
@@ -325,6 +350,7 @@ private fun CommunityDetailView(
             ) {
                 Text(state.name.ifEmpty { "@${state.handle}" },
                     style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
+                if (state.official == true) Pill("Official", fill = VoiidColor.accentTint, textColor = VoiidColor.accentInk)
                 if (amHost) {
                     Pill("HOST", fill = VoiidColor.accent, textColor = VoiidColor.textOnAccent,
                         fontSize = 9.5f, hPad = 6.dp, vPad = 2.dp)
@@ -395,9 +421,9 @@ private fun CommunityDetailView(
                     OutlinePill("Inbox", CommunityIcon.INBOX, Modifier.weight(1f)) {
                         haptics.tap(); showHostInbox = true
                     }
-                } else if (state.isMember) {
+                } else if (state.canInvite) {
                     OutlinePill("Invite", CommunityIcon.PERSON_ADD, Modifier.weight(1f)) {
-                        haptics.tap()
+                        haptics.tap(); showInvite = true
                     }
                 }
 
@@ -416,17 +442,17 @@ private fun CommunityDetailView(
                             tint = VoiidColor.textPrimary)
                     }
                     CommunityMenu(menuOpen, { menuOpen = false }) {
-                        if (amHost) {
+                        if (amManager) {
                             CommunityMenuItem("Community settings", CommunityIcon.GEAR) {
                                 menuOpen = false; haptics.tap(); showSettings = true
                             }
                             CommunityMenuDivider()
                         }
-                        CommunityMenuItem("Share community", CommunityIcon.SHARE) {
-                            menuOpen = false; haptics.tap()
+                        if (state.canInvite || state.discoverable) CommunityMenuItem("Invite / QR code", CommunityIcon.SHARE) {
+                            menuOpen = false; haptics.tap(); showInvite = true
                         }
                         CommunityMenuItem("Report", CommunityIcon.WARNING) {
-                            menuOpen = false; haptics.tap()
+                            menuOpen = false; haptics.tap(); showReport = true
                         }
                         if (state.isMember && !amHost) {
                             CommunityMenuDivider()
@@ -460,7 +486,7 @@ private fun CommunityDetailView(
         // ── Tabs ─────────────────────────────────────────────────────────────────
         // A non-member gets About only — there is nothing else they may read.
         if (state.isMember) {
-            CommunityTabBar(selected = tab, onSelect = { tab = it })
+            CommunityTabBar(selected = tab, isManager = amManager, onSelect = { tab = it })
             Spacer(Modifier.height(VoiidSpacing.md))
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                 when (tab) {
@@ -472,10 +498,10 @@ private fun CommunityDetailView(
                             )
                             Spacer(Modifier.height(VoiidSpacing.md))
                         }
-                        CommunityHomeTab(communityId = state.id, isAdmin = amHost)
+                        CommunityHomeTab(communityId = state.id, isAdmin = amManager, canPost = state.posting_policy != "managers" || amManager)
                     }
                     CommunityTab.SPACES ->
-                        CommunitySpacesTab(communityId = state.id, isAdmin = amHost)
+                        CommunitySpacesTab(communityId = state.id, isAdmin = amManager, onOpen = onOpenConversation)
                     CommunityTab.EVENTS -> Column(
                         verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
                     ) {
@@ -483,9 +509,9 @@ private fun CommunityDetailView(
                         CommunityTournamentsSection(communityId = state.id)
                     }
                     CommunityTab.MEMBERS ->
-                        CommunityMembersTab(communityId = state.id, isAdmin = amHost)
+                        CommunityMembersTab(communityId = state.id, isAdmin = amManager, isOwner = amHost)
                     CommunityTab.ABOUT ->
-                        CommunityAboutTab(card = state, isAdmin = amHost)
+                        CommunityAboutTab(card = state, isAdmin = amManager)
                 }
             }
         } else {
@@ -497,6 +523,8 @@ private fun CommunityDetailView(
         Spacer(Modifier.height(96.dp))
     }
 
+    if (showInvite) CommunityInviteSheet(state, service) { showInvite = false }
+    if (showReport) ReportSheet(com.voiid.app.net.ReportTarget.Community(state.id)) { showReport = false }
     if (showSettings) {
         CommunitySettingsScreen(
             card = state,
@@ -609,3 +637,63 @@ private fun OutlinePill(
 /** Spaces tab — channels list; announcement badges mark host-writes rows. */
 /** Members tab — active roster with role badges; hosts also see pending requests. */
 /** About tab — the container facts, stated plainly. */
+
+
+@Composable
+private fun CommunityInviteSheet(card: CommunityService.CommunityCard, service: CommunityService, onClose: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var url by remember(card.id) { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var invites by remember { mutableStateOf<List<CommunityService.Invite>>(emptyList()) }
+    suspend fun create() {
+        if (busy) return
+        busy = true; error = null
+        try {
+            val token = if (card.canInvite) service.createInvite(card.id, 100, 168).token else null
+            url = com.voiid.app.net.CommunityLink.format(card.handle, token)
+            if (card.isManager) invites = service.invites(card.id)
+        } catch (e: Exception) { error = e.message ?: "Couldn’t create an invite." }
+        finally { busy = false }
+    }
+    LaunchedEffect(card.id) { create() }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(card.name) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                val image = remember(url) {
+                    url?.let { value -> runCatching {
+                        val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(value, com.google.zxing.BarcodeFormat.QR_CODE, 600, 600)
+                        android.graphics.Bitmap.createBitmap(600, 600, android.graphics.Bitmap.Config.ARGB_8888).apply {
+                            for (y in 0 until 600) for (x in 0 until 600) setPixel(x, y, if (matrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+                        }
+                    }.getOrNull() }
+                }
+                if (image != null) androidx.compose.foundation.Image(image.asImageBitmap(), "Community invite QR", Modifier.fillMaxWidth())
+                Text("Scanning opens a preview. Joining never grants an admin role.")
+                if (card.canInvite) Text("Links expire in 7 days or after 100 joins.")
+                if (error != null) Text(error!!, color = VoiidColor.error)
+                if (url != null) androidx.compose.material3.TextButton(onClick = {
+                    context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "text/plain"; putExtra(android.content.Intent.EXTRA_TEXT, url)
+                    }, "Share community"))
+                }) { Text("Share invite") }
+                if (card.canInvite) androidx.compose.material3.TextButton(enabled = !busy, onClick = { scope.launch { create() } }) { Text("Create a new link") }
+                invites.forEach { invite ->
+                    androidx.compose.material3.TextButton(enabled = !busy, onClick = { scope.launch {
+                        busy = true
+                        try {
+                            service.revokeInvite(card.id, invite.token)
+                            invites = invites.filterNot { it.token == invite.token }
+                            if (url?.contains(invite.token) == true) url = null
+                        } catch (e: Exception) { error = e.message }
+                        finally { busy = false }
+                    } }) { Text("Revoke link · " + (invite.expires_at?.take(10) ?: "No expiry")) }
+                }
+            }
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = onClose) { Text("Done") } },
+    )
+}

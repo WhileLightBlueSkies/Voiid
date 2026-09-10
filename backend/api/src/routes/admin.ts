@@ -26,6 +26,8 @@
 // is a new privileged endpoint nobody remembered to gate, and a missing middleware in a
 // route definition is visible in review in a way a missing branch is not.
 import { Router } from 'express';
+import { dispatchOfficialCommunityAction } from './communities';
+import { officialCommunityActionAllowed } from '../officialCommunityActions';
 import { asyncHandler } from '../util';
 import { sendAdminBroadcast } from '../push';
 import type { Request, Response, NextFunction } from 'express';
@@ -1399,7 +1401,7 @@ router.get('/communities', requireAdmin, asyncHandler(async (req, res) => {
 
   const rows = await query<any>(
     `select c.id, c.handle, c.name, c.description, c.category,
-            c.discoverable, c.join_policy, c.member_count, c.max_members,
+            c.discoverable, c.join_policy, c.member_count, c.max_members, c.official_key, c.posting_policy,
             c.suspended_at, c.created_at, c.owner_id,
             u.full_name as owner_name, u.username as owner_username,
             (select count(*) from community_posts p where p.community_id = c.id)::int as post_count
@@ -1422,6 +1424,40 @@ router.get('/communities', requireAdmin, asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/communities/:id — one community, with its roster split by state.
 // ─────────────────────────────────────────────────────────────────────────────────
+// Full management is exclusively for the three explicitly designated official communities.
+router.get('/communities/:id/manage-members', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'invalid community id' });
+  const official = await query(`select id from communities where id = $1 and official_key in ('jobs','feedback','updates')`, [id]);
+  if (!official.length) return res.status(403).json({ error: 'official communities only' });
+  const q = String(req.query.q ?? '').trim().replace(/^@/, '').slice(0,100);
+  const members = await query(`select m.user_id, m.role, m.state, u.full_name, u.username
+    from community_members m join users u on u.id = m.user_id where m.community_id = $1 and m.state <> 'left'
+      and (m.user_id::text = $2 or position(lower($2) in lower(coalesce(u.username,''))) > 0
+        or position(lower($2) in lower(coalesce(u.full_name,''))) > 0)
+    order by (m.user_id::text = $2 or lower(u.username) = lower($2)) desc, m.joined_at limit 200`, [id,q]);
+  res.json({ members });
+}));
+
+router.post('/communities/:id/manage', requireAdmin, requireRole('admin'), asyncHandler(async (req, res, next) => {
+  const id = String(req.params.id);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+  const { method, path, payload } = req.body ?? {};
+  if (!officialCommunityActionAllowed(method, path)) return res.status(400).json({ error: 'unsupported management action' });
+  const community = (await query<{ owner_id: string }>(
+    `select c.owner_id from communities c join users u on u.id = c.owner_id
+      where c.id = $1 and c.official_key in ('jobs', 'feedback', 'updates') and u.deleted_at is null`, [id]))[0];
+  if (!community) return res.status(403).json({ error: 'full management is only available for official Voiid communities' });
+  // Record the operator before dispatch. An unavailable audit store refuses privileged actions.
+  // Bodies and invitation tokens are deliberately not copied to the audit log.
+  await query(`insert into admin_audit_log (admin_id, action, target_type, target_id, detail)
+      values ($1, 'official_community_action', 'community', $2, $3)`,
+    [(req as any).admin.adminId, id, JSON.stringify({ method, resource: path.split('/')[0] || 'settings' })]);
+  dispatchOfficialCommunityAction(req, res, next, id, community.owner_id, method, path, payload);
+}));
+
 router.get('/communities/:id', requireAdmin, asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
@@ -1430,7 +1466,7 @@ router.get('/communities/:id', requireAdmin, asyncHandler(async (req, res) => {
 
   const rows = await query<any>(
     `select c.id, c.handle, c.name, c.description, c.category,
-            c.discoverable, c.join_policy, c.member_count, c.max_members,
+            c.discoverable, c.join_policy, c.member_count, c.max_members, c.official_key, c.posting_policy,
             c.suspended_at, c.created_at, c.owner_id, c.members_can_invite,
             u.full_name as owner_name, u.username as owner_username
        from communities c

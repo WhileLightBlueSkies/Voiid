@@ -96,7 +96,7 @@ struct RootTabView: View {
         static var visible: [Tab] { allCases.filter { shipped.contains($0) } }
 
         /// Memories (Moments) and Chats are enabled for the current test round.
-        private static let shipped: Set<Tab> = [.chat, .stories]
+        private static let shipped: Set<Tab> = [.chat, .stories, .communities]
 
         /// SF Symbols, OUTLINE weight — the inactive state.
         ///

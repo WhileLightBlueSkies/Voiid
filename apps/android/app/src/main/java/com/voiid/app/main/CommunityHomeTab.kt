@@ -59,6 +59,7 @@ import kotlinx.coroutines.launch
 fun CommunityHomeTab(
     communityId: String,
     isAdmin: Boolean,
+    canPost: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -67,6 +68,12 @@ fun CommunityHomeTab(
     val svc = remember { CommunityService(context) }
     val myUserId = remember { TokenStore.get(context).userId }
 
+    var composing by remember { mutableStateOf(false) }
+    var pinning by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf("") }
+    var draftTitle by remember { mutableStateOf("") }
+    var authoringBusy by remember { mutableStateOf(false) }
+    var authoringError by remember { mutableStateOf<String?>(null) }
     var posts by remember { mutableStateOf<List<CommunityService.Post>>(emptyList()) }
     var pinned by remember { mutableStateOf<CommunityService.Announcement?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -182,7 +189,7 @@ fun CommunityHomeTab(
 
         AnnouncementSlot(
             pinned = pinned, isAdmin = isAdmin, loading = loading,
-            announcementError = announcementError, unpinBusy = unpinBusy,
+            announcementError = announcementError, unpinBusy = unpinBusy, onPin = { pinning = true },
             onUnpin = {
                 val current = pinned ?: return@AnnouncementSlot
                 scope.launch {
@@ -200,7 +207,8 @@ fun CommunityHomeTab(
             },
         )
 
-        ComposeBar(onClick = { haptics.tap() })
+        if (canPost) ComposeBar(onClick = { haptics.tap(); composing = true })
+
 
         writeError?.let { message ->
             WriteErrorBanner(message = message, onDismiss = { writeError = null })
@@ -275,6 +283,27 @@ fun CommunityHomeTab(
             },
         )
     }
+    if (composing || pinning) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!authoringBusy) { composing = false; pinning = false } },
+        title = { Text(if (pinning) "Pin announcement" else "New post") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (pinning) androidx.compose.material3.OutlinedTextField(value = draftTitle, onValueChange = { draftTitle = it.take(120) }, label = { Text("Title") })
+            androidx.compose.material3.OutlinedTextField(value = draft, onValueChange = { draft = it.take(if (pinning) 2000 else 4000) }, label = { Text("Write something") }, minLines = 3)
+            Text("Community posts are visible to the server and the community’s audience.", style = VoiidFont.rounded(12))
+            authoringError?.let { Text(it, color = VoiidColor.error) }
+        } },
+        confirmButton = { androidx.compose.material3.TextButton(enabled = !authoringBusy && draft.isNotBlank() && (!pinning || draftTitle.isNotBlank()), onClick = { scope.launch {
+            authoringBusy = true; authoringError = null
+            try {
+                if (pinning) pinned = svc.pinAnnouncement(communityId, draftTitle.trim(), draft.trim())
+                else posts = listOf(svc.createPost(communityId, draft.trim())) + posts
+                composing = false; pinning = false; draft = ""; draftTitle = ""; haptics.success()
+            } catch (e: Exception) { authoringError = e.message ?: "Couldn’t publish. Your draft is still here." }
+            finally { authoringBusy = false }
+        } }) { Text(if (authoringBusy) "Publishing…" else "Publish") } },
+        dismissButton = { androidx.compose.material3.TextButton(enabled = !authoringBusy, onClick = { composing = false; pinning = false }) { Text("Cancel") } },
+    )
+
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════
@@ -543,6 +572,7 @@ private fun AnnouncementSlot(
     announcementError: String?,
     unpinBusy: Boolean,
     onUnpin: () -> Unit,
+    onPin: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     when {
@@ -555,7 +585,7 @@ private fun AnnouncementSlot(
                         horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
                     ) {
                         AnnouncementControl("Replace", CommunityIcon.REPLACE, !unpinBusy) {
-                            haptics.tap()
+                            haptics.tap(); onPin()
                         }
                         AnnouncementControl("Unpin", CommunityIcon.PIN_SLASH, !unpinBusy) {
                             haptics.tap(); onUnpin()
@@ -566,7 +596,7 @@ private fun AnnouncementSlot(
         }
         announcementError != null && !loading ->
             Emptyish(CommunityIcon.WARNING, announcementError, "Pull down to try again.")
-        isAdmin && !loading -> PinAnnouncementSlot { haptics.tap() }
+        isAdmin && !loading -> PinAnnouncementSlot { haptics.tap(); onPin() }
         // A member with no announcement sees no element at all.
     }
 }

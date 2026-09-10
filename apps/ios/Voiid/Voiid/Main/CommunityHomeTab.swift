@@ -54,6 +54,7 @@ struct CommunityHomeTab: View {
     /// Drives the admin dashboard. A member never renders it — the block is gated on the role
     /// rather than hidden behind a flag, so there is no build in which a member sees the queue.
     let isAdmin: Bool
+    var canPost: Bool = true
 
     @State private var posts: [CommunityService.Post] = []
     @State private var pinned: CommunityService.Announcement?
@@ -116,7 +117,7 @@ struct CommunityHomeTab: View {
 
             // Above the feed, below the announcement: the thing you came to say goes in at
             // the top of the list it lands at the top of.
-            composeBar
+            if canPost { composeBar }
 
             // A failed write is stated where the write was started from, and dismissible —
             // it is about one action that is now over, not about the state of the tab.

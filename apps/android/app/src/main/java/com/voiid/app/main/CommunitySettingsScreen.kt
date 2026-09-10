@@ -75,6 +75,8 @@ fun CommunitySettingsScreen(
     var about by remember { mutableStateOf(current.description ?: "") }
     var discoverable by remember { mutableStateOf(current.discoverable) }
     var joinPolicy by remember { mutableStateOf(current.join_policy) }
+    var membersCanInvite by remember { mutableStateOf(current.members_can_invite) }
+    var managersPostOnly by remember { mutableStateOf(current.posting_policy == "managers") }
 
     var saving by remember { mutableStateOf(false) }
     var saveFailure by remember { mutableStateOf<String?>(null) }
@@ -104,7 +106,9 @@ fun CommunitySettingsScreen(
     val dirty = trimmedName != current.name ||
         about.trim() != (current.description ?: "") ||
         discoverable != current.discoverable ||
-        sanitisedPolicy != current.join_policy
+        sanitisedPolicy != current.join_policy ||
+        (membersCanInvite && sanitisedPolicy != "invite_only") != current.members_can_invite ||
+        managersPostOnly != (current.posting_policy == "managers")
     val canSave = dirty && trimmedName.isNotEmpty() && !saving
 
     Column(
@@ -203,6 +207,17 @@ fun CommunitySettingsScreen(
                         selected = joinPolicy == option.id,
                         onSelect = { haptics.selection(); joinPolicy = option.id },
                     )
+                }
+            }
+
+            CardSection(header = "Permissions", footer = "Joining never grants an admin role. Admins and owners manage invitations and posts.") {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Members can invite", modifier = Modifier.weight(1f), color = VoiidColor.textPrimary)
+                    VoiidToggle(checked = membersCanInvite && sanitisedPolicy != "invite_only", onCheckedChange = { membersCanInvite = it && sanitisedPolicy != "invite_only" })
+                }
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Only managers can post", modifier = Modifier.weight(1f), color = VoiidColor.textPrimary)
+                    VoiidToggle(checked = managersPostOnly, onCheckedChange = { managersPostOnly = it })
                 }
             }
 
@@ -335,6 +350,8 @@ fun CommunitySettingsScreen(
                             runCatching {
                                 svc.update(
                                     communityId = current.id,
+                                    membersCanInvite = membersCanInvite && sanitisedPolicy != "invite_only",
+                                    postingPolicy = if (managersPostOnly) "managers" else "members",
                                     // Only what CHANGED is sent. An unchanged field is null,
                                     // and null means "leave this column alone".
                                     name = trimmedName.takeIf { it != current.name },
@@ -349,6 +366,8 @@ fun CommunitySettingsScreen(
                                 // Re-seed the whole draft from the RESPONSE, so the server's
                                 // own trimming shows up rather than the text as typed.
                                 current = updated
+                                membersCanInvite = updated.members_can_invite
+                                managersPostOnly = updated.posting_policy == "managers"
                                 name = updated.name
                                 about = updated.description ?: ""
                                 discoverable = updated.discoverable

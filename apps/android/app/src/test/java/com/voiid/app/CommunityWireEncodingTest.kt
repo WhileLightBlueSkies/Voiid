@@ -176,4 +176,18 @@ class CommunityWireEncodingTest {
         val encoded = json.encodeToString(FixedEnvelope.serializer(), FixedEnvelope(target = "m1"))
         assertTrue(encoded, encoded.contains("\"t\":\"community_ask\""))
     }
+    @Test
+    fun `membership role and invite policy remain authoritative`() {
+        fun card(state: String, role: String, policy: String = "open", invites: Boolean = true) = json.decodeFromString(
+            CommunityService.CommunityCard.serializer(),
+            """{"id":"g1","handle":"voiid_jobs","name":"Voiid Jobs","membership_state":"$state","membership_role":"$role","join_policy":"$policy","members_can_invite":$invites,"official":true,"posting_policy":"managers"}""",
+        )
+        assertTrue(card("active", "admin").isManager)
+        assertFalse(card("left", "admin").isManager)
+        assertFalse(card("pending", "admin").canInvite)
+        assertFalse(card("active", "member", invites = false).canInvite)
+        assertFalse(card("active", "member", policy = "invite_only").canInvite)
+        assertTrue(card("active", "member").canInvite)
+        assertTrue(card("active", "owner", policy = "invite_only").canInvite)
+    }
 }

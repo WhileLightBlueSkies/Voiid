@@ -305,6 +305,7 @@ jobs:
            .then(()=>c.query('create database voiid_test_reap'))
            .then(()=>c.query('create database voiid_test_conf'))
            .then(()=>c.query('create database voiid_test_history'))
+           .then(()=>c.query('create database voiid_test_communities'))
            .then(()=>c.end())"
 
       # S03. Both suites run HERE rather than in the node job because they need a real
@@ -314,6 +315,14 @@ jobs:
         env:
           SESSION_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_sessions
         run: npx tsx --test backend/api/test/sessionPostgres.test.ts
+
+      - name: Community permissions and encrypted lifecycle against PostgreSQL
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_communities
+          COMMUNITY_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_communities
+        run: |
+          node infrastructure/deployment/migrate.mjs
+          npx tsx --test backend/api/test/communitiesPostgres.test.ts
 
       - name: Relay connect authorization against PostgreSQL
         env:
@@ -532,6 +541,11 @@ jobs:
       #
       # The tag MUST match what the working copy uses (currently 12.15.0). If iOS starts
       # failing here right after a Firebase bump, this pin is the thing to update.
+      - name: Validate community QR links
+        run: |
+          swiftc apps/ios/Voiid/Voiid/Networking/CommunityLink.swift tools/test-community-links.swift -o /tmp/community-link-checks
+          /tmp/community-link-checks
+
       - name: Restore vendored Firebase SDK
         run: |
           set -euxo pipefail

@@ -70,6 +70,10 @@ class CommunityService(context: Context) {
          * THE ONLY SOURCE OF TRUTH FOR "AM I IN THIS". Null means not a member. Never infer
          * this from the fact that a link resolved; a forwarded link resolves for everyone.
          */
+        val membership_role: String? = null,
+        val official: Boolean = false,
+        val posting_policy: String = "members",
+        val members_can_invite: Boolean = false,
         val membership_state: String? = null,
         /**
          * Whether the token in the link is currently redeemable. Null when the link carried no
@@ -82,6 +86,8 @@ class CommunityService(context: Context) {
          */
         val invite_valid: Boolean? = null,
     ) {
+        val isManager: Boolean get() = isMember && membership_role in setOf("owner", "admin")
+        val canInvite: Boolean get() = !suspended && (isManager || (isMember && members_can_invite && join_policy != "invite_only"))
         val isMember: Boolean get() = membership_state == "active"
         val isPending: Boolean get() = membership_state == "pending"
         val isBanned: Boolean get() = membership_state == "banned"
@@ -99,7 +105,7 @@ class CommunityService(context: Context) {
         val membership_role: String? = null,
     ) {
         fun merged(inviteValid: Boolean?): CommunityCard =
-            community.copy(membership_state = membership_state, invite_valid = inviteValid)
+            community.copy(membership_state = membership_state, membership_role = membership_role, invite_valid = inviteValid)
     }
 
     /**
@@ -351,7 +357,8 @@ class CommunityService(context: Context) {
     suspend fun createPost(communityId: String, body: String, mediaUrl: String? = null): Post {
         val payload = ApiClient.json.encodeToString(
             CreatePostBody.serializer(), CreatePostBody(body, mediaUrl))
-        return api.requestAs("POST", "communities/$communityId/posts", payload)
+        @Serializable data class Envelope(val post: Post)
+        return api.requestAs<Envelope>("POST", "communities/$communityId/posts", payload).post
     }
 
     suspend fun deletePost(communityId: String, postId: String): Boolean {
@@ -402,9 +409,9 @@ class CommunityService(context: Context) {
      */
     suspend fun announcement(communityId: String): Announcement? {
         @Serializable
-        data class Envelope(val announcements: List<Announcement> = emptyList())
+        data class Envelope(val announcement: Announcement? = null)
         return api.requestAs<Envelope>("GET", "communities/$communityId/announcements")
-            .announcements.firstOrNull()
+            .announcement
     }
 
     @Serializable
@@ -413,7 +420,8 @@ class CommunityService(context: Context) {
     suspend fun pinAnnouncement(communityId: String, title: String, body: String): Announcement {
         val payload = ApiClient.json.encodeToString(
             AnnouncementBody.serializer(), AnnouncementBody(title, body))
-        return api.requestAs("POST", "communities/$communityId/announcements", payload)
+        @Serializable data class Envelope(val announcement: Announcement)
+        return api.requestAs<Envelope>("POST", "communities/$communityId/announcements", payload).announcement
     }
 
     suspend fun unpinAnnouncement(communityId: String, announcementId: String): Boolean {
@@ -452,7 +460,8 @@ class CommunityService(context: Context) {
     ): AboutLink {
         val payload = ApiClient.json.encodeToString(
             LinkBody.serializer(), LinkBody(label, value, icon))
-        return api.requestAs("POST", "communities/$communityId/links", payload)
+        @Serializable data class Envelope(val link: AboutLink)
+        return api.requestAs<Envelope>("POST", "communities/$communityId/links", payload).link
     }
 
     suspend fun deleteLink(communityId: String, linkId: String): Boolean {
@@ -491,7 +500,8 @@ class CommunityService(context: Context) {
     ): Rule {
         val payload = ApiClient.json.encodeToString(
             RuleBody.serializer(), RuleBody(title, detail, position))
-        return api.requestAs("POST", "communities/$communityId/rules", payload)
+        @Serializable data class Envelope(val rule: Rule)
+        return api.requestAs<Envelope>("POST", "communities/$communityId/rules", payload).rule
     }
 
     suspend fun updateRule(
@@ -500,7 +510,8 @@ class CommunityService(context: Context) {
     ): Rule {
         val payload = ApiClient.json.encodeToString(
             RuleBody.serializer(), RuleBody(title ?: "", detail, position))
-        return api.requestAs("PATCH", "communities/$communityId/rules/$ruleId", payload)
+        @Serializable data class Envelope(val rule: Rule)
+        return api.requestAs<Envelope>("PATCH", "communities/$communityId/rules/$ruleId", payload).rule
     }
 
     suspend fun deleteRule(communityId: String, ruleId: String): Boolean {
@@ -616,6 +627,8 @@ class CommunityService(context: Context) {
         joinPolicy: String? = null,
         discoverable: Boolean? = null,
         avatarUrl: String? = null,
+        membersCanInvite: Boolean? = null,
+        postingPolicy: String? = null,
     ): CommunityCard {
         val fields = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
         fun put(k: String, v: String?) {
@@ -624,13 +637,15 @@ class CommunityService(context: Context) {
         put("name", name)
         put("description", description)
         put("join_policy", joinPolicy)
-        put("avatar_url", avatarUrl)
+        put("avatar_r2_key", avatarUrl)
+        put("posting_policy", postingPolicy)
+        if (membersCanInvite != null) fields["members_can_invite"] = kotlinx.serialization.json.JsonPrimitive(membersCanInvite)
         if (discoverable != null) {
             fields["discoverable"] = kotlinx.serialization.json.JsonPrimitive(discoverable)
         }
         val payload = kotlinx.serialization.json.JsonObject(fields).toString()
         val env: CommunityEnvelope = api.requestAs("PATCH", "communities/$communityId", payload)
-        return env.merged(null)
+        return resolve(CommunityLink(env.community.handle, null))
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
@@ -643,13 +658,15 @@ class CommunityService(context: Context) {
     suspend fun createChannel(communityId: String, name: String, kind: String? = null): Channel {
         val payload = ApiClient.json.encodeToString(
             ChannelBody.serializer(), ChannelBody(name, kind))
-        return api.requestAs("POST", "communities/$communityId/channels", payload)
+        @Serializable data class Envelope(val channel: Channel)
+        return api.requestAs<Envelope>("POST", "communities/$communityId/channels", payload).channel
     }
 
     suspend fun renameChannel(communityId: String, conversationId: String, name: String): Channel {
         val payload = ApiClient.json.encodeToString(
             ChannelBody.serializer(), ChannelBody(name, null))
-        return api.requestAs("PATCH", "communities/$communityId/channels/$conversationId", payload)
+        api.request("PATCH", "communities/$communityId/channels/$conversationId", payload)
+        return channels(communityId).first { it.conversation_id == conversationId }
     }
 
     suspend fun deleteChannel(communityId: String, conversationId: String): Boolean {
@@ -684,7 +701,8 @@ class CommunityService(context: Context) {
     ): Invite {
         val payload = ApiClient.json.encodeToString(
             InviteBody.serializer(), InviteBody(maxUses, expiresInHours))
-        return api.requestAs("POST", "communities/$communityId/invites", payload)
+        @Serializable data class Envelope(val invite: Invite)
+        return api.requestAs<Envelope>("POST", "communities/$communityId/invites", payload).invite
     }
 
     suspend fun revokeInvite(communityId: String, token: String): Boolean {

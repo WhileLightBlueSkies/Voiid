@@ -45,7 +45,9 @@
 import { Router } from 'express';
 import { randomBytes } from 'crypto';
 import { pool, query } from '../db';
-import { requireAuth } from '../auth';
+import { purgeCommunityData } from '../communityDeletion';
+import { requireAuth as requireUserAuth } from '../auth';
+import type { Request, Response, NextFunction } from 'express';
 import { rateLimit } from '../security';
 import { asyncHandler } from '../util';
 import { publisher } from '../redis';
@@ -54,8 +56,25 @@ import { presignGet, r2Configured } from '../r2';
 // "is this an ACTIVE member of a LIVE community" — a question with a suspended-is-frozen rule
 // and a pending-is-not-a-member rule that must not be re-implemented per route.
 import { communityAccess } from '../communityRoles';
+import { communityChannelSync, communityChannelEvents } from '../communityChannelSync';
 
 const router = Router();
+// An in-process capability, impossible to supply in JSON, headers or a URL.
+const officialDispatch = Symbol('official-community-admin');
+function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if ((req as any)[officialDispatch] === true) return next();
+  return requireUserAuth(req, res, next);
+}
+
+export function dispatchOfficialCommunityAction(req: Request, res: Response, next: NextFunction,
+  communityId: string, ownerId: string, method: string, path: string, body: unknown) {
+  (req as any)[officialDispatch] = true;
+  (req as any).auth = { user_id: ownerId };
+  req.method = method;
+  req.url = `/${communityId}${path ? '/' + path : ''}`;
+  req.body = body ?? {};
+  (router as any).handle(req, res, next);
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Same grammar as users.username (010), creator_profiles.handle (029) and the
@@ -145,6 +164,8 @@ type CommunityRow = {
   // which is why the PATCH handler could not see them to update them.
   category: string | null;
   members_can_invite: boolean;
+  official_key: string | null;
+  posting_policy: string;
 };
 
 /**
@@ -163,6 +184,8 @@ type CommunityRow = {
 async function publicCard(row: CommunityRow) {
   return {
     id: row.id,
+    official: row.official_key != null,
+    posting_policy: row.posting_policy,
     handle: row.handle,
     name: row.name,
     description: row.description ?? null,
@@ -192,7 +215,7 @@ async function publicCard(row: CommunityRow) {
 
 const COMMUNITY_COLUMNS = `id, owner_id, handle, name, description, avatar_r2_key,
                            discoverable, join_policy, member_count, max_members,
-                           suspended_at, created_at, category, members_can_invite`;
+                           suspended_at, created_at, category, members_can_invite, official_key, posting_policy`;
 
 /**
  * Resolve a community by uuid OR by handle, in one probe either way.
@@ -257,6 +280,7 @@ async function requireManager(communityId: string, userId: string): Promise<Mana
   )[0];
   if (!community) return { ok: false, status: 404, error: 'no such community' };
 
+  if (community.suspended_at) return { ok: false, status: 403, error: 'this community is suspended' };
   if (community.owner_id === userId) return { ok: true, community, role: 'owner' };
 
   const m = await membershipOf(communityId, userId);
@@ -289,14 +313,17 @@ async function publishMembershipNotice(
     const admins = await query<{ user_id: string }>(
       `select user_id from community_members
         where community_id = $1 and state = 'active' and role in ('owner', 'admin')
+        order by case role when 'owner' then 0 else 1 end, user_id
         limit ${COMMIT_NOTICE_FANOUT}`,
       [communityId]
     );
     if (!admins.length) return;
     const body = JSON.stringify({
-      type: event,
+      type: 'mls_event',
+      membership_event: event,
       community_id: communityId,
       user_id: subjectUserId,
+      conversation_id: channelIds[0] ?? null,
       conversation_ids: channelIds,
     });
     const pipe = publisher.pipeline();
@@ -338,6 +365,9 @@ async function channelsOf(communityId: string) {
 // row or it silently mints a second, half-wired community. `on conflict (id) do nothing`
 // below turns the retry into a lookup. There is no server-side default for this column, so
 // forgetting to send one is a 400, not a surprise uuid.
+router.post('/channel-sync', requireAuth, rateLimit({ max: 60, windowSeconds: 60, bucket: 'community-channel-sync' }), asyncHandler(communityChannelSync));
+router.post('/channel-events', requireAuth, rateLimit({ max: 120, windowSeconds: 60, bucket: 'community-channel-events' }), asyncHandler(communityChannelEvents));
+
 router.post(
   '/',
   requireAuth,
@@ -365,6 +395,7 @@ router.post(
 
     const description = trimmed(body.description, MAX_DESCRIPTION);
     const avatarKey = trimmed(body.avatar_r2_key, 400);
+    if (avatarKey && !avatarKey.startsWith(`media/${user_id}/`)) return res.status(403).json({ error: 'upload a community image from this account first' });
     const discoverable = body.discoverable === true;
     const joinPolicy = String(body.join_policy ?? 'open');
     if (!['open', 'approval', 'invite_only'].includes(joinPolicy)) {
@@ -545,7 +576,7 @@ router.get(
   requireAuth,
   rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
-    const q = String(req.query.q ?? '').trim();
+    const q = String(req.query.q ?? '').trim().replace(/^@/, '').slice(0, 100);
     // Two characters minimum. A one-character query returns most of the directory sorted by
     // size, which is a scrape, not a search.
     // An empty query returns TRENDING rather than nothing. A discover surface that opens
@@ -563,7 +594,7 @@ router.get(
         `select ${COMMUNITY_COLUMNS}
            from communities c
           where c.discoverable and c.suspended_at is null
-          order by (
+          order by (c.official_key is not null) desc, (
             select count(*) from community_members m
              where m.community_id = c.id
                and m.state = 'active'
@@ -587,7 +618,7 @@ router.get(
          from communities
         where discoverable and suspended_at is null
           and (lower(handle) like $1 or name ilike $2)
-        order by member_count desc, id
+        order by (official_key is not null) desc, member_count desc, id
         limit $3`,
       [`${pattern}%`, `%${escapeLike(q)}%`, limit]
     );
@@ -849,6 +880,7 @@ router.post(
               values ($1, $2, 'member', $3, $4, now(), null)
          on conflict (community_id, user_id) do update
                 set state       = excluded.state,
+                    role        = 'member',
                     joined_at   = now(),
                     left_at     = null,
                     invited_via = coalesce(excluded.invited_via, community_members.invited_via)`,
@@ -865,7 +897,7 @@ router.post(
                 select ch.conversation_id, $2, 'member'
                   from community_channels ch
                  where ch.community_id = $1
-           on conflict (conversation_id, user_id) do update set left_at = null
+           on conflict (conversation_id, user_id) do update set left_at = null, role = 'member'
              returning conversation_id`,
           [communityId, user_id]
         );
@@ -926,7 +958,7 @@ router.post(
       await client.query('begin');
       const updated = (
         await client.query(
-          `update community_members set state = 'left', left_at = now()
+          `update community_members set state = 'left', role = 'member', left_at = now()
             where community_id = $1 and user_id = $2 and state in ('active', 'pending')`,
           [communityId, user_id]
         )
@@ -1092,7 +1124,7 @@ async function setMemberState(
       );
     } else {
       await client.query(
-        `update community_members set state = $3, left_at = now()
+        `update community_members set state = $3, role = 'member', left_at = now()
           where community_id = $1 and user_id = $2`,
         [communityId, targetUserId, next]
       );
@@ -1105,7 +1137,7 @@ async function setMemberState(
               select ch.conversation_id, $2, 'member'
                 from community_channels ch
                where ch.community_id = $1
-         on conflict (conversation_id, user_id) do update set left_at = null
+         on conflict (conversation_id, user_id) do update set left_at = null, role = 'member'
            returning conversation_id`,
         [communityId, targetUserId]
       );
@@ -1169,6 +1201,10 @@ router.post(
     if (!UUID_RE.test(target)) return res.status(400).json({ error: 'user id must be a uuid' });
     if (target === user_id) return res.status(400).json({ error: 'use leave to remove yourself' });
 
+    const targetRole = (await membershipOf(gate.community.id, target))?.role;
+    if (targetRole === 'admin' && gate.role !== 'owner') {
+      return res.status(403).json({ error: 'only the owner can remove an admin' });
+    }
     const out = await setMemberState(gate.community.id, target, 'left');
     res.status(out.status).json(out.body);
   })
@@ -1216,7 +1252,7 @@ router.post(
     if (!UUID_RE.test(target)) return res.status(400).json({ error: 'user id must be a uuid' });
 
     const changed = await query(
-      `update community_members set state = 'left'
+      `update community_members set state = 'left', role = 'member'
         where community_id = $1 and user_id = $2 and state = 'banned'
         returning user_id`,
       [gate.community.id, target]
@@ -1251,22 +1287,19 @@ router.post(
     }
 
     const updated = await query(
-      `update community_members set role = $3
-        where community_id = $1 and user_id = $2 and state = 'active' and role <> 'owner'
-        returning user_id`,
+      `with changed as (
+         update community_members set role = $3
+          where community_id = $1 and user_id = $2 and state = 'active' and role <> 'owner'
+          returning user_id
+       ), channels as (
+         update conversation_members set role = $3
+          where user_id in (select user_id from changed)
+            and conversation_id in (select conversation_id from community_channels where community_id = $1)
+          returning user_id
+       ) select user_id from changed`,
       [gate.community.id, target, role]
     );
     if (!updated.length) return res.status(404).json({ error: 'that person is not an active member' });
-
-    // Community role and conversation role are separate vocabularies, and both have to move:
-    // the community role governs announcement posting (see communityGuard.ts) while the
-    // conversation role is what conversations.ts checks for add/remove inside one channel.
-    await query(
-      `update conversation_members set role = $3
-        where user_id = $2
-          and conversation_id in (select conversation_id from community_channels where community_id = $1)`,
-      [gate.community.id, target, role === 'admin' ? 'admin' : 'member']
-    );
     res.json({ role, changed: true });
   })
 );
@@ -1314,8 +1347,16 @@ router.patch(
     // `description: null` clears it; an absent key leaves it alone. The two have to be
     // distinguishable or there is no way to remove a description once written.
     if (body.description !== undefined) push('description', trimmed(body.description, MAX_DESCRIPTION));
-    if (body.avatar_r2_key !== undefined) push('avatar_r2_key', trimmed(body.avatar_r2_key, 400));
+    if (body.avatar_r2_key !== undefined) {
+      const key = trimmed(body.avatar_r2_key, 400);
+      if (key && !key.startsWith(`media/${user_id}/`)) return res.status(403).json({ error: 'upload a community image from this account first' });
+      push('avatar_r2_key', key);
+    }
     if (body.discoverable !== undefined) push('discoverable', body.discoverable === true);
+    if (body.posting_policy !== undefined) {
+      if (!['members', 'managers'].includes(body.posting_policy)) return res.status(400).json({ error: 'invalid posting policy' });
+      push('posting_policy', body.posting_policy);
+    }
     let joinPolicy = gate.community.join_policy;
     if (body.join_policy !== undefined) {
       const jp = String(body.join_policy);
@@ -1360,7 +1401,7 @@ router.patch(
     );
     // Deleted between the authorisation read and the write. 404, not a crash in publicCard.
     if (!rows[0]) return res.status(404).json({ error: 'no such community' });
-    res.json({ community: await publicCard(rows[0]) });
+    res.json({ community: await publicCard(rows[0]), membership_state: 'active', membership_role: gate.role });
   })
 );
 
@@ -1580,8 +1621,15 @@ router.post(
   rateLimit({ max: 30, windowSeconds: 3600, bucket: 'community-invite-mint' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
-    const gate = await requireManager(String(req.params.id ?? ''), user_id);
-    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+    const community = await findCommunity(String(req.params.id ?? ''));
+    if (!community) return res.status(404).json({ error: 'no such community' });
+    if (community.suspended_at) return res.status(403).json({ error: 'this community is suspended' });
+    const me = await membershipOf(community.id, user_id);
+    const manager = community.owner_id === user_id || (me?.state === 'active' && me.role === 'admin');
+    if (!manager && !(me?.state === 'active' && community.members_can_invite && community.join_policy !== 'invite_only')) {
+      return res.status(403).json({ error: 'you cannot create invites for this community' });
+    }
+    const gate = { community };
 
     const hours = req.body?.expires_in_hours;
     let expiresAt: string | null = null;
@@ -1599,6 +1647,7 @@ router.post(
       if (!Number.isFinite(n) || n <= 0) {
         return res.status(400).json({ error: 'max_uses must be a positive integer' });
       }
+      if (!Number.isInteger(Number(req.body.max_uses)) || n > 2147483647) return res.status(400).json({ error: 'invalid use limit' });
       maxUses = n;
     }
 
@@ -1868,6 +1917,11 @@ router.post(
     // precisely because posting IS the "active member of a live community" question it answers.
     const access = await communityAccess(communityId, user_id, false);
     if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const policy = await findCommunity(communityId);
+    if (policy?.posting_policy === 'managers' && !access.isOrganiser) {
+      return res.status(403).json({ error: 'only community managers can publish posts here' });
+    }
 
     const body = trimmed(req.body?.body, MAX_POST_BODY);
     // community_posts_body_len rejects an empty body as a 500; catch it here as a 400.
@@ -2789,5 +2843,39 @@ router.get(
     res.json({ items });
   })
 );
+
+// Owner-confirmed deletion includes backing chats; it must not leave orphan Spaces.
+router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (!UUID_RE.test(id)) return res.status(400).json({ error: 'invalid community id' });
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const community = (await client.query('select owner_id, name from communities where id = $1 for update', [id])).rows[0];
+    if (!community || community.owner_id !== (req as any).auth.user_id) {
+      await client.query('rollback'); return res.status(403).json({ error: 'only the owner can delete this community' });
+    }
+    if (req.body?.confirm_name !== community.name) {
+      await client.query('rollback'); return res.status(400).json({ error: 'type the community name to confirm deletion' });
+    }
+    const removed = await purgeCommunityData(client, [id]);
+    await client.query('commit'); res.json({ deleted: true, removed });
+  } catch (error) { await client.query('rollback'); throw error; }
+  finally { client.release(); }
+}));
+
+router.patch('/:id/posts/:postId', requireAuth, asyncHandler(async (req, res) => {
+  const id = String(req.params.id), postId = String(req.params.postId);
+  if (!UUID_RE.test(id) || !UUID_RE.test(postId)) return res.status(400).json({ error: 'invalid post id' });
+  const { user_id } = (req as any).auth;
+  const access = await communityAccess(id, user_id, false);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  const body = trimmed(req.body?.body, MAX_POST_BODY);
+  if (!body) return res.status(400).json({ error: 'a post cannot be empty' });
+  const rows = await query(`update community_posts set body = $4, edited_at = now()
+    where community_id = $1 and id = $2 and author_id = $3 and removed_at is null returning id`, [id, postId, user_id, body]);
+  if (!rows.length) return res.status(404).json({ error: 'post not found or not yours' });
+  res.json({ updated: true });
+}));
 
 export default router;

@@ -244,7 +244,11 @@ struct ChatsHomeView: View {
                 // Competing sheet presentations can otherwise lose the scanned handle.
                 if scannedHandle != nil { showFindByUsername = true }
             }) {
-                ScanQRCodeView { link in
+                ScanQRCodeView(onCommunityScan: { link in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        CommunityLinkRouter.shared.handle(URL(string: CommunityLink.format(handle: link.handle, inviteToken: link.inviteToken)))
+                    }
+                }) { link in
                     // Hand off rather than act: the scanner knows a handle, and every gate
                     // after that belongs to the flow below.
                     scannedHandle = link.username

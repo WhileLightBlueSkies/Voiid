@@ -296,6 +296,10 @@ router.post('/:id/members', requireAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'user_ids (non-empty string array) required' });
   }
 
+  if ((await query(`select conversation_id from community_channels where conversation_id = $1`, [convId])).length) {
+    return res.status(403).json({ error: 'join or approve members through the community' });
+  }
+
   const conv = (await query<{ type: string }>(`select type from conversations where id = $1`, [convId]))[0];
   if (!conv) return res.status(404).json({ error: 'conversation not found' });
   if (conv.type !== 'group') return res.status(400).json({ error: 'can only add members to a group' });
@@ -395,6 +399,9 @@ router.post('/:id/members', requireAuth, asyncHandler(async (req, res) => {
 // forty-nine, and the first one to act wins.
 // ─────────────────────────────────────────────────────────────────────────────────
 router.patch('/:id/members/:userId/role', requireAuth, asyncHandler(async (req, res) => {
+  if ((await query(`select conversation_id from community_channels where conversation_id = $1`, [req.params.id])).length) {
+    return res.status(403).json({ error: 'manage membership and roles from the community' });
+  }
   const { user_id } = (req as any).auth;
   const convId = req.params.id;
   const targetId = req.params.userId;
@@ -486,6 +493,9 @@ router.patch('/:id/members/:userId/role', requireAuth, asyncHandler(async (req, 
 // keeps the index from tripping mid-transaction.
 // ─────────────────────────────────────────────────────────────────────────────────
 router.post('/:id/transfer-ownership', requireAuth, asyncHandler(async (req, res) => {
+  if ((await query(`select conversation_id from community_channels where conversation_id = $1`, [req.params.id])).length) {
+    return res.status(403).json({ error: 'manage membership and roles from the community' });
+  }
   const { user_id } = (req as any).auth;
   const convId = req.params.id;
   const targetId = req.body?.user_id;
@@ -547,6 +557,9 @@ router.post('/:id/transfer-ownership', requireAuth, asyncHandler(async (req, res
 // reaching them; the MLS rekey/Commit that cryptographically removes them is
 // distributed separately by the client.
 router.delete('/:id/members/:userId', requireAuth, asyncHandler(async (req, res) => {
+  if ((await query(`select conversation_id from community_channels where conversation_id = $1`, [req.params.id])).length) {
+    return res.status(403).json({ error: 'manage membership and roles from the community' });
+  }
   const { user_id } = (req as any).auth;
   const convId = req.params.id;
   const target = req.params.userId;

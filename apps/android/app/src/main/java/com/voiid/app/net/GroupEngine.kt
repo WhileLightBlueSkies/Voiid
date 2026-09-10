@@ -103,6 +103,8 @@ class GroupEngine private constructor(context: Context) {
      * resurrect them either.
      */
     fun resetForSignOut() {
+        lastCommunitySync = 0L
+        lastKeyPackageCheck = 0L
         member = null
         groupIds.clear()
         groupMapLoaded = false
@@ -414,6 +416,7 @@ class GroupEngine private constructor(context: Context) {
         chat.storeGroupOutgoing(conversationId, text)
         lock.withLock<Unit> {
             val m = ensureMemberLocked()
+            flushCommunityOutboxLocked(m, conversationId)
             val gid = groupIds[conversationId] ?: run {
                 Log.w("VOIID", "MLS: send — no local group for conv=$conversationId"); return@withLock
             }
@@ -443,6 +446,7 @@ class GroupEngine private constructor(context: Context) {
     suspend fun sendGroupLocationControl(conversationId: String, envelopeJson: String) = withContext(Dispatchers.IO) {
         lock.withLock<Unit> {
             val m = ensureMemberLocked()
+            flushCommunityOutboxLocked(m, conversationId)
             val gid = groupIds[conversationId] ?: run {
                 Log.w("VOIID", "MLS: location send — no local group for conv=$conversationId"); return@withLock
             }
@@ -478,21 +482,37 @@ class GroupEngine private constructor(context: Context) {
 
     /** Fetch + apply this device's undelivered Welcome/Commit events. Never throws. */
     suspend fun syncGroupEvents() = withContext(Dispatchers.IO) {
+        syncCommunityChannels()
         lock.withLock<Unit> {
             val m = ensureMemberLocked()
-            val env: GroupEventsResponse = runCatching { api.requestAs<GroupEventsResponse>("GET", "mls/group-events") }
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (lastKeyPackageCheck == 0L || now - lastKeyPackageCheck >= 60000) {
+                lastKeyPackageCheck = now
+                topUpKeyPackagesIfLowLocked(m)
+            }
+            val env: GroupEventsResponse = runCatching { api.requestAs<GroupEventsResponse>("GET", "mls/group-events?ack=explicit&device_id=${e2e.deviceId ?: ""}") }
                 .getOrElse { Log.w("VOIID", "MLS: group-events fetch failed: ${it.message}"); return@withLock }
             if (env.events.isEmpty()) return@withLock
-            // Welcomes first (so a same-batch commit for a just-joined group can be applied).
-            val ordered = env.events.sortedWith(compareBy({ if (it.kind == "welcome") 0 else 1 }, { it.created_at ?: "" }))
-            for (ev in ordered) {
-                runCatching {
+            val acknowledged = mutableListOf<String>()
+            val blocked = mutableSetOf<String>()
+            for (ev in env.events) {
+                val id = ev.id ?: continue
+                if (ev.conversation_id in blocked) continue
+                val pending = pendingState()
+                if (id in pending.applied) { acknowledged.add(id); continue }
+                try {
                     when (ev.kind) {
-                        "welcome" -> applyWelcomeLocked(m, ev)
+                        "welcome" -> runCatching { applyWelcomeLocked(m, ev) } // Other devices' Welcome cannot use our KeyPackage.
                         "commit" -> applyCommitLocked(m, ev)
-                        else -> Log.w("VOIID", "MLS: unknown group event kind=${ev.kind}")
+                        else -> continue
                     }
-                }.onFailure { Log.e("VOIID", "MLS: apply ${ev.kind} for conv=${ev.conversation_id} failed", it) }
+                    persistCommunityStateLocked(m, pending.copy(applied = (pending.applied + id).takeLast(4000)))
+                    acknowledged.add(id)
+                } catch (e: Exception) { blocked.add(ev.conversation_id); Log.w("VOIID", "MLS control update deferred") }
+            }
+            if (acknowledged.isNotEmpty()) {
+                @Serializable data class Ack(val device_id: String, val event_ids: List<String>)
+                runCatching { api.request("POST", "mls/group-events/ack", ApiClient.json.encodeToString(Ack.serializer(), Ack(e2e.deviceId ?: "", acknowledged))) }
             }
         }
     }
@@ -501,21 +521,15 @@ class GroupEngine private constructor(context: Context) {
         val ratchetTree = ev.ratchet_tree?.let { Base64.decode(it, Base64.NO_WRAP) }
             ?: run { Log.w("VOIID", "MLS: welcome missing ratchet_tree"); return }
         // Already joined this conversation? A duplicate welcome would fork state — skip.
-        if (groupIds.containsKey(ev.conversation_id)) { Log.i("VOIID", "MLS: welcome for known group — skip"); return }
         val session = m.joinGroup(Base64.decode(ev.payload, Base64.NO_WRAP), ratchetTree)
         groupIds[ev.conversation_id] = session.groupId()
-        persistGroupMapLocked()
-        persistMemberLocked(m)
         Log.i("VOIID", "MLS: joined group via welcome conv=${ev.conversation_id}")
     }
 
     private fun applyCommitLocked(m: GroupMember, ev: GroupEventDTO) {
-        val gid = groupIds[ev.conversation_id] ?: run {
-            Log.w("VOIID", "MLS: commit for unknown group conv=${ev.conversation_id} — skip"); return
-        }
+        val gid = groupIds[ev.conversation_id] ?: error("Waiting for group Welcome")
         val session = m.loadGroup(gid)
         session.decrypt(m, Base64.decode(ev.payload, Base64.NO_WRAP))   // applies commit, returns null
-        persistMemberLocked(m)
         // The commit advanced our epoch → the call key changed. Re-key any live call.
         signalEpochAdvancedLocked(ev.conversation_id, session, m)
         Log.i("VOIID", "MLS: applied commit conv=${ev.conversation_id}")
@@ -666,7 +680,7 @@ class GroupEngine private constructor(context: Context) {
     private suspend fun postGroupEvents(conversationId: String, events: List<GroupEvent>) {
         if (events.isEmpty()) return
         val body = ApiClient.json.encodeToString(
-            PostGroupEventsBody.serializer(), PostGroupEventsBody(conversationId, events))
+            PostGroupEventsBody.serializer(), PostGroupEventsBody(conversationId, events, e2e.deviceId))
         api.request("POST", "mls/group-events", jsonBody = body)
     }
 
@@ -677,6 +691,101 @@ class GroupEngine private constructor(context: Context) {
             android.util.Log.e("VOIID", "unreadable group message timestamp from the server: '$s'")
             0L
         }
+
+    @Serializable private data class CommunityDevice(val user_id: String, val device_id: String) {
+        val identity: String get() = "$user_id::$device_id"
+    }
+    @Serializable private data class CommunityChannel(val conversation_id: String, val mls_group_id: String? = null, val devices: List<CommunityDevice>)
+    @Serializable private data class CommunityChannels(val channels: List<CommunityChannel>)
+    @Serializable private data class CommunityDeviceBody(val device_id: String)
+    @Serializable private data class CommunityBatch(val device_id: String, val conversation_id: String,
+        val batch_id: String, val group_id: String, val events: List<GroupEvent>)
+    @Serializable private data class CommunityPending(val batches: List<CommunityBatch> = emptyList(), val applied: List<String> = emptyList())
+    private var lastCommunitySync = 0L
+    private var lastKeyPackageCheck = 0L
+    private fun pendingState(): CommunityPending = prefs.getString("community_pending", null)?.let {
+        ApiClient.json.decodeFromString(CommunityPending.serializer(), it)
+    } ?: CommunityPending()
+
+    // One synchronous encrypted-preferences transaction contains the new epoch, group map,
+    // receipt ledger and outgoing Commit. No state can be committed without its retry record.
+    private fun persistCommunityStateLocked(m: GroupMember, state: CommunityPending = pendingState()) {
+        val map = groupIds.mapValues { Base64.encodeToString(it.value, Base64.NO_WRAP) }
+        check(prefs.edit()
+            .putString(PREF_MEMBER, Base64.encodeToString(m.serialize(), Base64.NO_WRAP))
+            .putString(PREF_GROUPMAP, ApiClient.json.encodeToString(MapSerializer(String.serializer(), String.serializer()), map))
+            .putString("community_pending", ApiClient.json.encodeToString(CommunityPending.serializer(), state)).commit()) { "Could not save encryption state" }
+    }
+    private suspend fun flushCommunityOutboxLocked(m: GroupMember, conversationId: String? = null) {
+        val blocked = mutableSetOf<String>()
+        for (batch in pendingState().batches) {
+            if ((conversationId != null && batch.conversation_id != conversationId) || batch.conversation_id in blocked) continue
+            try {
+                api.request("POST", "communities/channel-events", ApiClient.json.encodeToString(CommunityBatch.serializer(), batch))
+                val state = pendingState()
+                persistCommunityStateLocked(m, state.copy(batches = state.batches.filterNot { it.batch_id == batch.batch_id }))
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) {
+                if (conversationId != null) throw e
+                blocked.add(batch.conversation_id)
+            }
+        }
+    }
+    private suspend fun queueCommunityBatchLocked(cid: String, session: GroupSession, m: GroupMember, events: List<GroupEvent>) {
+        val device = e2e.deviceId ?: throw ApiError.NotAuthenticated
+        val batch = CommunityBatch(device, cid, java.util.UUID.randomUUID().toString(), Base64.encodeToString(session.groupId(), Base64.NO_WRAP), events)
+        val pending = pendingState()
+        persistCommunityStateLocked(m, pending.copy(batches = pending.batches + batch))
+        flushCommunityOutboxLocked(m, cid)
+    }
+    suspend fun syncCommunityChannels() = withContext(Dispatchers.IO) {
+        lock.withLock {
+            try {
+                val m = ensureMemberLocked()
+                flushCommunityOutboxLocked(m)
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastCommunitySync < 10000) return@withLock
+                lastCommunitySync = now
+                val device = e2e.deviceId ?: return@withLock
+                val response = api.requestAs<CommunityChannels>("POST", "communities/channel-sync",
+                    ApiClient.json.encodeToString(CommunityDeviceBody.serializer(), CommunityDeviceBody(device)))
+                for (channel in response.channels) {
+                    val cid = channel.conversation_id
+                    if (pendingState().batches.any { it.conversation_id == cid }) continue
+                    if (groupIds[cid] == null && channel.mls_group_id != null) continue
+                    val session = groupIds[cid]?.let { m.loadGroup(it) } ?: run {
+                        val created = m.createGroup()
+                        groupIds[cid] = created.groupId()
+                        queueCommunityBatchLocked(cid, created, m, emptyList())
+                        created
+                    }
+                    if (channel.mls_group_id != null && channel.mls_group_id != Base64.encodeToString(session.groupId(), Base64.NO_WRAP)) continue
+                    val desired = channel.devices.map { it.identity }.toSet()
+                    fun identities() = session.memberIdentities().map { it.toString(Charsets.UTF_8) }.toSet()
+                    for (removed in (identities() - desired).sorted()) {
+                        val commit = session.removeMember(m, removed.toByteArray())
+                        val recipients = identities() intersect desired
+                        queueCommunityBatchLocked(cid, session, m, recipients.sorted().map { GroupEvent(it.substringBefore("::"), "commit", Base64.encodeToString(commit, Base64.NO_WRAP), recipient_device_id = it.substringAfter("::")) })
+                    }
+                    val missing = channel.devices.filter { it.identity !in identities() }.map { it.user_id }.toSet()
+                    for (user in missing.sorted()) {
+                        val packages = runCatching { api.requestAs<KeyPackagesResponse>("GET", "mls/keypackages/$user") }.getOrNull() ?: continue
+                        for (kp in packages.key_packages) {
+                            val identity = "$user::${kp.device_id}"
+                            if (identity !in desired || identity in identities()) continue
+                            val recipients = identities()
+                            val out = session.addMember(m, Base64.decode(kp.key_package, Base64.NO_WRAP))
+                            val events = recipients.sorted().map { GroupEvent(it.substringBefore("::"), "commit", Base64.encodeToString(out.commit, Base64.NO_WRAP), recipient_device_id = it.substringAfter("::")) } +
+                                GroupEvent(user, "welcome", Base64.encodeToString(out.welcome, Base64.NO_WRAP), Base64.encodeToString(out.ratchetTree, Base64.NO_WRAP), kp.device_id)
+                            queueCommunityBatchLocked(cid, session, m, events)
+                        }
+                    }
+                    signalEpochAdvancedLocked(cid, session, m)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { Log.w("VOIID", "Community encryption sync deferred; will retry") }
+        }
+    }
 
     // MARK: - DTOs
 
@@ -689,8 +798,9 @@ class GroupEngine private constructor(context: Context) {
         val kind: String,
         val payload: String,
         val ratchet_tree: String? = null,
+        val recipient_device_id: String? = null,
     )
-    @Serializable private data class PostGroupEventsBody(val conversation_id: String, val events: List<GroupEvent>)
+    @Serializable private data class PostGroupEventsBody(val conversation_id: String, val events: List<GroupEvent>, val sender_device_id: String?)
     @Serializable private data class GroupEventDTO(
         val id: String? = null,
         val conversation_id: String,

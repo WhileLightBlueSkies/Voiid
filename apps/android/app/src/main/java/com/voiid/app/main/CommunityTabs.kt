@@ -63,6 +63,7 @@ enum class CommunityTab(val label: String) {
 @Composable
 fun CommunityTabBar(
     selected: CommunityTab,
+    isManager: Boolean = false,
     onSelect: (CommunityTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -74,7 +75,7 @@ fun CommunityTabBar(
             .padding(horizontal = VoiidSpacing.md),
         horizontalArrangement = Arrangement.spacedBy(22.dp),
     ) {
-        CommunityTab.entries.forEach { tab ->
+        CommunityTab.entries.filter { isManager || it != CommunityTab.MEMBERS }.forEach { tab ->
             val isSelected = tab == selected
             val labelColor by animateColorAsState(
                 if (isSelected) VoiidColor.textPrimary else VoiidColor.textSecondary,
@@ -118,12 +119,18 @@ fun CommunityTabBar(
 fun CommunitySpacesTab(
     communityId: String,
     isAdmin: Boolean,
+    onOpen: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
     val svc = remember { CommunityService(context) }
 
+    val scope = rememberCoroutineScope()
+    var editor by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf<CommunityService.Channel?>(null) }
+    var deleting by remember { mutableStateOf<CommunityService.Channel?>(null) }
+    var saving by remember { mutableStateOf(false) }
     var channels by remember { mutableStateOf<List<CommunityService.Channel>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -145,7 +152,8 @@ fun CommunitySpacesTab(
     }
 
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md)) {
-        if (isAdmin) CreateSpaceRow { haptics.tap() }
+        error?.takeIf { channels.isNotEmpty() }?.let { Text(it, color = VoiidColor.error, style = VoiidFont.rounded(13)) }
+        if (isAdmin) CreateSpaceRow { haptics.tap(); editing = null; editor = "" }
 
         when {
             loading && channels.isEmpty() -> CenteredSpinner()
@@ -156,9 +164,43 @@ fun CommunitySpacesTab(
                 if (isAdmin) "Create one to give people somewhere to talk."
                 else "The host hasn't made any yet.",
             )
-            else -> ordered.forEach { SpaceCard(it, isAdmin) }
+            else -> ordered.forEach { channel -> SpaceCard(channel, isAdmin,
+                onOpen = { scope.launch {
+                    val engine = com.voiid.app.net.GroupEngine.get(context)
+                    engine.syncGroupEvents()
+                    if (engine.hasGroup(channel.conversation_id)) onOpen(channel.conversation_id)
+                    else error = "This Space is preparing encryption. Its owner needs to open Voiid to finish adding your device. Please try again shortly."
+                } },
+                onEdit = { editing = channel; editor = channel.name ?: "" },
+                onDelete = { deleting = channel }) }
         }
     }
+    if (editor != null) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!saving) editor = null },
+        title = { Text(if (editing == null) "Create a Space" else "Rename Space") },
+        text = { Column { androidx.compose.material3.OutlinedTextField(value = editor ?: "", onValueChange = { editor = it.take(60) }, label = { Text("Space name") }); error?.let { Text(it, color = VoiidColor.error) } } },
+        confirmButton = { androidx.compose.material3.TextButton(enabled = !saving && !editor.isNullOrBlank(), onClick = { scope.launch {
+            saving = true; error = null
+            try {
+                val old = editing
+                if (old == null) svc.createChannel(communityId, editor!!.trim(), "chat")
+                else svc.renameChannel(communityId, old.conversation_id, editor!!.trim())
+                channels = svc.channels(communityId); editor = null
+            } catch (e: Exception) { error = e.message }
+            finally { saving = false }
+        } }) { Text("Save") } },
+        dismissButton = { androidx.compose.material3.TextButton(enabled = !saving, onClick = { editor = null }) { Text("Cancel") } })
+    if (deleting != null) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!saving) deleting = null }, title = { Text("Remove this Space?") },
+        text = { Text(error ?: "This removes the Space from the community.") },
+        confirmButton = { androidx.compose.material3.TextButton(enabled = !saving, onClick = { scope.launch {
+            saving = true; error = null
+            try { svc.deleteChannel(communityId, deleting!!.conversation_id); channels = svc.channels(communityId); deleting = null }
+            catch (e: Exception) { error = e.message }
+            finally { saving = false }
+        } }) { Text("Remove") } },
+        dismissButton = { androidx.compose.material3.TextButton(enabled = !saving, onClick = { deleting = null }) { Text("Cancel") } })
+
 }
 
 @Composable
@@ -188,13 +230,14 @@ private fun CreateSpaceRow(onClick: () -> Unit) {
 }
 
 @Composable
-private fun SpaceCard(channel: CommunityService.Channel, isAdmin: Boolean) {
+private fun SpaceCard(channel: CommunityService.Channel, isAdmin: Boolean, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
     var menuOpen by remember { mutableStateOf(false) }
 
     Row(
         Modifier
             .fillMaxWidth()
+            .pressableClickable(onClick = onOpen)
             .clip(RoundedCornerShape(VoiidRadius.lg))
             .background(VoiidColor.surfaceCard)
             .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
@@ -248,16 +291,10 @@ private fun SpaceCard(channel: CommunityService.Channel, isAdmin: Boolean) {
                         }
                         CommunityMenu(menuOpen, { menuOpen = false }) {
                             CommunityMenuItem("Edit Space", CommunityIcon.PENCIL) {
-                                menuOpen = false; haptics.tap()
+                                menuOpen = false; haptics.tap(); onEdit()
                             }
-                            CommunityMenuItem(
-                                if (channel.isAnnouncement) "Allow everyone to post"
-                                else "Restrict to admins",
-                                CommunityIcon.LOCK,
-                            ) { menuOpen = false; haptics.tap() }
-                            CommunityMenuDivider()
-                            CommunityMenuItem("Archive Space", CommunityIcon.ARCHIVE,
-                                destructive = true) { menuOpen = false; haptics.tap() }
+                            if (!channel.isAnnouncement) CommunityMenuItem("Remove Space", CommunityIcon.ARCHIVE,
+                                destructive = true) { menuOpen = false; haptics.tap(); onDelete() }
                         }
                     }
                 }
@@ -284,6 +321,7 @@ enum class MemberFilter(val label: String) { ALL("All"), ADMINS("Admins") }
 fun CommunityMembersTab(
     communityId: String,
     isAdmin: Boolean,
+    isOwner: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -323,6 +361,7 @@ fun CommunityMembersTab(
             .filter { query.isBlank() || it.user_id.contains(query.trim(), ignoreCase = true) }
     }
 
+    if (error != null && members.isNotEmpty()) Text(error!!, color = VoiidColor.error)
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md)) {
         MemberSearchField(query) { query = it }
 
@@ -392,7 +431,19 @@ fun CommunityMembersTab(
                     color = VoiidColor.textSecondary)
             }
             else -> Column(verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                visible.forEach { MemberRow(it, isAdmin, pendingRequest = false, busy = false) }
+                visible.forEach { member -> MemberRow(member, isAdmin && !member.isOwner && (isOwner || !member.isAdmin), pendingRequest = false,
+                    busy = deciding.contains(member.user_id), canChangeRole = isOwner,
+                    onRole = { scope.launch {
+                        deciding = deciding + member.user_id
+                        try { svc.setRole(communityId, member.user_id, if (member.isAdmin) "member" else "admin"); load() }
+                        catch (e: Exception) { error = e.message }
+                        finally { deciding = deciding - member.user_id }
+                    } }, onRemove = { scope.launch {
+                        deciding = deciding + member.user_id
+                        try { svc.removeMember(communityId, member.user_id); load() }
+                        catch (e: Exception) { error = e.message }
+                        finally { deciding = deciding - member.user_id }
+                    } }) }
             }
         }
     }
@@ -463,6 +514,9 @@ private fun MemberRow(
     pendingRequest: Boolean,
     busy: Boolean,
     onDecide: ((Boolean) -> Unit)? = null,
+    canChangeRole: Boolean = false,
+    onRole: () -> Unit = {},
+    onRemove: () -> Unit = {},
 ) {
     val haptics = LocalVoiidHaptics.current
     var menuOpen by remember { mutableStateOf(false) }
@@ -523,7 +577,7 @@ private fun MemberRow(
             }
             pendingRequest -> Pill("Waiting", fill = VoiidColor.accentTint,
                 textColor = VoiidColor.accentInk)
-            isAdmin -> Box {
+            isAdmin && !busy -> Box {
                 Box(
                     Modifier
                         .size(30.dp)
@@ -537,13 +591,13 @@ private fun MemberRow(
                 CommunityMenu(menuOpen, { menuOpen = false }) {
                     // NO "Message" item. Joining a community is not a messaging right —
                     // reaching another member still takes one of the reachability paths.
-                    CommunityMenuItem(
+                    if (canChangeRole) CommunityMenuItem(
                         if (member.isAdmin) "Remove admin" else "Make admin",
                         CommunityIcon.ADMINS,
-                    ) { menuOpen = false; haptics.tap() }
+                    ) { menuOpen = false; haptics.tap(); onRole() }
                     CommunityMenuDivider()
                     CommunityMenuItem("Remove from community", CommunityIcon.MINUS_CIRCLE,
-                        destructive = true) { menuOpen = false; haptics.tap() }
+                        destructive = true) { menuOpen = false; haptics.tap(); onRemove() }
                 }
             }
         }
@@ -587,6 +641,12 @@ fun CommunityAboutTab(
     var writeError by remember { mutableStateOf<String?>(null) }
     var deleteBusy by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingDelete by remember { mutableStateOf<CommunityService.AboutLink?>(null) }
+    var authoring by remember { mutableStateOf<String?>(null) }
+    var entryTitle by remember { mutableStateOf("") }
+    var entryBody by remember { mutableStateOf("") }
+    var selectedRule by remember { mutableStateOf<CommunityService.Rule?>(null) }
+    var deletingRule by remember { mutableStateOf<CommunityService.Rule?>(null) }
+    var saving by remember { mutableStateOf(false) }
 
     LaunchedEffect(card.id) {
         linksLoading = true
@@ -646,11 +706,21 @@ fun CommunityAboutTab(
         if (rules.isNotEmpty()) {
             AboutSection("Rules") {
                 Column(verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                    rules.forEachIndexed { index, rule -> RuleCard(index + 1, rule) }
+                    rules.forEachIndexed { index, rule ->
+                        RuleCard(index + 1, rule)
+                        if (isAdmin) Row {
+                            androidx.compose.material3.TextButton(onClick = { selectedRule = rule; entryTitle = rule.title ?: ""; entryBody = rule.detail ?: ""; authoring = "rule" }) { Text("Edit") }
+                            androidx.compose.material3.TextButton(onClick = { deletingRule = rule }) { Text("Delete") }
+                        }
+                    }
                 }
             }
         }
 
+        if (isAdmin) Row {
+            androidx.compose.material3.TextButton(onClick = { authoring = "rule"; selectedRule = null; entryTitle = ""; entryBody = "" }) { Text("Add rule") }
+            androidx.compose.material3.TextButton(onClick = { authoring = "link"; entryTitle = ""; entryBody = "" }) { Text("Add link") }
+        }
         // ── Links ────────────────────────────────────────────────────────────────
         if (linksLoading || linksError != null || links.isNotEmpty() || isAdmin) {
             AboutSection("Links") {
@@ -687,11 +757,37 @@ fun CommunityAboutTab(
             CommunityGlyph(CommunityIcon.LOCK, size = 12.dp, tint = VoiidColor.accentInk)
             Text(
                 "Messages inside a Space are end-to-end encrypted. The community itself — " +
-                    "its name, members and invites — is not, so it can be searched and joined.",
+                    "including Home posts, announcements, its name, members and invites — is not, so it can be moderated, searched and joined.",
                 style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
             )
         }
     }
+
+    if (authoring != null) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!saving) authoring = null },
+        title = { Text(if (authoring == "link") "Add link" else if (selectedRule == null) "Add rule" else "Edit rule") },
+        text = { Column {
+            androidx.compose.material3.OutlinedTextField(value = entryTitle, onValueChange = { if (it.length <= 80) entryTitle = it }, label = { Text("Title") })
+            androidx.compose.material3.OutlinedTextField(value = entryBody, onValueChange = { if (it.length <= (if (authoring == "link") 2048 else 400)) entryBody = it }, label = { Text(if (authoring == "link") "https://…" else "Details") })
+            writeError?.let { Text(it, color = VoiidColor.error) }
+        } },
+        confirmButton = { androidx.compose.material3.TextButton(enabled = !saving && entryTitle.isNotBlank(), onClick = { scope.launch {
+            saving = true
+            runCatching {
+                if (authoring == "link") links = links + svc.createLink(card.id, entryTitle, entryBody)
+                else {
+                    val existing = selectedRule
+                    val saved = if (existing == null) svc.createRule(card.id, entryTitle, entryBody) else svc.updateRule(card.id, existing.id, entryTitle, entryBody)
+                    rules = if (existing == null) rules + saved else rules.map { if (it.id == saved.id) saved else it }
+                }
+            }.onSuccess { authoring = null; writeError = null }.onFailure { writeError = it.message ?: "Couldn't save." }
+            saving = false
+        } }) { Text("Save") } },
+        dismissButton = { androidx.compose.material3.TextButton(enabled = !saving, onClick = { authoring = null }) { Text("Cancel") } })
+    deletingRule?.let { rule -> VoiidConfirmDialog(title = "Delete this rule?", message = "This removes the rule from the community.", confirmLabel = "Delete", destructive = true,
+        onCancel = { deletingRule = null }, onConfirm = { deletingRule = null; scope.launch {
+            runCatching { svc.deleteRule(card.id, rule.id) }.onSuccess { rules = rules.filterNot { it.id == rule.id } }.onFailure { writeError = it.message ?: "Couldn't delete rule." }
+        } }) }
 
     pendingDelete?.let { link ->
         VoiidConfirmDialog(

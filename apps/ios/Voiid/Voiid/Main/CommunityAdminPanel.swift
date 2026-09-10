@@ -18,6 +18,7 @@ import SwiftUI
 struct CommunityAdminPanel: View {
     let communityId: String
     let communityName: String
+    var isOwner: Bool = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -324,7 +325,8 @@ struct CommunityAdminPanel: View {
             case .active:
                 // The owner is not ours to demote or remove — that route is owner-only
                 // server-side and the row would only produce a 403.
-                if !m.isOwner {
+                if !m.isOwner && (isOwner || m.role != "admin") {
+                    if isOwner {
                     if m.role == "admin" {
                         Button("Remove as admin", systemImage: "person.badge.minus") {
                             Task { await setRole(m, to: "member") }
@@ -333,6 +335,7 @@ struct CommunityAdminPanel: View {
                         Button("Make admin", systemImage: "person.badge.shield.checkmark") {
                             Task { await setRole(m, to: "admin") }
                         }
+                    }
                     }
                     Divider()
                     Button("Remove", systemImage: "person.fill.xmark", role: .destructive) {

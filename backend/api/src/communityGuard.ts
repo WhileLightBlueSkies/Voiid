@@ -60,7 +60,14 @@ export async function announcementPostDeniedReason(
       [conversationId]
     )
   )[0];
-  if (!channel || channel.kind !== 'announcement') return null;
+  if (!channel) return null;
+  const access = await query<{ allowed: boolean }>(
+    `select (c.suspended_at is null and exists (
+      select 1 from community_members m where m.community_id = c.id
+      and m.user_id = $2 and m.state = 'active')) as allowed
+     from communities c where c.id = $1`, [channel.community_id, senderUserId]);
+  if (!access[0]?.allowed) return 'only active members of a live community may post';
+  if (channel.kind !== 'announcement') return null;
 
   // Probe 2 (announcement sends only): may this person broadcast?
   //

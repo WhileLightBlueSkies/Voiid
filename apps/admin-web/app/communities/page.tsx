@@ -7,6 +7,7 @@ import { PageHeader, Async, Pill, when, name } from '../../components/ui';
 import { api } from '../../lib/api';
 
 type Community = {
+  official_key: string | null;
   id: string; handle: string; name: string; category: string | null;
   discoverable: boolean; join_policy: string;
   member_count: number; post_count: number;
@@ -58,7 +59,7 @@ function Body() {
     <>
       <PageHeader
         title="Communities"
-        subtitle="Every community on Voiid, including the ones nobody has reported yet."
+        subtitle="Manage official Voiid communities and review community moderation."
       />
 
       <div className="row" style={{ marginBottom: 16 }}>

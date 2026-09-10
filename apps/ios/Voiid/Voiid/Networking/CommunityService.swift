@@ -107,6 +107,9 @@ final class CommunityService {
 
         /// THE ONLY SOURCE OF TRUTH FOR "AM I IN THIS". Nil means not a member. Never infer this
         /// from the fact that a link resolved; a forwarded link resolves for everyone.
+        var membership_role: String?
+        let official: Bool?
+        let posting_policy: String?
         var membership_state: String?
         /// Whether the token in the link is currently redeemable. Nil when the link carried no
         /// token.
@@ -126,6 +129,8 @@ final class CommunityService {
         var membersCanInvite: Bool { members_can_invite ?? true }
         var isDiscoverable: Bool { discoverable ?? true }
         var isSuspended: Bool { suspended ?? false }
+        var isManager: Bool { isMember && ["owner", "admin"].contains(membership_role ?? "") }
+        var canInvite: Bool { !isSuspended && (isManager || (isMember && membersCanInvite && policy != "invite_only")) }
         var isMember: Bool { membership_state == "active" }
         var isPending: Bool { membership_state == "pending" }
         var isBanned: Bool { membership_state == "banned" }
@@ -161,6 +166,7 @@ final class CommunityService {
         func merged(inviteValid: Bool?) -> CommunityCard {
             var card = community
             card.membership_state = membership_state
+            card.membership_role = membership_role
             card.invite_valid = inviteValid
             return card
         }
@@ -278,6 +284,28 @@ final class CommunityService {
             "POST", "communities/\(communityId)/channels",
             body: Body(name: name, kind: kind))
         return env.channel
+    }
+
+    struct Invite: Decodable, Identifiable {
+        let token: String
+        let expires_at: String?
+        let max_uses: Int?
+        let use_count: Int?
+        var id: String { token }
+    }
+    func createInvite(communityId: String) async throws -> Invite {
+        struct Body: Encodable { let expires_in_hours = 168; let max_uses = 100 }
+        struct Envelope: Decodable { let invite: Invite }
+        let result: Envelope = try await api.request("POST", "communities/\(communityId)/invites", body: Body())
+        return result.invite
+    }
+    func invites(communityId: String) async throws -> [Invite] {
+        struct Envelope: Decodable { let invites: [Invite] }
+        let result: Envelope = try await api.request("GET", "communities/\(communityId)/invites")
+        return result.invites
+    }
+    func revokeInvite(communityId: String, token: String) async throws {
+        _ = try await api.request("DELETE", "communities/\(communityId)/invites/\(token)", as: EmptyResponse.self)
     }
 
     /// One row of the roster.

@@ -117,7 +117,7 @@ private enum class Tab(
 
     companion object {
         // Keep declaration before visible: companion properties initialize in order.
-        private val SHIPPED = setOf(CHAT, STORIES)
+        private val SHIPPED = setOf(CHAT, STORIES, COMMUNITIES)
 
         /**
          * The tabs the bar actually shows, and the order it steps through.

@@ -216,9 +216,18 @@ router.get('/keypackages/count', requireAuth, asyncHandler(async (req, res) => {
 // Store + push Welcome/Commit control messages to recipients (caller must be a member).
 router.post('/group-events', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
-  const { conversation_id, events } = req.body ?? {};
+  const { conversation_id, events, sender_device_id } = req.body ?? {};
+  const sessionDevice = (req as any).auth.device_id;
+  const senderDevice = sender_device_id ?? sessionDevice ?? null;
+  if (senderDevice && (typeof senderDevice !== 'string' || !/^[0-9a-f-]{36}$/i.test(senderDevice)
+      || (sessionDevice && senderDevice !== sessionDevice) || !(await ownsDevice(senderDevice, user_id)))) {
+    return res.status(403).json({ error: 'sender device does not belong to this session' });
+  }
   if (!conversation_id || !Array.isArray(events)) {
     return res.status(400).json({ error: 'conversation_id and events[] required' });
+  }
+  if ((await query(`select conversation_id from community_channels where conversation_id = $1`, [conversation_id])).length) {
+    return res.status(403).json({ error: 'use coordinated community encryption updates' });
   }
   const member = await query(
     `select 1 from conversation_members where conversation_id = $1 and user_id = $2 and left_at is null`,
@@ -269,8 +278,9 @@ router.post('/group-events', requireAuth, asyncHandler(async (req, res) => {
        select e.id, d.id, e.uid
          from unnest($1::uuid[], $2::uuid[]) as e(id, uid)
          join devices d on d.user_id = e.uid and d.revoked_at is null
+        where ($3::uuid is null or d.id <> $3::uuid)
        on conflict do nothing`,
-      [inserted.map((r) => r.id), inserted.map((r) => r.recipient_user_id)]
+      [inserted.map((r) => r.id), inserted.map((r) => r.recipient_user_id), senderDevice]
     );
   }
 
@@ -297,6 +307,21 @@ router.post('/group-events', requireAuth, asyncHandler(async (req, res) => {
   }
 
   res.json({ stored: valid.length });
+}));
+
+// Updated apps acknowledge only after atomically persisting the epoch and event ledger.
+router.post('/group-events/ack', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id, device_id: authDevice } = (req as any).auth;
+  const device = authDevice ?? req.body?.device_id;
+  const ids = req.body?.event_ids;
+  if (!device || (authDevice && req.body?.device_id && authDevice !== req.body.device_id)
+      || !Array.isArray(ids) || ids.length > 500 || ids.some(id => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id))) {
+    return res.status(400).json({ error: 'device_id and up to 500 event_ids required' });
+  }
+  if (!(await ownsDevice(device, user_id))) return res.status(403).json({ error: 'unknown device' });
+  await query(`update mls_event_deliveries set delivered_at = now()
+    where device_id = $1 and recipient_user_id = $2 and event_id = any($3::uuid[]) and delivered_at is null`, [device, user_id, ids]);
+  res.json({ acknowledged: true });
 }));
 
 // GET /mls/group-events — undelivered Welcome/Commit events for the caller; marks delivered.
@@ -326,16 +351,16 @@ router.get('/group-events', requireAuth, asyncHandler(async (req, res) => {
        from mls_event_deliveries d
        join mls_group_events e on e.id = d.event_id
       where d.device_id = $1 and d.delivered_at is null
-      order by e.created_at asc`,
+      order by e.sequence asc limit 500`,
     [deviceId]
   );
-  if (rows.length) {
+  if (rows.length && req.query.ack !== 'explicit') {
     // Marks only THIS device's rows. Another device of the same account still has its own
     // copy of the queue and is unaffected — which is the entire point of the change.
     await query(
       `update mls_event_deliveries set delivered_at = now()
-        where device_id = $1 and delivered_at is null`,
-      [deviceId]
+        where device_id = $1 and delivered_at is null and event_id = any($2::uuid[])`,
+      [deviceId, rows.map((row: any) => row.id)]
     );
   }
   res.json({ events: rows });

@@ -6,9 +6,11 @@ import Link from 'next/link';
 import Shell, { type Me } from '../../../components/Shell';
 import { PageHeader, Stat, Async, Pill, when, name } from '../../../components/ui';
 import { api } from '../../../lib/api';
+import OfficialControls from './OfficialControls';
 
 type Detail = {
   community: {
+    official_key: string | null; posting_policy: string;
     id: string; handle: string; name: string; description: string | null;
     category: string | null; discoverable: boolean; join_policy: string;
     member_count: number; max_members: number | null; members_can_invite: boolean;
@@ -208,6 +210,7 @@ function Body({ me }: { me: Me }) {
             {d.community.description && <Field label="Description" value={d.community.description} />}
           </div>
 
+          {d.community.official_key && me.role === 'admin' && <OfficialControls id={id} community={d.community} members={d.members} reload={async () => { await load(); await loadPosts(); }} />}
           <h2 style={{ marginBottom: 10 }}>Paid capabilities</h2>
           <div className="card" style={{ marginBottom: 22 }}>
             <p className="muted" style={{ margin: '0 0 14px', fontSize: 14 }}>

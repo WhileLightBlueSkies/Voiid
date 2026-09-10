@@ -256,6 +256,7 @@ struct CommunityCardRow: View {
                             .foregroundColor(VoiidColor.textPrimary)
                             .lineLimit(1)
 
+                        if card.official == true { Image(systemName: "checkmark.seal.fill").foregroundColor(VoiidColor.accentInk).accessibilityLabel("Official Voiid community") }
                         if isHost {
                             Text("HOST")
                                 .font(VoiidFont.rounded(9.5, .bold))

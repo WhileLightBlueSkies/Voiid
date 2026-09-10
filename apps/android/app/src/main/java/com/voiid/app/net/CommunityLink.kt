@@ -77,6 +77,7 @@ data class CommunityLink(
             val host = uri.host?.lowercase() ?: return null
             if (host != HOST && host != HOST_WWW) return null
 
+            if (uri.userInfo != null || (uri.port != -1 && uri.port != 443) || uri.fragment != null) return null
             // pathSegments is already percent-decoded, so this compares the real segments and
             // not their encoding; the HANDLE regex below is what makes the decoding safe.
             val segments = uri.pathSegments ?: return null
@@ -84,10 +85,11 @@ data class CommunityLink(
             val handle = segments[1].lowercase()
             if (!HANDLE.matches(handle)) return null
 
-            // A malformed token is dropped, NOT passed through: sending it would burn a
-            // redemption attempt and teach the user nothing. The link then behaves as a plain
-            // "look at this community" link, and the server refuses the join if one was needed.
-            val token = uri.getQueryParameter(QUERY_TOKEN)?.takeIf { TOKEN.matches(it) }
+            // Reject malformed or duplicate capabilities; never downgrade a bad invite to a public link.
+            val values = uri.getQueryParameters(QUERY_TOKEN)
+            if (values.size > 1) return null
+            val token = values.firstOrNull()
+            if (token != null && !TOKEN.matches(token)) return null
             return CommunityLink(handle, token)
         }
 

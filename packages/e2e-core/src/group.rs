@@ -343,6 +343,14 @@ impl GroupSession {
             .map_err(|_| E2eError::Serialization)
     }
 
+    /// Authenticated credential identities in the current epoch, for roster reconciliation.
+    pub fn member_identities(&self) -> Vec<Vec<u8>> {
+        self.group
+            .members()
+            .map(|member| member.credential.serialized_content().to_vec())
+            .collect()
+    }
+
     /// Number of members currently in the group (from our view of the state).
     pub fn member_count(&self) -> usize {
         self.group.members().count()

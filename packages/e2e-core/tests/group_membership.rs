@@ -105,3 +105,36 @@ fn remove_unknown_member_errors() {
     let ((alice, mut ag), _, _) = three_member_group();
     assert!(ag.remove_member(&alice, b"nobody").is_err());
 }
+
+/// The coordinator compares authenticated MLS leaves, including after a restart.
+#[test]
+fn member_identities_follow_churn_and_persistence() {
+    let ((alice, mut ag), (bob, mut bg), _) = three_member_group();
+    let mut identities = ag.member_identities();
+    identities.sort();
+    assert_eq!(
+        identities,
+        vec![b"alice".to_vec(), b"bob".to_vec(), b"carol".to_vec()]
+    );
+    let commit = ag.remove_member(&alice, b"carol").unwrap();
+    bg.decrypt(&bob, &commit).unwrap();
+    let gid = ag.group_id();
+    let restored = GroupMember::restore(&alice.serialize().unwrap()).unwrap();
+    let mut group = restored.load_group(&gid).unwrap();
+    let mut identities = group.member_identities();
+    identities.sort();
+    assert_eq!(identities, vec![b"alice".to_vec(), b"bob".to_vec()]);
+    let carol = GroupMember::new(b"carol").unwrap();
+    let added = group
+        .add_member(&restored, &carol.key_package().unwrap())
+        .unwrap();
+    bg.decrypt(&bob, &added.commit).unwrap();
+    let rejoined = carol
+        .join_group(&added.welcome, &added.ratchet_tree)
+        .unwrap();
+    let mut expected = group.member_identities();
+    expected.sort();
+    let mut actual = rejoined.member_identities();
+    actual.sort();
+    assert_eq!(actual, expected);
+}

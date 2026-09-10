@@ -13,6 +13,8 @@ import kotlinx.serialization.Serializable
  * travels — there is no message id here and there is no field to put one in.
  */
 sealed class ReportTarget(val type: String, val id: String) {
+    class Community(id: String) : ReportTarget("community", id)
+    class CommunityPost(id: String) : ReportTarget("community_post", id)
     class Clip(id: String) : ReportTarget("clip", id)
     class Creator(userId: String) : ReportTarget("creator", userId)
     class Person(userId: String) : ReportTarget("message_sender", userId)

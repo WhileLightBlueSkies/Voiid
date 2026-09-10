@@ -78,7 +78,7 @@ struct ChatDetailView: View {
     /// Empty for 1:1 chats. Loaded on appear — never DummyData.
     @State private var groupMembers: [VMember] = []
 
-    var body: some View {
+    private var chatContent: some View {
         VStack(spacing: 0) {
             // Multi-select has its own bar; NORMAL mode uses the NATIVE navigation bar +
             // toolbar — Apple's system back button and `chatToolbar` items. No custom chrome,
@@ -168,6 +168,10 @@ struct ChatDetailView: View {
                 ContactProfileView(conversation: conversation, pendingCall: $pendingCall)
             }
         }
+    }
+
+    private var chatSheets: some View {
+        chatContent
         .sheet(isPresented: $showSafetyNumber) {
             SafetyNumberView(peerUserId: conversation.peerUserId ?? "",
                              peerName: conversation.title)
@@ -237,6 +241,10 @@ struct ChatDetailView: View {
                 chat.forward(msg, to: targets)
             }
         }
+    }
+
+    var body: some View {
+        chatSheets
         // Single message delete — confirmation modal
         .confirmationDialog("Delete message?", isPresented: Binding(
             get: { deleteMessage != nil }, set: { if !$0 { deleteMessage = nil } }),

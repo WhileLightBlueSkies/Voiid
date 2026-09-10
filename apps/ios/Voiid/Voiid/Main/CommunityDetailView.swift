@@ -11,6 +11,7 @@
 //
 
 import SwiftUI
+import CoreImage.CIFilterBuiltins
 
 struct CommunityDetailView: View {
     let handle: String
@@ -22,12 +23,16 @@ struct CommunityDetailView: View {
     /// renders the latter; only this one is worth interrupting a drawn card for.
     @State private var actionError: String?
     @State private var busy = false
+    @State private var showInvite = false
+    @State private var showReport = false
+    @State private var confirmLeave = false
     @State private var showInbox = false
     @State private var showSettings = false
     @State private var adminCard: CommunityService.CommunityCard?
     @State private var tab: CommunityTab = .home
     @State private var openConversation: VConversation?
 
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var chat: ChatStore
     @EnvironmentObject private var session: AppSession
 
@@ -90,12 +95,34 @@ struct CommunityDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await load()
+            while !Task.isCancelled {
+                await GroupEngine.shared.syncGroupEvents()
+                do { try await Task.sleep(for: .seconds(10)) } catch { break }
+                await load()
+            }
+        }
+        .sheet(isPresented: $showInvite) { if let card { CommunityInviteView(card: card) } }
+        .sheet(isPresented: $showReport) { if let card { ReportSheet(target: .community(communityId: card.id)) { showReport = false } } }
+        .alert("Leave this community?", isPresented: $confirmLeave) {
+            Button("Cancel", role: .cancel) {}
+            Button("Leave", role: .destructive) {
+                Task {
+                    busy = true
+                    defer { busy = false }
+                    do { if let card { _ = try await CommunityService.shared.leave(communityId: card.id); await load() } }
+                    catch { actionError = error.localizedDescription }
+                }
+            }
+        }
+        .refreshable { await load() }
         .sheet(isPresented: $showInbox) { CommunityInboxView() }
         // Bound to the card rather than a bool: the console needs a community id, and the
         // only proof we have one is the card that produced the menu the host just tapped.
         .sheet(item: $adminCard) { c in
-            CommunityAdminPanel(communityId: c.id, communityName: c.name)
+            CommunityAdminPanel(communityId: c.id, communityName: c.name, isOwner: isOwner(c))
         }
         // Presented on the loaded card rather than on the handle, so the settings screen opens
         // already holding the values it edits and never has to render its own second load of
@@ -166,6 +193,7 @@ struct CommunityDetailView: View {
                 Text(c.name ?? "@\(c.handle)")
                     .font(VoiidFont.rounded(24, .bold))
                     .foregroundColor(VoiidColor.textPrimary)
+                if c.official == true { Image(systemName: "checkmark.seal.fill").foregroundColor(VoiidColor.accentInk).accessibilityLabel("Official Voiid community") }
                 if isOwner(c) {
                     Text("HOST")
                         .font(VoiidFont.rounded(9.5, .bold))
@@ -262,11 +290,12 @@ struct CommunityDetailView: View {
                     .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-            } else if c.isMember {
+            } else if c.canInvite {
                 // INVITE, not Share. Only a member can hand out a way in, and only for a
                 // community whose policy allows one — see POST /communities/:id/invites.
                 Button {
                     Haptics.tap()
+                    showInvite = true
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "person.badge.plus")
@@ -304,7 +333,7 @@ struct CommunityDetailView: View {
             // It sits in the overflow rather than the button row on purpose: the row is a
             // signed-off layout, and settings is a rare, deliberate act rather than something
             // a host reaches for on every visit.
-            if isOwner(c) {
+            if isOwner(c) || c.isManager {
                 // The console goes above settings because it is the thing a host opens to
                 // ACT — approve, moderate, promote — while settings is where they go to
                 // change what the community IS. Frequency, not importance, sets the order.
@@ -318,14 +347,14 @@ struct CommunityDetailView: View {
                 }
                 Divider()
             }
-            Button("Share community", systemImage: "square.and.arrow.up") {}
-            Button("Notifications", systemImage: "bell") {}
-            Button("Report", systemImage: "exclamationmark.triangle") {}
+            Button("Invite / QR code", systemImage: "qrcode") { showInvite = true }
+                .disabled(!c.canInvite && !c.isDiscoverable)
+            Button("Report", systemImage: "exclamationmark.triangle") { showReport = true }
             if c.isMember && !isOwner(c) {
                 Divider()
                 Button("Leave community",
                        systemImage: "rectangle.portrait.and.arrow.right",
-                       role: .destructive) {}
+                       role: .destructive) { confirmLeave = true }
             }
         } label: {
             Image(systemName: "chevron.down")
@@ -415,16 +444,16 @@ struct CommunityDetailView: View {
             // empty tab reads as "nothing here" rather than "not visible to you" — so a
             // non-member gets About, which is the tab whose content they are entitled to.
             if c.isMember {
-                tabBar(managing: isOwner(c))
+                tabBar(managing: isOwner(c) || c.isManager)
                 Group {
                     // A selection that is no longer visible — restored state, or a demotion
                     // while the screen is open — falls back to Home rather than rendering a
                     // tab the bar above no longer offers a way back from.
-                    switch (CommunityTab.visible(isManager: isOwner(c)).contains(tab) ? tab : .home) {
+                    switch (CommunityTab.visible(isManager: isOwner(c) || c.isManager).contains(tab) ? tab : .home) {
                     case .home:
-                        CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c))
+                        CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager, canPost: c.posting_policy != "managers" || c.isManager || isOwner(c))
                     case .spaces:
-                        CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c),
+                        CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager,
                                            openConversation: $openConversation)
                     case .events:
                         // `isOwner` is the manager signal this screen already uses for every
@@ -435,13 +464,13 @@ struct CommunityDetailView: View {
                         // server by `communityAccess(..., needsAdmin: true)`; this flag only
                         // decides whether the buttons are drawn.
                         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                            CommunityEventsSection(communityId: c.id, isHost: isOwner(c))
-                            CommunityTournamentsSection(communityId: c.id, isHost: isOwner(c))
+                            CommunityEventsSection(communityId: c.id, isHost: isOwner(c) || c.isManager)
+                            CommunityTournamentsSection(communityId: c.id, isHost: isOwner(c) || c.isManager)
                         }
                     case .members:
-                        CommunityMembersTab(communityId: c.id, isAdmin: isOwner(c))
+                        CommunityMembersTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager, isOwner: isOwner(c))
                     case .about:
-                        CommunityAboutTab(card: c, isAdmin: isOwner(c))
+                        CommunityAboutTab(card: c, isAdmin: isOwner(c) || c.isManager)
                     }
                 }
                 .padding(.horizontal, VoiidSpacing.md)
@@ -534,5 +563,82 @@ struct CommunityDetailView: View {
         } catch {
             self.actionError = (error as? APIError)?.errorDescription ?? "Couldn\u{2019}t join."
         }
+    }
+}
+
+
+struct CommunityInviteView: View {
+    let card: CommunityService.CommunityCard
+    @Environment(\.dismiss) private var dismiss
+    @State private var url: URL?
+    @State private var error: String?
+    @State private var invites: [CommunityService.Invite] = []
+    @State private var working = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    Text(card.name).font(VoiidFont.rounded(24, .bold))
+                    if let url {
+                        if let image = qr(url.absoluteString) {
+                            Image(uiImage: image).interpolation(.none).resizable().scaledToFit()
+                                .frame(width: 240, height: 240).padding(16).background(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 20))
+                                .accessibilityLabel("Community invite QR code")
+                        }
+                        Text("Scanning opens a preview. Joining never grants an admin role.")
+                            .font(VoiidFont.subhead).foregroundStyle(VoiidColor.textSecondary)
+                        ShareLink(item: url) { Label("Share invite", systemImage: "square.and.arrow.up") }
+                        if card.canInvite { Text("This link expires in 7 days or after 100 joins.").font(.footnote) }
+                    } else if error == nil { ProgressView() }
+                    if let error { Text(error).foregroundStyle(VoiidColor.error) }
+                    if card.canInvite {
+                        Button("Create a new link") { Task { await create() } }.disabled(working)
+                    }
+                    if card.isManager {
+                        ForEach(invites) { invite in
+                            HStack {
+                                Text(invite.expires_at.map { "Expires \($0.prefix(10))" } ?? "No expiry").font(.footnote)
+                                Spacer()
+                                Button("Revoke", role: .destructive) {
+                                    Task {
+                                        working = true
+                                        defer { working = false }
+                                        do {
+                                            try await CommunityService.shared.revokeInvite(communityId: card.id, token: invite.token)
+                                            invites.removeAll { $0.token == invite.token }
+                                            if url?.query?.contains(invite.token) == true { url = nil }
+                                        } catch { self.error = error.localizedDescription }
+                                    }
+                                }.disabled(working)
+                            }
+                        }
+                    }
+                }.padding(24)
+            }
+            .background(VoiidColor.background)
+            .navigationTitle("Community QR")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .task { await create() }
+        }
+    }
+    private func create() async {
+        guard !working else { return }
+        working = true; error = nil
+        defer { working = false }
+        do {
+            let token = card.canInvite ? try await CommunityService.shared.createInvite(communityId: card.id).token : nil
+            url = URL(string: CommunityLink.format(handle: card.handle, inviteToken: token))
+            if card.isManager { invites = try await CommunityService.shared.invites(communityId: card.id) }
+        } catch { self.error = error.localizedDescription }
+    }
+    private func qr(_ text: String) -> UIImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(text.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)),
+              let image = CIContext().createCGImage(output, from: output.extent) else { return nil }
+        return UIImage(cgImage: image)
     }
 }

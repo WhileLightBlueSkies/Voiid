@@ -358,13 +358,6 @@ fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
 fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
 
 fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
-    // EXPLICIT deinit, added to generated code. swift-frontend 6.3.3 segfaults running
-    // EarlyPerfInliner on the SYNTHESISED deinit of this class at -O, failing every Release
-    // build of both the app and the NSE. Declaring one stops the compiler synthesising the
-    // function it crashes on, and costs nothing: the members it releases are released either
-    // way. Re-apply if the bindings are regenerated, or drop it once the toolchain is fixed.
-    deinit { map.removeAll() }
-
     // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
     private var map: [UInt64: T] = [:]
@@ -848,6 +841,11 @@ public protocol GroupSessionProtocol: AnyObject, Sendable {
     func memberCount()  -> UInt32
     
     /**
+     * Authenticated device identities, read from the current MLS epoch.
+     */
+    func memberIdentities()  -> [Data]
+
+    /**
      * Remove the member with stable identifier `identity`. Returns the commit
      * to broadcast to remaining members; rekeys so the removed member can't
      * read later messages.
@@ -1017,6 +1015,17 @@ open func groupId() -> Data  {
 open func memberCount() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_voiid_e2e_core_fn_method_groupsession_member_count(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Authenticated device identities, read from the current MLS epoch.
+     */
+open func memberIdentities() -> [Data]  {
+    return try!  FfiConverterSequenceData.lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_method_groupsession_member_identities(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -2271,6 +2280,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceData: FfiConverterRustBuffer {
+    typealias SwiftType = [Data]
+
+    public static func write(_ value: [Data], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterData.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Data] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Data]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterData.read(from: &buf))
+        }
+        return seq
+    }
+}
 /**
  * Open a backup blob produced by `encrypt_backup` using the master secret. A
  * wrong secret or tampered blob errors (GCM auth) rather than returning wrong
@@ -2549,6 +2583,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_member_count() != 21166) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_method_groupsession_member_identities() != 23414) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_remove_member() != 56234) {
