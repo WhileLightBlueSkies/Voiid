@@ -347,9 +347,11 @@ router.get('/group-events', requireAuth, asyncHandler(async (req, res) => {
   const rows = await query(
     `select e.id, e.conversation_id, e.sender_user_id, e.kind,
             encode(e.payload,'base64') as payload,
-            encode(e.ratchet_tree,'base64') as ratchet_tree, e.created_at
+            encode(e.ratchet_tree,'base64') as ratchet_tree, e.created_at,
+            (ch.conversation_id is not null) as device_targeted
        from mls_event_deliveries d
        join mls_group_events e on e.id = d.event_id
+       left join community_channels ch on ch.conversation_id = e.conversation_id
       where d.device_id = $1 and d.delivered_at is null
       order by e.sequence asc limit 500`,
     [deviceId]

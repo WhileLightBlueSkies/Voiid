@@ -58,3 +58,13 @@ Public cards, Home posts, rules, links, events and moderation metadata are serve
 - A new member/device needs the owner's coordinating phone online to receive Space keys. Lost coordinator state is deliberately not replaced with a different group; recovery/handoff requires further work. This release does not establish always-available, owner-independent admission.
 - Known R2 objects are queued for deletion through the existing erasure worker. Object keys hidden only inside encrypted payloads cannot be recovered by the server. The reset removes live server data, not copies already downloaded to a user's phone or retained infrastructure backups.
 - Home posts/announcements and moderation data are server-readable. Complete admin management does not grant decryption of encrypted Spaces or host DMs, nor does it promise access to their old message plaintext.
+
+## Release progress
+
+- Implementation pushed to public `main`: `158af5a`.
+- Local iOS simulator build also passed after the signed device build.
+- GitHub deployment run: https://github.com/WhileLightBlueSkies/Voiid/actions/runs/34452853370 (status to be updated after completion).
+- No browser runtime was available. An isolated localhost fixture rendered all admin control sections successfully, but visual inspection and browser interaction were not performed.
+- Production currently runs API, websocket, workers and games under PM2; no admin frontend process was present there. The updated admin panel is running locally at `http://localhost:3100` with its existing authentication flow.
+
+- Final durability correction: both apps persist the private KeyPackage material before publishing public packages. Device-targeted Community Welcomes are retained on processing failure, while ordinary group Welcomes for other devices remain ignorable. Backend integration and both native builds passed again after this correction.

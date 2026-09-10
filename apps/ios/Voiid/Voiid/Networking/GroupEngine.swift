@@ -224,7 +224,7 @@ final class GroupEngine {
             let kp = try m.keyPackage()
             packages.append(kp.base64EncodedString())
         }
-        persistMember()   // privates now live in the blob — save BEFORE upload
+        guard persistMember() else { throw APIError.http(status: 0, message: "Could not save encryption keys") }
         let _: PublishKPResponse = try await api.request(
             "POST", "mls/keypackages",
             body: PublishKPBody(device_id: deviceId, key_packages: packages))
@@ -443,6 +443,7 @@ final class GroupEngine {
         let payload: String
         var ratchet_tree: String?
         var created_at: String?
+        var device_targeted: Bool?
     }
     private struct GroupEventsInResponse: Decodable { let events: [GroupEventIn] }
 
@@ -483,7 +484,11 @@ final class GroupEngine {
                     guard let welcome = decodeB64(e.payload), let tree = e.ratchet_tree.flatMap(decodeB64) else { continue }
                     // A valid Welcome may be a rejoin. Trying our KeyPackage is the device binding;
                     // another device's Welcome fails without replacing our current group.
-                    if let session = try? m.joinGroup(welcome: welcome, ratchetTree: tree) {
+                    if e.device_targeted == true {
+                        // This Welcome was addressed to this exact device. Retain it on failure.
+                        let session = try m.joinGroup(welcome: welcome, ratchetTree: tree)
+                        sessions[e.conversation_id] = session; convGroups[e.conversation_id] = session.groupId()
+                    } else if let session = try? m.joinGroup(welcome: welcome, ratchetTree: tree) {
                         sessions[e.conversation_id] = session; convGroups[e.conversation_id] = session.groupId()
                     }
                 case "commit":

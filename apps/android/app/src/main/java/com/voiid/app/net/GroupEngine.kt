@@ -201,7 +201,7 @@ class GroupEngine private constructor(context: Context) {
     private suspend fun publishKeyPackagesLocked(m: GroupMember) {
         val deviceId = e2e.deviceId ?: return
         val packages = (0 until KEYPACKAGE_BATCH).map { Base64.encodeToString(m.keyPackage(), Base64.NO_WRAP) }
-        persistMemberLocked(m)   // persist BEFORE upload so private halves are never lost
+        persistCommunityStateLocked(m) // synchronous durable write before publishing the public halves
         val body = ApiClient.json.encodeToString(
             UploadKeyPackagesBody.serializer(), UploadKeyPackagesBody(deviceId, packages))
         api.request("POST", "mls/keypackages", jsonBody = body)
@@ -502,7 +502,7 @@ class GroupEngine private constructor(context: Context) {
                 if (id in pending.applied) { acknowledged.add(id); continue }
                 try {
                     when (ev.kind) {
-                        "welcome" -> runCatching { applyWelcomeLocked(m, ev) } // Other devices' Welcome cannot use our KeyPackage.
+                        "welcome" -> if (ev.device_targeted) applyWelcomeLocked(m, ev) else runCatching { applyWelcomeLocked(m, ev) }
                         "commit" -> applyCommitLocked(m, ev)
                         else -> continue
                     }
@@ -809,6 +809,7 @@ class GroupEngine private constructor(context: Context) {
         val payload: String,
         val ratchet_tree: String? = null,
         val created_at: String? = null,
+        val device_targeted: Boolean = false,
     )
     @Serializable private data class GroupEventsResponse(val events: List<GroupEventDTO> = emptyList())
 

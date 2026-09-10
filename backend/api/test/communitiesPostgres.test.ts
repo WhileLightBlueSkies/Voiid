@@ -153,6 +153,7 @@ test('community roles, official controls, invite admission and encrypted lifecyc
       assert.equal((await request('POST','/mls/group-events',{conversation_id:batch.conversation_id,events:[]},member)).status,403);
       const first = await request('GET',`/mls/group-events?ack=explicit&device_id=${memberDevice}`,undefined,member,undefined,memberDevice);
       assert.equal(first.status,200,JSON.stringify(first.body)); assert.deepEqual(first.body.events.map((e:any)=>e.kind),['welcome','commit']);
+      assert.ok(first.body.events.every((e:any)=>e.device_targeted === true));
       const sibling = await request('GET',`/mls/group-events?ack=explicit&device_id=${memberSibling}`,undefined,member,undefined,memberSibling);
       assert.equal(sibling.body.events.length,0,'another device must not receive commits before its own welcome');
       const retry = await request('GET',`/mls/group-events?ack=explicit&device_id=${memberDevice}`,undefined,member,undefined,memberDevice);
