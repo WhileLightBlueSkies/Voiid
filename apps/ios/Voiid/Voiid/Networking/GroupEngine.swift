@@ -339,6 +339,18 @@ final class GroupEngine {
         }
     }
 
+    /// Check the signed credential before it can alter the real Space. The authenticated
+    /// key-package endpoint identifies the user/device; a publisher must not label its key
+    /// with somebody else's MLS identity. The throwaway group's secrets are never sent.
+    private func communityKeyPackageMatches(_ data: Data, identity: String) -> Bool {
+        do {
+            let inspector = try GroupMember.create(identity: Data("voiid-keypackage-check".utf8))
+            let probe = try inspector.createGroup()
+            _ = try probe.addMember(member: inspector, theirKeyPackage: data)
+            return probe.memberIdentities().contains(Data(identity.utf8))
+        } catch { return false }
+    }
+
     private func fetchKeyPackages(userId: String, deviceId: String? = nil) async throws -> [KeyPackageDTO] {
         let suffix = deviceId.map { "?device_id=\($0)" } ?? ""
         let env: KeyPackagesResponse = try await api.request("GET", "mls/keypackages/\(userId)\(suffix)")
@@ -930,6 +942,7 @@ final class GroupEngine {
                         for kp in packages {
                             let identity = "\(user)::\(kp.device_id)"
                             guard desired.contains(identity), !identities().contains(identity), let data = decodeB64(kp.key_package) else { continue }
+                            guard communityKeyPackageMatches(data, identity: identity) else { continue }
                             let recipients = identities()
                             let output = try session.addMember(member: m, theirKeyPackage: data)
                             var events = recipients.sorted().map { GroupEventOut(recipient_user_id: $0.components(separatedBy: "::")[0], kind: "commit", payload: output.commit.base64EncodedString(), recipient_device_id: $0.components(separatedBy: "::")[1]) }

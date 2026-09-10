@@ -580,6 +580,9 @@ jobs:
           bash packages/e2e-core/build-apple.sh
           test -d apps/ios/Voiid/Frameworks/Voiid.xcframework
 
+      - name: Reject forged community device credentials
+        run: python3 tools/check-community-keypackage-identity.py
+
       - name: Build for simulator (unsigned)
         working-directory: apps/ios/Voiid
         run: |

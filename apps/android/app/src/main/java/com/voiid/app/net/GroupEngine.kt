@@ -731,6 +731,16 @@ class GroupEngine private constructor(context: Context) {
             }
         }
     }
+    // Validate the signed credential in isolated state before changing the real Space.
+    private fun communityKeyPackageMatches(data: ByteArray, identity: String): Boolean = runCatching {
+        GroupMember.create("voiid-keypackage-check".toByteArray()).use { inspector ->
+            inspector.createGroup().use { probe ->
+                probe.addMember(inspector, data)
+                probe.memberIdentities().any { it.contentEquals(identity.toByteArray()) }
+            }
+        }
+    }.getOrDefault(false)
+
     private suspend fun queueCommunityBatchLocked(cid: String, session: GroupSession, m: GroupMember, events: List<GroupEvent>) {
         val device = e2e.deviceId ?: throw ApiError.NotAuthenticated
         val batch = CommunityBatch(device, cid, java.util.UUID.randomUUID().toString(), Base64.encodeToString(session.groupId(), Base64.NO_WRAP), events)
@@ -774,8 +784,10 @@ class GroupEngine private constructor(context: Context) {
                         for (kp in packages.key_packages) {
                             val identity = "$user::${kp.device_id}"
                             if (identity !in desired || identity in identities()) continue
+                            val data = Base64.decode(kp.key_package, Base64.NO_WRAP)
+                            if (!communityKeyPackageMatches(data, identity)) continue
                             val recipients = identities()
-                            val out = session.addMember(m, Base64.decode(kp.key_package, Base64.NO_WRAP))
+                            val out = session.addMember(m, data)
                             val events = recipients.sorted().map { GroupEvent(it.substringBefore("::"), "commit", Base64.encodeToString(out.commit, Base64.NO_WRAP), recipient_device_id = it.substringAfter("::")) } +
                                 GroupEvent(user, "welcome", Base64.encodeToString(out.welcome, Base64.NO_WRAP), Base64.encodeToString(out.ratchetTree, Base64.NO_WRAP), kp.device_id)
                             queueCommunityBatchLocked(cid, session, m, events)

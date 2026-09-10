@@ -53,7 +53,7 @@ Public cards, Home posts, rules, links, events and moderation metadata are serve
 ## Limits and remaining release steps
 
 - **Owner account is still awaiting the user's answer.** Never seed the official communities onto an inferred account.
-- The production inventory read at the start was seven communities, ten memberships, six Spaces and two posts, with no events/orders. Production reset and deployment must be recorded below when actually performed.
+- The production inventory read at the start was seven communities, ten memberships, six Spaces and two posts, with no events/orders. The production reset and verified deployments are recorded below.
 - The iPhone install was attempted but iOS refused to mount its developer image while DLT WORK was locked. Android is disconnected. No cross-device Community lifecycle test has been claimed.
 - A new member/device needs the owner's coordinating phone online to receive Space keys. Lost coordinator state is deliberately not replaced with a different group; recovery/handoff requires further work. This release does not establish always-available, owner-independent admission.
 - Known R2 objects are queued for deletion through the existing erasure worker. Object keys hidden only inside encrypted payloads cannot be recovered by the server. The reset removes live server data, not copies already downloaded to a user's phone or retained infrastructure backups.
@@ -63,7 +63,7 @@ Public cards, Home posts, rules, links, events and moderation metadata are serve
 
 - Implementation pushed to public `main`: `158af5a`.
 - Local iOS simulator build also passed after the signed device build.
-- GitHub deployment run: https://github.com/WhileLightBlueSkies/Voiid/actions/runs/34452853370 (status to be updated after completion).
+- GitHub deployment run: https://github.com/WhileLightBlueSkies/Voiid/actions/runs/34452853370 (completed successfully; backend `158af5a`).
 - No browser runtime was available. An isolated localhost fixture rendered all admin control sections successfully, but visual inspection and browser interaction were not performed.
 - Production currently runs API, websocket, workers and games under PM2; no admin frontend process was present there. The updated admin panel is running locally at `http://localhost:3100` with its existing authentication flow.
 
@@ -71,3 +71,14 @@ Public cards, Home posts, rules, links, events and moderation metadata are serve
 
 - Multi-device key lookup now targets only the missing device; the coordinator skips devices with no available MLS package. PostgreSQL checks prove repeated attempts for an unready device do not consume a sibling phone's packages. The key-count route is declared before the dynamic user route so replenishment actually reaches the count handler.
 - Existing call checks also passed: shared Android/iOS call-key vectors, five production Swift conference encryption-recovery cases and five coordinator-election cases.
+
+## Production result and handoff
+
+- Final backend revision **`c77987c`** deployed successfully through all quality gates: https://github.com/WhileLightBlueSkies/Voiid/actions/runs/34455136294 . Live `/health` reports that build, API status OK, database up and Redis up.
+- The explicitly authorized production reset deleted **7 communities and 6 associated conversations**. A fresh count after the final deployment confirms **0 communities, 0 Spaces, 0 posts, 0 memberships, 0 host threads and 0 event orders**. No identifiable R2 objects were queued by this reset (`media_queued: 0`).
+- **No replacement communities were seeded.** Voiid Jobs, Voiid Feedback and Voiid Updates are ready in the reviewed, tested seed script, but the user's owner account is still required.
+- The admin panel is running on loopback at `http://localhost:3100`. Its login page responds, the real API's browser preflight permits that origin, and live admin-management/channel-sync probes return 401 without authentication.
+- Signed iPhone and Android debug builds are ready. Android has **125 passing JVM tests**. Installation is still blocked by the iPhone passcode and disconnected Android; no live cross-device result is claimed.
+- Additional phone-side hardening validates a KeyPackage's signed credential against the requested user/device **before changing the real Space**. An isolated temporary group checks the credential using the existing MLS library; none of its secrets are published. Android explicitly closes that temporary state. The real production Swift guard rejects a forged owner identity, a wrong device identity and malformed bytes, while a legitimate recipient still joins and decrypts successfully. `tools/check-community-keypackage-identity.py` runs this check and is wired into iOS CI. Both native builds passed after adding the guard. This follow-up changes no deployed backend behavior.
+- Source files used for the built native apps were compared with the workspace (26 files, no mismatches before the final guard; the guard files were then overlaid and rebuilt).
+- Remaining user inputs: the existing owner username/account ID; unlock the iPhone and reconnect Android for installation and live membership/QR/Space tests. Owner-online provisioning and lost-coordinator recovery remain the explicit limitations described above.
