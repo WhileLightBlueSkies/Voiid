@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /*
  * Voiid Admin — internal operations console.
  *
@@ -54,6 +58,26 @@
   --attention: #f6821f;
 
   --row-h: 44px;
+
+  /* THE SAME COLOURS, as HSL triplets, for Tailwind and shadcn.
+   *
+   * Duplicated deliberately rather than converted: every page still written against
+   * var(--surface) keeps rendering identically while components move to bg-card, so the
+   * migration can be incremental instead of a flag day. Both names resolve to one pixel.
+   * Change a colour here and change its hex twin above — they are one decision. */
+  --bg-hsl: 200 27% 4%;
+  --surface-hsl: 195 19% 8%;
+  --surface-2-hsl: 195 20% 12%;
+  --surface-3-hsl: 196 19% 15%;
+  --border-hsl: 195 17% 18%;
+  --text-hsl: 180 12% 97%;
+  --text-mute-hsl: 196 8% 53%;
+  --accent-hsl: 185 76% 31%;
+  --ok-hsl: 151 55% 41%;
+  --danger-hsl: 358 75% 59%;
+  --warning-hsl: 48 96% 53%;
+  --info-hsl: 217 91% 60%;
+  --attention-hsl: 28 92% 54%;
 }
 
 * { box-sizing: border-box; }
