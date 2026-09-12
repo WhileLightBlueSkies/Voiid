@@ -7,6 +7,8 @@ import Shell, { type Me } from '../../../components/Shell';
 import { PageHeader, Stat, Async, Pill, when, name } from '../../../components/ui';
 import { api } from '../../../lib/api';
 import OfficialControls from './OfficialControls';
+import FinancePanel from './FinancePanel';
+import PaymentsDemo from './PaymentsDemo';
 
 type Detail = {
   community: {
@@ -210,6 +212,7 @@ function Body({ me }: { me: Me }) {
             {d.community.description && <Field label="Description" value={d.community.description} />}
           </div>
 
+          {me.role === 'admin' && <><PaymentsDemo /><FinancePanel id={id} /></>}
           {d.community.official_key && me.role === 'admin' && <OfficialControls id={id} community={d.community} members={d.members} reload={async () => { await load(); await loadPosts(); }} />}
           <h2 style={{ marginBottom: 10 }}>Paid capabilities</h2>
           <div className="card" style={{ marginBottom: 22 }}>

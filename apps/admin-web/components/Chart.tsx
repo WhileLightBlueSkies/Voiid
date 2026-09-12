@@ -21,8 +21,8 @@ const W = 600;
 const H = 160;
 const PAD = 4;
 
-export function AreaChart({ points, color = 'var(--accent)', label }: {
-  points: Point[]; color?: string; label: string;
+export function AreaChart({ points, color = 'var(--accent)', label, totalLabel = 'total' }: {
+  points: Point[]; color?: string; label: string; totalLabel?: string;
 }) {
   const gradId = useId();
   const [hover, setHover] = useState<number | null>(null);
@@ -57,7 +57,7 @@ export function AreaChart({ points, color = 'var(--accent)', label }: {
         <span className="mute" style={{ fontSize: 12 }}>
           {/* The hovered day replaces the total in place, rather than appearing in a
               floating tooltip that would cover the very point being inspected. */}
-          {active ? `${active.day} · ${active.value}` : `${total} total`}
+          {active ? `${active.day} · ${active.value}` : `${total} ${totalLabel}`}
         </span>
         <span style={{ flex: 1 }} />
         <span className="mono" style={{ fontSize: 12, color: 'var(--text-mute)' }}>peak {max}</span>
@@ -75,7 +75,7 @@ export function AreaChart({ points, color = 'var(--accent)', label }: {
         <svg
           viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
           style={{ width: '100%', height: 130, display: 'block' }}
-          role="img" aria-label={`${label}: ${total} over ${points.length} days`}
+          role="img" aria-label={`${label}: ${total} ${totalLabel} over ${points.length} days`}
         >
           <defs>
             <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
@@ -91,6 +91,7 @@ export function AreaChart({ points, color = 'var(--accent)', label }: {
             />
           ))}
 
+          {points.length === 1 && <circle cx={xy(points[0], 0)[0]} cy={xy(points[0], 0)[1]} r={3} fill={color} />}
           <path d={area} fill={`url(#${gradId})`} />
           <path
             d={line} fill="none" stroke={color} strokeWidth="2"

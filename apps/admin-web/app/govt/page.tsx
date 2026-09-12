@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Shell from '../../components/Shell';
 import { PageHeader, Pill, Async, when } from '../../components/ui';
+import { ListTable } from '../../components/List';
 import { api } from '../../lib/api';
 
 type Req = {
@@ -92,43 +93,43 @@ function Body() {
 
       {creating && <NewRequest onDone={(id) => { setCreating(false); void load(); if (id) setOpen(id); }} />}
 
-      <Async loading={loading} error={error} empty={rows.length === 0}
-             emptyText="No requests have been logged.">
-        <table className="list">
-          <thead>
-            <tr><th>Authority</th><th>Basis</th><th>Subject</th><th>Received</th><th>Status</th><th /></tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td>
-                  <div style={{ fontWeight: 600 }}>{r.authority}</div>
-                  <div className="mute" style={{ fontSize: 13 }}>{r.reference}</div>
-                </td>
-                <td>
-                  <div style={{ fontSize: 13 }}>{r.legal_basis}</div>
-                  {r.emergency && <Pill tone="danger">emergency</Pill>}
-                </td>
-                <td className="mono" style={{ fontSize: 13 }}>
-                  {r.subject_phone ?? '—'}
-                  {!r.subject_user_id && <div className="mute" style={{ fontSize: 12 }}>no account</div>}
-                </td>
-                <td className="mute" style={{ fontSize: 13 }}>{when(r.received_at)}</td>
-                <td>
-                  <Pill tone={STATUS_TONE[r.status]}>{r.status.replace(/_/g, ' ')}</Pill>
-                  {/* The absence of paperwork is the thing worth seeing from the list. */}
-                  {!r.order_document_key && (
-                    <div style={{ fontSize: 12, color: 'var(--attention)', marginTop: 3 }}>no order attached</div>
-                  )}
-                </td>
-                <td style={{ textAlign: 'right' }}>
-                  <button className="ghost sm" onClick={() => setOpen(r.id)}>Open</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Async>
+      <ListTable
+        head={['Authority', 'Basis', 'Subject', 'Received', 'Status', '']}
+        loading={loading}
+        error={error}
+        empty={rows.length === 0}
+        emptyText="No requests have been logged."
+        cursor={null}
+        onMore={() => {}}
+      >
+        {rows.map((r) => (
+        <tr key={r.id}>
+          <td>
+            <div style={{ fontWeight: 600 }}>{r.authority}</div>
+            <div className="mute" style={{ fontSize: 13 }}>{r.reference}</div>
+          </td>
+          <td>
+            <div style={{ fontSize: 13 }}>{r.legal_basis}</div>
+            {r.emergency && <Pill tone="danger">emergency</Pill>}
+          </td>
+          <td className="mono" style={{ fontSize: 13 }}>
+            {r.subject_phone ?? '—'}
+            {!r.subject_user_id && <div className="mute" style={{ fontSize: 12 }}>no account</div>}
+          </td>
+          <td className="mute" style={{ fontSize: 13 }}>{when(r.received_at)}</td>
+          <td>
+            <Pill tone={STATUS_TONE[r.status]}>{r.status.replace(/_/g, ' ')}</Pill>
+            {/* The absence of paperwork is the thing worth seeing from the list. */}
+            {!r.order_document_key && (
+              <div style={{ fontSize: 12, color: 'var(--attention)', marginTop: 3 }}>no order attached</div>
+            )}
+          </td>
+          <td style={{ textAlign: 'right' }}>
+            <button className="ghost sm" onClick={() => setOpen(r.id)}>Open</button>
+          </td>
+        </tr>
+        ))}
+      </ListTable>
     </>
   );
 }
