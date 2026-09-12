@@ -12,10 +12,15 @@ import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api, clearToken, getToken, ApiError } from '../lib/api';
+import {
+  LayoutDashboard, BarChart3, Flag, Film, Users2, CalendarDays, Gamepad2,
+  BellRing, UserCog, FileText, Landmark, ScrollText, LogOut,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
 export type Me = { email: string; name: string; role: 'admin' | 'moderator' };
 
-type NavItem = { href: string; label: string; adminOnly?: boolean; tone?: 'legal' };
+type NavItem = { href: string; label: string; icon: LucideIcon; adminOnly?: boolean; tone?: 'legal' };
 
 /**
  * GROUPED, not a flat list of eleven.
@@ -30,25 +35,25 @@ const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: '',
     items: [
-      { href: '/', label: 'Overview' },
-      { href: '/analytics', label: 'Analytics', adminOnly: true },
+      { href: '/', label: 'Overview', icon: LayoutDashboard },
+      { href: '/analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
     ],
   },
   {
     section: 'Moderation',
     items: [
-      { href: '/reports', label: 'Reports' },
-      { href: '/clips', label: 'Clips' },
-      { href: '/communities', label: 'Communities' },
+      { href: '/reports', label: 'Reports', icon: Flag },
+      { href: '/clips', label: 'Clips', icon: Film },
+      { href: '/communities', label: 'Communities', icon: Users2 },
     ],
   },
   {
     section: 'Operations',
     items: [
-      { href: '/events', label: 'Events & revenue' },
-      { href: '/games', label: 'Games', adminOnly: true },
-      { href: '/push', label: 'Push', adminOnly: true },
-      { href: '/users', label: 'Users & devices', adminOnly: true },
+      { href: '/events', label: 'Events & revenue', icon: CalendarDays },
+      { href: '/games', label: 'Games', icon: Gamepad2, adminOnly: true },
+      { href: '/push', label: 'Push', icon: BellRing, adminOnly: true },
+      { href: '/users', label: 'Users & devices', icon: UserCog, adminOnly: true },
     ],
   },
   {
@@ -56,9 +61,9 @@ const NAV: { section: string; items: NavItem[] }[] = [
     // Separated and last so neither is reachable by muscle memory aimed at something else.
     section: 'Legal',
     items: [
-      { href: '/dpdp', label: 'Data requests', adminOnly: true },
-      { href: '/govt', label: 'Government requests', adminOnly: true, tone: 'legal' },
-      { href: '/audit', label: 'Audit log' },
+      { href: '/dpdp', label: 'Data requests', icon: FileText, adminOnly: true },
+      { href: '/govt', label: 'Government requests', icon: Landmark, adminOnly: true, tone: 'legal' },
+      { href: '/audit', label: 'Audit log', icon: ScrollText },
     ],
   },
 ];
@@ -114,22 +119,27 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
           height: '100vh',
         }}
       >
-        <div style={{ padding: '0 10px 16px', display: 'flex', alignItems: 'center', gap: 9 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--accent)' }} />
-          <strong style={{ letterSpacing: '-0.01em' }}>Voiid</strong>
-          <span className="mute" style={{ fontSize: 13 }}>Admin</span>
+        <div className="mb-4 flex items-center gap-2.5 px-2.5 pb-4"
+             style={{ borderBottom: '1px solid var(--border)' }}>
+          <span
+            className="grid h-7 w-7 place-items-center rounded-md text-[13px] font-bold text-[#04181b]"
+            style={{
+              background: 'linear-gradient(150deg, var(--accent-ink), var(--accent))',
+              boxShadow: '0 2px 10px rgba(25,195,212,0.25)',
+            }}
+          >
+            V
+          </span>
+          <div className="leading-tight">
+            <div className="text-sm font-semibold tracking-[-0.01em]">Voiid</div>
+            <div className="text-micro text-[var(--text-mute)]">Operations</div>
+          </div>
         </div>
 
         {sections.map((g, gi) => (
           <div key={g.section || gi} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             {g.section && (
-              <div
-                className="mute"
-                style={{
-                  fontSize: 11, fontWeight: 600, letterSpacing: '0.06em',
-                  textTransform: 'uppercase', padding: '14px 10px 5px',
-                }}
-              >
+              <div className="px-2.5 pb-1.5 pt-4 text-micro font-semibold uppercase tracking-[0.07em] text-[var(--text-mute)]">
                 {g.section}
               </div>
             )}
@@ -139,45 +149,66 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
                 <Link
                   key={n.href}
                   href={n.href}
-                  style={{
-                    padding: '9px 10px',
-                    borderRadius: 9,
-                    fontSize: 14,
-                    fontWeight: active ? 600 : 500,
-                    color: active ? 'var(--text)' : 'var(--text-dim)',
-                    background: active ? 'var(--accent-quiet)' : 'transparent',
-                    textDecoration: 'none',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
+                  aria-current={active ? 'page' : undefined}
+                  className={[
+                    'group relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm',
+                    'no-underline transition-colors',
+                    active
+                      ? 'bg-[var(--accent-quiet)] font-semibold text-[var(--text)]'
+                      : 'font-medium text-[var(--text-dim)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]',
+                  ].join(' ')}
                 >
+                  {/* A RAIL, not just a fill. A tinted background alone is easy to lose in
+                      peripheral vision on a dark sidebar; a bright edge against the panel
+                      border is what the eye actually catches when scanning back. */}
+                  {active && (
+                    <span
+                      aria-hidden
+                      className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r"
+                      style={{ background: 'var(--accent-ink)' }}
+                    />
+                  )}
+                  <n.icon
+                    size={15}
+                    strokeWidth={active ? 2.2 : 1.9}
+                    className={active ? 'text-[var(--accent-ink)]' : 'text-[var(--text-mute)] group-hover:text-[var(--text-dim)]'}
+                  />
+                  <span className="flex-1">{n.label}</span>
                   {/* A standing mark on the surfaces where a mistake is a legal problem.
                       Not a warning — the work is legitimate — but the eye should never
                       land here thinking it is somewhere ordinary. */}
                   {n.tone === 'legal' && (
-                    <span
-                      aria-hidden
-                      style={{
-                        width: 5, height: 5, borderRadius: 5,
-                        background: 'var(--attention)', flex: '0 0 5px',
-                      }}
-                    />
+                    <span aria-hidden className="h-1.5 w-1.5 rounded-full"
+                          style={{ background: 'var(--attention)' }} />
                   )}
-                  {n.label}
                 </Link>
               );
             })}
           </div>
         ))}
 
-        <div style={{ marginTop: 'auto', padding: '12px 10px 0', borderTop: '1px solid var(--border)' }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>{me.name || me.email}</div>
-          <div className="mute" style={{ fontSize: 12, marginBottom: 10 }}>
-            {me.role === 'admin' ? 'Admin' : 'Moderator'}
+        <div className="mt-auto pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+          <div className="mb-2 flex items-center gap-2.5 px-1">
+            {/* An initial, not a generic avatar glyph. On a console where two people share a
+                machine, the question the footer answers is "who am I signed in as" — and a
+                letter answers it faster than a name read at 12px. */}
+            <span
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-tiny font-semibold"
+              style={{ background: 'var(--surface-3)', color: 'var(--accent-ink)' }}
+            >
+              {(me.name || me.email).charAt(0).toUpperCase()}
+            </span>
+            <div className="min-w-0 flex-1 leading-tight">
+              <div className="truncate text-tiny font-semibold" title={me.name || me.email}>
+                {me.name || me.email}
+              </div>
+              <div className="text-micro text-[var(--text-mute)]">
+                {me.role === 'admin' ? 'Admin' : 'Moderator'}
+              </div>
+            </div>
           </div>
           <button
-            className="ghost sm"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-tiny font-medium text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
             onClick={async () => {
               // Best-effort server logout, then clear locally REGARDLESS. A network failure
               // must not leave a live token sitting in the tab.
@@ -186,6 +217,7 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
               router.replace('/login');
             }}
           >
+            <LogOut size={13} strokeWidth={2} />
             Sign out
           </button>
         </div>

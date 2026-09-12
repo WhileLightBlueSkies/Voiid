@@ -1,8 +1,26 @@
 'use client';
 
+//
+// The console's front door.
+//
+// A login screen is the one page in an admin panel with no data on it, which makes it the
+// page most often left as a bare form on a grey field. It is also the first thing anyone
+// sees of the product, including the person deciding whether the rest looks trustworthy —
+// so it gets the same care as a surface that does carry data.
+//
+// WHAT IT DELIBERATELY DOES NOT DO
+//   * No "forgot password" link. Admin accounts are provisioned, not self-served; a link to
+//     a flow that does not exist is worse than no link.
+//   * No sign-up. Same reason.
+//   * No branding claims about security. A padlock illustration on a login form is
+//     decoration pretending to be assurance.
+//
+
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, setToken, ApiError } from '../../lib/api';
+import { Button } from '../../components/ui/button';
+import { Input, Label } from '../../components/ui/input';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -41,35 +59,120 @@ export default function Login() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}>
-      <form onSubmit={submit} className="card" style={{ width: '100%', maxWidth: 380, padding: 26 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 3, background: 'var(--accent)' }} />
-          <strong>Voiid</strong>
-          <span className="mute" style={{ fontSize: 13 }}>Admin</span>
+    <div className="relative grid min-h-screen place-items-center overflow-hidden p-6">
+      {/*
+        AMBIENT LIGHT, not a picture. Two wide, very low-opacity accent washes behind the
+        card give the page a light source, so the form reads as sitting in a room rather
+        than floating on a flat fill. They are pure CSS — no image request on the one page
+        that must load before a session exists, and nothing to go stale.
+      */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            'radial-gradient(760px circle at 18% 8%, rgba(25,195,212,0.10), transparent 62%),' +
+            'radial-gradient(680px circle at 84% 92%, rgba(96,165,250,0.07), transparent 60%)',
+        }}
+      />
+      {/* A faint grid. It gives the empty field a sense of scale — the difference between
+          "dark background" and "a surface that extends past the card". Masked to fade out
+          before the edges so it never reads as a texture swatch. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 opacity-[0.35]"
+        style={{
+          backgroundImage:
+            'linear-gradient(rgba(255,255,255,0.028) 1px, transparent 1px),' +
+            'linear-gradient(90deg, rgba(255,255,255,0.028) 1px, transparent 1px)',
+          backgroundSize: '52px 52px',
+          maskImage: 'radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 78%)',
+          WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 78%)',
+        }}
+      />
+
+      <div className="relative w-full max-w-[400px]">
+        {/* The mark sits ABOVE the card rather than inside it. The card is the task; the
+            identity is context, and stacking them lets the form start at its own first
+            line instead of a third of the way down. */}
+        <div className="mb-7 flex items-center gap-2.5">
+          <span
+            className="grid h-8 w-8 place-items-center rounded-md text-[15px] font-bold text-[#04181b]"
+            style={{
+              background: 'linear-gradient(150deg, var(--accent-ink), var(--accent))',
+              boxShadow: '0 2px 14px rgba(25,195,212,0.30)',
+            }}
+          >
+            V
+          </span>
+          <div className="leading-tight">
+            <div className="text-[15px] font-semibold tracking-[-0.01em]">Voiid</div>
+            <div className="text-tiny text-[var(--text-mute)]">Operations console</div>
+          </div>
         </div>
-        <p className="muted" style={{ margin: '0 0 20px', fontSize: 14 }}>
-          Internal operations console.
+
+        <form
+          onSubmit={submit}
+          className="rounded-lg border border-border bg-card p-6"
+          style={{
+            // The same top-edge highlight the rest of the console's cards carry, a little
+            // stronger here because this card has nothing else competing for the eye.
+            backgroundImage:
+              'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0) 140px)',
+            boxShadow: '0 18px 50px -20px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.02)',
+          }}
+        >
+          <h1 className="mb-1 text-[17px] font-semibold tracking-[-0.015em]">Sign in</h1>
+          <p className="mb-6 text-sm text-[var(--text-mute)]">
+            Internal access only. Sessions end when this tab closes.
+          </p>
+
+          <div className="mb-4 space-y-1.5">
+            <Label htmlFor="email" className="text-[var(--text-dim)]">Email</Label>
+            <Input
+              id="email" type="email" value={email} autoComplete="username" required
+              autoFocus placeholder="you@voiid.app"
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
+
+          <div className="mb-5 space-y-1.5">
+            <Label htmlFor="password" className="text-[var(--text-dim)]">Password</Label>
+            <Input
+              id="password" type="password" value={password} autoComplete="current-password"
+              required placeholder="••••••••••••"
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+
+          {/* role="alert" so the failure is ANNOUNCED, not merely drawn. A sighted user sees
+              the red; a screen-reader user would otherwise submit into silence. */}
+          {error && (
+            <div
+              role="alert"
+              className="mb-5 rounded-md border px-3 py-2.5 text-sm"
+              style={{
+                borderColor: 'rgba(248,113,113,0.28)',
+                background: 'rgba(248,113,113,0.09)',
+                color: '#fca5a5',
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          <Button type="submit" disabled={busy} className="w-full" size="lg">
+            {busy ? 'Signing in…' : 'Sign in'}
+          </Button>
+        </form>
+
+        {/* The session rule, stated where it is relevant rather than discovered later. It is
+            also the honest reason this console feels different from a consumer app: closing
+            the tab really does end the session. */}
+        <p className="mt-5 text-center text-tiny text-[var(--text-mute)]">
+          Access is provisioned by an administrator.
         </p>
-
-        <label className="mute" style={{ fontSize: 13 }}>Email</label>
-        <input
-          type="email" value={email} autoComplete="username" required
-          onChange={(e) => setEmail(e.target.value)} style={{ margin: '6px 0 14px' }}
-        />
-
-        <label className="mute" style={{ fontSize: 13 }}>Password</label>
-        <input
-          type="password" value={password} autoComplete="current-password" required
-          onChange={(e) => setPassword(e.target.value)} style={{ margin: '6px 0 18px' }}
-        />
-
-        {error && <div className="notice error" style={{ marginBottom: 14 }}>{error}</div>}
-
-        <button type="submit" disabled={busy} style={{ width: '100%' }}>
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
+      </div>
     </div>
   );
 }

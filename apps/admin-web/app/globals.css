@@ -1,6 +1,5 @@
 @tailwind base;
 @tailwind components;
-@tailwind utilities;
 
 /*
  * Voiid Admin — internal operations console.
@@ -17,30 +16,30 @@
 :root {
   color-scheme: dark;
 
-  --bg: #080c0e;              /* Theme.swift background (dark) */
-  --surface: #111719;         /* surfaceCard (dark) */
-  --surface-2: #182124;       /* surfaceRaised (dark) */
-  --surface-3: #1f2a2e;       /* hover / pressed well */
+  --bg: #0a0e14;              /* Theme.swift background (dark) */
+  --surface: #111720;         /* surfaceCard (dark) */
+  --surface-2: #171e29;       /* surfaceRaised (dark) */
+  --surface-3: #1e2733;       /* hover / pressed well */
 
-  --border: #263236;          /* divider (dark) */
-  --border-strong: #35454a;
+  --border: #222c3a;          /* divider (dark) */
+  --border-strong: #33405280;
 
-  --text: #f6f8f8;
-  --text-dim: #a6b0b2;
-  --text-mute: #7d8b90;
+  --text: #e8edf5;
+  --text-dim: #9aa7b8;
+  --text-mute: #6b7b8f;
 
   /* The fill and the ink are different jobs. #13828C on #080C0E is too dark to READ,
    * so teal text uses the lighter ink — the same split the marketing site makes. */
-  --accent: #13828c;
-  --accent-hover: #16959f;
-  --accent-ink: #68b8bd;
-  --accent-quiet: rgba(19, 130, 140, 0.14);
+  --accent: #19c3d4;
+  --accent-hover: #2dd6e6;
+  --accent-ink: #5fe3f0;
+  --accent-quiet: rgba(25, 195, 212, 0.13);
 
   /* Status is never carried by hue alone anywhere in this panel — always a word too. */
-  --ok: #2fa36b;
-  --danger: #e5484d;
-  --warning: #facc15;
-  --info: #3b82f6;
+  --ok: #34d399;
+  --danger: #f87171;
+  --warning: #fbbf24;
+  --info: #60a5fa;
 
   /* Cloudflare's console reads TIGHT: 6/8px radii, not the 12/16 of a marketing page.
    * Rounder corners make a data table look like a settings sheet. */
@@ -55,7 +54,7 @@
 
   /* Cloudflare's signature: the orange accent for attention states, used sparingly and
    * NEVER as the primary action — teal stays the brand. */
-  --attention: #f6821f;
+  --attention: #fb923c;
 
   --row-h: 44px;
 
@@ -65,19 +64,19 @@
    * var(--surface) keeps rendering identically while components move to bg-card, so the
    * migration can be incremental instead of a flag day. Both names resolve to one pixel.
    * Change a colour here and change its hex twin above — they are one decision. */
-  --bg-hsl: 200 27% 4%;
-  --surface-hsl: 195 19% 8%;
-  --surface-2-hsl: 195 20% 12%;
-  --surface-3-hsl: 196 19% 15%;
-  --border-hsl: 195 17% 18%;
-  --text-hsl: 180 12% 97%;
-  --text-mute-hsl: 196 8% 53%;
-  --accent-hsl: 185 76% 31%;
-  --ok-hsl: 151 55% 41%;
-  --danger-hsl: 358 75% 59%;
-  --warning-hsl: 48 96% 53%;
-  --info-hsl: 217 91% 60%;
-  --attention-hsl: 28 92% 54%;
+  --bg-hsl: 216 33% 6%;
+  --surface-hsl: 216 31% 10%;
+  --surface-2-hsl: 217 28% 13%;
+  --surface-3-hsl: 214 26% 16%;
+  --border-hsl: 215 26% 18%;
+  --text-hsl: 217 39% 94%;
+  --text-mute-hsl: 213 14% 49%;
+  --accent-hsl: 185 79% 46%;
+  --ok-hsl: 158 64% 52%;
+  --danger-hsl: 0 91% 71%;
+  --warning-hsl: 43 96% 56%;
+  --info-hsl: 213 94% 68%;
+  --attention-hsl: 27 96% 61%;
 }
 
 * { box-sizing: border-box; }
@@ -88,7 +87,11 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font: 14px/1.55 var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* Inter's defaults leave figures proportional; a console compares numbers DOWN a
+   * column, so tabular is the right default and prose is the exception. */
+  font-feature-settings: "cv11", "ss01", "tnum";
+  letter-spacing: -0.006em;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -172,6 +175,10 @@ input::placeholder { color: var(--text-mute); }
   border-radius: var(--radius-lg);
   padding: 16px;
   box-shadow: var(--shadow-1);
+  /* A 1px highlight along the top edge. On a near-black ground a drop shadow is invisible,
+   * so elevation has to be carried by light catching the upper lip — which is what makes a
+   * panel read as sitting ON the page rather than cut out of it. */
+  background-image: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0) 120px);
 }
 
 /* A panel with its own titled header bar — the primary grouping unit of the Cloudflare
@@ -201,7 +208,12 @@ input::placeholder { color: var(--text-mute); }
 
 .muted { color: var(--text-dim); }
 .mute  { color: var(--text-mute); }
-.mono  { font-variant-numeric: tabular-nums; }
+.mono  {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.94em;   /* mono runs visually larger at the same px; this matches its neighbours */
+  letter-spacing: -0.01em;
+}
 
 /* ── Table ─────────────────────────────────────────────────────────────────── */
 
@@ -273,3 +285,17 @@ tbody tr:hover { background: var(--surface-2); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/*
+ * UTILITIES LAST, and this ordering is load-bearing.
+ *
+ * Emitted at the top, Tailwind's utilities lose to every bare-element rule below them —
+ * `button { background: var(--accent) }` and `.bg-transparent` have the same specificity,
+ * so the later one wins, and a shadcn <Button variant="ghost"> came out solid teal. The
+ * page looked unstyled because its classes were present and silently outranked.
+ *
+ * Putting them here means a utility overrides the legacy element styles, which is the
+ * behaviour every Tailwind component assumes. The element rules above stay for the pages
+ * not yet migrated; as each one moves to components, its rule can go.
+ */
+@tailwind utilities;
