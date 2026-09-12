@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Shell from '../components/Shell';
 import { PageHeader, Async } from '../components/ui';
-import { AreaChart, BarRow, type Point } from '../components/Chart';
+import { MultiLineChart, BarRow } from '../components/Chart';
 import { DateRange, rangeQuery, rangeLabel, type Range } from '../components/DateRange';
 import { CountryShares, type CountryShare } from '../components/CountryShares';
 import { api } from '../lib/api';
@@ -68,8 +68,15 @@ function Body() {
   }, []);
 
   const n = (v?: number) => v ?? 0;
-  const pts = (k: keyof Series): Point[] =>
-    series.map((r) => ({ day: r.day, value: Number(r[k]) || 0 }));
+  // One row per day carrying every metric, which is the shape a shared-scale chart needs:
+  // four independent series cannot be compared when each is normalised to its own peak.
+  const multiSeries = series.map((r) => ({
+    day: r.day,
+    users: Number(r.users) || 0,
+    clips: Number(r.clips) || 0,
+    posts: Number(r.posts) || 0,
+    conversations: Number(r.conversations) || 0,
+  }));
 
   return (
     <>
@@ -112,10 +119,25 @@ function Body() {
                 <div className="notice error">{seriesError}</div>
               ) : (
                 <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
-                  <Panel title="New users"><AreaChart points={pts('users')} label="Signups" /></Panel>
-                  <Panel title="New clips"><AreaChart points={pts('clips')} label="Clips posted" color="var(--info)" /></Panel>
-                  <Panel title="Community posts"><AreaChart points={pts('posts')} label="Posts" color="var(--ok)" /></Panel>
-                  <Panel title="New conversations"><AreaChart points={pts('conversations')} label="Threads started" color="var(--attention)" /></Panel>
+                  {/* ONE panel, four series, rather than four panels of one.
+                      Four separate area charts each auto-scale to their own maximum, so a
+                      day with 3 signups and a day with 300 clips drew the same height —
+                      the shapes were comparable but the VOLUMES were not, which is the
+                      comparison an overview is for. Sharing a scale makes the relationship
+                      between them readable at a glance, and the per-metric detail is one
+                      click away on Analytics. */}
+                  <div style={{ gridColumn: 'span 2' }}>
+                    <MultiLineChart
+                      label="Growth"
+                      data={multiSeries}
+                      series={[
+                        { key: 'users', name: 'Signups' },
+                        { key: 'clips', name: 'Clips' },
+                        { key: 'posts', name: 'Posts' },
+                        { key: 'conversations', name: 'Threads' },
+                      ]}
+                    />
+                  </div>
 
                   {/* Fills the gap the fourth chart leaves. `span 2` rather than `1 / -1`:
                       at three columns it takes the two free cells and the row closes; at two
