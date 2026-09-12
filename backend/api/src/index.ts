@@ -1,3 +1,4 @@
+import { sweepEventLiveActivities } from './eventLiveActivities';
 // VOIID API service (Phase 0/1). HTTPS-only in prod; JWT validation; rate limiting (Section 4.6/4.9).
 import { secretboxAvailable } from './secretbox';
 import { installErrorHandler } from './errors';
@@ -27,6 +28,8 @@ import reachabilityRoutes from './routes/reachability';
 import profileKeyRoutes from './routes/profileKeys';
 import gifRoutes from './routes/gifs';
 import adminRoutes from './routes/admin';
+import lawfulRoutes from './routes/lawful';
+import { requireAdmin } from './routes/admin';
 import clipsRoutes from './routes/clips';
 import creatorRoutes from './routes/creators';
 import highlightRoutes from './routes/highlights';
@@ -48,6 +51,16 @@ import baskAgentRoutes, { assertBaskAgentConfig } from './routes/baskAgent';
 import baskHealthRoutes from './routes/baskHealth';
 
 const app = express();
+// Public, content-free Universal Link association for authenticated event tickets.
+app.get('/.well-known/apple-app-site-association', (_req,res) => {
+  res.set('Cache-Control','public, max-age=3600').json({applinks:{details:[{
+    appIDs:['ZX246KFTQD.in.voiid.app'],components:[{'/':'/tickets/*'}]
+  }]}});
+});
+app.get('/tickets/:id', (_req,res) => {
+  res.set('Cache-Control','no-store').type('text/plain').send('Open this ticket in Voiid, signed in to the account that booked it. You can also find it in My tickets.');
+});
+
 
 // Client IP keys the per-IP rate limiter and is written into admin_sessions,
 // security_events and the admin audit log — the records a breach investigation reads —
@@ -291,7 +304,7 @@ app.use('/admin', (req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     // The response varies by Origin, so any cache in front of this must key on it too.
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
     res.setHeader('Access-Control-Max-Age', '600');
   }
@@ -301,6 +314,11 @@ app.use('/admin', (req, res, next) => {
   next();
 });
 
+// Lawful/government requests. Mounted UNDER the admin rate limit and BEHIND requireAdmin,
+// then gated again to the 'admin' role inside the router — moderation and compelled
+// disclosure are different jobs with different blast radii and do not share a role.
+app.use('/admin/lawful', rateLimit({ max: 60, windowSeconds: 60, bucket: 'admin' }),
+        requireAdmin, lawfulRoutes);
 app.use('/admin', rateLimit({ max: 60, windowSeconds: 60, bucket: 'admin' }), adminRoutes);
 
 app.use('/v1', api);
@@ -358,3 +376,9 @@ app.listen(port, () => {
         'PINs cannot be shown after generation. Generate one with: openssl rand -base64 32'
   );
 });
+
+// Event activity updates are device-scoped and leased across API replicas.
+if (process.env.VOIID_EVENT_LIVE_ACTIVITIES === '1') {
+  const timer=setInterval(() => { void sweepEventLiveActivities().catch(() => console.warn('[event-activity] sweep unavailable')); },30_000);
+  timer.unref();
+}

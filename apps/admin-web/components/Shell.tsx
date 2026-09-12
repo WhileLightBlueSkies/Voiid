@@ -15,17 +15,52 @@ import { api, clearToken, getToken, ApiError } from '../lib/api';
 
 export type Me = { email: string; name: string; role: 'admin' | 'moderator' };
 
-const NAV: { href: string; label: string; adminOnly?: boolean }[] = [
-  { href: '/', label: 'Overview' },
-  { href: '/communities', label: 'Communities' },
-  { href: '/clips', label: 'Clips' },
-  { href: '/events', label: 'Events & revenue' },
-  { href: '/reports', label: 'Reports' },
-  { href: '/games', label: 'Games', adminOnly: true },
-  { href: '/push', label: 'Push', adminOnly: true },
-  { href: '/users', label: 'Users & devices', adminOnly: true },
-  { href: '/dpdp', label: 'Data requests', adminOnly: true },
-  { href: '/audit', label: 'Audit log' },
+type NavItem = { href: string; label: string; adminOnly?: boolean; tone?: 'legal' };
+
+/**
+ * GROUPED, not a flat list of eleven.
+ *
+ * Eleven equal-weight links is a scan problem: nothing tells the operator that "Clips" and
+ * "Data requests" are different KINDS of work, so finding the second one means reading all
+ * of them. The groups say what each stretch of the sidebar is for, and the ordering runs
+ * from the everyday to the consequential — moderation queues first, the legal surfaces last,
+ * because that is both how often they are opened and how much damage a misclick does.
+ */
+const NAV: { section: string; items: NavItem[] }[] = [
+  {
+    section: '',
+    items: [
+      { href: '/', label: 'Overview' },
+      { href: '/analytics', label: 'Analytics', adminOnly: true },
+    ],
+  },
+  {
+    section: 'Moderation',
+    items: [
+      { href: '/reports', label: 'Reports' },
+      { href: '/clips', label: 'Clips' },
+      { href: '/communities', label: 'Communities' },
+    ],
+  },
+  {
+    section: 'Operations',
+    items: [
+      { href: '/events', label: 'Events & revenue' },
+      { href: '/games', label: 'Games', adminOnly: true },
+      { href: '/push', label: 'Push', adminOnly: true },
+      { href: '/users', label: 'Users & devices', adminOnly: true },
+    ],
+  },
+  {
+    // The two surfaces where a mistake is a legal problem rather than an operational one.
+    // Separated and last so neither is reachable by muscle memory aimed at something else.
+    section: 'Legal',
+    items: [
+      { href: '/dpdp', label: 'Data requests', adminOnly: true },
+      { href: '/govt', label: 'Government requests', adminOnly: true, tone: 'legal' },
+      { href: '/audit', label: 'Audit log' },
+    ],
+  },
 ];
 
 export default function Shell({ children }: { children: (me: Me) => ReactNodeLike }) {
@@ -58,7 +93,9 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
   // warm API, and a flashed loader is more visible than the wait it describes.
   if (!me) return null;
 
-  const items = NAV.filter((n) => !n.adminOnly || me.role === 'admin');
+  const sections = NAV
+    .map((g) => ({ ...g, items: g.items.filter((n) => !n.adminOnly || me.role === 'admin') }))
+    .filter((g) => g.items.length > 0);
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
@@ -83,26 +120,56 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
           <span className="mute" style={{ fontSize: 13 }}>Admin</span>
         </div>
 
-        {items.map((n) => {
-          const active = n.href === '/' ? pathname === '/' : pathname.startsWith(n.href);
-          return (
-            <Link
-              key={n.href}
-              href={n.href}
-              style={{
-                padding: '9px 10px',
-                borderRadius: 9,
-                fontSize: 14,
-                fontWeight: active ? 600 : 500,
-                color: active ? 'var(--text)' : 'var(--text-dim)',
-                background: active ? 'var(--accent-quiet)' : 'transparent',
-                textDecoration: 'none',
-              }}
-            >
-              {n.label}
-            </Link>
-          );
-        })}
+        {sections.map((g, gi) => (
+          <div key={g.section || gi} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {g.section && (
+              <div
+                className="mute"
+                style={{
+                  fontSize: 11, fontWeight: 600, letterSpacing: '0.06em',
+                  textTransform: 'uppercase', padding: '14px 10px 5px',
+                }}
+              >
+                {g.section}
+              </div>
+            )}
+            {g.items.map((n) => {
+              const active = n.href === '/' ? pathname === '/' : pathname.startsWith(n.href);
+              return (
+                <Link
+                  key={n.href}
+                  href={n.href}
+                  style={{
+                    padding: '9px 10px',
+                    borderRadius: 9,
+                    fontSize: 14,
+                    fontWeight: active ? 600 : 500,
+                    color: active ? 'var(--text)' : 'var(--text-dim)',
+                    background: active ? 'var(--accent-quiet)' : 'transparent',
+                    textDecoration: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                >
+                  {/* A standing mark on the surfaces where a mistake is a legal problem.
+                      Not a warning — the work is legitimate — but the eye should never
+                      land here thinking it is somewhere ordinary. */}
+                  {n.tone === 'legal' && (
+                    <span
+                      aria-hidden
+                      style={{
+                        width: 5, height: 5, borderRadius: 5,
+                        background: 'var(--attention)', flex: '0 0 5px',
+                      }}
+                    />
+                  )}
+                  {n.label}
+                </Link>
+              );
+            })}
+          </div>
+        ))}
 
         <div style={{ marginTop: 'auto', padding: '12px 10px 0', borderTop: '1px solid var(--border)' }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>{me.name || me.email}</div>
