@@ -6,6 +6,8 @@ import { PageHeader, Pill, when, name } from '../../components/ui';
 import { ListTable } from '../../components/List';
 import { useList } from '../../components/useList';
 import { api } from '../../lib/api';
+import { Button } from '../../components/ui/button';
+import { PromptDialog, ConfirmDialog } from '../../components/ui/dialog';
 
 type Clip = {
   id: string; caption: string | null; created_at: string;
@@ -42,12 +44,12 @@ function Body({ me }: { me: Me }) {
     }
   }
 
+  // Which clip each dialog is about, or null when closed. Keyed by id rather than a
+  // boolean so the dialog cannot outlive the row it was opened from.
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
   async function destroy(id: string) {
-    // DELETE is not remove. Remove hides a clip and is reversible; this erases the object
-    // from storage and cannot be undone, so it asks — and says which of the two it is.
-    if (!window.confirm(
-      'Permanently delete this clip and its file? Removal is reversible; this is not.',
-    )) return;
     setBusy(id);
     setWriteError(null);
     try {
@@ -127,17 +129,10 @@ function Body({ me }: { me: Me }) {
                   Restore
                 </button>
               ) : (
-                <button
-                  className="danger sm" disabled={busy === c.id}
-                  onClick={() => {
-                    // The reason is required by the route and is the only record of WHY a
-                    // takedown happened, so it is asked for before the call, not after.
-                    const reason = window.prompt('Why is this clip being removed?')?.trim();
-                    if (reason) void act(c.id, `/clips/${c.id}/remove`, { reason });
-                  }}
-                >
+                <Button variant="destructive" size="sm" disabled={busy === c.id}
+                        onClick={() => setRemoving(c.id)}>
                   Remove
-                </button>
+                </Button>
               )}
             </td>
           </tr>
@@ -163,19 +158,51 @@ function Body({ me }: { me: Me }) {
               style={{ maxWidth: '80vw', maxHeight: '70vh', borderRadius: 'var(--radius-lg)' }}
             />
             <div className="row" style={{ gap: 8 }}>
-              <button className="ghost" onClick={() => setPlaying(null)}>Close</button>
+              <Button variant="ghost" onClick={() => setPlaying(null)}>Close</Button>
               {/* Deletion lives HERE and nowhere else: an irreversible action should not be
                   reachable from a list row, where it sits one mis-click from Remove. */}
               {me.role === 'admin' && (
-                <button className="danger" disabled={busy === playing.id}
-                        onClick={() => void destroy(playing.id)}>
+                <Button variant="destructive" disabled={busy === playing.id}
+                        onClick={() => setDeleting(playing.id)}>
                   Delete permanently
-                </button>
+                </Button>
               )}
             </div>
           </div>
         </div>
       )}
+
+      <PromptDialog
+        open={removing !== null}
+        title="Remove this clip?"
+        body="It stops being visible to anyone. This is reversible — the file is kept and the clip can be restored."
+        label="Why it is being removed"
+        placeholder="The rule it breaks, in a sentence."
+        confirmLabel="Remove clip"
+        destructive
+        busy={busy === removing}
+        onCancel={() => setRemoving(null)}
+        onConfirm={(reason) => {
+          const id = removing;
+          setRemoving(null);
+          if (id) void act(id, `/clips/${id}/remove`, { reason });
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleting !== null}
+        title="Delete permanently?"
+        body="This erases the clip and its file from storage. Removal is reversible; this is not."
+        confirmLabel="Delete permanently"
+        destructive
+        busy={busy === deleting}
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => {
+          const id = deleting;
+          setDeleting(null);
+          if (id) void destroy(id);
+        }}
+      />
     </>
   );
 }

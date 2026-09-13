@@ -7,6 +7,7 @@ import { PageHeader, Pill, when, name } from '../../components/ui';
 import { ListTable } from '../../components/List';
 import { useList } from '../../components/useList';
 import { api } from '../../lib/api';
+import { PromptDialog, ConfirmDialog } from '../../components/ui/dialog';
 
 type User = {
   id: string; username: string | null; full_name: string | null;
@@ -29,11 +30,13 @@ function Body() {
   /// separately audited.
   const [revealed, setRevealed] = useState<Record<string, string>>({});
 
+  // The user each dialog acts on. Holding the whole record rather than an id so the
+  // dialog can name the person — "sign out every device" is a different decision when you
+  // can see whose devices they are.
+  const [revoking, setRevoking] = useState<User | null>(null);
+  const [revealing, setRevealing] = useState<User | null>(null);
+
   async function revoke(u: User) {
-    // Signing every device out is disruptive and not obviously reversible from the user's
-    // side, so it confirms — the one destructive act on this page.
-    const label = name(u.full_name, u.username, u.id.slice(0, 8));
-    if (!window.confirm(`Sign out every device for ${label}? They'll have to log in again.`)) return;
     setBusy(u.id);
     setWriteError(null);
     try {
@@ -46,11 +49,7 @@ function Body() {
     }
   }
 
-  async function reveal(u: User) {
-    const reason = window.prompt(
-      'Why do you need this number? (recorded in the audit log against your name)',
-    )?.trim();
-    if (!reason) return;
+  async function reveal(u: User, reason: string) {
     setBusy(u.id);
     setWriteError(null);
     try {
@@ -114,7 +113,7 @@ function Body() {
                   {u.phone_masked && (
                     <button
                       className="ghost sm" disabled={busy === u.id}
-                      onClick={() => void reveal(u)}
+                      onClick={() => setRevealing(u)}
                     >
                       Reveal
                     </button>
@@ -129,7 +128,7 @@ function Body() {
               <button
                 className="ghost sm"
                 disabled={busy === u.id || u.device_count === 0}
-                onClick={() => void revoke(u)}
+                onClick={() => setRevoking(u)}
               >
                 Sign out devices
               </button>
@@ -137,6 +136,37 @@ function Body() {
           </tr>
         ))}
       </ListTable>
+
+      <PromptDialog
+        open={revealing !== null}
+        title="Reveal this phone number?"
+        body="The number is shown to you once and the request is written to the audit log against your name. The panel masks numbers so it cannot be used to harvest them — only to confirm one you already hold."
+        label="Why you need it"
+        placeholder="The ticket or case this is for."
+        confirmLabel="Reveal number"
+        busy={busy === revealing?.id}
+        onCancel={() => setRevealing(null)}
+        onConfirm={(reason) => {
+          const u = revealing;
+          setRevealing(null);
+          if (u) void reveal(u, reason);
+        }}
+      />
+
+      <ConfirmDialog
+        open={revoking !== null}
+        title={`Sign out every device for ${revoking ? name(revoking.full_name, revoking.username, revoking.id.slice(0, 8)) : ''}?`}
+        body="Every session ends immediately and they will have to log in again on each device. Their messages and keys are untouched."
+        confirmLabel="Sign out all devices"
+        destructive
+        busy={busy === revoking?.id}
+        onCancel={() => setRevoking(null)}
+        onConfirm={() => {
+          const u = revoking;
+          setRevoking(null);
+          if (u) void revoke(u);
+        }}
+      />
     </>
   );
 }

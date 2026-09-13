@@ -12,6 +12,8 @@ import { PageHeader, Pill, when } from '../../components/ui';
 import { ListTable } from '../../components/List';
 import { useList } from '../../components/useList';
 import { api } from '../../lib/api';
+import { Button } from '../../components/ui/button';
+import { PromptDialog, ConfirmDialog } from '../../components/ui/dialog';
 
 type Req = {
   id: string; user_id: string; kind: string; status: string;
@@ -28,6 +30,8 @@ function Body() {
   const [closed, setClosed] = useState(false);
   const list = useList<Req>('/dpdp', 'requests', { status: closed ? 'closed' : 'open' });
   const [busy, setBusy] = useState<string | null>(null);
+  const [erasing, setErasing] = useState<string | null>(null);
+  const [closing, setClosing] = useState<string | null>(null);
   const [writeError, setWriteError] = useState<string | null>(null);
 
   async function run(id: string, path: string, json: unknown) {
@@ -88,36 +92,52 @@ function Body() {
               {!closed && (
                 <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
                   {r.kind === 'erasure' && (
-                    <button
-                      className="danger sm"
-                      disabled={busy === r.id}
-                      onClick={() => {
-                        // Erasure soft-deletes a real person's account. It confirms, and the
-                        // wording says what actually happens rather than "are you sure".
-                        if (window.confirm('Start erasure? This soft-deletes the account and the worker purges it after the grace period.')) {
-                          void run(r.id, `/dpdp/${r.id}/start-erasure`, {});
-                        }
-                      }}
-                    >
+                    <Button variant="destructive" size="sm" disabled={busy === r.id}
+                            onClick={() => setErasing(r.id)}>
                       Start erasure
-                    </button>
+                    </Button>
                   )}
-                  <button
-                    className="ghost sm"
-                    disabled={busy === r.id}
-                    onClick={() => {
-                      const resolution = window.prompt('Close with what resolution?')?.trim();
-                      if (resolution) void run(r.id, `/dpdp/${r.id}/status`, { status: 'closed', resolution });
-                    }}
-                  >
+                  <Button variant="ghost" size="sm" disabled={busy === r.id}
+                          onClick={() => setClosing(r.id)}>
                     Close
-                  </button>
+                  </Button>
                 </div>
               )}
             </td>
           </tr>
         ))}
       </ListTable>
+
+      <ConfirmDialog
+        open={erasing !== null}
+        title="Start erasure?"
+        body="This soft-deletes the account now. The worker purges it permanently after the grace period, and that part cannot be undone."
+        confirmLabel="Start erasure"
+        destructive
+        busy={busy === erasing}
+        onCancel={() => setErasing(null)}
+        onConfirm={() => {
+          const id = erasing;
+          setErasing(null);
+          if (id) void run(id, `/dpdp/${id}/start-erasure`, {});
+        }}
+      />
+
+      <PromptDialog
+        open={closing !== null}
+        title="Close this request?"
+        body="The resolution is the record of what was done, and it is what the subject is told. A request closed with nothing written is one nobody can answer for later."
+        label="Resolution"
+        placeholder="What was provided, erased, or why it was refused."
+        confirmLabel="Close request"
+        busy={busy === closing}
+        onCancel={() => setClosing(null)}
+        onConfirm={(resolution) => {
+          const id = closing;
+          setClosing(null);
+          if (id) void run(id, `/dpdp/${id}/status`, { status: 'closed', resolution });
+        }}
+      />
     </>
   );
 }

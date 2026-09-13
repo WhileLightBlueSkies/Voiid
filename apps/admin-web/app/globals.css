@@ -283,8 +283,22 @@ tbody tr:hover { background: var(--surface-2); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; animation: none !important; }
+  /*
+   * GENTLER, NOT ABSENT. Killing every animation outright removes the cues that tell
+   * someone a dialog arrived or a row changed — reduced motion asks for less vestibular
+   * movement, not less feedback. So transforms are dropped (that is the part which causes
+   * discomfort) while opacity is kept and shortened.
+   */
+  *, *::before, *::after {
+    animation-duration: 120ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 120ms !important;
+  }
+  /* No scaling or sliding entrances; the surface simply becomes present. */
+  .animate-in { animation-name: rm-fade !important; }
+  [style*="transform"] { transition-property: opacity !important; }
 }
+@keyframes rm-fade { from { opacity: 0 } to { opacity: 1 } }
 
 /*
  * UTILITIES LAST, and this ordering is load-bearing.
