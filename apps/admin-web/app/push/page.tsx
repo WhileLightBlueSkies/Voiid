@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Shell, { type Me } from '../../components/Shell';
+import { Button } from '../../components/ui/button';
 import { PageHeader } from '../../components/ui';
 import { api } from '../../lib/api';
 
@@ -91,14 +92,14 @@ function Body({ me }: { me: Me }) {
       />
 
       {readOnly && (
-        <p style={{ color: '#a6b0b2', fontSize: 13, marginBottom: 16 }}>
+        <p style={{ color: 'var(--text-dim)', fontSize: 13, marginBottom: 16 }}>
           You have the moderator role — sending announcements requires the admin role.
         </p>
       )}
-      {error && <p style={{ color: '#e5484d', fontSize: 13, marginBottom: 16 }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 16 }}>{error}</p>}
 
       {sent && (
-        <div style={{ border: '1px solid #13828c', background: '#0f1f21', borderRadius: 12,
+        <div style={{ border: '1px solid var(--border)', background: 'var(--accent-quiet)', borderRadius: 12,
                       padding: 14, marginBottom: 16, fontSize: 13 }}>
           Sent to {sent.attempted} device{sent.attempted === 1 ? '' : 's'} — {sent.apns} iOS,
           {' '}{sent.fcm} Android
@@ -124,17 +125,10 @@ function Body({ me }: { me: Me }) {
         <Labelled label="Audience" hint="">
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {(['all', 'platform', 'user'] as Audience[]).map((a) => (
-              <button key={a} disabled={readOnly || busy}
-                      onClick={() => touch(setAudience)(a)}
-                      style={{
-                        padding: '7px 14px', borderRadius: 999, fontSize: 13,
-                        border: '1px solid ' + (audience === a ? '#13828c' : '#263236'),
-                        background: audience === a ? '#13828c' : 'transparent',
-                        color: audience === a ? '#fff' : '#a6b0b2',
-                        cursor: readOnly || busy ? 'default' : 'pointer',
-                      }}>
+              <SegButton key={a} active={audience === a} disabled={readOnly || busy}
+                         onClick={() => touch(setAudience)(a)}>
                 {a === 'all' ? 'Everyone' : a === 'platform' ? 'One platform' : 'One user'}
-              </button>
+              </SegButton>
             ))}
           </div>
         </Labelled>
@@ -143,17 +137,10 @@ function Body({ me }: { me: Me }) {
           <Labelled label="Platform" hint="">
             <div style={{ display: 'flex', gap: 8 }}>
               {(['ios', 'android'] as const).map((p) => (
-                <button key={p} disabled={readOnly || busy}
-                        onClick={() => touch(setPlatform)(p)}
-                        style={{
-                          padding: '7px 14px', borderRadius: 999, fontSize: 13,
-                          border: '1px solid ' + (platform === p ? '#13828c' : '#263236'),
-                          background: platform === p ? '#13828c' : 'transparent',
-                          color: platform === p ? '#fff' : '#a6b0b2',
-                          cursor: readOnly || busy ? 'default' : 'pointer',
-                        }}>
+                <SegButton key={p} active={platform === p} disabled={readOnly || busy}
+                           onClick={() => touch(setPlatform)(p)}>
                   {p === 'ios' ? 'iOS' : 'Android'}
-                </button>
+                </SegButton>
               ))}
             </div>
           </Labelled>
@@ -177,34 +164,61 @@ function Body({ me }: { me: Me }) {
             {busy ? 'Checking…' : 'Preview'}
           </button>
         ) : (
-          <div style={{ border: '1px solid #263236', borderRadius: 12, padding: 16,
-                        background: '#111719' }}>
-            <p style={{ fontSize: 12, color: '#a6b0b2', margin: '0 0 10px' }}>
-              This will reach <strong style={{ color: '#f6f8f8' }}>{preview.recipients}</strong>
+          <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16,
+                        background: 'var(--surface)' }}>
+            <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 10px' }}>
+              This will reach <strong style={{ color: 'var(--text)' }}>{preview.recipients}</strong>
               {' '}device{preview.recipients === 1 ? '' : 's'} — {preview.ios} iOS,
               {' '}{preview.android} Android. There is no undo.
             </p>
             {/* The payload as it will appear, so the last thing reviewed is the thing sent. */}
-            <div style={{ border: '1px solid #263236', borderRadius: 10, padding: 12,
-                          background: '#0b0f10', marginBottom: 12 }}>
+            <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12,
+                          background: 'var(--surface-2)', marginBottom: 12 }}>
               <div style={{ fontSize: 14, fontWeight: 600 }}>{preview.title}</div>
-              <div style={{ fontSize: 13, color: '#a6b0b2', marginTop: 2 }}>{preview.body}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 2 }}>{preview.body}</div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button disabled={busy} onClick={doSend}
-                      style={{ ...primary, opacity: busy ? 0.5 : 1 }}>
+              <Button disabled={busy} onClick={doSend}>
                 {busy ? 'Sending…' : `Send to ${preview.recipients}`}
-              </button>
-              <button disabled={busy} onClick={() => setPreview(null)}
-                      style={{ ...primary, background: 'transparent', border: '1px solid #263236',
-                               color: '#a6b0b2' }}>
+              </Button>
+              <Button variant="ghost" disabled={busy} onClick={() => setPreview(null)}>
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
         )}
       </div>
     </>
+  );
+}
+
+/**
+ * One option in a small exclusive set.
+ *
+ * Written against the design tokens rather than hex literals — these two selectors carried
+ * the old accent inline, so they went on showing the pre-redesign teal after the palette
+ * moved. aria-pressed rather than colour alone: the selected state must survive a reader
+ * who cannot see the fill.
+ */
+function SegButton({ active, disabled, onClick, children }: {
+  active: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      disabled={disabled}
+      onClick={onClick}
+      className={[
+        'rounded-full border px-3.5 py-1.5 text-tiny font-medium transition-colors',
+        'disabled:cursor-default disabled:opacity-50',
+        active
+          ? 'border-transparent bg-primary text-white'
+          : 'border-border bg-transparent text-[var(--text-dim)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]',
+      ].join(' ')}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -214,8 +228,8 @@ function Labelled({ label, hint, children }: {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-        <label style={{ fontSize: 12, color: '#a6b0b2' }}>{label}</label>
-        {hint && <span style={{ fontSize: 11, color: '#5d696c' }}>{hint}</span>}
+        <label style={{ fontSize: 12, color: 'var(--text-dim)' }}>{label}</label>
+        {hint && <span style={{ fontSize: 11, color: 'var(--text-mute)' }}>{hint}</span>}
       </div>
       {children}
     </div>
@@ -224,10 +238,10 @@ function Labelled({ label, hint, children }: {
 
 const input: React.CSSProperties = {
   width: '100%', padding: '9px 11px', borderRadius: 8,
-  border: '1px solid #263236', background: '#0b0f10', color: '#f6f8f8', fontSize: 13,
+  border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)', fontSize: 13,
 };
 
 const primary: React.CSSProperties = {
   padding: '10px 18px', borderRadius: 10, fontSize: 14, fontWeight: 600,
-  border: 'none', background: '#13828c', color: '#fff', cursor: 'pointer',
+  border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer',
 };

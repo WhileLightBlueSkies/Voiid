@@ -10,6 +10,10 @@ import { useCallback, useEffect, useState } from 'react';
 import Shell from '../../components/Shell';
 import { PageHeader, Async, Pill, when } from '../../components/ui';
 import { api } from '../../lib/api';
+import { Card } from '../../components/ui/card';
+import { Badge } from '../../components/ui/badge';
+import { Button } from '../../components/ui/button';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 
 type Entry = {
   id: string; admin_id: string | null; action: string;
@@ -65,45 +69,59 @@ function Body() {
         empty={rows.length === 0}
         emptyText="Nothing recorded yet."
       >
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <table>
-            <thead>
-              <tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Detail</th></tr>
-            </thead>
-            <tbody>
+        <Card className="overflow-hidden p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>When</TableHead>
+                <TableHead>Who</TableHead>
+                <TableHead>Action</TableHead>
+                <TableHead>Target</TableHead>
+                <TableHead>Detail</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {rows.map((e) => (
-                <tr key={e.id}>
-                  <td className="muted" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>{when(e.created_at)}</td>
-                  <td className="muted" style={{ fontSize: 13 }}>{e.admin_name || e.admin_email || '—'}</td>
-                  <td>
+                <TableRow key={e.id}>
+                  <TableCell className="whitespace-nowrap text-tiny text-[var(--text-mute)]">
+                    {when(e.created_at)}
+                  </TableCell>
+                  <TableCell className="text-tiny text-[var(--text-dim)]">
+                    {e.admin_name || e.admin_email || '—'}
+                  </TableCell>
+                  <TableCell>
                     {/* A refusal is the interesting half of an incident, so it is the one
                         action that gets a colour of its own. */}
                     {e.action.endsWith('forbidden')
-                      ? <Pill tone="danger">{e.action}</Pill>
-                      : <Pill>{e.action}</Pill>}
-                  </td>
-                  <td className="muted" style={{ fontSize: 13 }}>
-                    {e.target_type ? `${e.target_type}` : '—'}
+                      ? <Badge variant="destructive">{e.action}</Badge>
+                      : <Badge variant="secondary">{e.action}</Badge>}
+                  </TableCell>
+                  <TableCell className="text-tiny text-[var(--text-dim)]">
+                    {e.target_type ?? '—'}
                     {e.target_id && (
-                      <div className="mute" style={{ fontSize: 12, fontFamily: 'ui-monospace, monospace' }}>
+                      <div className="mono text-micro text-[var(--text-mute)]">
                         {e.target_id.slice(0, 8)}…
                       </div>
                     )}
-                  </td>
-                  <td className="mute" style={{ fontSize: 12, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  </TableCell>
+                  {/* The detail is raw JSON and can be long. Truncated with the full value
+                      on hover: a log row must stay one line tall or the table stops being
+                      scannable, but the detail is often the reason someone opened it. */}
+                  <TableCell className="mono max-w-[280px] truncate text-micro text-[var(--text-mute)]"
+                             title={e.detail ? JSON.stringify(e.detail, null, 2) : undefined}>
                     {e.detail ? JSON.stringify(e.detail) : '—'}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </Card>
 
         {cursor && (
-          <div style={{ marginTop: 14, textAlign: 'center' }}>
-            <button className="ghost" disabled={loading} onClick={() => void load(cursor)}>
+          <div className="mt-4 text-center">
+            <Button variant="outline" size="sm" disabled={loading} onClick={() => void load(cursor)}>
               {loading ? 'Loading…' : 'Load more'}
-            </button>
+            </Button>
           </div>
         )}
       </Async>

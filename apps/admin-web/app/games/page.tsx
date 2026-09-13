@@ -103,13 +103,13 @@ function Body({ me }: { me: Me }) {
       />
 
       {readOnly && (
-        <p style={{ color: '#a6b0b2', fontSize: 13, marginBottom: 16 }}>
+        <p style={{ color: 'var(--text-dim)', fontSize: 13, marginBottom: 16 }}>
           You have the moderator role — this page is read-only. Changing a game&rsquo;s release
           state requires the admin role.
         </p>
       )}
       {writeError && (
-        <p style={{ color: '#e5484d', fontSize: 13, marginBottom: 16 }}>{writeError}</p>
+        <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 16 }}>{writeError}</p>
       )}
 
       <Async loading={loading} error={error} empty={(games?.length ?? 0) === 0}
@@ -148,14 +148,14 @@ function GameCard({ game, readOnly, busy, onPatch }: {
 
   return (
     <div style={{
-      border: '1px solid #263236', borderRadius: 14, padding: 16,
-      background: '#111719', opacity: busy ? 0.6 : 1,
+      border: '1px solid var(--border)', borderRadius: 14, padding: 16,
+      background: 'var(--surface)', opacity: busy ? 0.6 : 1,
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
         <strong style={{ fontSize: 16 }}>{game.name}</strong>
-        <span style={{ color: '#5d696c', fontSize: 12 }}>{game.slug}</span>
+        <span style={{ color: 'var(--text-mute)', fontSize: 12 }}>{game.slug}</span>
         <Pill tone={tone}>{game.enabled ? game.release_state : 'disabled'}</Pill>
-        <span style={{ color: '#a6b0b2', fontSize: 12 }}>v{game.game_version}</span>
+        <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>v{game.game_version}</span>
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
@@ -167,9 +167,9 @@ function GameCard({ game, readOnly, busy, onPatch }: {
             title={STATE_HELP[s]}
             style={{
               padding: '7px 14px', borderRadius: 999, fontSize: 13,
-              border: '1px solid ' + (game.release_state === s ? '#13828c' : '#263236'),
-              background: game.release_state === s ? '#13828c' : 'transparent',
-              color: game.release_state === s ? '#fff' : '#a6b0b2',
+              border: '1px solid ' + (game.release_state === s ? 'var(--accent)' : 'var(--border)'),
+              background: game.release_state === s ? 'var(--accent)' : 'transparent',
+              color: game.release_state === s ? '#fff' : 'var(--text-dim)',
               cursor: readOnly || busy ? 'default' : 'pointer',
             }}
           >
@@ -177,7 +177,7 @@ function GameCard({ game, readOnly, busy, onPatch }: {
           </button>
         ))}
       </div>
-      <p style={{ color: '#5d696c', fontSize: 12, marginTop: 8 }}>
+      <p style={{ color: 'var(--text-mute)', fontSize: 12, marginTop: 8 }}>
         {STATE_HELP[game.release_state]}
       </p>
 
@@ -225,7 +225,7 @@ function GameCard({ game, readOnly, busy, onPatch }: {
       </div>
 
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14,
-                      fontSize: 13, color: '#a6b0b2' }}>
+                      fontSize: 13, color: 'var(--text-dim)' }}>
         <input
           type="checkbox"
           checked={game.enabled}
@@ -245,7 +245,7 @@ function Field({ label, hint, value, placeholder, disabled, onChange, onCommit }
 }) {
   return (
     <div>
-      <label style={{ display: 'block', fontSize: 12, color: '#a6b0b2', marginBottom: 4 }}>
+      <label style={{ display: 'block', fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
         {label}
       </label>
       <input
@@ -257,11 +257,11 @@ function Field({ label, hint, value, placeholder, disabled, onChange, onCommit }
         onKeyDown={(e) => { if (e.key === 'Enter') onCommit(); }}
         style={{
           width: '100%', padding: '8px 10px', borderRadius: 8,
-          border: '1px solid #263236', background: '#0b0f10', color: '#f6f8f8',
+          border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text)',
           fontSize: 13,
         }}
       />
-      <p style={{ color: '#5d696c', fontSize: 11, marginTop: 4 }}>{hint}</p>
+      <p style={{ color: 'var(--text-mute)', fontSize: 11, marginTop: 4 }}>{hint}</p>
     </div>
   );
 }

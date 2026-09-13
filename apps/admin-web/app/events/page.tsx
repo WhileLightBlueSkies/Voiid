@@ -15,7 +15,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import Shell from '../../components/Shell';
-import { PageHeader, Pill, when, money } from '../../components/ui';
+import { PageHeader, when, money } from '../../components/ui';
+import { Badge } from '../../components/ui/badge';
 import { ListTable } from '../../components/List';
 import { useList } from '../../components/useList';
 
@@ -30,8 +31,8 @@ type EventRow = {
   tickets: number; checked_in: number;
 };
 
-const STATUS_TONE: Record<string, 'ok' | 'danger' | 'accent' | undefined> = {
-  published: 'ok', cancelled: 'danger', draft: undefined,
+const STATUS_TONE: Record<string, 'ok' | 'destructive' | 'secondary' | undefined> = {
+  published: 'ok', cancelled: 'destructive', draft: 'secondary',
 };
 
 export default function Events() {
@@ -53,18 +54,33 @@ function Body() {
         subtitle="Ticket pricing, orders and what each event collected"
       />
 
-      <div className="row" style={{ gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        {['', 'published', 'draft', 'cancelled'].map((s) => (
-          <button key={s || 'all'}
-                  className={status === s ? 'chip active' : 'chip'}
-                  onClick={() => setStatus(s)}>
-            {s === '' ? 'All' : s}
-          </button>
-        ))}
-        <button className={paidOnly ? 'chip active' : 'chip'}
-                onClick={() => setPaidOnly((v) => !v)}>
+      {/* A SEGMENTED CONTROL for status, a separate toggle for the paid filter.
+          They were five identical chips in one row, which read as five options where only
+          one can be chosen — but "Paid only" combines with any of the other four. Splitting
+          them says which is a choice and which is a filter. */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-md border border-border p-0.5"
+             style={{ background: 'var(--surface-2)' }} role="group" aria-label="Status">
+          {['', 'published', 'draft', 'cancelled'].map((s) => (
+            <button
+              key={s || 'all'}
+              aria-pressed={status === s}
+              onClick={() => setStatus(s)}
+              className={[
+                'rounded px-2.5 py-1 text-tiny font-medium capitalize transition-colors',
+                status === s
+                  ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
+                  : 'bg-transparent text-[var(--text-mute)] hover:text-[var(--text-dim)]',
+              ].join(' ')}
+            >
+              {s === '' ? 'All' : s}
+            </button>
+          ))}
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-tiny text-[var(--text-dim)]">
+          <input type="checkbox" checked={paidOnly} onChange={() => setPaidOnly((v) => !v)} />
           Paid only
-        </button>
+        </label>
       </div>
 
       <ListTable
@@ -124,9 +140,9 @@ function Body() {
               <td>
                 {/* Suspension is shown BESIDE the host's status, never instead of it: they are
                     different people's decisions and collapsing them loses which is which. */}
-                <Pill tone={STATUS_TONE[e.status]}>{e.status}</Pill>
+                <Badge variant={STATUS_TONE[e.status]}>{e.status}</Badge>
                 {e.suspended_at && (
-                  <div style={{ marginTop: 4 }}><Pill tone="danger">Off sale</Pill></div>
+                  <div className="mt-1"><Badge variant="destructive">Off sale</Badge></div>
                 )}
               </td>
             </tr>
