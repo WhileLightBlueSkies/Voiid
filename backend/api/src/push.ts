@@ -45,6 +45,8 @@ export interface VoipTarget {
  * no plaintext, no sender name, no message body, no ciphertext ever rides here.
  */
 export interface PushMeta {
+  community_id?: string;
+  community_handle?: string;
   message_id?: string;
   conversation_id?: string;
   // Call ring routing (Section 4.14): NON-SECRET identifiers only, so a
@@ -301,7 +303,24 @@ function getApnsSession(host: string = apnsHost()): http2.ClientHttp2Session {
   const existing = apnsSessions.get(host);
   if (existing && !existing.closed && !existing.destroyed) return existing;
   const session = http2.connect(host);
-  session.on('error', (e) => console.warn(`[push] apns session error (${host}):`, e.message));
+  session.on('error', (e) => {
+    console.warn(`[push] apns session error (${host}):`, e.message);
+    // EVICT AND DESTROY, don't just log.
+    //
+    // An errored HTTP/2 session is not necessarily `closed` or `destroyed`, so the cache
+    // check above happily handed the same dead session to every subsequent send — and each
+    // one failed with "the pending stream has been canceled", forever, until the process
+    // restarted. One transient network blip therefore took the whole APNs path down
+    // permanently, which is precisely what the logs show.
+    if (apnsSessions.get(host) === session) apnsSessions.delete(host);
+    if (!session.destroyed) session.destroy();
+  });
+  // A GOAWAY is the server telling us this connection is finished. Without handling it the
+  // session lingers in the cache in a state that is neither usable nor closed.
+  session.on('goaway', () => {
+    if (apnsSessions.get(host) === session) apnsSessions.delete(host);
+    if (!session.destroyed) session.destroy();
+  });
   session.on('close', () => {
     if (apnsSessions.get(host) === session) apnsSessions.delete(host);
   });
@@ -375,7 +394,15 @@ function apnsSendOneTo(
       body += chunk;
     });
     req.on('error', (e) => {
-      console.warn('[push] apns request error:', (e as Error).message);
+      const msg = (e as Error).message;
+      console.warn('[push] apns request error:', msg);
+      // A stream cancelled underneath us means the SESSION died, not that the token is
+      // bad. The session has already been evicted by its own error handler, so one retry
+      // gets a fresh connection — without this, every push queued against a dying
+      // connection was silently lost.
+      if (!isRetry && /cancel|GOAWAY|closed/i.test(msg)) {
+        return resolve(apnsSendOneTo(token, auth, host, meta, true));
+      }
       resolve();
     });
     req.on('end', () => {
@@ -537,7 +564,13 @@ function voipSendOneTo(
       body += chunk;
     });
     req.on('error', (e) => {
-      console.warn('[push] voip request error:', (e as Error).message);
+      const msg = (e as Error).message;
+      console.warn('[push] voip request error:', msg);
+      // Same transport-vs-verdict distinction as the alert path above. A lost ring is
+      // a missed call, so this retry matters more here than anywhere else.
+      if (!isRetry && /cancel|GOAWAY|closed/i.test(msg)) {
+        return resolve(voipSendOneTo(token, auth, host, meta, true));
+      }
       resolve();
     });
     req.on('end', () => {
@@ -757,4 +790,31 @@ async function broadcastFcm(tokens: string[], title: string, body: string): Prom
     console.warn('[push] fcm broadcast failed:', (e as Error).message);
     return 0;
   }
+}
+
+/** ActivityKit tokens use their own topic, never the ordinary notification channel. */
+export const eventActivityPushConfigured = apnsConfigured;
+export async function sendEventActivityPush(token: string, sandbox: boolean, aps: Record<string, unknown>, allowFallback = true): Promise<number> {
+  if (!apnsConfigured()) throw new Error('Activity push unavailable');
+  return new Promise((resolve, reject) => {
+    const req = getApnsSession(sandbox ? APNS_SANDBOX_HOST : APNS_PROD_HOST).request({
+      ':method': 'POST', ':path': `/3/device/${token}`,
+      authorization: `bearer ${apnsAuthToken()}`,
+      'apns-topic': `${APNS_BUNDLE_ID}.push-type.liveactivity`,
+      'apns-push-type': 'liveactivity', 'apns-priority': '5',
+      'apns-expiration': String(Math.floor(Date.now() / 1000) + 60),
+    });
+    let status = 0;
+    let responseBody = '';
+    req.on('response', h => { status = Number(h[':status']); });
+    req.on('data', chunk => { if (responseBody.length<4096) responseBody += chunk.toString(); });
+    req.on('error', reject);
+    req.on('end', () => {
+      if (allowFallback && status===400 && responseBody.includes('BadDeviceToken')) {
+        sendEventActivityPush(token,!sandbox,aps,false).then(resolve,reject);
+      } else resolve(status);
+    });
+    req.setTimeout(10_000, () => { req.close(); reject(new Error('Activity push timeout')); });
+    req.end(JSON.stringify({ aps }));
+  });
 }
