@@ -94,7 +94,40 @@ object DeepLinkRouter {
      * launch from a link on a fresh install lands on onboarding: the link must survive sign-in
      * rather than being thrown away at the moment there is nobody to resolve it for.
      */
+    val communityMembershipChanges = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 1)
     val pendingCommunityInvite = MutableStateFlow<CommunityLink?>(null)
     fun openCommunityInvite(link: CommunityLink) { pendingCommunityInvite.value = link }
     fun consumeCommunityInvite() { pendingCommunityInvite.value = null }
+}
+
+/** In-process only: never persists message previews or replaces background notifications. */
+object InAppMessageNotifications {
+    data class Banner(val conversationId: String, val messageId: String?, val title: String, val body: String,
+        val id: String = java.util.UUID.randomUUID().toString(), val count: Int = 1, val communityHandle: String? = null)
+    val current = kotlinx.coroutines.flow.MutableStateFlow<Banner?>(null)
+    val banners = kotlinx.coroutines.flow.MutableStateFlow<List<Banner>>(emptyList())
+    private val recent = ArrayDeque<String>()
+    @Synchronized fun show(conversationId: String, messageId: String?, title: String?, body: String?) {
+        if (!AppPresence.isForeground() || AppPresence.shouldSuppressNotification(conversationId)) return
+        if (messageId != null) {
+            val key = "$conversationId:$messageId"
+            if (recent.contains(key)) return
+            recent.addLast(key)
+            if (recent.size > 128) recent.removeFirst()
+        }
+        val count = (banners.value.firstOrNull { it.conversationId == conversationId }?.count ?: 0) + 1
+        val next = Banner(conversationId, messageId, title?.takeIf { it.isNotBlank() } ?: "Voiid",
+            body?.takeIf { it.isNotBlank() } ?: "New message", count = count)
+        publish((listOf(next) + banners.value.filterNot { it.conversationId == conversationId }).take(3))
+    }
+    @Synchronized fun showCommunityApproval(handle: String, isRequest: Boolean = false, isUpdate: Boolean = false) {
+        if (!AppPresence.isForeground()) return
+        val item = Banner("", null, if (isUpdate) "New community update" else if (isRequest) "New community join request" else "Community request approved", "Tap to open the community", communityHandle = handle)
+        publish((listOf(item) + banners.value.filterNot { it.communityHandle == handle }).take(3))
+    }
+    private fun publish(next: List<Banner>) { banners.value = next; current.value = next.firstOrNull() }
+    @Synchronized fun dismiss(banner: Banner) {
+        if (current.value?.id == banner.id) publish(banners.value.drop(1).filterNot { AppPresence.shouldSuppressNotification(it.conversationId) })
+    }
+    @Synchronized fun clear() { publish(emptyList()) }
 }

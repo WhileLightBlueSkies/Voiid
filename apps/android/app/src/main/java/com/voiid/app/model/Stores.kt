@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.sync.withLock
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
@@ -199,17 +200,32 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // Keep channel transcripts in Room; the Groups tab only uses confirmed standalone IDs.
+    private val groupListPrefs get() = appContext.getSharedPreferences("voiid_group_list", android.content.Context.MODE_PRIVATE)
+    private val groupListKey get() = "standalone_v1_${com.voiid.app.net.TokenStore.get(appContext).userId}"
+    private var standaloneGroupIds: Set<String>
+        get() = groupListPrefs.getStringSet(groupListKey, emptySet())!!.toSet()
+        set(value) { groupListPrefs.edit().putStringSet(groupListKey, value.toSet()).apply() }
+    private var communityChannelIds: Set<String>
+        get() = groupListPrefs.getStringSet(groupListKey + ".channels", emptySet())!!.toSet()
+        set(value) { groupListPrefs.edit().putStringSet(groupListKey + ".channels", value.toSet()).apply() }
+    private var communityConversations: List<VConversation> = emptyList()
+    private val encryptedGroupConversations get() = groupConversations + communityConversations
+    private val conversationListMutex = kotlinx.coroutines.sync.Mutex()
+
     /** Render from Room. Never touches the network, never clears on failure. */
     private suspend fun loadLocal() {
         val cached = runCatching { LocalStore.conversations(appContext) }.getOrDefault(emptyList())
-        if (cached.isEmpty()) return
         directConversations.clear(); groupConversations.clear()
         // Note to Self lives in CHATS, pinned to the top — you reach for it by muscle
         // memory, not by recency, so its position should never move. Filtering to DIRECT
         // alone would drop it from BOTH lists. Mirrors iOS `applyLocalConversations`.
         directConversations.addAll(cached.filter { it.type == ConversationType.SELF })
         directConversations.addAll(cached.filter { it.type == ConversationType.DIRECT })
-        groupConversations.addAll(cached.filter { it.type == ConversationType.GROUP })
+        val channelIds = communityChannelIds
+        communityConversations = cached.filter { it.type == ConversationType.GROUP && it.id in channelIds }
+        val listedGroupIds = standaloneGroupIds
+        groupConversations.addAll(cached.filter { it.type == ConversationType.GROUP && it.id in listedGroupIds })
         // Previews come from Room (denormalized), so we touch NO message store here — the list
         // paints instantly and offline regardless of history size. Full history maps lazily on
         // open; previews stay fresh via bumpPreview at write time.
@@ -240,7 +256,11 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     }
 
     /** Suspend reload (so callers like handleIncoming can await it, then sync). */
-    private suspend fun reload() {
+    private suspend fun reload() = conversationListMutex.withLock { reloadLocked() }
+
+    private suspend fun reloadLocked() {
+        val accountId = com.voiid.app.net.TokenStore.get(appContext).userId
+        val previousGroupIds = standaloneGroupIds
         try {
             // Ensure Note to Self exists before the list is fetched, so it appears on first
             // launch rather than only after a second one. Idempotent server-side; a failure
@@ -255,14 +275,31 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                     c.copy(title = UserDirectory.displayName(peer, fallback = c.title))
                 } else c
             }
+            val communityService = com.voiid.app.net.CommunityService(appContext)
+            val channelIds = mutableSetOf<String>()
+            val communities = communityService.mine()
+            // /mine is capped at 200; a truncated response cannot classify all channels.
+            check(communities.size < 200) { "Couldn’t refresh groups from an incomplete community list." }
+            for (community in communities.filter { it.isMember || it.owner_id == accountId }) {
+                channelIds.addAll(communityService.channels(community.id).map { it.conversation_id })
+            }
+            if (com.voiid.app.net.TokenStore.get(appContext).userId != accountId) return
+            val confirmed = convs.filter { it.type == ConversationType.GROUP && it.id !in channelIds }.map { it.id }.toSet()
+            val newlyCreated = standaloneGroupIds - previousGroupIds
+            standaloneGroupIds = GroupListMembership.reconcile(previousGroupIds, standaloneGroupIds,
+                convs.filter { it.type == ConversationType.GROUP }.map { it.id }.toSet(), channelIds)
+            communityChannelIds = channelIds
             // The server payload carries no preview snippet — preserve the denormalized one we
             // already hold (from Room) so a sync doesn't blank the list previews.
             val prevMap = (directConversations + groupConversations).associate { it.id to it.lastMessagePreview }
             val withPreview = convs.map { it.copy(lastMessagePreview = it.lastMessagePreview ?: prevMap[it.id]) }
+            val createdDuringSync = groupConversations.filter { it.id in newlyCreated && it.id !in channelIds }
+            communityConversations = withPreview.filter { it.type == ConversationType.GROUP && it.id in channelIds }
             directConversations.clear(); groupConversations.clear()
             directConversations.addAll(withPreview.filter { it.type == ConversationType.SELF })
             directConversations.addAll(withPreview.filter { it.type == ConversationType.DIRECT })
-            groupConversations.addAll(withPreview.filter { it.type == ConversationType.GROUP })
+            groupConversations.addAll(withPreview.filter { it.type == ConversationType.GROUP && it.id in confirmed })
+            groupConversations.addAll(createdDuringSync.filter { created -> groupConversations.none { it.id == created.id } })
             LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly (preview col preserved by the upsert)
             loadError = null
         } catch (e: Exception) {
@@ -323,9 +360,9 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     /** Resolve a conversation by id for deep-linking (e.g. a notification tap). Returns
      *  a cached one immediately, otherwise reloads the list from the server once. */
     suspend fun conversationById(id: String): VConversation? {
-        (directConversations + groupConversations).firstOrNull { it.id == id }?.let { return it }
+        (directConversations + encryptedGroupConversations).firstOrNull { it.id == id }?.let { return it }
         runCatching { reload() }
-        return (directConversations + groupConversations).firstOrNull { it.id == id }
+        return (directConversations + encryptedGroupConversations).firstOrNull { it.id == id }
     }
 
     /**
@@ -590,6 +627,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 id = convId, type = ConversationType.GROUP, title = name,
                 memberCount = memberUserIds.size + 1,
             )
+            standaloneGroupIds = standaloneGroupIds + convId
             if (groupConversations.none { it.id == convId }) groupConversations.add(0, conv)
             LocalStore.saveConversations(appContext, listOf(conv))
             conv
@@ -604,7 +642,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { groupEngine.addMember(conversationId, userId) }
                 .onFailure { val m = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t add member."; loadError = m; onError(m) }
-            onDone()
+                .onSuccess { onDone() }
         }
     }
 
@@ -613,7 +651,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { groupEngine.removeMember(conversationId, userId) }
                 .onFailure { val m = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t remove member."; loadError = m; onError(m) }
-            onDone()
+                .onSuccess { onDone() }
         }
     }
 
@@ -629,7 +667,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { chatService.setMemberRole(conversationId, userId, role.name.lowercase()) }
                 .onFailure { val m = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t change that role."; loadError = m; onError(m) }
-            onDone()
+                .onSuccess { onDone() }
         }
     }
 
@@ -638,7 +676,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { chatService.transferOwnership(conversationId, userId) }
                 .onFailure { val m = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t transfer ownership."; loadError = m; onError(m) }
-            onDone()
+                .onSuccess { onDone() }
         }
     }
 
@@ -653,7 +691,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         val conv = directConversations.firstOrNull { it.id == conversationId }
         // Real E2EE group text over MLS: persist an echo in the shared store, then encrypt
         // + fan out in the background. Non-text group content still falls through to echo.
-        val group = groupConversations.firstOrNull { it.id == conversationId }
+        val group = encryptedGroupConversations.firstOrNull { it.id == conversationId }
         if (group != null && kind == MessageKind.TEXT) {
             viewModelScope.launch {
                 try {
@@ -765,11 +803,11 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     private suspend fun handleIncoming(conversationId: String) {
         android.util.Log.i("VOIID", "handleIncoming conv=$conversationId known=${directConversations.any { it.id == conversationId }}")
-        (directConversations + groupConversations).firstOrNull { it.id == conversationId }?.let { syncMessages(it); return }
+        (directConversations + encryptedGroupConversations).firstOrNull { it.id == conversationId }?.let { syncMessages(it); return }
         // Unknown conversation (first message from a new contact / a group we were just
         // added to) — reload the list, THEN sync it so the message actually appears.
         reload()
-        (directConversations + groupConversations).firstOrNull { it.id == conversationId }?.let { syncMessages(it) }
+        (directConversations + encryptedGroupConversations).firstOrNull { it.id == conversationId }?.let { syncMessages(it) }
     }
 
     /** An MLS control event (welcome/commit) landed — process group events across all our
@@ -779,7 +817,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             groupEngine.syncGroupEvents()
             // We may have just JOINED a group we don't yet list — reload to surface it.
             reload()
-            groupConversations.forEach { runCatching { groupEngine.receiveGroupMessages(it.id); refresh(it.id) } }
+            encryptedGroupConversations.forEach { runCatching { groupEngine.receiveGroupMessages(it.id); refresh(it.id) } }
         }.onFailure { android.util.Log.e("VOIID", "handleMlsEvent failed", it) }
     }
 

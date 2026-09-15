@@ -38,9 +38,7 @@ struct MapTabView: View {
     @ObservedObject private var engine = MapPresenceEngine.shared
     @ObservedObject private var visibility = MapVisibilityState.shared
     @ObservedObject private var directory = UserDirectory.shared
-    /// Conversation live shares (A) surfaced on the Map too — see `liveContacts`. Observed so
-    /// each decrypted fix (which ticks the engine's `version`) redraws the moving pin.
-    @ObservedObject private var shareEngine = LocationShareEngine.shared
+
     /// Move (journey / ETA). Observed so a contact who starts travelling grows a badge on
     /// their pin and a "See their route" row on their card without any other change here.
     @ObservedObject private var moves = MapMoveEngine.shared
@@ -182,32 +180,13 @@ struct MapTabView: View {
 
     // MARK: - Map
 
-    /// Two sources, one map (docs/LOCATION.md §5 + §7):
-    ///   (B) presence — ambient, coarse, 5 min / 250 m. Everyone who chose to be visible to us.
-    ///   (A) conversation live shares — someone actively sharing WITH ME from a chat, at
-    ///       10–15 s cadence. Those fixes are already decrypted in memory for the in-chat
-    ///       bubble; drawing them here publishes nothing new and changes no cadence for anyone.
-    ///
-    /// Deduped by user with the CONVERSATION share winning — it is strictly fresher, so a
-    /// friend live-sharing with you moves in near-real-time rather than sitting on their last
-    /// 5-minute presence fix.
+    /// Friends Map uses only its explicitly opted-in presence audience.
+    /// Conversation live shares stay inside their originating chat.
     private var liveContacts: [MapPresence] {
-        let presence = engine.presences.filter {
-            let s = MapPresenceState.forFix(at: $0.fixedAt)
-            return s == .live || s == .stale
-        }
-        var byUser = Dictionary(presence.map { ($0.senderUserId, $0) }, uniquingKeysWith: { _, b in b })
-        for share in shareEngine.activeInboundShares() {
-            guard let fix = shareEngine.lastFix(shareId: share.shareId) else { continue }
-            byUser[share.ownerUserId] = MapPresence(
-                senderUserId: share.ownerUserId,
-                shareId: share.shareId,
-                coordinate: CLLocationCoordinate2D(latitude: fix.lat, longitude: fix.lon),
-                accuracy: fix.acc ?? 0,
-                seq: fix.seq,
-                fixedAt: fix.date)
-        }
-        return Array(byUser.values).sorted { $0.senderUserId < $1.senderUserId }
+        engine.presences.filter {
+            let state = MapPresenceState.forFix(at: $0.fixedAt)
+            return state == .live || state == .stale
+        }.sorted { $0.senderUserId < $1.senderUserId }
     }
 
     private var mapCanvas: some View {

@@ -64,6 +64,7 @@ struct StorageSettingsView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .voiidSettingsPage()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

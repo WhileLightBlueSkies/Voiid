@@ -1,3 +1,5 @@
+import { usageAnalytics } from '../usageAnalytics';
+import { communityFinance, setCommunityCommission, validCommission } from '../communityFinance';
 // Admin routes — the moderation plane (see 028_admin_users.sql).
 //
 // A SEPARATE AUTH SYSTEM, ON PURPOSE. Every other router here authenticates a Voiid USER via
@@ -1458,6 +1460,31 @@ router.post('/communities/:id/manage', requireAdmin, requireRole('admin'), async
   dispatchOfficialCommunityAction(req, res, next, id, community.owner_id, method, path, payload);
 }));
 
+// Finance permission is platform-admin-only, including ordinary communities.
+router.get('/communities/:id/finance', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  const offset = Number(req.query.offset ?? 0);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) || !Number.isSafeInteger(offset) || offset < 0 || offset > 1000000)
+    return res.status(400).json({ error: 'invalid community or page' });
+  const data = await communityFinance(id, offset);
+  if (!data) return res.status(404).json({ error: 'community not found' });
+  res.set('Cache-Control', 'no-store');
+  return res.json(data);
+}));
+
+router.patch('/communities/:id/commission', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  const { commission_bps, expected_bps, reason } = req.body ?? {};
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+      || !validCommission(commission_bps) || !validCommission(expected_bps)
+      || typeof reason !== 'string' || reason.trim().length < 5 || reason.length > 500)
+    return res.status(400).json({ error: 'provide a rate from 0–100% and a reason (5–500 characters)' });
+  const result = await setCommunityCommission(id, commission_bps, expected_bps, (req as any).admin.adminId, reason.trim());
+  if (result === 'missing') return res.status(404).json({ error: 'community not found' });
+  if (result === 'conflict') return res.status(409).json({ error: 'commission changed; refresh before saving' });
+  return res.json({ commission_bps });
+}));
+
 router.get('/communities/:id', requireAdmin, asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
@@ -1703,6 +1730,13 @@ router.post('/communities/:id/entitlements/:cap/revoke',
 // tool people are meant to keep open, and its tiles disagree with each other whenever a write
 // lands mid-render.
 // ─────────────────────────────────────────────────────────────────────────────────
+router.get('/analytics', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const days = Number(req.query.days ?? 30);
+  if (![7, 30, 90].includes(days)) return res.status(400).json({ error: 'days must be 7, 30 or 90' });
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json(await usageAnalytics(days));
+}));
+
 router.get('/communities/:id/analytics', requireAdmin, asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   if (!/^[0-9a-f-]{36}$/i.test(id)) {

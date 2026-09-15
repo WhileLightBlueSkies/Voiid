@@ -71,18 +71,10 @@ class CallForegroundService : Service() {
         return START_NOT_STICKY
     }
 
-    /**
-     * The user swiped VOIID out of Recents mid-call. Tear the call down properly and notify
-     * the peer, otherwise they're left staring at a zombie call that never rings off.
-     */
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        runCatching { CallManager.hangupFromSystem() }
-        runCatching { GroupCallManager.leaveFromSystem() }
-        running = false
-        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-        runCatching { stopSelf() }
-        super.onTaskRemoved(rootIntent)
-    }
+    // Removing the Activity from Recents is not a hang-up. CallManager and
+    // GroupCallManager own media independently of the Activity; keep this started
+    // foreground service and its ongoing-call controls alive until they end the call.
+    // START_NOT_STICKY is intentional: a killed process cannot restore its RTC state.
 
     override fun onDestroy() {
         running = false

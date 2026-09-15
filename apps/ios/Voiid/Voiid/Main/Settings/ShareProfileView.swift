@@ -56,6 +56,7 @@ struct ShareProfileView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .scrollIndicators(.hidden)
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationTitle("Share Profile")

@@ -49,28 +49,43 @@ import java.time.format.DateTimeFormatter
  * take money, this branch is what changes.
  */
 @Composable
-fun CommunityEventsSection(communityId: String, modifier: Modifier = Modifier) {
+fun CommunityEventsSection(communityId: String, modifier: Modifier = Modifier, isOwner: Boolean = false, isManager: Boolean = false, managementContext: Boolean = false) {
+    var showCreate by remember(communityId) { mutableStateOf(false) }
+    var showTickets by remember(communityId) { mutableStateOf(false) }
+    var managing by remember(communityId) { mutableStateOf<EventService.Event?>(null) }
+    var refresh by remember(communityId) { mutableStateOf(0) }
+    if(showCreate) EventEditorDialog(communityId=communityId,onDismiss={showCreate=false},onSaved={showCreate=false;refresh++})
+    if (showTickets) EventTicketWallet { showTickets = false }
+    managing?.let { e -> EventManagerDialog(e, isManager || e.can_manage, canAssign = isManager, onDismiss = { managing = null }, onChanged = { refresh++ }) }
     val ctx = LocalContext.current
     val haptics = LocalVoiidHaptics.current
-    val scope = rememberCoroutineScope()
     val service = remember { EventService(ApiClient(TokenStore.get(ctx))) }
 
     var events by remember(communityId) { mutableStateOf<List<EventService.Event>>(emptyList()) }
     var loaded by remember(communityId) { mutableStateOf(false) }
-    var busyId by remember { mutableStateOf<String?>(null) }
+    var loadError by remember(communityId) { mutableStateOf<String?>(null) }
+    var booking by remember { mutableStateOf<EventService.Event?>(null) }
+    booking?.let { e -> EventGroupBooking(e, onDismiss={booking=null}, onBooked={booking=null;showTickets=true;refresh++}) }
+
 
     suspend fun reload() {
-        runCatching { service.list(communityId) }.onSuccess { events = it }
+        try { events=service.list(communityId);loadError=null }
+        catch(e:kotlinx.coroutines.CancellationException){throw e}
+        catch(_:Exception){loadError="Unable to load events."}
         loaded = true
     }
 
-    LaunchedEffect(communityId) { reload() }
+    LaunchedEffect(communityId, refresh) { reload() }
 
     Column(modifier = modifier.fillMaxWidth()) {
-        Text("Events", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        if(isManager && managementContext) androidx.compose.material3.TextButton(onClick={showCreate=true}){Text("Create event")}
+        if(!managementContext) Text("Events", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        EventStaffInvitations(communityId) { refresh++ }
+        if(!managementContext) androidx.compose.material3.TextButton(onClick = { showTickets = true }) { Text("My tickets") }
         Spacer(Modifier.height(8.dp))
 
-        if (loaded && events.isEmpty()) {
+        loadError?.let{Text(it);androidx.compose.material3.TextButton(onClick={refresh++}){Text("Retry")}}
+        if (loaded && loadError==null && events.isEmpty()) {
             Text("No events yet.", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
         }
 
@@ -92,6 +107,7 @@ fun CommunityEventsSection(communityId: String, modifier: Modifier = Modifier) {
                         color = VoiidColor.textPrimary,
                         maxLines = 2,
                     )
+                    if (isManager || e.can_manage || e.can_checkin) androidx.compose.material3.TextButton(onClick = { managing = e }) { Text(if (isManager || e.can_manage) "Manage event" else "Check in") }
                     Text(subtitle(e), style = VoiidFont.rounded(11), color = VoiidColor.textSecondary)
                     e.location_text?.takeIf { it.isNotBlank() }?.let {
                         Text(it, style = VoiidFont.rounded(11), color = VoiidColor.textSecondary, maxLines = 1)
@@ -99,6 +115,7 @@ fun CommunityEventsSection(communityId: String, modifier: Modifier = Modifier) {
                 }
 
                 when {
+                    isManager || e.can_manage -> Unit
                     e.your_order_status == "paid" ->
                         Text("Going", style = VoiidFont.rounded(12, FontWeight.SemiBold), color = VoiidColor.primary)
 
@@ -109,28 +126,15 @@ fun CommunityEventsSection(communityId: String, modifier: Modifier = Modifier) {
                             style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
                         )
 
-                    // The one honest thing to render: the server answers 501 here.
-                    !e.free ->
-                        Text("Ticketing soon", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
-
                     else -> Text(
-                        "RSVP",
+                        if (e.free) "RSVP" else "Book tickets",
                         style = VoiidFont.rounded(13, FontWeight.SemiBold),
                         color = VoiidColor.textOnPrimary,
                         modifier = Modifier
                             .clip(CircleShape)
                             .background(VoiidColor.primary)
                             .softClickable {
-                                if (busyId != null) return@softClickable
-                                haptics.tap(); busyId = e.id
-                                scope.launch {
-                                    // Capacity is the server's to enforce and people may be
-                                    // racing for the last seat, so the list is re-read rather
-                                    // than optimistically marked "Going".
-                                    runCatching { service.rsvp(e.id) }
-                                    reload()
-                                    busyId = null
-                                }
+                                haptics.tap(); booking = e
                             }
                             .padding(horizontal = 14.dp, vertical = 6.dp),
                     )
@@ -164,3 +168,70 @@ private val DATE_OUT: DateTimeFormatter =
 
 private fun displayDate(iso: String): String? =
     runCatching { DATE_OUT.format(Instant.parse(iso)) }.getOrNull()
+
+
+@Composable
+internal fun CommunityEarningsDialog(communityId: String, onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val service = remember { EventService(ApiClient(TokenStore.get(ctx))) }
+    var earnings by remember(communityId) { mutableStateOf<EventService.Earnings?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var retry by remember { mutableStateOf(0) }
+    var loading by remember { mutableStateOf(false) }
+    LaunchedEffect(communityId, retry) {
+        loading = true; error = null
+        try { earnings = service.earnings(communityId) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: com.voiid.app.net.ApiError.Http) {
+            if (e.status == 401 || e.status == 403) earnings = null
+            error = when (e.status) {
+                401 -> "Please sign in again."
+                403 -> "Only the community owner can view earnings."
+                429 -> "Please wait a moment before refreshing again."
+                else -> if (earnings == null) "Unable to load earnings. Please try again." else "Couldn’t refresh. Showing the last loaded earnings."
+            }
+        }
+        catch (_: Exception) { error = if (earnings == null) "Unable to load earnings. Check your connection and owner access." else "Couldn’t refresh. Showing the last loaded earnings." }
+        finally { loading = false }
+    }
+    EventControlPage("Earnings",onDismiss) {
+        androidx.compose.foundation.lazy.LazyColumn(contentPadding=androidx.compose.foundation.layout.PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(24.dp)) {
+            item { Text("Your earnings",style=androidx.compose.material3.MaterialTheme.typography.headlineLarge);Text("Event sales and your organiser share") }
+            item { androidx.compose.material3.TextButton(enabled = !loading, onClick = { retry++ }) { Text(if (loading) "Refreshing…" else "Refresh") } }
+            if (error != null) item { Text(error!!); androidx.compose.material3.TextButton(enabled = !loading, onClick = { retry++ }) { Text("Retry") } }
+            if (loading) item { androidx.compose.material3.CircularProgressIndicator() }
+            earnings?.let { data ->
+                item { androidx.compose.material3.Surface(shape=RoundedCornerShape(24.dp),color=VoiidColor.surfaceCard) {
+                    Column(Modifier.fillMaxWidth().padding(22.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                        Text("Your split",style=androidx.compose.material3.MaterialTheme.typography.titleLarge)
+                        Text("${java.math.BigDecimal(10000-data.commission_bps).movePointLeft(2)}%",style=androidx.compose.material3.MaterialTheme.typography.headlineLarge)
+                        androidx.compose.material3.LinearProgressIndicator(progress={ (10000-data.commission_bps)/10000f },modifier=Modifier.fillMaxWidth())
+                        Text("Voiid ${java.math.BigDecimal(data.commission_bps).movePointLeft(2)}% · Applies to new orders")
+                    }
+                } }
+                if (data.totals.isEmpty()) item { Text("No earnings yet. Your event orders will appear here.") }
+                data.totals.forEach { t -> item {
+                    fun amount(v: String?) = v?.let { "${t.currency} ${java.math.BigDecimal(it).movePointLeft(2).toPlainString()}" } ?: "Not recorded"
+                    androidx.compose.material3.Surface(shape=RoundedCornerShape(24.dp),color=VoiidColor.surfaceCard) {
+                        Column(Modifier.fillMaxWidth().padding(22.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                            Text("${t.status.replaceFirstChar{it.uppercase()}} · ${t.orders} orders",style=androidx.compose.material3.MaterialTheme.typography.titleMedium)
+                            Text(amount(t.organiser_minor),style=androidx.compose.material3.MaterialTheme.typography.headlineLarge)
+                            Text("Your share")
+                            androidx.compose.material3.HorizontalDivider()
+                            Text("Gross sales: ${amount(t.gross_minor)}")
+                            Text("Voiid commission: ${amount(t.commission_minor)}")
+                            if(t.unpriced_orders>0)Text("Some older orders have no recorded commission.")
+                        }
+                    }
+                } }
+                item { androidx.compose.material3.Surface(shape=RoundedCornerShape(24.dp),color=VoiidColor.surfaceCard) {
+                    Column(Modifier.fillMaxWidth().padding(22.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                        Text("Bank settlements",style=androidx.compose.material3.MaterialTheme.typography.titleLarge)
+                        Text("Bank account setup will be available after organiser onboarding is connected.")
+                        Text("Order totals are before processing fees and taxes. They are not a withdrawable balance.",style=androidx.compose.material3.MaterialTheme.typography.bodySmall)
+                    }
+                } }
+            }
+        }
+    }
+}

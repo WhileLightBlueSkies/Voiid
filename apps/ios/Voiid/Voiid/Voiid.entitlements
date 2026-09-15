@@ -11,6 +11,11 @@
 	     for both. Xcode still uses the sandbox gateway for debug builds run from the IDE,
 	     which is why local development is unaffected by this.
 	     The server's APNS_ENV must agree: 'production' here, 'production' there. -->
+	<!-- Event ticket passes only. Register pass.in.voiid.events in Apple Developer. -->
+	<key>com.apple.developer.pass-type-identifiers</key>
+	<array>
+		<string>$(TeamIdentifierPrefix)pass.in.voiid.events</string>
+	</array>
 	<key>aps-environment</key>
 	<string>production</string>
 	<!-- Universal Links for community invites: https://voiid.app/c/<handle>?i=<token>.
@@ -25,6 +30,7 @@
 	<array>
 		<string>applinks:voiid.app</string>
 		<string>applinks:www.voiid.app</string>
+		<string>applinks:api-dev.voiid.app</string>
 	</array>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>

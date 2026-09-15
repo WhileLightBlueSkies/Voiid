@@ -29,6 +29,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 import CoreImage.CIFilterBuiltins
 
 struct SafetyNumberView: View {
@@ -40,7 +41,7 @@ struct SafetyNumberView: View {
     @State private var state: LoadState = .loading
     /// Which representation of the number is on screen. Defaults to the DIGITS, not the code:
     /// the read-aloud path works everywhere, a scan needs two devices in one room.
-    @State private var showQR = false
+    @State private var scanningEntry: Entry?
 
     /// The card swap and the state crossfade are both opacity-and-scale on a small surface,
     /// so they stay under Reduce Motion — but the spring is dropped, because a settling
@@ -76,6 +77,7 @@ struct SafetyNumberView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, VoiidSpacing.lg)
             }
+            .softTopEdgeEffect()
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Verify encryption")
             .navigationBarTitleDisplayMode(.inline)
@@ -87,6 +89,9 @@ struct SafetyNumberView: View {
         }
         .tint(VoiidColor.primary)
         .task { await load() }
+        .sheet(item: $scanningEntry) { entry in
+            SafetyCodeScanner(expected: entry.number, peerName: peerName)
+        }
     }
 
     // MARK: - States
@@ -150,48 +155,42 @@ struct SafetyNumberView: View {
     }
 
     private var loadedBody: some View {
-        VStack(spacing: VoiidSpacing.lg) {
+        VStack(spacing: 24) {
+            ProfileAvatarButton(photoURL: UserDirectory.shared.photoURL(peerUserId), name: peerName, size: 64)
+            Text(peerName).font(VoiidFont.rounded(22, .semibold)).foregroundStyle(VoiidColor.textPrimary)
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-                    // Only labelled when there is more than one — "Device 1 of 1" is noise.
+                VStack(spacing: 18) {
                     if entries.count > 1 {
                         Text("Device \(index + 1) of \(entries.count)")
-                            .font(VoiidFont.rounded(12, .semibold))
-                            .kerning(0.6)
-                            .foregroundStyle(VoiidColor.textSecondary)
-                            .padding(.horizontal, VoiidSpacing.xs)
+                            .font(VoiidFont.rounded(12, .semibold)).foregroundStyle(VoiidColor.textSecondary)
                     }
-                    // The code and the digits are the SAME fact in two forms, so they
-                    // occupy the same place and swap — rather than stacking, which would
-                    // push the instructions off-screen and imply two separate things to
-                    // check. Tapping either flips to the other.
-                    Button {
-                        Haptics.tap()
-                        showQR.toggle()
-                    } label: {
-                        if showQR, let qr = qrImage(for: entry.number) {
-                            qrCard(qr)
-                        } else {
-                            numberCard(entry.number)
-                        }
+                    if let qr = qrImage(for: entry.number) {
+                        qr.interpolation(.none).resizable().scaledToFit().frame(maxWidth: 220)
+                            .padding(16).background(Color.white, in: RoundedRectangle(cornerRadius: 16))
+                            .accessibilityLabel("Security code QR")
                     }
-                    .buttonStyle(SoftPressStyle(scale: 0.98))
-                    // The two forms swap in place, so the transition should read as ONE card
-                    // turning over rather than two cards trading places. Opacity plus a small
-                    // scale does that without a literal 3D flip, which at this size reads as
-                    // a gimmick and costs legibility mid-rotation.
-                    //
-                    // Critically damped: nothing was thrown, and a verification screen is the
-                    // last place that should feel playful.
-                    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1.0),
-                               value: showQR)
-                    .accessibilityHint(showQR ? "Shows the digits instead"
-                                              : "Shows a scannable code instead")
-                }
+                    Text(formattedCode(entry.number))
+                        .font(.system(size: 15, weight: .medium, design: .monospaced))
+                        .lineSpacing(7).multilineTextAlignment(.center).foregroundStyle(VoiidColor.textPrimary)
+                    Button { scanningEntry = entry } label: {
+                        Label("Scan QR code", systemImage: "qrcode.viewfinder").frame(minHeight: 44)
+                    }.buttonStyle(.borderedProminent)
+                    Text("Compare this code on both devices.")
+                        .font(VoiidFont.rounded(12)).foregroundStyle(VoiidColor.textSecondary)
+                }.padding(20).frame(maxWidth: .infinity)
+                    .background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
             }
-
             instructions
         }
+    }
+
+    private func formattedCode(_ number: String) -> String {
+        let digits = Array(number.filter(\.isNumber))
+        return stride(from: 0, to: digits.count, by: 20).map { start in
+            stride(from: start, to: min(start + 20, digits.count), by: 5).map {
+                String(digits[$0..<min($0 + 5, digits.count)])
+            }.joined(separator: " ")
+        }.joined(separator: "\n")
     }
 
     /// The number as a scannable code.
@@ -364,5 +363,67 @@ struct SafetyNumberView: View {
             NSLog("[VOIID] safety number load failed: \(error.localizedDescription)")
             state = .failed
         }
+    }
+}
+
+// Compare the complete QR payload, never a prefix or digits extracted from a URL.
+enum SafetyQRComparison {
+    enum Result { case match, mismatch, invalid }
+    static func compare(_ payload: String, expected: String) -> Result {
+        let digits = expected.filter { $0 >= "0" && $0 <= "9" }
+        guard payload.utf8.count == 60, payload.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+              digits.count == 60 else { return .invalid }
+        return payload == digits ? .match : .mismatch
+    }
+}
+
+private struct SafetyCodeScanner: View {
+    let expected: String
+    let peerName: String
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var permission = AVCaptureDevice.authorizationStatus(for: .video)
+    @State private var unavailable = false
+    @State private var result: SafetyQRComparison.Result?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    Text("Scan \(peerName)’s code from this device pair’s Verify encryption screen.")
+                        .multilineTextAlignment(.center)
+                    if let result {
+                        Image(systemName: result == .match ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                            .font(.system(size: 44))
+                        Text(result == .match ? "Codes match" : result == .mismatch ? "Codes don’t match" : "Not a security QR code")
+                            .font(VoiidFont.rounded(22, .semibold))
+                        Text(result == .match ? "The displayed security codes match for this device pair. Verify other linked devices separately." : result == .mismatch ? "Check that you opened the same conversation and selected the correct device. Compare the codes again before sharing sensitive information." : "Scan the QR shown in Verify encryption, not a profile or community QR.")
+                            .multilineTextAlignment(.center)
+                        Button("Scan again") { self.result = nil }
+                    } else if permission == .authorized && !unavailable {
+                        VoiidQRScannerPreview(isScanning: scenePhase == .active, torchOn: false,
+                            onCode: { if result == nil { result = SafetyQRComparison.compare($0, expected: expected) } },
+                            onUnavailable: { unavailable = true }, onTorchStatus: { _, _ in })
+                            .frame(height: 320).clipShape(RoundedRectangle(cornerRadius: 24))
+                    } else {
+                        Text(unavailable ? "Camera unavailable. You can still compare the digits." : "Allow camera access to scan. You can also compare the digits manually.")
+                            .multilineTextAlignment(.center)
+                        if permission == .denied {
+                            Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) } }
+                        }
+                    }
+                }.padding(24).frame(maxWidth: .infinity)
+            }.softTopEdgeEffect().background(VoiidColor.background)
+                .foregroundStyle(VoiidColor.textPrimary)
+                .navigationTitle("Scan security QR").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }.tint(VoiidColor.primary)
+            .task {
+                if permission == .notDetermined { _ = await AVCaptureDevice.requestAccess(for: .video) }
+                permission = AVCaptureDevice.authorizationStatus(for: .video)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { permission = AVCaptureDevice.authorizationStatus(for: .video) }
+            }
     }
 }

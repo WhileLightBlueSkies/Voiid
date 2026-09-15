@@ -6,6 +6,7 @@
 // over Redis; call MEDIA and SRTP keys are derived E2E on the devices (e2e-core).
 // The server NEVER sees media, keys, SDP, or candidates here (Section 4.14).
 import { Router } from 'express';
+import { encodeOneToOneCallGrant } from '@voiid/common-utils';
 import { query, withTransaction } from '../db';
 import { resolveIceServers } from '../turn';
 import {
@@ -33,6 +34,22 @@ import {
 } from '../callConference';
 
 const router = Router();
+
+// Temporary, opt-in diagnostics. Never record URL parameters, headers, bodies or identities.
+const callDiagnosticsUntil = Number(process.env.VOIID_CALL_DIAGNOSTICS_UNTIL ?? 0);
+router.use((req, res, next) => {
+  if (Date.now() < callDiagnosticsUntil) {
+    const started = Date.now();
+    res.once('finish', () => {
+      console.info('[call-route]', JSON.stringify({
+        at: new Date().toISOString(), method: req.method,
+        route: typeof req.route?.path === 'string' ? req.route.path : 'unmatched',
+        status: res.statusCode, elapsedMs: Date.now() - started,
+      }));
+    });
+  }
+  next();
+});
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -168,7 +185,7 @@ router.post('/ring', requireAuth, asyncHandler(async (req, res) => {
   // with a longer `p`, never change its schema mid-call.
   await redis.set(
     ringGrantKey(call_id),
-    encodeCallGrant([user_id, to_user_id], [user_id, to_user_id]),
+    encodeOneToOneCallGrant(user_id, to_user_id),
     'EX',
     RING_GRANT_TTL_SECONDS
   );

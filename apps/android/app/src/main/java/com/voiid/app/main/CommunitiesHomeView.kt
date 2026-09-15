@@ -77,6 +77,7 @@ fun CommunitiesHomeView(
     var error by remember { mutableStateOf<String?>(null) }
     var open by remember { mutableStateOf<CommunityService.CommunityCard?>(null) }
     var showCreate by remember { mutableStateOf(false) }
+    var discovering by remember { mutableStateOf(false) }
 
     // Searching REPLACES the list rather than filtering `mine`: discovery is a different
     // source with its own endpoint, not a filter over what you already belong to.
@@ -92,11 +93,13 @@ fun CommunitiesHomeView(
 
     val pull = com.voiid.app.ui.components.rememberVoiidPullRefresh { scope.launch { loadMine() } }
     LaunchedEffect(Unit) { loadMine() }
-    LaunchedEffect(query, open) {
-        if (open != null) return@LaunchedEffect
+    LaunchedEffect(query, open, discovering, mine.isEmpty(), loading, error) {
+        if (open != null || (!discovering && !searching && (mine.isNotEmpty() || loading || error != null))) return@LaunchedEffect
         searchingNow = true; searchError = null
-        kotlinx.coroutines.delay(250)
-        try { results = svc.search(query.trim()) }
+        try {
+            kotlinx.coroutines.delay(250)
+            results = svc.search(query.trim())
+        }
         catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) { searchError = e.message ?: "Couldn’t search communities." }
         finally { searchingNow = false }
@@ -132,7 +135,10 @@ fun CommunitiesHomeView(
             Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Communities", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
+            if (discovering) {
+                androidx.compose.material3.TextButton(onClick = { discovering = false; query = "" }) { Text("Back") }
+            }
+            Text(if (discovering) "Discover" else "Communities", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
             Spacer(Modifier.weight(1f))
             Box(
                 Modifier.size(40.dp).clip(CircleShape).background(VoiidColor.fieldFill)
@@ -140,6 +146,23 @@ fun CommunitiesHomeView(
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Default.Add, "Create a community", tint = VoiidColor.primary) }
         }
+
+        if (!discovering) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp)
+                .clip(RoundedCornerShape(16.dp)).background(VoiidColor.surfaceCard)
+                .softClickable { haptics.tap(); query = ""; discovering = true }
+                .semantics { contentDescription = "Discover communities. Browse public communities" }
+                .padding(16.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Outlined.Groups, null, tint = VoiidColor.primary, modifier = Modifier.size(28.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Discover communities", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                    Text("Browse public communities", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                }
+                Text("›", color = VoiidColor.textSecondary, style = VoiidFont.rounded(24))
+            }
+        }
+        androidx.activity.compose.BackHandler(enabled = discovering) { discovering = false; query = "" }
 
         BasicTextField(
             value = query, onValueChange = { query = it },
@@ -157,19 +180,27 @@ fun CommunitiesHomeView(
         )
         Spacer(Modifier.height(12.dp))
 
-        val shown = if (searching) results else (mine + results).distinctBy { it.id }
-        if (searchError != null) Message(searchError!!)
-        if (searchingNow) Text("Finding communities…", modifier = Modifier.padding(horizontal = 16.dp), color = VoiidColor.textSecondary)
+        val recommended = !discovering && !searching && mine.isEmpty() && !loading && error == null
+        val browsing = discovering || searching || recommended
+        val shown = if (browsing) results else mine
+        val listError = if (browsing) searchError else error
+        val listLoading = if (browsing) searchingNow else loading
         when {
-            // Error beats empty: rendering "you're in none" for a failed request is a lie
-            // the user cannot act on.
-            error != null && mine.isEmpty() && !searching ->
-                Message(error!!, action = "Try again") { scope.launch { loadMine() } }
-            shown.isEmpty() && !loading && !searchingNow && searchError == null && searching ->
-                Message("No communities match that.")
-            shown.isEmpty() && !loading ->
-                Message("You're not in any communities yet. Search above, or open an invite link.")
+            listError != null && shown.isEmpty() ->
+                Message(listError, action = "Try again") {
+                    if (browsing) scope.launch {
+                        searchingNow = true; searchError = null
+                        try { results = svc.search(query.trim()) }
+                        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (e: Exception) { searchError = e.message ?: "Couldn’t search communities." }
+                        finally { searchingNow = false }
+                    } else scope.launch { loadMine() }
+                }
+            listLoading && shown.isEmpty() -> Message("Finding communities…")
+            shown.isEmpty() && browsing -> Message(if (searching) "No communities match that." else "Nothing to discover yet.")
+            shown.isEmpty() -> Message("You’re not in any communities yet. Tap Discover communities above, scan a QR code, or open an invite link.")
             else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp)) {
+                if (recommended) item { Text("Recommended communities", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textSecondary); Spacer(Modifier.height(12.dp)) }
                 items(shown, key = { it.id }) { card ->
                     CommunityRow(card) { haptics.tap(); open = card }
                     Spacer(Modifier.height(10.dp))
@@ -238,7 +269,7 @@ private fun Message(text: String, action: String? = null, onAction: () -> Unit =
  * host, the inbox of threads opened with them.
  */
 @Composable
-private fun CommunityDetailView(
+internal fun CommunityDetailView(
     card: CommunityService.CommunityCard,
     service: CommunityService,
     onBack: () -> Unit,
@@ -254,7 +285,13 @@ private fun CommunityDetailView(
     var tab by remember { mutableStateOf(CommunityTab.HOME) }
     var showHostInbox by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var notificationMode by remember(card.id) { mutableStateOf<String?>(null) }
+    var savingNotifications by remember { mutableStateOf(false) }
+    LaunchedEffect(card.id, state.isMember) {
+        if (state.isMember) notificationMode = runCatching { service.notificationPreference(card.id) }.getOrNull()
+    }
     var showSettings by remember { mutableStateOf(false) }
+    var showAdmin by remember { mutableStateOf(false) }
     var showInvite by remember { mutableStateOf(false) }
     var showReport by remember { mutableStateOf(false) }
     val myUserId = remember { com.voiid.app.net.TokenStore.get(context).userId }
@@ -270,6 +307,9 @@ private fun CommunityDetailView(
     }
 
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(card.id) {
+        com.voiid.app.net.DeepLinkRouter.communityMembershipChanges.collect { changed -> if (changed == card.id) reload() }
+    }
     LaunchedEffect(card.id, lifecycle) {
         lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
             while (true) {
@@ -417,7 +457,7 @@ private fun CommunityDetailView(
                     },
                 )
 
-                if (amHost) {
+                if (amManager) {
                     OutlinePill("Inbox", CommunityIcon.INBOX, Modifier.weight(1f)) {
                         haptics.tap(); showHostInbox = true
                     }
@@ -442,9 +482,25 @@ private fun CommunityDetailView(
                             tint = VoiidColor.textPrimary)
                     }
                     CommunityMenu(menuOpen, { menuOpen = false }) {
+                        if (state.isMember) {
+                            for (mode in listOf("all", "important", "none")) {
+                                CommunityMenuItem("Notifications: " + mode.replaceFirstChar { it.uppercase() }, if (notificationMode == mode) CommunityIcon.CHECK else CommunityIcon.MEGAPHONE) {
+                                    if (!savingNotifications) {
+                                        savingNotifications = true
+                                        menuOpen = false
+                                        scope.launch {
+                                            try { service.setNotificationPreference(state.id, mode); notificationMode = mode }
+                                            catch (e: Exception) { actionError = "Couldn't save notification settings. Please try again." }
+                                            finally { savingNotifications = false }
+                                        }
+                                    }
+                                }
+                            }
+                            CommunityMenuDivider()
+                        }
                         if (amManager) {
-                            CommunityMenuItem("Community settings", CommunityIcon.GEAR) {
-                                menuOpen = false; haptics.tap(); showSettings = true
+                            CommunityMenuItem("Admin panel", CommunityIcon.GEAR) {
+                                menuOpen = false; haptics.tap(); showAdmin = true
                             }
                             CommunityMenuDivider()
                         }
@@ -505,8 +561,8 @@ private fun CommunityDetailView(
                     CommunityTab.EVENTS -> Column(
                         verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
                     ) {
-                        CommunityEventsSection(communityId = state.id)
-                        CommunityTournamentsSection(communityId = state.id)
+                        CommunityEventsSection(communityId = state.id, isOwner = amHost, isManager = amManager)
+                        // Tournaments hidden until an explicit post-launch enablement.
                     }
                     CommunityTab.MEMBERS ->
                         CommunityMembersTab(communityId = state.id, isAdmin = amManager, isOwner = amHost)
@@ -525,6 +581,7 @@ private fun CommunityDetailView(
 
     if (showInvite) CommunityInviteSheet(state, service) { showInvite = false }
     if (showReport) ReportSheet(com.voiid.app.net.ReportTarget.Community(state.id)) { showReport = false }
+    if (showAdmin) CommunityControlPanel(state,amHost,onDismiss={showAdmin=false},onSettings={showAdmin=false;showSettings=true})
     if (showSettings) {
         CommunitySettingsScreen(
             card = state,
@@ -534,8 +591,8 @@ private fun CommunityDetailView(
     }
 
     if (showHostInbox) {
-        CommunityHostInboxView(
-            onOpenConversation = onOpenConversation,
+        CommunityRequestInbox(
+            communityId = state.id,
             onClose = { showHostInbox = false },
         )
     }

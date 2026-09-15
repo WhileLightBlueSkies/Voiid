@@ -28,6 +28,7 @@ import SwiftUI
 
 struct EventHostView: View {
     let event: EventService.Event
+    var canAssignStaff: Bool = false
     /// Called whenever this screen changed something the list behind it renders.
     var onChange: () -> Void = {}
 
@@ -45,9 +46,13 @@ struct EventHostView: View {
     @State private var actionError: String?
     @State private var confirmCancel = false
     @State private var showCheckIn = false
+    @State private var editing = false
+    @State private var workspaceTab = "Overview"
+    @State private var guestSearch = ""
 
-    init(event: EventService.Event, onChange: @escaping () -> Void = {}) {
+    init(event: EventService.Event, canAssignStaff: Bool = false, onChange: @escaping () -> Void = {}) {
         self.event = event
+        self.canAssignStaff = canAssignStaff
         self.onChange = onChange
         _current = State(initialValue: event)
     }
@@ -61,9 +66,35 @@ struct EventHostView: View {
                                     subtitle: headerSubtitle,
                                     badge: statusBadge)
 
-                detailsCard
-                hostControls
-                attendeesCard
+                if status == "published" {
+                    Button { showCheckIn = true } label: {
+                        Label("Open check-in desk", systemImage: "qrcode.viewfinder").font(.headline)
+                            .frame(maxWidth: .infinity).padding(14)
+                    }.buttonStyle(.borderedProminent)
+                }
+                if !ordersLoading && !ordersFailed {
+                    HStack(spacing: 14) {
+                        workspaceMetric("Registered", orders.filter { $0.status == "paid" }.reduce(0) { $0 + ($1.quantity ?? 1) })
+                        workspaceMetric("Checked in", orders.reduce(0) { $0 + ($1.checked_in ?? 0) })
+                    }
+                }
+                Text("Counts cover up to 500 bookings.").font(.caption).foregroundStyle(VoiidColor.textSecondary)
+                Picker("Workspace", selection: $workspaceTab) {
+                    Text("Overview").tag("Overview"); Text("Guests").tag("Guests"); Text("Check-in").tag("Check-in")
+                }.pickerStyle(.segmented)
+                if workspaceTab == "Overview" {
+                    detailsCard
+                    if canAssignStaff { NavigationLink("Manage event team") { EventTeamView(eventId: current.id) } }
+                    hostControls
+                } else if workspaceTab == "Guests" {
+                    TextField("Search guest or username", text: $guestSearch).textFieldStyle(.roundedBorder)
+                    attendeesCard
+                } else {
+                    VoiidCardSection("Group entry") {
+                        VoiidSettingsRow(icon: "person.2", title: "One scan admits the whole booking", detail: "Ask the whole group to arrive together. Used bookings cannot be admitted again.")
+                    }
+                    attendeesCard
+                }
 
                 if let actionError {
                     Text(actionError)
@@ -79,6 +110,9 @@ struct EventHostView: View {
         }
         .voiidSettingsPage()
         .task(id: current.id) { await loadOrders() }
+        .sheet(isPresented: $editing) {
+            EventEditView(event: current) { updated in current = updated; onChange() }
+        }
         .sheet(isPresented: $showCheckIn) {
             EventCheckInView(eventId: current.id, eventTitle: current.title) {
                 Task { await loadOrders() }
@@ -93,9 +127,16 @@ struct EventHostView: View {
             }
             Button("Keep it", role: .cancel) {}
         } message: {
-            Text("Everyone who RSVP'd keeps their ticket and nothing is refunded — cancelling "
-               + "marks the event off, it doesn't undo it. This can't be reversed.")
+            Text("Cancelling stops registration and admission. Records are kept; refunds are handled separately. This cannot be reversed.")
         }
+    }
+
+    private func workspaceMetric(_ title: String, _ count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline).foregroundStyle(VoiidColor.textSecondary)
+            Text("\(count)").font(.largeTitle.weight(.semibold)).monospacedDigit()
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            .background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
     }
 
     // MARK: Header
@@ -149,6 +190,10 @@ struct EventHostView: View {
 
     @ViewBuilder private var hostControls: some View {
         VoiidCardSection("Hosting", footer: controlsFooter) {
+            if status != "cancelled" {
+                Button("Edit event") { editing = true }.disabled(busy)
+                VoiidRowDivider()
+            }
             if status == "draft" {
                 VoiidSettingsRow(icon: "paperplane",
                                  title: "Publish",
@@ -158,16 +203,6 @@ struct EventHostView: View {
                 } trailing: {
                     if busy { ProgressView().tint(VoiidColor.accent) } else { VoiidChevron() }
                 }
-                VoiidRowDivider()
-            }
-
-            if status == "published" {
-                VoiidSettingsRow(icon: "qrcode.viewfinder",
-                                 title: "Check people in",
-                                 detail: "Read a ticket code at the door.") {
-                    Haptics.tap()
-                    showCheckIn = true
-                } trailing: { VoiidChevron() }
                 VoiidRowDivider()
             }
 
@@ -193,7 +228,7 @@ struct EventHostView: View {
             return "A draft is invisible to members. Publishing is what makes it real, and "
                  + "it can't be undone \u{2014} an event you no longer want is cancelled."
         case "published":
-            return "Cancelling leaves every ticket valid and refunds nothing."
+            return "Cancelling stops admission. Refunds are handled separately."
         default:
             return "A cancelled event can't be reopened. Create a new one instead."
         }
@@ -234,7 +269,7 @@ struct EventHostView: View {
             }
         } else {
             VoiidCardSection("Attendees \u{00B7} \(orders.count)") {
-                ForEach(Array(orders.enumerated()), id: \.element.id) { index, order in
+                ForEach(Array(orders.filter { guestSearch.isEmpty || $0.display.localizedCaseInsensitiveContains(guestSearch) }.enumerated()), id: \.element.id) { index, order in
                     if index > 0 { VoiidRowDivider() }
                     VoiidSettingsRow(icon: "person",
                                      title: order.display,
@@ -334,5 +369,109 @@ enum VoiidEventDate {
     /// locale formatter would quietly invent an exponent this client does not know.
     static func price(minor: Int?, currency: String?) -> String {
         String(format: "%@ %.2f", currency ?? "INR", Double(minor ?? 0) / 100)
+    }
+}
+
+
+private struct EventEditView: View {
+    let event: EventService.Event
+    let onSaved: (EventService.Event) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var details: String
+    @State private var venue: String
+    @State private var start: Date
+    @State private var end: Date
+    @State private var hasEnd: Bool
+    @State private var capacity: String
+    @State private var busy = false
+    @State private var error: String?
+    init(event: EventService.Event, onSaved: @escaping (EventService.Event) -> Void) {
+        self.event = event; self.onSaved = onSaved
+        _title = State(initialValue: event.title); _details = State(initialValue: event.description ?? "")
+        _venue = State(initialValue: event.location_text ?? "")
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let begins = event.starts_at.flatMap { formatter.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) } ?? Date()
+        _start = State(initialValue: begins)
+        _end = State(initialValue: event.ends_at.flatMap { formatter.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) } ?? begins.addingTimeInterval(3600))
+        _hasEnd = State(initialValue: event.ends_at != nil)
+        _capacity = State(initialValue: event.capacity.map(String.init) ?? "")
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Event details") {
+                    TextField("Title", text: $title)
+                    TextField("Description", text: $details, axis: .vertical)
+                    TextField("Venue", text: $venue)
+                }
+                Section("Schedule") {
+                    DatePicker("Starts", selection: $start)
+                    Toggle("Set end time", isOn: $hasEnd)
+                    if hasEnd { DatePicker("Ends", selection: $end, in: start...) }
+                }
+                Section("Capacity") {
+                    TextField("Unlimited when empty", text: $capacity).keyboardType(.numberPad)
+                    Text("Reducing capacity does not remove existing registrations.").font(.footnote)
+                }
+                if let error { Text(error).foregroundStyle(.red) }
+            }
+            .disabled(busy)
+            .navigationTitle("Edit event")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(busy) }
+                ToolbarItem(placement: .confirmationAction) { Button(busy ? "Saving…" : "Save") { Task { await save() } }.disabled(busy) }
+            }
+            .interactiveDismissDisabled(busy)
+        }
+    }
+    @MainActor private func save() async {
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty, cleanTitle.count <= 120, !hasEnd || end > start,
+              capacity.isEmpty || (Int(capacity) ?? 0) > 0 else { error = "Check the title, times and capacity."; return }
+        busy = true; error = nil; defer { busy = false }
+        do {
+            let changes = EventService.EventEdit(title: cleanTitle, description: details, starts_at: ISO8601DateFormatter().string(from: start), ends_at: hasEnd ? ISO8601DateFormatter().string(from: end) : nil, location_text: venue, capacity: Int(capacity))
+            guard let updated = try await EventService.shared.edit(eventId: event.id, changes: changes) else { error = "No event returned. Please refresh and try again."; return }
+            onSaved(updated); dismiss()
+        } catch { self.error = (error as? APIError)?.errorDescription ?? "Unable to save changes." }
+    }
+}
+
+struct EventTeamView: View {
+    let eventId: String
+    @State private var members: [EventService.StaffMember] = []
+    @State private var username = ""
+    @State private var role = "volunteer"
+    @State private var error: String?
+    @State private var busy = false
+    var body: some View {
+        Form {
+            Section("Invite an active community member") {
+                TextField("Username", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                Picker("Event role", selection: $role) { Text("Volunteer").tag("volunteer"); Text("Event manager").tag("manager") }
+                Text(role == "volunteer" ? "Can check tickets for this event only." : "Can edit this event, view registrations and check tickets. No bank or community admin access.").font(.footnote)
+                Button("Send invitation") { Task { await perform { try await EventService.shared.inviteStaff(eventId: eventId, username: username, role: role); username = "" } } }.disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if let error { Section { Text(error); Button("Retry") { Task { await load() } } } }
+            Section("Event team") {
+                if members.isEmpty { Text("No event staff assigned.") }
+                ForEach(members) { member in
+                    VStack(alignment: .leading) {
+                        Text(member.full_name ?? member.username ?? "Member")
+                        Text("\(member.role) · \(member.state)").font(.footnote)
+                        Text("Access ends: \(member.expires_at)").font(.caption)
+                        if member.state != "revoked" { Button("Remove access", role: .destructive) { Task { await perform { try await EventService.shared.removeStaff(eventId: eventId, userId: member.user_id) } } } }
+                    }
+                }
+            }
+        }.disabled(busy).navigationTitle("Event team").task { await load() }
+    }
+    @MainActor private func load() async { await perform {} }
+    @MainActor private func perform(_ action: () async throws -> Void) async {
+        busy = true; error = nil; defer { busy = false }
+        do { try await action(); members = try await EventService.shared.team(eventId: eventId) }
+        catch { members = []; self.error = (error as? APIError)?.errorDescription ?? "Unable to update event team." }
     }
 }

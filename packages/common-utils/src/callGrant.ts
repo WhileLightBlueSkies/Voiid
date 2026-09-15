@@ -11,6 +11,16 @@ export interface CallGrant {
 
 export const CALL_GRANT_VERSION = 2;
 
+/** Format version is not call mode: both 1:1 and conference grants use v2. */
+export function encodeOneToOneCallGrant(caller: string, callee: string): string {
+  return JSON.stringify({ ...JSON.parse(encodeCallGrant([caller, callee], [caller, callee])), mode: 'one-to-one' });
+}
+
+/** Unmarked v2 grants retain conference behavior during a rolling deployment. */
+export function callGrantNeedsDeviceClaim(grant: { v?: number; mode?: string }): boolean {
+  return grant.mode === 'one-to-one' || grant.v == null || grant.v === 1;
+}
+
 /**
  * How long a CONFERENCE grant lives.
  *
@@ -81,4 +91,3 @@ export function callGrantAllows(raw: string | null | undefined, from: string, to
   if (!from || !to || from === to) return false;
   return grant.p.includes(from) && grant.p.includes(to);
 }
-

@@ -1,3 +1,8 @@
+import { scheduleCommunityNotification } from '../communityNotifications';
+import { eventActivityPushConfigured } from '../push';
+import { eventAccess } from '../eventAccess';
+import { appleWalletConfigured, createApplePass } from '../payments/appleWallet';
+import { admitTicket } from '../payments/admission';
 // Community events, orders and tickets — the free-RSVP half of Phase 2, with the paid half
 // wired but deliberately switched off until somebody chooses a payment provider.
 //
@@ -33,7 +38,7 @@ import { requireAuth } from '../auth';
 import { rateLimit } from '../security';
 import { asyncHandler } from '../util';
 import { communityAccess } from '../communityRoles';
-import { activeProvider, FREE_PROVIDER } from '../payments/provider';
+import { activeProvider, providerByName, FREE_PROVIDER } from '../payments/provider';
 import { reconcileUnmatched } from '../payments/inbox';
 import {
   newTicketNonce,
@@ -43,6 +48,26 @@ import {
 } from '../payments/tickets';
 
 const router = Router();
+
+// Owner earnings: deliberately separate from the platform-admin response and its audit data.
+router.get('/communities/:id/wallet', requireAuth, asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'invalid community' });
+  const userId = (req as any).auth.user_id;
+  const access = await communityAccess(id, userId, true);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  const owner = (await query(`select event_commission_bps from communities where id=$1 and owner_id=$2`, [id,userId]))[0];
+  if (!owner) return res.status(403).json({ error: 'only the community owner can access earnings' });
+  const totals = await query(`select o.currency,o.status,count(*)::int as orders,
+    sum(o.amount_minor)::text as gross_minor,sum(o.commission_minor)::text as commission_minor,
+    sum(o.organiser_minor)::text as organiser_minor,
+    count(*) filter(where o.commission_bps is null)::int as unpriced_orders
+    from event_orders o join community_events e on e.id=o.event_id
+    where e.community_id=$1 group by o.currency,o.status order by o.currency,o.status`,[id]);
+  res.set('Cache-Control','no-store');
+  return res.json({ commission_bps:owner.event_commission_bps,totals,payouts_ready:false });
+}));
+
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -114,7 +139,8 @@ async function loadEvent(id: string): Promise<EventRow | undefined> {
 async function openEvent(
   id: unknown,
   userId: string,
-  needsAdmin: boolean
+  needsAdmin: boolean,
+  checkin: boolean = false
 ): Promise<
   | { ok: true; event: EventRow; isOrganiser: boolean }
   | { ok: false; status: number; error: string }
@@ -125,7 +151,7 @@ async function openEvent(
   const event = await loadEvent(id);
   if (!event) return { ok: false, status: 404, error: 'no such event' };
 
-  const access = await communityAccess(event.community_id, userId, needsAdmin);
+  const access = await eventAccess(event.id, event.community_id, userId, checkin ? 'checkin' : needsAdmin ? 'manage' : 'view');
   if (!access.ok) return { ok: false, status: access.status, error: access.error };
 
   if (event.status === 'draft' && !access.isOrganiser) {
@@ -237,9 +263,10 @@ router.get(
     // Drafts are filtered in SQL rather than after the fetch: an unpublished event must not
     // cross the process boundary at all for a non-organiser, because the next person to add a
     // field to this response should not have to remember to re-filter it.
-    const rows = await query<EventRow & { your_order_status: string | null; ticket_count: string }>(
+    const rows = await query<EventRow & { your_order_status: string | null; ticket_count: string; staff_role: string | null }>(
       `select e.*,
               o.status as your_order_status,
+              (select role from event_staff where event_id=e.id and user_id=$2 and state='active' and expires_at>now()) as staff_role,
               (select count(*) from event_tickets t
                 where t.event_id = e.id and t.state = 'valid')::text as ticket_count
          from community_events e
@@ -247,7 +274,7 @@ router.get(
                 on o.event_id = e.id and o.buyer_id = $2
                and o.status in ('pending', 'paid')
         where e.community_id = $1
-          and ($3::boolean or e.status <> 'draft')
+          and ($3::boolean or e.status <> 'draft' or exists(select 1 from event_staff where event_id=e.id and user_id=$2 and role='manager' and state='active' and expires_at>now()))
         order by e.starts_at
         limit 200`,
       [communityId, userId, access.isOrganiser]
@@ -258,6 +285,8 @@ router.get(
         ...eventCard(r),
         your_order_status: r.your_order_status,
         tickets_issued: Number(r.ticket_count),
+        can_manage: access.isOrganiser || r.staff_role === 'manager',
+        can_checkin: access.isOrganiser || r.staff_role != null,
       })),
     });
   })
@@ -387,12 +416,21 @@ router.patch(
       push('price_minor', price);
     }
 
+    if (opened.event.status === 'cancelled') return res.status(409).json({error:'cancelled events cannot be edited'});
+    const resultingStart = starts_at === undefined ? new Date(opened.event.starts_at) : new Date(starts_at);
+    const resultingEnd = ends_at === undefined ? opened.event.ends_at : ends_at;
+    if (resultingEnd != null && new Date(resultingEnd).getTime() <= resultingStart.getTime())
+      return res.status(400).json({error:'end time must be after start time'});
     if (sets.length === 0) return res.json({ event: eventCard(opened.event) });
 
     const rows = await query<EventRow>(
-      `update community_events set ${sets.join(', ')} where id = $1 returning *`,
+      `update community_events set ${sets.join(', ')} where id = $1 and status <> 'cancelled' returning *`,
       params
     );
+    if(!rows[0]) return res.status(409).json({error:'event was cancelled; refresh before editing'});
+    if (rows[0].status === 'published') {
+      scheduleCommunityNotification({communityId:rows[0].community_id,actorId:userId,kind:'event'});
+    }
     res.json({ event: eventCard(rows[0]) });
   })
 );
@@ -421,6 +459,7 @@ router.post(
       [opened.event.id]
     );
     if (rows.length === 0) return res.status(409).json({ error: 'this event is not a draft' });
+    scheduleCommunityNotification({communityId:rows[0].community_id,actorId:userId,kind:'event'});
     res.json({ event: eventCard(rows[0]) });
   })
 );
@@ -441,6 +480,9 @@ router.post(
       [opened.event.id]
     );
     if (rows.length === 0) return res.status(409).json({ error: 'this event is already cancelled' });
+    if (opened.event.status === 'published') {
+      scheduleCommunityNotification({communityId:rows[0].community_id,actorId:userId,kind:'event'});
+    }
     res.json({ event: eventCard(rows[0]), note: 'existing tickets are untouched; refunds are separate' });
   })
 );
@@ -469,6 +511,10 @@ router.post(
     if (!opened.ok) return res.status(opened.status).json({ error: opened.error });
     const event = opened.event;
 
+    if (opened.isOrganiser || event.created_by === userId) {
+      return res.status(403).json({ error: 'Event hosts and managers cannot book their own event. Open Manage event instead.' });
+    }
+
     if (event.status !== 'published') {
       return res.status(409).json({ error: 'this event is not open for registration' });
     }
@@ -492,8 +538,8 @@ router.post(
     // is well-defined: a double-tapped RSVP and a returning abandoned checkout both land here
     // and get their own order back instead of a second one to pay for.
     const live = (
-      await query<{ id: string; status: string; quantity: number; provider: string }>(
-        `select id, status, quantity, provider from event_orders
+      await query<{ id: string; status: string; quantity: number; provider: string; provider_ref: string; amount_minor: string; currency: string }>(
+        `select id, status, quantity, provider, provider_ref, amount_minor, currency from event_orders
           where event_id = $1 and buyer_id = $2 and status in ('pending', 'paid')`,
         [event.id, userId]
       )
@@ -501,6 +547,7 @@ router.post(
     if (live) {
       return res.status(200).json({
         order: { id: live.id, status: live.status, quantity: live.quantity, provider: live.provider },
+        checkout: live.status === 'pending' ? providerByName(live.provider)?.resumeCheckout?.(live.provider_ref, Number(live.amount_minor), live.currency) : undefined,
         existed: true,
       });
     }
@@ -569,14 +616,14 @@ router.post(
         // rather than a 500 — both requests were the same intent.
         if ((e as { code?: string }).code !== PG_UNIQUE_VIOLATION) throw e;
         const winner = (
-          await query<{ id: string; status: string; quantity: number; provider: string }>(
-            `select id, status, quantity, provider from event_orders
+          await query<{ id: string; status: string; quantity: number; provider: string; provider_ref: string; amount_minor: string; currency: string }>(
+            `select id, status, quantity, provider, provider_ref, amount_minor, currency from event_orders
               where event_id = $1 and buyer_id = $2 and status in ('pending', 'paid')`,
             [event.id, userId]
           )
         )[0];
         if (!winner) return res.status(409).json({ error: 'order changed, retry' });
-        return res.status(200).json({ order: winner, existed: true });
+        return res.status(200).json({ order: winner, checkout: winner.status === 'pending' ? providerByName(winner.provider)?.resumeCheckout?.(winner.provider_ref, Number(winner.amount_minor), winner.currency) : undefined, existed: true });
       }
     }
 
@@ -828,11 +875,12 @@ router.get(
     const rows = await query(
       `select t.id, t.event_id, t.state, t.checked_in_at, t.created_at,
               e.title, e.starts_at, e.ends_at, e.location_text, e.status as event_status,
-              e.community_id, o.status as order_status
+              e.community_id, o.status as order_status, case when o.admission_mode='group' then o.quantity else 1 end as people
          from event_tickets t
          join community_events e on e.id = t.event_id
          join event_orders o on o.id = t.order_id
         where t.holder_id = $1
+          and (o.admission_mode='individual' or t.id=(select id from event_tickets where order_id=o.id order by id limit 1))
         order by e.starts_at desc
         limit 200`,
       [userId]
@@ -840,6 +888,127 @@ router.get(
     res.json({ tickets: rows });
   })
 );
+
+router.get('/event-tickets/:id', requireAuth, asyncHandler(async (req,res) => {
+  const own=await loadOwnTicket(req.params.id,(req as any).auth.user_id);
+  if(!own.ok) return res.status(own.status).json({error:own.error});
+  const ticket=(await query(`select t.id,t.event_id,t.state,t.checked_in_at,e.title,e.starts_at,e.location_text,
+    e.status as event_status,o.status as order_status,e.community_id, case when o.admission_mode='group' then o.quantity else 1 end as people
+    from event_tickets t join community_events e on e.id=t.event_id join event_orders o on o.id=t.order_id
+    join communities c on c.id=e.community_id
+    where t.id=$1 and e.suspended_at is null and c.suspended_at is null`,[own.ticket.id]))[0];
+  if(!ticket) return res.status(404).json({error:'ticket unavailable'});
+  res.set('Cache-Control','no-store');return res.json({ticket});
+}));
+
+router.post('/event-tickets/:id/live-activity', requireAuth,
+  rateLimit({ max: 20, windowSeconds: 60, bucket: 'event-activity' }),
+  asyncHandler(async (req,res) => {
+    const auth=(req as any).auth;
+    if(!auth.device_id) return res.status(403).json({error:'A registered device is required'});
+    const found=await loadOwnTicket(req.params.id,auth.user_id);
+    if(!found.ok) return res.status(found.status).json({error:found.error});
+    const t=found.ticket;
+    if(t.state!=='valid' || t.checked_in_at || t.order_status!=='paid' || t.event_status!=='published' || t.suspended)
+      return res.status(409).json({error:'This ticket is unavailable'});
+    const active=(await query('select count(*)::int as n from event_live_activities where device_id=$1 and ticket_id<>$2 and expires_at>now()',[auth.device_id,t.id]))[0];
+    if(active.n>=4) return res.status(409).json({error:'Stop following another event first'});
+    const token=req.body?.token;
+    if(typeof token!=='string' || !/^[a-f0-9]{64,512}$/.test(token) || typeof req.body?.sandbox!=='boolean')
+      return res.status(400).json({error:'Invalid activity token'});
+    if(process.env.VOIID_EVENT_LIVE_ACTIVITIES !== '1' || !eventActivityPushConfigured()) return res.status(503).json({error:'Event updates are unavailable'});
+    const time=(await query('select starts_at from community_events where id=$1',[found.ticket.event_id]))[0];
+    const delta=new Date(time.starts_at).getTime()-Date.now();
+    if(delta>8*3600_000 || delta < -3600_000) return res.status(409).json({error:'Follow your event closer to its start time'});
+    await query(`insert into event_live_activities(device_id,ticket_id,token,sandbox)
+      values($1,$2,$3,$4) on conflict(device_id,ticket_id) do update set token=excluded.token,
+      sandbox=excluded.sandbox,next_check_at=now(),last_payload=null,last_sent_at=null`,
+      [auth.device_id,found.ticket.id,token,req.body.sandbox]);
+    return res.json({ok:true});
+  }));
+router.delete('/event-tickets/:id/live-activity', requireAuth, asyncHandler(async(req,res)=>{
+  if(!UUID_RE.test(req.params.id)) return res.status(400).json({error:'Invalid ticket'});
+  await query('delete from event_live_activities where device_id=$1 and ticket_id=$2',[(req as any).auth.device_id,req.params.id]);
+  return res.json({ok:true});
+}));
+
+router.get('/event-tickets/:id/apple-wallet', requireAuth,
+  rateLimit({ max: 10, windowSeconds: 60, bucket: 'apple-wallet' }),
+  asyncHandler(async (req,res) => {
+    const found = await loadOwnTicket(req.params.id,(req as any).auth.user_id);
+    if(!found.ok) return res.status(found.status).json({error:found.error});
+    if(!appleWalletConfigured()) return res.status(503).json({error:'Apple Wallet is not available yet'});
+    const ticket = (await query(`select t.id,e.title,e.starts_at,e.location_text,
+      case when o.admission_mode='group' then o.quantity else 1 end as people from event_tickets t
+      join community_events e on e.id=t.event_id join communities c on c.id=e.community_id
+      join event_orders o on o.id=t.order_id
+      where t.id=$1 and t.state='valid' and t.checked_in_at is null and o.status='paid'
+        and e.status='published' and e.suspended_at is null and c.suspended_at is null`,[found.ticket.id]))[0];
+    if(!ticket) return res.status(409).json({error:'This ticket is not available for Wallet'});
+    try {
+      const pass=await createApplePass(ticket);
+      res.set('Cache-Control','no-store');
+      return res.json({pass_base64:pass.toString('base64')});
+    } catch {
+      console.error('[wallet] pass signing failed');
+      return res.status(503).json({error:'Unable to create Wallet ticket. Please try again later.'});
+    }
+  }));
+
+router.get('/events/:id/team', requireAuth, asyncHandler(async(req,res)=>{
+ const userId=(req as any).auth.user_id;
+ const opened=await openEvent(req.params.id,userId,false);
+ if(!opened.ok)return res.status(opened.status).json({error:opened.error});
+ const host=await communityAccess(opened.event.community_id,userId,true);
+ if(!host.ok)return res.status(host.status).json({error:host.error});
+ const staff=await query(`select s.user_id,s.role,s.state,s.expires_at,u.full_name,u.username from event_staff s
+   join users u on u.id=s.user_id where s.event_id=$1 order by s.invited_at desc`,[opened.event.id]);
+ res.set('Cache-Control','no-store');return res.json({staff});
+}));
+router.post('/events/:id/team',requireAuth,rateLimit({max:30,windowSeconds:60,bucket:'event-team'}),asyncHandler(async(req,res)=>{
+ const userId=(req as any).auth.user_id;
+ const opened=await openEvent(req.params.id,userId,false);
+ if(!opened.ok)return res.status(opened.status).json({error:opened.error});
+ const host=await communityAccess(opened.event.community_id,userId,true);
+ if(!host.ok)return res.status(host.status).json({error:host.error});
+ const {username,role}=req.body??{};
+ if(typeof username!=='string'||!['manager','volunteer'].includes(role))return res.status(400).json({error:'username and event role required'});
+ const member=(await query(`select u.id from users u join community_members m on m.user_id=u.id
+   where lower(u.username)=lower($1) and m.community_id=$2 and m.state='active'`,[username.replace(/^@/,''),opened.event.community_id]))[0];
+ if(!member)return res.status(404).json({error:'active community member not found'});
+ if(member.id===userId)return res.status(400).json({error:'you already manage this event'});
+ await query(`insert into event_staff(event_id,user_id,role,invited_by,expires_at) values($1,$2,$3,$4,now()+interval '7 days')
+   on conflict(event_id,user_id) do update set role=excluded.role,state='pending',invited_by=excluded.invited_by,
+   invited_at=now(),expires_at=excluded.expires_at,accepted_at=null`,[opened.event.id,member.id,role,userId]);
+ return res.status(201).json({ok:true});
+}));
+router.get('/communities/:id/staff-invitations',requireAuth,asyncHandler(async(req,res)=>{
+ const id=String(req.params.id),userId=(req as any).auth.user_id;
+ if(!UUID_RE.test(id))return res.status(400).json({error:'invalid community'});
+ const member=await communityAccess(id,userId,false);if(!member.ok)return res.status(member.status).json({error:member.error});
+ const invitations=await query(`select s.event_id,s.role,s.state,s.expires_at,e.title from event_staff s
+   join community_events e on e.id=s.event_id where e.community_id=$1 and s.user_id=$2 and s.state in ('pending','active')
+   and s.expires_at>now() and e.status<>'cancelled' and e.suspended_at is null`,[id,userId]);
+ return res.json({invitations});
+}));
+router.post('/events/:id/team/accept',requireAuth,asyncHandler(async(req,res)=>{
+ const id=String(req.params.id),userId=(req as any).auth.user_id;
+ if(!UUID_RE.test(id))return res.status(400).json({error:'invalid event'});
+ const event=await loadEvent(id);if(!event)return res.status(404).json({error:'event not found'});
+ const member=await communityAccess(event.community_id,userId,false);if(!member.ok)return res.status(member.status).json({error:member.error});
+ const changed=await query(`update event_staff set state='active',accepted_at=now() where event_id=$1 and user_id=$2
+   and state='pending' and expires_at>now() returning role`,[id,userId]);
+ if(!changed.length)return res.status(409).json({error:'invitation expired or no longer pending'});
+ return res.json({ok:true});
+}));
+router.delete('/events/:id/team/:userId',requireAuth,asyncHandler(async(req,res)=>{
+ const userId=(req as any).auth.user_id;
+ const opened=await openEvent(req.params.id,userId,false);if(!opened.ok)return res.status(opened.status).json({error:opened.error});
+ const host=await communityAccess(opened.event.community_id,userId,true);if(!host.ok)return res.status(host.status).json({error:host.error});
+ if(!UUID_RE.test(String(req.params.userId)))return res.status(400).json({error:'invalid member'});
+ await query(`update event_staff set state='revoked' where event_id=$1 and user_id=$2`,[opened.event.id,req.params.userId]);
+ return res.json({ok:true});
+}));
 
 /** The holder's own ticket, or an explanation of why it is not usable. */
 async function loadOwnTicket(ticketId: unknown, userId: string) {
@@ -855,12 +1024,19 @@ async function loadOwnTicket(ticketId: unknown, userId: string) {
       state: string;
       order_status: string;
       event_status: string;
+      admission_mode: string;
+      checked_in_at: string | null;
+      suspended: boolean;
+      canonical_id: string;
     }>(
       `select t.id, t.event_id, t.holder_id, t.qr_nonce, t.state,
-              o.status as order_status, e.status as event_status
+              o.status as order_status, e.status as event_status, o.admission_mode, t.checked_in_at,
+              (e.suspended_at is not null or c.suspended_at is not null) as suspended,
+              (select id from event_tickets where order_id=o.id order by id limit 1) as canonical_id
          from event_tickets t
          join event_orders o on o.id = t.order_id
          join community_events e on e.id = t.event_id
+         join communities c on c.id=e.community_id
         where t.id = $1`,
       [ticketId]
     )
@@ -895,7 +1071,10 @@ router.get(
     if (t.order_status !== 'paid') return res.status(409).json({ error: 'this order is not paid' });
     if (t.event_status === 'cancelled') return res.status(409).json({ error: 'this event was cancelled' });
 
-    const signed = signTicketCode(t.id, t.event_id, t.qr_nonce);
+    if(t.checked_in_at || t.suspended || t.event_status!=='published') return res.status(409).json({error:'This booking is not available for admission'});
+    if(t.admission_mode==='group' && t.id!==t.canonical_id) return res.status(409).json({error:'Refresh My tickets to open your group booking'});
+    res.set('Cache-Control','no-store');
+    const signed = signTicketCode(t.id, t.event_id, t.qr_nonce, t.admission_mode==='group');
     if (!signed) {
       // No signing key. 503 and a loud log rather than an unsigned code: an unsigned code is a
       // bearer uuid, which is exactly what the signature exists to not be.
@@ -926,6 +1105,7 @@ router.post(
       return res.status(409).json({ error: 'this ticket is no longer valid' });
     }
 
+    if(found.ticket.admission_mode==='group' && found.ticket.id!==found.ticket.canonical_id) return res.status(409).json({error:'Refresh My tickets to open your group booking'});
     const nonce = newTicketNonce();
     // Conditional on checked_in_at being null: rotating a ticket that has already walked
     // through the door achieves nothing and would only confuse the record.
@@ -937,7 +1117,7 @@ router.post(
     );
     if (rows.length === 0) return res.status(409).json({ error: 'this ticket has already been used' });
 
-    const signed = signTicketCode(found.ticket.id, found.ticket.event_id, nonce);
+    const signed = signTicketCode(found.ticket.id, found.ticket.event_id, nonce, found.ticket.admission_mode==='group');
     if (!signed) return res.status(503).json({ error: 'ticket codes are temporarily unavailable' });
     res.json({ code: signed.code, expires_at: signed.expiresAt });
   })
@@ -961,7 +1141,7 @@ router.post(
   rateLimit({ max: 600, windowSeconds: 3600, bucket: 'event-checkin' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth;
-    const opened = await openEvent(req.params.id, userId, true);
+    const opened = await openEvent(req.params.id, userId, true, true);
     if (!opened.ok) return res.status(opened.status).json({ error: opened.error });
 
     if (!ticketSigningAvailable()) {
@@ -974,68 +1154,18 @@ router.post(
       // The reason is returned because the person holding the scanner needs it — "expired, ask
       // them to refresh" and "this is not one of ours" are different conversations at a door.
       // It reveals nothing: an attacker submitting codes already knows which one they sent.
-      return res.status(400).json({ ok: false, reason: check.reason });
+      return res.status(400).json({ ok: false, reason: check.reason, error: check.reason });
     }
 
     // THE CODE'S EVENT MUST BE THE EVENT BEING SCANNED. Without this, a valid ticket for last
     // month's event would open this month's door, since the signature says nothing about which
     // door is asking.
     if (check.eventId !== opened.event.id) {
-      return res.status(400).json({ ok: false, reason: 'wrong_event' });
+      return res.status(400).json({ ok: false, reason: 'wrong_event', error: 'wrong_event' });
     }
 
-    const ticket = (
-      await query<{
-        id: string;
-        state: string;
-        qr_nonce: string;
-        checked_in_at: Date | null;
-        holder_id: string;
-        order_status: string;
-        full_name: string | null;
-        username: string | null;
-      }>(
-        `select t.id, t.state, t.qr_nonce, t.checked_in_at, t.holder_id,
-                o.status as order_status, u.full_name, u.username
-           from event_tickets t
-           join event_orders o on o.id = t.order_id
-           left join users u on u.id = t.holder_id
-          where t.id = $1 and t.event_id = $2`,
-        [check.ticketId, opened.event.id]
-      )
-    )[0];
-    if (!ticket) return res.status(404).json({ ok: false, reason: 'not_found' });
-
-    // THE NONCE MUST BE THE CURRENT ONE. This is what makes rotation actually revoke: a code
-    // signed against a superseded nonce verifies cryptographically and is still refused here.
-    if (ticket.qr_nonce !== check.nonce) return res.status(409).json({ ok: false, reason: 'superseded' });
-    if (ticket.state !== 'valid') return res.status(409).json({ ok: false, reason: 'void' });
-    if (ticket.order_status !== 'paid') return res.status(409).json({ ok: false, reason: 'unpaid' });
-
-    const claimed = await query<{ checked_in_at: Date }>(
-      `update event_tickets
-          set checked_in_at = now(), checked_in_by = $2
-        where id = $1 and checked_in_at is null and state = 'valid'
-        returning checked_in_at`,
-      [ticket.id, userId]
-    );
-    if (claimed.length === 0) {
-      // Already through. Reported with the original time, because the useful answer at a door
-      // is "this was used at 19:42", not "no".
-      return res.status(409).json({
-        ok: false,
-        reason: 'already_checked_in',
-        checked_in_at: ticket.checked_in_at,
-      });
-    }
-
-    res.json({
-      ok: true,
-      ticket_id: ticket.id,
-      holder_id: ticket.holder_id,
-      holder_name: ticket.full_name ?? ticket.username ?? null,
-      checked_in_at: claimed[0].checked_in_at,
-    });
+    const admission = await admitTicket(opened.event.id, check.ticketId, check.nonce, userId, check.group === true);
+    return res.status(admission.ok ? 200 : admission.reason === 'access_removed' ? 403 : 409).json(admission.ok ? admission : {...admission,error:admission.reason});
   })
 );
 

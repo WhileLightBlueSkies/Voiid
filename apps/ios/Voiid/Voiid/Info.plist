@@ -13,46 +13,14 @@
 			</array>
 		</dict>
 	</array>
-	<key>ITSAppUsesNonExemptEncryption</key>
+	<key>FirebaseAppDelegateProxyEnabled</key>
 	<false/>
-	<key>NSCameraUsageDescription</key>
-	<string>Scan Voiid QR codes, take photos and videos for your chats, and set your profile picture.</string>
-	<key>NSFaceIDUsageDescription</key>
-	<string>Confirm it is you before linking a browser to your Voiid account.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>Find friends already on Voiid. Your contacts are matched privately on your device and are never uploaded.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Allow Always so live location keeps updating while Voiid is in the background, for as long as you set. Sharing stops automatically when your timer ends.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Voiid uses your location only when you choose to share it in a chat or on the Map. Your location is end-to-end encrypted — Voiid's servers never see it.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Record voice notes and talk on Voiid calls. Audio is end-to-end encrypted — Voiid's servers never hear it.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Save photos and videos from Voiid to your library.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Choose photos and videos to send on Voiid. Everything you send is end-to-end encrypted.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INStartCallIntent</string>
 		<string>INStartAudioCallIntent</string>
 		<string>INStartVideoCallIntent</string>
 	</array>
-	<!-- Firebase MUST NOT swizzle the app delegate.
-	     With the proxy enabled (the default when this key is absent), FirebaseMessaging
-	     replaces application(_:didRegisterForRemoteNotificationsWithDeviceToken:) at
-	     runtime, keeps the APNs token for FCM, and OUR implementation never runs. So
-	     E2EManager.registerPushToken was never called, `pushToken` stayed nil, every
-	     devices/register sent push_token = null, and the column stayed NULL for the life
-	     of the install — on every iOS device, for weeks.
-	     The tell was voip_token being populated beside it: PushKit delivers through
-	     PKPushRegistry, which Firebase does not swizzle, so calls rang while messages
-	     never woke the app.
-	     Disabling the proxy means the delegate methods in VoiidApp.swift are called
-	     directly. They already do both halves of the job — Auth.auth().setAPNSToken for
-	     Firebase Auth's silent verification push, then registerPushToken for us — which
-	     is exactly what the proxy was doing on our behalf minus the second call. -->
-	<key>FirebaseAppDelegateProxyEnabled</key>
-	<false/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>voip</string>
@@ -69,9 +37,6 @@
 		<key>UIImageRespectsSafeAreaInsets</key>
 		<false/>
 	</dict>
-	<!-- Backend endpoints, from the VOIID_API_BASE_URL / VOIID_WS_URL build settings (Q03).
-	     Unset in Release on purpose: APIConfig refuses to start rather than defaulting to the
-	     development backend. Debug ignores these and uses its own default. -->
 	<key>VoiidApiBaseURL</key>
 	<string>$(VOIID_API_BASE_URL)</string>
 	<key>VoiidWebSocketURL</key>

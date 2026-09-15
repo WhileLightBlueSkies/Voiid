@@ -26,6 +26,7 @@ struct FindByUsernameView: View {
     /// happen exactly as they do for a typed handle, because a QR proves someone showed you
     /// a code, not that its owner agreed to hear from you.
     var prefilledHandle: String? = nil
+    var onScanAgain: (() -> Void)? = nil
 
     /// Called with the conversation id once a chat is opened, so the caller can navigate.
     /// Declared last so a trailing closure reads naturally at both call sites.
@@ -41,8 +42,19 @@ struct FindByUsernameView: View {
     @State private var sending = false
     @State private var error: String?
     @FocusState private var handleFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var lookupTask: Task<Void, Never>?
+    @State private var pendingConversationId: String?
 
     var body: some View {
+        Group {
+            if onScanAgain != nil { scannedBody } else { usernameBody }
+        }
+        .onDisappear { lookupTask?.cancel() }
+        .interactiveDismissDisabled(sending)
+    }
+
+    private var usernameBody: some View {
         NavigationStack {
             List {
                 Section {
@@ -114,6 +126,153 @@ struct FindByUsernameView: View {
             }
         }
         .tint(VoiidColor.primary)
+    }
+
+    private var scannedBody: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    QRScreenHeading(title: pendingConversationId == nil ? "Profile preview" : "Request sent",
+                                    subtitle: pendingConversationId == nil ? "Here’s the person from your QR code." : "They’ll decide whether to accept your request.")
+                    if let p = profile {
+                        scannedProfileCard(p)
+                    } else {
+                        VStack(spacing: 16) {
+                            if looking {
+                                ProgressView()
+                                Text("Looking up @\(cleanHandle)…")
+                            } else {
+                                Image(systemName: "person.crop.circle.badge.questionmark")
+                                    .font(.system(size: 40))
+                                Text("Couldn’t load this profile")
+                            }
+                        }
+                        .font(.system(.subheadline, design: .rounded))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                        .frame(maxWidth: .infinity, minHeight: 200)
+                    }
+                    if let error {
+                        Text(error)
+                            .font(.system(.subheadline, design: .rounded))
+                            .foregroundStyle(VoiidColor.error)
+                            .accessibilityIdentifier("scan.profileError")
+                    }
+                }
+                .frame(maxWidth: 520)
+                .frame(maxWidth: .infinity)
+                .padding(24)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .background(VoiidColor.background.ignoresSafeArea())
+            .safeAreaInset(edge: .bottom) { scannedActions }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { onScanAgain?() } label: {
+                        Image(systemName: "chevron.left").frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Back to scanner")
+                    .disabled(sending)
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                guard !didPrefill else { return }
+                didPrefill = true
+                handle = prefilledHandle ?? ""
+                lookup()
+            }
+        }
+        .tint(VoiidColor.primary)
+    }
+
+    private func scannedProfileCard(_ p: ContactPinService.PublicProfile) -> some View {
+        VStack(spacing: 16) {
+            QRIdentityAvatar(photoURL: p.photo_url, name: p.full_name ?? p.username ?? "?")
+            Text(p.full_name?.isEmpty == false ? p.full_name! : (p.username ?? "Voiid profile"))
+                .font(.system(.title2, design: .rounded, weight: .bold))
+                .foregroundStyle(VoiidColor.textPrimary)
+                .multilineTextAlignment(.center)
+            Text("@\(p.username ?? cleanHandle)")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(VoiidColor.textSecondary)
+            if let bio = p.bio, !bio.isEmpty {
+                Text(bio).font(.system(.body, design: .rounded))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            Divider().padding(.vertical, 4)
+            if pendingConversationId != nil {
+                Label("Waiting for them to accept", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(VoiidColor.accentInk)
+                    .font(.system(.headline, design: .rounded))
+                    .accessibilityIdentifier("scan.requestSent")
+            } else if !p.reachable_by_username {
+                Text("This person can’t be reached by username.")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(VoiidColor.textSecondary)
+            } else if p.requires_pin {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Contact PIN", systemImage: "lock")
+                        .font(.system(.headline, design: .rounded))
+                    Text("Ask them for their 6-digit PIN to send a request.")
+                        .font(.system(.subheadline, design: .rounded))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                    TextField("6-digit PIN", text: $pin)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                        .font(.system(.title2, design: .monospaced))
+                        .padding(16)
+                        .background(VoiidColor.fieldFill, in: RoundedRectangle(cornerRadius: 14))
+                        .onChange(of: pin) { _, value in
+                            let digits = String(value.filter { $0 >= "0" && $0 <= "9" }.prefix(6))
+                            if pin != digits { pin = digits }
+                        }
+                        .accessibilityLabel("Contact PIN")
+                        .accessibilityIdentifier("scan.contactPin")
+                }
+                .foregroundStyle(VoiidColor.textPrimary)
+            } else {
+                Label(p.is_mutual_contact ? "You’re in each other’s contacts" : "They’ll receive a message request",
+                      systemImage: "person.crop.circle.badge.checkmark")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(VoiidColor.textSecondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+        .background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var scannedActions: some View {
+        VStack(spacing: 12) {
+            if let conversationId = pendingConversationId {
+                Button("Done") {
+                    dismiss()
+                    onOpen(conversationId, true)
+                }
+                .buttonStyle(QRActionButtonStyle())
+            } else if let p = profile, p.reachable_by_username {
+                Button { Haptics.rigid(); send(p) } label: {
+                    if sending { ProgressView().tint(VoiidColor.textOnPrimary) }
+                    else { Text(p.is_mutual_contact ? "Message" : "Send request") }
+                }
+                .buttonStyle(QRActionButtonStyle())
+                .disabled(sending || (p.requires_pin && pin.count != 6))
+                .opacity(sending || (p.requires_pin && pin.count != 6) ? 0.5 : 1)
+                .accessibilityIdentifier("scan.messageProfile")
+            } else if !looking && profile == nil {
+                Button("Try again", action: lookup).buttonStyle(QRActionButtonStyle())
+            }
+            Button("Scan again") { onScanAgain?() }
+                .buttonStyle(QRActionButtonStyle(secondary: true))
+                .disabled(sending)
+                .accessibilityIdentifier("scan.again")
+        }
+        .frame(maxWidth: 520)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity)
+        .background(VoiidColor.background)
     }
 
     @ViewBuilder
@@ -189,24 +348,36 @@ struct FindByUsernameView: View {
     private func lookup() {
         let h = cleanHandle
         guard !h.isEmpty else { return }
+        lookupTask?.cancel()
         looking = true
         error = nil
         profile = nil
-        Task {
+        pin = ""
+        lookupTask = Task {
             do {
                 let found = try await ContactPinService.shared.lookup(username: h)
-                withAnimation(.spring(duration: 0.34, bounce: 0)) { profile = found }
+                guard !Task.isCancelled else { return }
+                guard cleanHandle == h else { looking = false; return }
+                withAnimation(.easeOut(duration: reduceMotion ? 0.15 : 0.2)) { profile = found }
             } catch {
                 // Do not distinguish "no such handle" from other failures any more than the
                 // server already does — a precise message here would help someone enumerate
                 // which handles exist.
-                self.error = "No one found with that username."
+                guard !Task.isCancelled else { return }
+                guard cleanHandle == h else { looking = false; return }
+                if case APIError.http(404, _, _) = error {
+                    self.error = "No one found with that username."
+                } else {
+                    self.error = "Couldn’t load this profile. Check your connection and try again."
+                }
             }
             looking = false
         }
     }
 
     private func send(_ p: ContactPinService.PublicProfile) {
+        guard !sending, pendingConversationId == nil, p.reachable_by_username,
+              !p.requires_pin || pin.count == 6 else { return }
         sending = true
         error = nil
         Task {
@@ -214,8 +385,14 @@ struct FindByUsernameView: View {
                 let result = try await ContactPinService.shared.requestChat(
                     username: p.username ?? cleanHandle,
                     pin: p.requires_pin ? pin : nil)
-                dismiss()
-                onOpen(result.conversationId, result.pending)
+                if onScanAgain != nil && result.pending {
+                    pendingConversationId = result.conversationId
+                    pin = ""
+                    Haptics.success()
+                } else {
+                    dismiss()
+                    onOpen(result.conversationId, result.pending)
+                }
             } catch let APIError.http(status, message, _) {
                 // 403 is a wrong PIN, 429 is the throttle. Both are things the user can act
                 // on, so they are surfaced verbatim rather than flattened into "try again".

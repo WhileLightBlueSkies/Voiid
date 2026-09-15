@@ -1,8 +1,9 @@
 import { redeemWebTicket } from './webTicket';
+import { callDiagnostic } from './callDiagnostics';
 import { callKeyCopies, callKeyDeliveryFrames, CALL_DEVICE_CLAIM_SCRIPT } from './callSignaling';
 import { randomUUID } from 'node:crypto';
 import { boundedSend, PRESENCE_SCRIPT, FRAME_BUDGET_SCRIPT } from './transport';
-import { callGrantAllows } from '@voiid/common-utils';
+import { callGrantAllows, callGrantNeedsDeviceClaim } from '@voiid/common-utils';
 // VOIID WebSocket relay (Phase 0 realtime flow, Section 10).
 // Connect with JWT -> SUBSCRIBE channel:user:{id} -> in-memory socket_map.
 // On Redis message for a user, push the wake/ciphertext-ref down their live socket.
@@ -14,6 +15,11 @@ import { conversationRecipients, narrow, shareRecipients, useRecipientCache } fr
 import { BoundedRateMap, SocketBudget } from './budget';
 
 const port = Number(process.env.WS_PORT) || 4001;
+const callDiagnosticsUntil = Number(process.env.VOIID_CALL_DIAGNOSTICS_UNTIL ?? 0);
+function traceCall(type: unknown, reason: unknown, decision: 'received' | 'allowed' | 'blocked') {
+  const entry = callDiagnostic(type, reason, decision, callDiagnosticsUntil);
+  if (entry) console.info('[call-signal]', JSON.stringify(entry));
+}
 
 // ── FAIL-CLOSED BOOT GUARD ────────────────────────────────────────────────────
 // Mirrors the guard in backend/api/src/index.ts: a forged JWT accepted HERE is
@@ -849,6 +855,7 @@ wss.on('connection', async (ws, req) => {
           // handler async (which would change frame ordering for every other message type).
           // Frames for one call still land in order because they await the same key.
           const toUserId = msg.to_user_id as string;
+          traceCall(msg.type, msg.reason, 'received');
           await callPairAuthorized(msg.call_id as string, userId, toUserId).then(async (allowed) => {
             if (!allowed || ws.readyState !== WebSocket.OPEN || Date.now() >= auth.expiresAt) {
               // Fail closed and say nothing useful back: a caller probing which user_ids are
@@ -859,11 +866,12 @@ wss.on('connection', async (ws, req) => {
             // Device arbitration applies only to a 1:1 grant, never to conference participants.
             const grant = JSON.parse((await pub.get(ringGrantKey(msg.call_id))) ?? 'null');
             if (!grant || !callGrantAllows(JSON.stringify(grant), userId, toUserId)) return;
-            if (grant.v !== 2 && ['call_offer', 'call_answer', 'call_ice', 'call_decline', 'call_hangup', 'call_busy'].includes(msg.type)) {
+            if (callGrantNeedsDeviceClaim(grant) && ['call_offer', 'call_answer', 'call_ice', 'call_decline', 'call_hangup', 'call_busy'].includes(msg.type)) {
               const claim = await pub.eval(CALL_DEVICE_CLAIM_SCRIPT, 2,
                 `call:device:${msg.call_id}:${userId}`, `call:device:${msg.call_id}:${toUserId}`, auth.deviceId ?? 'legacy', msg.type,
                 7200, msg.reason ?? '') as [number, string, string];
               if (Number(claim[0]) !== 1) {
+                traceCall(msg.type, claim[2], 'blocked');
                 if (claim[2] === 'answer' || claim[2] === 'decline') boundedSend(ws, JSON.stringify({
                   type: 'call_taken', call_id: msg.call_id, from_user_id: userId,
                   reason: claim[2], winner_device_id: claim[1],
@@ -876,6 +884,7 @@ wss.on('connection', async (ws, req) => {
                 pub.publish(`channel:user:${toUserId}`, frame);
               }
             } else {
+              traceCall(msg.type, msg.reason, 'allowed');
               pub.publish(`channel:user:${toUserId}`, out);
             }
 

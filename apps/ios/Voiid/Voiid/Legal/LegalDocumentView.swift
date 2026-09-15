@@ -52,6 +52,7 @@ struct LegalDocumentView: View {
             .textSelection(.enabled)
         }
         .background(VoiidColor.background.ignoresSafeArea())
+        .softTopEdgeEffect()
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

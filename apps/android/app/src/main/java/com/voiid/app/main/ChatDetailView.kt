@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -244,7 +245,11 @@ fun ChatDetailView(
     val sortedDays = grouped.keys.sorted()
     val itemCount = sortedDays.sumOf { 1 + (grouped[it]?.size ?: 0) } + if (typing) 1 else 0
 
-    val hasEncryptionNotice = !isSelfChat && messages.size < 6
+    val hasEncryptionNotice = !isSelfChat
+    LaunchedEffect(notificationTarget?.requestId, conversation.id) {
+        val target = notificationTarget?.takeIf { it.conversationId == conversation.id } ?: return@LaunchedEffect
+        if (messages.none { it.id == target.messageId }) chat.syncMessages(conversation)
+    }
     LaunchedEffect(notificationTarget, messages.map { it.id }) {
         val target = notificationTarget?.takeIf { it.conversationId == conversation.id } ?: return@LaunchedEffect
         val rowIds = buildList {
@@ -261,9 +266,17 @@ fun ChatDetailView(
             com.voiid.app.net.DeepLinkRouter.consumeMessage(target)
         }
     }
+    var previousMessageCount by remember(conversation.id) { mutableStateOf(0) }
     LaunchedEffect(messages.size, typing) {
+        val oldCount = previousMessageCount
+        previousMessageCount = messages.size
+        val layout = listState.layoutInfo
+        val nearBottom = (layout.visibleItemsInfo.lastOrNull()?.index ?: 0) >= layout.totalItemsCount - 3
+        val appendedOwnMessage = messages.size > oldCount && messages.lastOrNull()?.isMine == true
         if (!notificationPositioned && notificationTarget?.conversationId != conversation.id && itemCount > 0) {
-            listState.animateScrollToItem(itemCount - 1 + if (hasEncryptionNotice) 1 else 0)
+            val target = itemCount - 1 + if (hasEncryptionNotice) 1 else 0
+            if (oldCount == 0) listState.scrollToItem(target)
+            else if (messages.size >= oldCount && (nearBottom || appendedOwnMessage)) listState.animateScrollToItem(target)
         }
     }
 
@@ -379,11 +392,14 @@ fun ChatDetailView(
                             )
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        androidx.compose.material3.IconButton(onClick = { haptics.tap(); startCall(CallKind.VOICE) }, modifier = Modifier.size(44.dp)) {
+                    Row(
+                        modifier = Modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(24.dp)).background(VoiidColor.fieldFill),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.IconButton(onClick = { haptics.tap(); startCall(CallKind.VOICE) }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Default.Call, "Voice call", tint = VoiidColor.textPrimary, modifier = Modifier.size(20.dp))
                         }
-                        androidx.compose.material3.IconButton(onClick = { haptics.tap(); startCall(CallKind.VIDEO) }, modifier = Modifier.size(44.dp)) {
+                        androidx.compose.material3.IconButton(onClick = { haptics.tap(); startCall(CallKind.VIDEO) }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Default.Videocam, "Video call", tint = VoiidColor.textPrimary, modifier = Modifier.size(23.dp))
                         }
                     }
@@ -406,14 +422,8 @@ fun ChatDetailView(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // Shown ONCE, at the very top of the transcript — the same place and moment
-                // WhatsApp puts it. It scrolls away with the history rather than pinning,
-                // because it is a fact about the conversation, not a status bar.
-                //
-                // ONLY ON A NEW CHAT: past ~6 messages it is a line of text pushed a thousand
-                // messages up where nobody will scroll. Note to Self is excluded — a note you
-                // wrote yourself has no second party for the guarantee to be ABOUT.
-                if (!isSelfChat && messages.size < 6) {
+                // Always retain the badge at the beginning of the transcript.
+                if (hasEncryptionNotice) {
                     item(key = "e2ee-notice") {
                         EncryptionNotice(
                             canVerify = conversation.peerUserId != null,
@@ -421,7 +431,6 @@ fun ChatDetailView(
                         )
                     }
                 }
-
                 sortedDays.forEach { day ->
                     item(key = "sep-$day") { DateSeparator(VoiidDate.separator(day)) }
                     items(grouped[day].orEmpty(), key = { it.id }) { msg ->
@@ -812,41 +821,21 @@ private fun presenceText(context: android.content.Context, conversation: VConver
  */
 @Composable
 private fun EncryptionNotice(canVerify: Boolean, onVerify: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp),
-        horizontalArrangement = Arrangement.Center,
-    ) {
-        Row(
-            Modifier
-                .widthIn(max = 320.dp)
-                .clip(RoundedCornerShape(VoiidRadius.md))
-                .background(VoiidColor.warning.copy(alpha = 0.10f))
-                .then(if (canVerify) Modifier.clickable(onClick = onVerify) else Modifier)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+    Box(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.heightIn(min = 48.dp)
+                .then(if (canVerify) Modifier.clickable(onClick = onVerify) else Modifier),
+            contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                Icons.Default.Lock, null,
-                tint = VoiidColor.textSecondary,
-                modifier = Modifier.size(13.dp).padding(top = 2.dp),
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    "Messages, photos, videos, voice notes and calls in this chat are " +
-                        "end-to-end encrypted. Not even Voiid can read or listen to them.",
-                    style = VoiidFont.rounded(12),
-                    color = VoiidColor.textSecondary,
-                )
-                if (canVerify) {
-                    // The affordance has to be visible or the tap is a secret.
-                    Text(
-                        "Tap to verify",
-                        style = VoiidFont.rounded(12, FontWeight.SemiBold),
-                        color = VoiidColor.primary,
-                    )
-                }
+            Row(
+                Modifier.clip(RoundedCornerShape(50)).background(VoiidColor.surfaceCard)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Icon(Icons.Default.Lock, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(12.dp))
+                Text("End-to-end encrypted", style = VoiidFont.rounded(12, FontWeight.Medium), color = VoiidColor.textSecondary)
+                if (canVerify) Icon(Icons.Default.ChevronRight, "Verify encryption", tint = VoiidColor.textSecondary, modifier = Modifier.size(13.dp))
             }
         }
     }

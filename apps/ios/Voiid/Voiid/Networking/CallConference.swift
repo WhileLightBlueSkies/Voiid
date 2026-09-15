@@ -190,7 +190,7 @@ final class CallConferenceService: ObservableObject {
 
     private let api = APIClient()
     private var generation = UUID()
-    private var addingPerson = false
+    @Published private(set) var addingPerson = false
     private var joiningInvite = false
     private func isCurrent(_ id: String, _ session: UUID) -> Bool {
         callId == id && generation == session && !Task.isCancelled

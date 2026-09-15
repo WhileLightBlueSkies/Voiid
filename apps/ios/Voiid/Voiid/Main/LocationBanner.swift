@@ -68,7 +68,7 @@ struct LocationBanner: View {
         .background(VoiidColor.primary)
         .overlay(VoiidColor.fieldBorder.frame(height: 1), alignment: .bottom)
         .confirmationDialog("Stop all live shares?", isPresented: $confirmStopAll, titleVisibility: .visible) {
-            Button("Stop all", role: .destructive) { Task { await engine.stopAll() } }
+            Button("Stop all", role: .destructive) { Task { for share in shares { await engine.stopLiveShare(share.id) } } }
             Button("Cancel", role: .cancel) {}
         }
         .animation(.easeInOut(duration: 0.2), value: shares.count)

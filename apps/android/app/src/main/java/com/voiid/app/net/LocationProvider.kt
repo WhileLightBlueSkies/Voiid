@@ -28,11 +28,11 @@ class LocationProvider(context: Context) {
 
     private var callback: LocationCallback? = null
 
-    /** (A) Live share cadence: balanced power, ~15 s target / 10 s floor, 25 m distance filter. */
+    /** (A) Live share cadence: balanced power, ~15 s target / 10 s floor, including fresh stationary fixes. */
     private fun liveRequest(): LocationRequest =
         LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 15_000L)
             .setMinUpdateIntervalMillis(10_000L)
-            .setMinUpdateDistanceMeters(25f)
+            .setMinUpdateDistanceMeters(0f)
             .setWaitForAccurateLocation(false)
             .build()
 

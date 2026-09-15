@@ -61,13 +61,13 @@ enum VoiidColor {
     static let primary      = Color(hex: 0x13828C)
 
     /// The app ground.
-    static let background   = dyn(0xF6F8F8, 0x080C0E)
+    static let background   = dyn(0xF6F8F8, 0x14191C)
     /// Cards, sheets, raised rows — one step up from the ground.
-    static let surfaceCard  = dyn(0xFFFFFF, 0x111719)
+    static let surfaceCard  = dyn(0xFFFFFF, 0x1B2226)
     /// One step below the card, for a region that must sit UNDER content rather than on it.
-    static let surfaceDeep  = dyn(0xEDF1F1, 0x080C0E)
+    static let surfaceDeep  = dyn(0xEDF1F1, 0x14191C)
     /// One step above the card — a menu over a sheet, a raised control. Palette "Elevated".
-    static let surfaceRaised = dyn(0xEDF1F1, 0x182124)
+    static let surfaceRaised = dyn(0xEDF1F1, 0x232C30)
 
     // MARK: Bubbles
 
@@ -79,14 +79,14 @@ enum VoiidColor {
     static let textOnBubble   = Color(hex: 0xFFFFFF)
     /// THEIR message — the quiet one, so the eye tracks your own thread down the screen.
     /// "Elevated" in dark so it separates from both the ground and the card.
-    static let bubbleReceived = dyn(0xEDF1F1, 0x182124)
+    static let bubbleReceived = dyn(0xEDF1F1, 0x232C30)
 
     // MARK: Text
 
-    /// 18.42:1 on the dark ground, 17.14:1 on the light one.
-    static let textPrimary   = dyn(0x101617, 0xF6F8F8)
-    /// 8.86:1 dark, 5.32:1 light — AA on every surface in both themes.
-    static let textSecondary = dyn(0x5D696C, 0xA6B0B2)
+    /// Soft off-white in dark mode, with strong contrast on each charcoal surface.
+    static let textPrimary   = dyn(0x101617, 0xDDE3E4)
+    /// Secondary reading text, kept legible on cards and raised surfaces.
+    static let textSecondary = dyn(0x5D696C, 0xA2ADB0)
     /// On a filled PRIMARY surface. White in both, because primary is Tide in both.
     static let textOnPrimary = Color(hex: 0xFFFFFF)
 
@@ -101,7 +101,7 @@ enum VoiidColor {
     static let divider     = dyn(0xD7DEDF, 0x263236)
     static let fieldBorder = dyn(0xD7DEDF, 0x263236)
     /// Input backgrounds and inert chips.
-    static let fieldFill   = dyn(0xEDF1F1, 0x111719)
+    static let fieldFill   = dyn(0xEDF1F1, 0x1B2226)
 
     // MARK: Accents
 
@@ -122,11 +122,11 @@ enum VoiidColor {
     /// They are opposite jobs, which is why this is not simply "the same colour, lightened".
     /// Use [accentInk] when you want teal text and [accentTint] when you want a teal surface;
     /// both are defined in terms of this pair so the intent is legible at the call site.
-    static let accentSoft = dyn(0xD9EFF0, 0x68B8BD)
+    static let accentSoft = dyn(0xD9EFF0, 0x78AAAD)
 
     /// A selected row, a highlighted surface, a wash behind an icon. Pale in light; in dark
     /// the same idea is a low-alpha Tide, because #68B8BD as a large fill would glow.
-    static let accentTint = dyn(0xD9EFF0, 0x123538)
+    static let accentTint = dyn(0xD9EFF0, 0x203639)
 
     /// Text or a glyph ON the Tide accent. WHITE in both themes.
     ///
@@ -141,16 +141,16 @@ enum VoiidColor {
     /// the dark ground. Light keeps true Tide, which is 4.57:1 on white — so use it on cards
     /// and sheets; on the light page ground it drops to 4.28:1, just under AA, and
     /// [textPrimary] is the right choice there instead.
-    static let accentInk = dyn(0x13828C, 0x68B8BD)
+    static let accentInk = dyn(0x13828C, 0x78AAAD)
 
     // MARK: Domain hues (section identity only — never bubbles or body text)
 
     /// Chat resolves to the spine.
-    static let domainChat     = dyn(0x13828C, 0x68B8BD)
-    static let domainStories  = dyn(0x7E22CE, 0xA855F7)
-    static let domainMap      = dyn(0x1D4ED8, 0x3B82F6)
-    static let domainCalls    = dyn(0x15803D, 0x22C55E)
-    static let domainPayments = dyn(0xA16207, 0xFACC15)
+    static let domainChat     = dyn(0x13828C, 0x78AAAD)
+    static let domainStories  = dyn(0x7E22CE, 0xB18ACF)
+    static let domainMap      = dyn(0x1D4ED8, 0x789ACE)
+    static let domainCalls    = dyn(0x15803D, 0x72B28E)
+    static let domainPayments = dyn(0xA16207, 0xC5AD70)
 
     // MARK: Status
     //
@@ -165,8 +165,8 @@ enum VoiidColor {
     static let onlineText = dyn(0x238A58, 0x2FA36B)
     /// 5.02:1 dark, 4.28:1 light.
     static let error   = dyn(0xD83A40, 0xE5484D)
-    static let warning = dyn(0xA16207, 0xFACC15)
-    static let info    = dyn(0x1D4ED8, 0x3B82F6)
+    static let warning = dyn(0xA16207, 0xC5AD70)
+    static let info    = dyn(0x1D4ED8, 0x789ACE)
 
     /// Retained for call sites that predate the theme-aware tokens; now simply the primary
     /// text colour, which resolves correctly on its own.
@@ -199,6 +199,8 @@ enum VoiidRadius {
 // on Splash/Terms; register the Urbanist font file in the app bundle (see BUILD_NATIVE.md).
 
 enum VoiidFont {
+    static let screenTitle = Font.system(size: 26, weight: .bold, design: .rounded)
+
     /// SF Pro Rounded at the spec's type scale.
     static func rounded(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .rounded)
@@ -240,7 +242,7 @@ enum LudoColor {
         return Color(UIColor { $0.userInterfaceStyle == .dark ? d : l })
     }
 
-    static let screenBackground = dyn(0xF6F8F8, 0x080C0E)
+    static let screenBackground = dyn(0xF6F8F8, 0x14191C)
     static let boardSurface     = dyn(0xF3F4F6, 0x15171C)
     static let trackCellFill    = dyn(0xFFFFFF, 0x202229)
     static let trackCellBorder  = dyn(0xC9CDD5, 0x444852)
@@ -279,14 +281,14 @@ enum LudoColor {
     static let dieEdge       = dyn(0xC6CAD2, 0x4A4E58)
     static let dieNeutralPip = dyn(0x69717D, 0xB2B8C3)
 
-    static let textPrimary   = dyn(0x101617, 0xF6F8F8)
-    static let textSecondary = dyn(0x5D696C, 0xA6B0B2)
+    static let textPrimary   = dyn(0x101617, 0xDDE3E4)
+    static let textSecondary = dyn(0x5D696C, 0xA2ADB0)
     static let podSurface    = dyn(0xFFFFFF, 0x171C1F)
     static let podBorder     = dyn(0xD7DEDF, 0x2D383C)
     static let timerTrack    = dyn(0xD9DDE3, 0x3A3E47)
     static let timerWarning  = dyn(0xB07818, 0xE0A83C)
     static let timerCritical = dyn(0xC0392F, 0xEF7A6B)
-    static let focusRing     = dyn(0x13828C, 0x68B8BD)
+    static let focusRing     = dyn(0x13828C, 0x78AAAD)
     static let scrim         = dyn(0x00000052, 0x00000070)
     static let shadow        = dyn(0x00000024, 0x00000066)
 
@@ -325,17 +327,6 @@ enum LudoColor {
         case 2: return centerYellow
         default: return centerBlue
         }
-    }
-}
-
-/// Geometry + motion constants (§2.2, §12–§15).
-// MARK: - Screen width (non-deprecated; avoids UIScreen.main)
-
-enum VoiidScreen {
-    static var width: CGFloat {
-        (UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first?.screen.bounds.width) ?? 402
     }
 }
 

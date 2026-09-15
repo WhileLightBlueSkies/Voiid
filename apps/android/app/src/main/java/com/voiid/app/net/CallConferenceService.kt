@@ -104,7 +104,7 @@ object ConferenceManager {
         /** False until a per-call secret has actually been applied. Never join without one. */
         val e2ee: Boolean = false,
         val muted: Boolean = false,
-        val speakerOn: Boolean = true,
+        val speakerOn: Boolean = false,
         val videoEnabled: Boolean = false,
         /** Transient banner text — "Adding Sam…". */
         val notice: String? = null,
@@ -389,7 +389,7 @@ object ConferenceManager {
                         isInviter = true,
                         roster = res.participants,
                         muted = CallManager.state.value?.muted ?: false,
-                        speakerOn = CallManager.state.value?.speaker ?: true,
+                        speakerOn = CallManager.state.value?.speaker ?: (kind == CallKind.VIDEO),
                         videoEnabled = CallManager.state.value?.videoEnabled ?: (kind == CallKind.VIDEO),
                         notice = "Adding $inviteeName…",
                     )
@@ -494,6 +494,7 @@ object ConferenceManager {
                 isInviter = false,
                 videoEnabled = kind == CallKind.VIDEO,
                 notice = "Joining…",
+                speakerOn = CallManager.state.value?.takeIf { it.callId == callId }?.speaker ?: (kind == CallKind.VIDEO),
             )
         }
         val session = generation
@@ -766,6 +767,12 @@ object ConferenceManager {
                 LiveKit.create(
                     appContext = ctx,
                     options = RoomOptions(adaptiveStream = true, dynacast = true, e2eeOptions = e2eeOptions),
+                    // Voiid/Telecom already own routing and focus. LiveKit's default
+                    // AudioSwitch handler must not select speaker during room connect.
+                    overrides = io.livekit.android.LiveKitOverrides(audioOptions = io.livekit.android.AudioOptions(
+                        audioHandler = io.livekit.android.audio.NoAudioHandler(),
+                        disableCommunicationModeWorkaround = true,
+                    )),
                 )
             }
         } catch (e: Exception) {
@@ -1052,7 +1059,7 @@ object ConferenceManager {
     }
 
     fun toggleSpeaker() {
-        val on = !(_state.value?.speakerOn ?: true)
+        val on = !(_state.value?.speakerOn ?: false)
         if (_state.value?.stage == Stage.ESCALATING) {
             if (CallManager.state.value?.speaker != on) CallManager.toggleSpeaker()
         } else applySpeaker(on)
@@ -1092,6 +1099,13 @@ object ConferenceManager {
 
     private fun applySpeaker(on: Boolean) {
         if (_state.value?.stage == Stage.ESCALATING) return
+        val callId = _state.value?.callId ?: return
+        // The 1:1 Telecom connection deliberately survives conference cutover.
+        // Keep it in charge instead of fighting its audio route through AudioManager.
+        if (TelecomBridge.setAudioRoute(callId, on)) {
+            Log.i("VOIID", "conference-route: Telecom owns route speaker=$on")
+            return
+        }
         val ctx = appContext ?: return
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         runCatching {

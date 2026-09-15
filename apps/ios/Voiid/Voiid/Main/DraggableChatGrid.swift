@@ -21,6 +21,7 @@ struct DraggableChatGrid: View {
     @State private var hoverZone: Zone? = nil
     @State private var cellCenters: [String: CGPoint] = [:]   // id -> center in grid space
     @State private var armed: VConversation? = nil     // long-press has "picked up" this card
+    @State private var gridWidth: CGFloat = 0
 
     enum Zone { case call, delete }
 
@@ -75,6 +76,14 @@ struct DraggableChatGrid: View {
             }
         }
         .coordinateSpace(name: "grid")
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            gridWidth = width
+            // A fold or Split View resize invalidates the active drag coordinates.
+            dragItem = nil
+            armed = nil
+            dragOffset = .zero
+            hoverZone = nil
+        }
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: items)
         .animation(.easeInOut(duration: 0.15), value: hoverZone)
     }
@@ -122,7 +131,8 @@ struct DraggableChatGrid: View {
     // Hover detection for zones + live reorder
     private func updateHoverAndReorder(_ p: CGPoint, dragging conv: VConversation) {
         // zones: left/right 70pt gutters
-        let w = VoiidScreen.width
+        let w = gridWidth
+        guard w > 0 else { return }
         if p.x < 70 { hoverZone = .call; return }
         if p.x > w - 70 { hoverZone = .delete; return }
         hoverZone = nil

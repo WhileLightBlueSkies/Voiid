@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node --env-file=../../.env dist/index.js",
+    "start": "node ../../infrastructure/deployment/service-launcher.mjs games",
     "test": "node ../../tools/run-suites.mjs src/engine/registry.test.ts src/engine/snake/snake.test.ts src/engine/cricket/cricket.test.ts src/engine/seabattle/seabattle.test.ts src/queue.test.ts src/engine/ludo/ludo.test.ts"
   },
   "dependencies": {

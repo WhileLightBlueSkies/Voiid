@@ -19,6 +19,13 @@ struct CommunityAdminPanel: View {
     let communityId: String
     let communityName: String
     var isOwner: Bool = false
+    var communityCard: CommunityService.CommunityCard? = nil
+    var onSettingsSaved: (CommunityService.CommunityCard) -> Void = { _ in }
+    private enum Destination: String, Identifiable {
+        case earnings, settings
+        var id: String { rawValue }
+    }
+    @State private var destination: Destination?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -76,7 +83,7 @@ struct CommunityAdminPanel: View {
                     ProgressView().tint(VoiidColor.accent)
                 }
             }
-            .navigationTitle("Manage")
+            .navigationTitle("Admin panel")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -86,6 +93,13 @@ struct CommunityAdminPanel: View {
             }
             .refreshable { await load() }
             .task { await load() }
+            .sheet(item: $destination) { selected in
+                switch selected {
+                case .earnings: CommunityEarningsView(communityId: communityId)
+                case .settings:
+                    if let communityCard { CommunitySettingsView(card: communityCard, onSaved: onSettingsSaved) }
+                }
+            }
             // A write failure interrupts, because the host believes it happened.
             .alert("Couldn't complete that",
                    isPresented: .init(get: { writeError != nil },
@@ -158,10 +172,29 @@ struct CommunityAdminPanel: View {
                 Text(communityName)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(VoiidColor.textPrimary)
-                Text("You're a host here.")
+                Text("Your community, in one place.")
                     .font(.system(size: 13))
                     .foregroundColor(VoiidColor.textSecondary)
             }
+
+            card {
+                NavigationLink {
+                    ScrollView { CommunityEventsSection(communityId: communityId, isHost: true, isOwner: isOwner, managementContext: true).padding(20) }
+                        .background(VoiidColor.background).navigationTitle("Events").navigationBarTitleDisplayMode(.inline)
+                } label: { adminEntry("Events", "Create, manage and check in guests", "calendar") }
+                Divider()
+                NavigationLink {
+                    CommunityInsightsView(communityId: communityId)
+                } label: { adminEntry("Insights", "Community activity and event status", "chart.bar") }
+                if isOwner {
+                    Divider()
+                    Button { destination = .earnings } label: { adminEntry("Earnings", "Sales, commission and your share", "banknote") }
+                }
+                if communityCard != nil {
+                    Divider()
+                    Button { destination = .settings } label: { adminEntry("Community settings", "Profile, discovery and joining", "gearshape") }
+                }
+            }.buttonStyle(.plain)
 
             if let e = statsError {
                 card { errorNote(e) }
@@ -178,6 +211,17 @@ struct CommunityAdminPanel: View {
                 }
             }
         }
+    }
+
+    private func adminEntry(_ title: String, _ detail: String, _ icon: String) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon).font(.title3).foregroundStyle(VoiidColor.accentInk).frame(width: 32)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline).foregroundStyle(VoiidColor.textPrimary)
+                Text(detail).font(.footnote).foregroundStyle(VoiidColor.textSecondary)
+            }
+            Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(VoiidColor.textSecondary)
+        }.padding(.vertical, 10).contentShape(Rectangle())
     }
 
     private func statTile(_ label: String, _ value: Int, _ icon: String,
@@ -460,5 +504,46 @@ struct CommunityAdminPanel: View {
         } catch {
             writeError = error.localizedDescription
         }
+    }
+}
+
+struct CommunityInsightsView: View {
+    let communityId: String
+    @State private var stats: CommunityService.Stats?
+    @State private var events: [EventService.Event] = []
+    @State private var error: String?
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Community at a glance").font(.largeTitle.weight(.semibold))
+                Text("Current totals").font(.subheadline).foregroundStyle(.secondary)
+                if let stats {
+                    HStack(spacing: 14) { metric("Members", stats.memberCount); metric("Posts", stats.postCount) }
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Events").font(.title2.weight(.semibold))
+                        ForEach(["published", "draft", "cancelled"], id: \.self) { status in
+                            HStack { Text(status.capitalized); Spacer(); Text("\(events.filter { $0.status == status }.count)").font(.title3.weight(.semibold)) }
+                        }
+                    }.padding(22).background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
+                    Text("Discovery views and referral analytics are not available yet.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else if let error {
+                    Text(error); Button("Retry") { Task { await load() } }
+                } else { ProgressView() }
+            }.padding(20)
+        }.background(VoiidColor.background).navigationTitle("Insights").navigationBarTitleDisplayMode(.inline)
+            .task { await load() }.refreshable { await load() }
+    }
+    private func metric(_ title: String, _ number: Int) -> some View {
+        VStack(alignment: .leading, spacing: 12) { Text(title).font(.subheadline).foregroundStyle(.secondary); Text("\(number)").font(.largeTitle.weight(.semibold)) }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(22).background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
+    }
+    private func load() async {
+        error = nil
+        do {
+            let freshStats = try await CommunityService.shared.stats(communityId: communityId)
+            let freshEvents = try await EventService.shared.list(communityId: communityId)
+            events = freshEvents; stats = freshStats
+        } catch { self.error = "Unable to load insights. Check your access and connection."; stats = nil }
     }
 }

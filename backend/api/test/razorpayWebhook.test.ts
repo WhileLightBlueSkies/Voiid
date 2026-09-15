@@ -141,3 +141,14 @@ test('amount_paid wins over the attempted payment amount', () => {
   }));
   assert.equal(p.verifyWebhook(raw, headers(raw)).amountMinor, 100);
 });
+
+test('resuming checkout preserves the existing order and exposes no signing secret', () => {
+  const payload = p.resumeCheckout('order_existing', 300, 'INR');
+  assert.equal(payload.order_id, 'order_existing');
+  assert.equal(payload.amount, 300);
+  assert.equal(payload.key, 'rzp_test_key');
+  assert.equal(JSON.stringify(payload).includes(SECRET), false);
+  assert.equal(Object.keys(payload).some(key => /secret/i.test(key)), false);
+  assert.throws(() => p.resumeCheckout('invalid', 300, 'INR'));
+  assert.throws(() => p.resumeCheckout('order_existing', 0, 'INR'));
+});

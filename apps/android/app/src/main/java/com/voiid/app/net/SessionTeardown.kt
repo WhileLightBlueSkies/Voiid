@@ -37,6 +37,9 @@ object SessionTeardown {
      */
     fun wipeLocalAccountState(context: Context) {
         val appContext = context.applicationContext
+        InAppMessageNotifications.clear()
+        DeepLinkRouter.pendingConversation.value = null
+        DeepLinkRouter.pendingMessage.value = null
 
         runCatching { StoryEngine.get(appContext).resetForSignOut() }
 

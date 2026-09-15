@@ -379,17 +379,3 @@ struct AIOpening: Identifiable, Hashable {
     /// Set when reopening a stored conversation.
     var threadID: String?
 }
-
-private extension View {
-    /// The reference uses `scrollEdgeEffectStyle(.soft, for: .top)`, which is iOS 26 only.
-    /// The app ships to iOS 18, so it is applied where available and skipped elsewhere —
-    /// it is a finish, not a layout, and its absence costs nothing structural.
-    @ViewBuilder
-    func softTopEdgeEffect() -> some View {
-        if #available(iOS 26.0, *) {
-            self.scrollEdgeEffectStyle(.soft, for: .top)
-        } else {
-            self
-        }
-    }
-}

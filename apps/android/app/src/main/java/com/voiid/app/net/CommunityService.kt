@@ -34,6 +34,14 @@ import kotlinx.serialization.Serializable
 class CommunityService(context: Context) {
     private val api = ApiClient(TokenStore.get(context))
 
+    @Serializable data class NotificationPreference(val notification_mode: String)
+    suspend fun notificationPreference(communityId: String): String =
+        api.requestAs<NotificationPreference>("GET", "communities/$communityId/notifications").notification_mode
+    suspend fun setNotificationPreference(communityId: String, mode: String) {
+        val body = kotlinx.serialization.json.buildJsonObject { put("notification_mode", kotlinx.serialization.json.JsonPrimitive(mode)) }
+        api.request("PATCH", "communities/$communityId/notifications", body.toString())
+    }
+
     /**
      * The public info card — the object the server nests under `community`, plus the two facts
      * the join sheet needs that arrive ALONGSIDE it rather than inside it.
@@ -283,6 +291,8 @@ class CommunityService(context: Context) {
     @Serializable
     data class Member(
         val user_id: String,
+        val full_name: String? = null,
+        val username: String? = null,
         val role: String? = null,
         val state: String? = null,
         val joined_at: String? = null,
@@ -292,10 +302,10 @@ class CommunityService(context: Context) {
     }
 
     /** `state` filters the roster. Anything but `active` is manager-only server-side. */
-    suspend fun members(communityId: String, state: String = "active"): List<Member> {
+    suspend fun members(communityId: String, state: String = "active", offset: Int = 0): List<Member> {
         @Serializable
         data class Envelope(val members: List<Member> = emptyList())
-        return api.requestAs<Envelope>("GET", "communities/$communityId/members?state=$state").members
+        return api.requestAs<Envelope>("GET", "communities/$communityId/members?state=$state&limit=50&offset=$offset").members
     }
 
     // ══════════════════════════════════════════════════════════════════════════════

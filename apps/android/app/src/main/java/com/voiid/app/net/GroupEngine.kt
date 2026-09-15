@@ -339,12 +339,19 @@ class GroupEngine private constructor(context: Context) {
      *  the remaining members. */
     suspend fun removeMember(conversationId: String, userId: String) = withContext(Dispatchers.IO) {
         lock.withLock<Unit> {
+            val detail: ConvMembersResponse = api.requestAs("GET", "conversations/$conversationId")
+            val callerRole = detail.members.firstOrNull { it.user_id == tokens.userId }?.role
+            val targetRole = detail.members.firstOrNull { it.user_id == userId }?.role
+            check(targetRole != null && targetRole != "owner" &&
+                (callerRole == "owner" || callerRole == "admin" && targetRole == "member")) {
+                "You cannot remove this member with your current group role"
+            }
             val m = ensureMemberLocked()
-            val gid = groupIds[conversationId] ?: return@withLock
+            val gid = groupIds[conversationId] ?: error("Group encryption is not ready")
             val session = m.loadGroup(gid)
-            val remaining = currentMemberUserIds(conversationId).filter { it != userId && it != tokens.userId }
+            val remaining = detail.members.map { it.user_id }.filter { it != userId && it != tokens.userId }
             val devices: DevicesResponse = runCatching { api.requestAs<DevicesResponse>("GET", "devices/$userId") }
-                .getOrElse { Log.e("VOIID", "MLS: remove — devices lookup failed", it); return@withLock }
+                .getOrElse { Log.e("VOIID", "MLS: remove — devices lookup failed", it); throw it }
             for (d in devices.devices) {
                 val identity = "$userId::${d.id}".toByteArray()
                 val commit = runCatching { session.removeMember(m, identity) }.getOrNull()
@@ -370,9 +377,7 @@ class GroupEngine private constructor(context: Context) {
             // It runs AFTER the commit is broadcast so the remaining members are guaranteed
             // to have received it: dropping the roster first would stop the server delivering
             // to the very people who still need this commit.
-            runCatching { removeFromServerRoster(conversationId, userId) }
-                .onFailure { Log.e("VOIID", "MLS: removed $userId from the group but the "
-                    + "server roster write failed — they may still receive ciphertext", it) }
+            removeFromServerRoster(conversationId, userId)
 
             Log.i("VOIID", "MLS: removed user=$userId from conv=$conversationId")
         }
@@ -412,27 +417,26 @@ class GroupEngine private constructor(context: Context) {
     /** Encrypt [text] once via MLS and fan the SAME ciphertext out to every member device
      *  (excluding this one). Stores a local echo so the sender sees it immediately. */
     suspend fun sendGroupMessage(conversationId: String, text: String) = withContext(Dispatchers.IO) {
-        // Store the echo up-front so it shows instantly even if the send races.
-        chat.storeGroupOutgoing(conversationId, text)
+        syncGroupEvents()
+        // Process pending membership commits before encrypting in the current epoch.
         lock.withLock<Unit> {
             val m = ensureMemberLocked()
             flushCommunityOutboxLocked(m, conversationId)
             val gid = groupIds[conversationId] ?: run {
-                Log.w("VOIID", "MLS: send — no local group for conv=$conversationId"); return@withLock
+                error("Group encryption is not ready. Refresh the group and try again.")
             }
             val session = m.loadGroup(gid)
             val ciphertext = session.encrypt(m, text.toByteArray())
             persistMemberLocked(m)   // encrypt advanced the ratchet → state changed
             val ctB64 = Base64.encodeToString(ciphertext, Base64.NO_WRAP)
             val targets = resolveGroupTargetDevices(conversationId)
-            if (targets.isEmpty()) { Log.w("VOIID", "MLS: send — no target devices"); return@withLock }
+            check(targets.isNotEmpty()) { "No group recipient devices are available" }
             val bundle = targets.map { DeviceCiphertext(it.deviceId, ctB64) }
             val body = ApiClient.json.encodeToString(
                 SendBundleBody.serializer(),
                 SendBundleBody(conversationId, e2e.deviceId, bundle, content_type = "group"))
-            runCatching { api.request("POST", "messages/send", jsonBody = body) }
-                .onSuccess { Log.i("VOIID", "MLS: sent group msg conv=$conversationId devices=${bundle.size}") }
-                .onFailure { Log.e("VOIID", "MLS: group send failed", it) }
+            api.request("POST", "messages/send", jsonBody = body)
+            chat.storeGroupOutgoing(conversationId, text)
         }
     }
 
@@ -844,6 +848,6 @@ class GroupEngine private constructor(context: Context) {
     @Serializable private data class MessagesResponse(val messages: List<MessageDTO> = emptyList())
     @Serializable private data class DeviceDTO(val id: String)
     @Serializable private data class DevicesResponse(val devices: List<DeviceDTO> = emptyList())
-    @Serializable private data class ConvMemberDTO(val user_id: String)
+    @Serializable private data class ConvMemberDTO(val user_id: String, val role: String? = null)
     @Serializable private data class ConvMembersResponse(val members: List<ConvMemberDTO> = emptyList())
 }

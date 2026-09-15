@@ -170,11 +170,11 @@ object VoiidPalette {
     // the single biggest behavioural difference from the lime palette: code that assumed
     // "primary is ink in light mode" is now wrong.
     val PrimaryLight = Color(0xFF13828C)     // Peacock teal — legible as text on light
-    val PrimaryDark = Color(0xFF68B8BD)      // lifted, so it holds up on the dark ground
+    val PrimaryDark = Color(0xFF78AAAD)      // lifted, so it holds up on the dark ground
     val BackgroundLight = Color(0xFFF6F8F8)
-    val BackgroundDark = Color(0xFF080C0E)
+    val BackgroundDark = Color(0xFF14191C)
     val SurfaceLight = Color(0xFFFFFFFF)
-    val SurfaceDark = Color(0xFF111719)      // Surface — a step ABOVE the ground
+    val SurfaceDark = Color(0xFF1B2226)      // Surface — a step ABOVE the ground
 
     // Bubbles. Teal in BOTH themes: a filled element is where the brand colour belongs, and
     // it is what makes your own thread trackable down the screen.
@@ -189,13 +189,13 @@ object VoiidPalette {
     val TextOnAccent = Color(0xFFFFFFFF)
     // Surface-light in dark so THEIR bubble separates from both the ground and the card.
     val BubbleRecvLight = Color(0xFFEDF1F1)
-    val BubbleRecvDark = Color(0xFF182124)
+    val BubbleRecvDark = Color(0xFF232C30)
 
     // Text
     val TextPrimaryLight = Color(0xFF101617)
-    val TextPrimaryDark = Color(0xFFF6F8F8)
+    val TextPrimaryDark = Color(0xFFDDE3E4)
     val TextSecondaryLight = Color(0xFF5D696C)
-    val TextSecondaryDark = Color(0xFFA6B0B2)
+    val TextSecondaryDark = Color(0xFFA2ADB0)
     // On a filled primary surface. Both themes fill with a mid-dark teal, so both labels are
     // white — unlike the lime palette, where the two directions differed.
     val TextOnPrimaryLight = Color(0xFFFFFFFF)
@@ -209,7 +209,7 @@ object VoiidPalette {
     val FieldBorderLight = Color(0xFFD7DEDF)
     val FieldBorderDark = Color(0xFF263236)
     val FieldFillLight = Color(0xFFEDF1F1)
-    val FieldFillDark = Color(0xFF111719)
+    val FieldFillDark = Color(0xFF1B2226)
 
     // Accent — the teal as a FILL. Not theme-split: what matters is its LABEL's contrast
     // against the fill (white on #13828C, 4.87:1), not the fill against the ground.
@@ -226,25 +226,25 @@ object VoiidPalette {
     // The lime palette had to go olive (#5A7A00) here to reach 4.62:1, losing the hue in the
     // process. Teal keeps its identity in both themes, which is much of why the spine moved.
     val AccentInkLight = Color(0xFF13828C)
-    val AccentInkDark = Color(0xFF68B8BD)
+    val AccentInkDark = Color(0xFF78AAAD)
 
     /** Pressed state for a filled accent. iOS: VoiidColor.accentPressed. */
     val AccentPressed = Color(0xFF0E6E77)
     /** A wash of the accent, for tinted chips and callout grounds. */
     val AccentTintLight = Color(0xFFD9EFF0)
-    val AccentTintDark = Color(0xFF123538)
+    val AccentTintDark = Color(0xFF203639)
 
     // Domain hues — the palette's feedback colours, theme-split. The brights measured
     // 1.5-4.0:1 on white (Warning worst at 1.53:1), so light takes darkened variants of the
     // SAME hue at 4.9-7.0:1.
     val StoriesLight = Color(0xFF7E22CE)
-    val StoriesDark = Color(0xFFA855F7)
+    val StoriesDark = Color(0xFFB18ACF)
     val MapLight = Color(0xFF1D4ED8)
-    val MapDark = Color(0xFF3B82F6)
+    val MapDark = Color(0xFF789ACE)
     val CallsLight = Color(0xFF15803D)
-    val CallsDark = Color(0xFF22C55E)
+    val CallsDark = Color(0xFF72B28E)
     val PaymentsLight = Color(0xFFA16207)
-    val PaymentsDark = Color(0xFFFACC15)
+    val PaymentsDark = Color(0xFFC5AD70)
 
     // Status. Same rule as the domains: light values are darkened variants, because the
     // palette's brights are designed for near-black.
@@ -252,13 +252,13 @@ object VoiidPalette {
     // same hues (audit: "Change Android palette to iOS values").
     // Surface depth + accent states (iOS Theme.swift 68-70 / 110-129).
     val SurfaceDeepLight = Color(0xFFEDF1F1)
-    val SurfaceDeepDark = Color(0xFF080C0E)
+    val SurfaceDeepDark = Color(0xFF14191C)
     val SurfaceRaisedLight = Color(0xFFEDF1F1)
-    val SurfaceRaisedDark = Color(0xFF182124)
+    val SurfaceRaisedDark = Color(0xFF232C30)
     val PressedLight = Color(0xFF0E6E77)
     val PressedDark = Color(0xFF0E6E77)
     val TintLight = Color(0xFFD9EFF0)
-    val TintDark = Color(0xFF123538)
+    val TintDark = Color(0xFF203639)
     val InkLight = Color(0xFF0B4A50)
     val InkDark = Color(0xFF9AD6DA)
 
@@ -267,9 +267,9 @@ object VoiidPalette {
     val ErrorLight = Color(0xFFD83A40)
     val ErrorDark = Color(0xFFE5484D)
     val WarningLight = Color(0xFFA16207)
-    val WarningDark = Color(0xFFFACC15)
+    val WarningDark = Color(0xFFC5AD70)
     val InfoLight = Color(0xFF1D4ED8)
-    val InfoDark = Color(0xFF3B82F6)
+    val InfoDark = Color(0xFF789ACE)
 }
 
 /**

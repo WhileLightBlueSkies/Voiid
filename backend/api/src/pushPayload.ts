@@ -66,6 +66,8 @@ export const ALLOWED_PUSH_KEYS = [
   'call_kind',
   'caller_id',
   'story_id',
+  'community_id',
+  'community_handle',
 ] as const;
 
 /**
@@ -73,6 +75,7 @@ export const ALLOWED_PUSH_KEYS = [
  * APNs `apns-expiration` header and the FCM `ttl`, so the two transports cannot drift.
  */
 export function wakeTtlSeconds(meta?: PushMeta): number {
+  if (meta?.type === 'missed_call' || meta?.type === 'community_update') return 86400;
   if (meta?.type === 'story') return STORY_TTL_SECONDS;
   if (meta?.type === 'call' || meta?.type === 'group_call') return CALL_RING_TTL_SECONDS;
   return Math.floor(OFFLINE_TTL_MS / 1000);
@@ -96,6 +99,8 @@ export function buildFcmData(meta?: PushMeta): Record<string, string> {
   // Story routing (non-secret): the woken client calls GET /stories/feed and pulls
   // its own encrypted key envelope. NOTHING about the story's content ships here.
   if (meta?.story_id) data.story_id = meta.story_id;
+  if (meta?.community_id) data.community_id = meta.community_id;
+  if (meta?.community_handle) data.community_handle = meta.community_handle;
   return data;
 }
 
@@ -106,6 +111,10 @@ export function buildFcmData(meta?: PushMeta): Record<string, string> {
  * here is a generic constant and never carries a sender or a body.
  */
 export function buildApnsAlertPayload(meta?: PushMeta): Record<string, unknown> {
+  if (meta?.type === 'community_approved' || meta?.type === 'community_request' || meta?.type === 'community_update') {
+    return { aps: { alert: { title: meta.type === 'community_update' ? 'New community update' : meta.type === 'community_request' ? 'New community join request' : 'Community request approved' }, sound: 'default', 'content-available': 1 },
+      type: meta.type, community_id: meta.community_id, community_handle: meta.community_handle };
+  }
   // CONTROL MESSAGES DRAW NO BANNER. A map_key / map_off rides the ordinary message
   // route so it can use the ratchet, but the user never sent it and must never see it.
   // `content-available: 1` with NO `alert` and NO `sound` wakes the app to fetch and

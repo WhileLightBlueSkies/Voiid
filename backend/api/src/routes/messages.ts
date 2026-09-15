@@ -78,12 +78,22 @@ function scheduleWakePush(
                or (b.blocked_user_id = devices.user_id and b.blocker_user_id = ${blockParam})
          )`
     : '';
+  // Community preferences affect alerts only; the message/outbox remains intact.
+  const communityFilter = meta?.conversation_id && !meta.silent ? `and not exists (
+    select 1 from community_channels ch
+    where ch.conversation_id = $${params.length + (senderId ? 2 : 1)}::uuid
+      and not exists(select 1 from community_members cm where cm.community_id=ch.community_id
+        and cm.user_id=devices.user_id and cm.state='active'
+        and (cm.notification_mode='all' or (cm.notification_mode='important' and ch.kind='announcement')))
+  )` : '';
+  const values = senderId ? [...params, senderId] : [...params];
+  if (communityFilter) values.push(meta!.conversation_id);
   query<{ push_token: string; push_provider: string }>(
     `select push_token, push_provider from devices
        where ${whereSql} and revoked_at is null
          and push_token is not null and push_provider is not null
-         ${filter}`,
-    senderId ? [...params, senderId] : params
+         ${filter} ${communityFilter}`,
+    values
   )
     .then((targets) => {
       if (targets.length) void sendWakePush(targets, meta);

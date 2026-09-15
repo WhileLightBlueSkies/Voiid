@@ -27,7 +27,7 @@ import AVFoundation
 final class ChatMediaThumbnails {
     static let shared = ChatMediaThumbnails()
 
-    /// Keyed by message id. NSCache rather than a dictionary so the system can evict under
+    /// Keyed by message id and pixel size. NSCache lets the system evict under
     /// pressure instead of the strip becoming a memory leak on a chat with a thousand photos.
     private let cache = NSCache<NSString, UIImage>()
     /// In-flight requests, so scrolling past the same item twice does not decode it twice.
@@ -37,15 +37,15 @@ final class ChatMediaThumbnails {
         cache.countLimit = 300
     }
 
-    func cached(_ id: String) -> UIImage? { cache.object(forKey: id as NSString) }
-
     /// Decode a thumbnail, or return the cached one. `nil` means the bytes are not available
     /// yet — the caller shows a placeholder and the item stays in the strip.
-    func thumbnail(for item: ChatMediaItem, side: CGFloat = 50) async -> UIImage? {
-        if let hit = cached(item.id) { return hit }
-        guard !inFlight.contains(item.id) else { return nil }
-        inFlight.insert(item.id)
-        defer { inFlight.remove(item.id) }
+    func thumbnail(for item: ChatMediaItem, side: CGFloat, displayScale: CGFloat) async -> UIImage? {
+        let pixels = max(1, ceil(side * displayScale))
+        let key = "\(item.id):\(Int(pixels))"
+        if let hit = cache.object(forKey: key as NSString) { return hit }
+        guard !inFlight.contains(key) else { return nil }
+        inFlight.insert(key)
+        defer { inFlight.remove(key) }
 
         // Local-first, exactly like the bubbles: memory → disk → network. A photo already
         // seen has its plaintext on disk and never touches the network again.
@@ -61,14 +61,13 @@ final class ChatMediaThumbnails {
 
         // Retina: the strip draws at `side` points, so decode to the pixel size that
         // actually lands on screen or the thumbnails are visibly soft.
-        let pixels = side * (UIScreen.main.scale)
         let kind = item.type
         let image: UIImage? = await Task.detached(priority: .userInitiated) {
             kind == .video ? Self.videoFrame(data, pixels: pixels)
                            : Self.imageThumb(data, pixels: pixels)
         }.value
 
-        if let image { cache.setObject(image, forKey: item.id as NSString) }
+        if let image { cache.setObject(image, forKey: key as NSString) }
         return image
     }
 

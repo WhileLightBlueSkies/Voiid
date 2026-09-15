@@ -55,6 +55,54 @@ class VoiidMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
+        if (data["type"] == "missed_call") {
+            val ctx = applicationContext
+            if (!TokenStore.get(ctx).isAuthenticated) return
+            val callId = data["call_id"] ?: return
+            val conversationId = data["conversation_id"] ?: return
+            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+            val preferences = ctx.getSharedPreferences("missed_call_pushes", Context.MODE_PRIVATE)
+            val seen = preferences.getStringSet("seen", emptySet()).orEmpty()
+            if (callId in seen) return
+            val channel = "voiid_missed_calls"
+            val manager = ctx.getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(channel, "Missed calls", NotificationManager.IMPORTANCE_HIGH))
+            val intent = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID, conversationId)
+                this.data = android.net.Uri.Builder().scheme("voiid").authority("missed-call").appendPath(callId).build()
+            }
+            val pending = PendingIntent.getActivity(ctx, callId.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val notification = NotificationCompat.Builder(ctx, channel)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(if (data["call_kind"] == "video") "Missed video call" else "Missed voice call")
+                .setContentText("Tap to open the conversation")
+                .setContentIntent(pending).setAutoCancel(true).setOnlyAlertOnce(true).build()
+            runCatching { NotificationManagerCompat.from(ctx).notify("missed:$callId", 1, notification) }
+                .onSuccess { preferences.edit().putStringSet("seen", (seen.toList().takeLast(199) + callId).toSet()).apply() }
+            return
+        }
+        if (data["type"] in setOf("community_approved", "community_request", "community_update")) {
+            if (!TokenStore.get(applicationContext).isAuthenticated) return
+            val isRequest = data["type"] == "community_request"
+            val isUpdate = data["type"] == "community_update"
+            val handle = data["community_handle"] ?: return
+            if (!Regex("^[a-z0-9_]{3,64}$").matches(handle)) return
+            val ctx = applicationContext
+            data["community_id"]?.let { DeepLinkRouter.communityMembershipChanges.tryEmit(it) }
+            if (AppPresence.isForeground()) { InAppMessageNotifications.showCommunityApproval(handle, isRequest, isUpdate); return }
+            val channel = "voiid_community_updates"
+            val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(android.app.NotificationChannel(channel, "Community updates", android.app.NotificationManager.IMPORTANCE_DEFAULT))
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://voiid.app/c/$handle"), ctx, com.voiid.app.MainActivity::class.java)
+            val pending = android.app.PendingIntent.getActivity(ctx, handle.hashCode(), intent, android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+            val notification = androidx.core.app.NotificationCompat.Builder(ctx, channel)
+                .setSmallIcon(com.voiid.app.R.mipmap.ic_launcher).setContentTitle(if (isUpdate) "New community update" else if (isRequest) "New community join request" else "Community request approved")
+                .setContentText("Tap to open the community").setContentIntent(pending).setAutoCancel(true).build()
+            runCatching { androidx.core.app.NotificationManagerCompat.from(ctx).notify("community:$handle", 1, notification) }
+            return
+        }
+
 
         // Incoming 1:1 call: wake the incoming-call UI (full-screen ring). The matching
         // call_offer arrives over the WebSocket once the app/socket is live.
@@ -323,6 +371,11 @@ object Notifier {
         title: String?,
         body: String?,
     ) {
+        // In-app banners do not require the OS notification permission.
+        if (AppPresence.isForeground()) {
+            InAppMessageNotifications.show(conversationId, messageId, title, body)
+            return
+        }
         // Android 13+: posting without POST_NOTIFICATIONS is a silent no-op — guard it.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)

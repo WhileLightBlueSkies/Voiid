@@ -82,6 +82,19 @@ object LocationShareEngine {
     private val inboundConversation = ConcurrentHashMap<String, String>()
 
     private val outbound = ConcurrentHashMap<String, Outbound>()
+    private var expiryJob: kotlinx.coroutines.Job? = null
+
+    private fun monitorExpiry() {
+        if (expiryJob?.isActive == true) return
+        expiryJob = scope.launch {
+            while (outbound.isNotEmpty()) {
+                val now = System.currentTimeMillis()
+                outbound.values.filter { it.expiresAt <= now }.map { it.shareId }
+                    .forEach { stopShare(it) }
+                kotlinx.coroutines.delay(1_000)
+            }
+        }
+    }
 
     private data class Outbound(
         val shareId: String,
@@ -112,6 +125,7 @@ object LocationShareEngine {
             LocationRelay.subscribeFix { shareId, from, ct, _ -> onFixFrame(shareId, from, ct) }
             LocationRelay.subscribeStop { shareId, _, kind, _ -> if (kind != "map") endInbound(shareId) }
             LocationRelay.subscribeControl { plain, from, convId -> onControl(plain, from, convId) }
+
         }
     }
 
@@ -201,6 +215,7 @@ object LocationShareEngine {
                 ))
             }
             outboundActive.add(OutboundShareView(created.share_id, conv.conversationId, expiresAt))
+            monitorExpiry()
             // Start emitting: the FGS keeps updates flowing while backgrounded; the first fix
             // triggers the durable live_start (initial coords + the shareKey) and the bubble.
             LocationForegroundService.start(appContext!!)
@@ -212,6 +227,9 @@ object LocationShareEngine {
     }
 
     private fun onFix(loc: Location) {
+        // Never label an old cached fix as a fresh position.
+        val ageMillis = (android.os.SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000
+        if (!loc.hasAccuracy() || loc.accuracy < 0 || ageMillis !in 0..60_000) return
         val lat = round5(loc.latitude); val lon = round5(loc.longitude); val acc = loc.accuracy.toDouble()
         val now = System.currentTimeMillis()
         for (ob in outbound.values) {
@@ -230,7 +248,7 @@ object LocationShareEngine {
                 scope.launch { sendControl(ShareTarget(ob.conversationId, ob.isGroup, ob.peerUserId), startEnv) }
             }
             // P3: one ciphertext for the whole audience, over the WS relay only.
-            val fixEnv = LocationEnvelope(k = LocationEnvelope.K_FIX, s = ob.shareId, n = ob.seq++, t = now, lat = lat, lon = lon, acc = acc)
+            val fixEnv = LocationEnvelope(k = LocationEnvelope.K_FIX, s = ob.shareId, n = ob.seq++, t = loc.time, lat = lat, lon = lon, acc = acc)
             val json = ApiClient.json.encodeToString(LocationEnvelope.serializer(), fixEnv)
             val ct = runCatching {
                 Base64.encodeToString(encryptBackup(Base64.decode(ob.keyB64, Base64.NO_WRAP), json.toByteArray()), Base64.NO_WRAP)
@@ -403,6 +421,7 @@ object LocationShareEngine {
                 if (outboundActive.none { it.shareId == s.share_id })
                     outboundActive.add(OutboundShareView(s.share_id, convId, expiresAt))
             }
+            monitorExpiry()
             for (s in res.inbound) {
                 val keyB64 = keyStore.getString(s.share_id, null) ?: continue
                 if (inboundViews.containsKey(s.share_id)) continue

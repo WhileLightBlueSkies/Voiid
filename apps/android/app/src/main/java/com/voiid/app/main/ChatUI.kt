@@ -277,7 +277,7 @@ fun MessageBubble(
                                     },
                                     onClick = { if (selectionMode) onSelectTap() },
                                 )
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                                .padding(horizontal = if (message.kind == MessageKind.IMAGE && !message.deletedForEveryone) 4.dp else 14.dp, vertical = if (message.kind == MessageKind.IMAGE && !message.deletedForEveryone) 4.dp else 10.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
                             BubbleInner(message, isGroup, isLastMine, onVote)
@@ -399,7 +399,12 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
             // iOS taps message media into a full-screen viewer; the bubble exposes the tap.
             var viewingFull by remember(message.id) { mutableStateOf(false) }
             if (ref != null) {
-                AsyncMediaImage(ref, onTap = { viewingFull = true })
+                Box(Modifier.size(width = 260.dp, height = 220.dp).clip(RoundedCornerShape(18.dp))) {
+                    AsyncMediaImage(ref, onTap = { viewingFull = true })
+                    Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(65.dp)
+                        .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(androidx.compose.ui.graphics.Color.Transparent, androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f)))))
+                    MetaRow(message, isLastMine, Modifier.align(Alignment.BottomEnd).padding(12.dp), onImage = true)
+                }
                 if (viewingFull && ref.mime.startsWith("video/")) {
                     ChatVideoViewer(ref, onClose = { viewingFull = false })
                 } else if (viewingFull) {
@@ -412,11 +417,13 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
                 }
             } else {
                 Box(
-                    modifier = Modifier.size(200.dp).clip(RoundedCornerShape(12.dp)).background(VoiidColor.accent.copy(alpha = 0.4f)),
+                    modifier = Modifier.size(width = 260.dp, height = 220.dp).clip(RoundedCornerShape(12.dp)).background(VoiidColor.fieldFill),
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator(color = VoiidColor.primary) }   // local echo before upload
             }
-            MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
+            if (message.text.isNotBlank()) {
+                Text(message.text, color = bubbleText(message.isMine), style = VoiidFont.rounded(16), modifier = Modifier.widthIn(max = 260.dp).padding(8.dp))
+            }
         }
         MessageKind.VOICE -> {
             AsyncVoiceNote(message.mediaRef, message.text, onOwnBubble = message.isMine)
@@ -568,9 +575,9 @@ private fun TextWithMeta(message: VMessage, isLastMine: Boolean) {
 
 /** Time + delivery-tick row that flows inline after text (or beneath media) — iOS `metaRow`. */
 @Composable
-private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier = Modifier) {
+private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier = Modifier, onImage: Boolean = false) {
     val mine = message.isMine
-    val metaTint = bubbleTextSecondary(mine)
+    val metaTint = if (onImage) androidx.compose.ui.graphics.Color.White else bubbleTextSecondary(mine)
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,

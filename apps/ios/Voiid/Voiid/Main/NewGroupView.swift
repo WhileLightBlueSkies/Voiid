@@ -25,9 +25,10 @@ struct NewGroupView: View {
     @State private var groupName = ""
     @State private var search = ""
     @State private var creating = false
+    @State private var creationError: String?
 
     private var canCreate: Bool {
-        !groupName.trimmingCharacters(in: .whitespaces).isEmpty && !selected.isEmpty && !creating
+        !groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !selected.isEmpty && !creating
     }
 
     private var filtered: [VContact] {
@@ -56,61 +57,73 @@ struct NewGroupView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Close") { dismiss() }.foregroundColor(VoiidColor.primary)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await create() } } label: {
-                        if creating { ProgressView() } else { Text("Create") }
-                    }
-                    .foregroundColor(canCreate ? VoiidColor.primary : VoiidColor.textSecondary)
-                    .disabled(!canCreate)
+                    Button("Close") { dismiss() }.foregroundColor(VoiidColor.primary).disabled(creating)
                 }
             }
+            .interactiveDismissDisabled(creating)
+            .alert("Couldn't create group", isPresented: Binding(get: { creationError != nil }, set: { if !$0 { creationError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(creationError ?? "") }
             .task { await load() }
         }
     }
 
     private var content: some View {
-        VStack(spacing: 0) {
-            // Group name field
-            HStack(spacing: VoiidSpacing.md) {
-                Circle().fill(VoiidColor.fieldFill).frame(width: 48, height: 48)
-                    .overlay(Image(systemName: "person.3.fill").foregroundColor(VoiidColor.primary))
-                TextField("", text: $groupName,
-                          prompt: Text("Group name").foregroundColor(VoiidColor.placeholder))
-                    .font(VoiidFont.rounded(17, .medium)).foregroundColor(VoiidColor.textPrimary)
-            }
-            .padding(.horizontal, VoiidSpacing.lg)
-            .padding(.vertical, VoiidSpacing.md)
-
-            if !selected.isEmpty {
-                Text("\(selected.count) selected")
-                    .font(VoiidFont.rounded(12)).foregroundColor(VoiidColor.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, VoiidSpacing.lg)
-            }
-
-            List {
-                if filtered.isEmpty {
-                    Text("No contacts on VOIID to add.")
-                        .font(VoiidFont.rounded(14)).foregroundColor(VoiidColor.textSecondary)
-                } else {
-                    Section("Add members") {
-                        ForEach(filtered) { c in
-                            Button { toggle(c) } label: { row(c) }.buttonStyle(.plain)
+        List {
+            Section {
+                VStack(spacing: 14) {
+                    Image(systemName: "person.3.fill")
+                        .font(.system(size: 30)).foregroundStyle(VoiidColor.primary)
+                        .frame(width: 88, height: 88)
+                        .background(VoiidColor.fieldFill, in: RoundedRectangle(cornerRadius: 26))
+                    Text("A space for your people").font(VoiidFont.rounded(22, .bold))
+                    Text("Choose a name and add people to start your private group.")
+                        .font(VoiidFont.rounded(13)).foregroundStyle(VoiidColor.textSecondary).multilineTextAlignment(.center)
+                    TextField("Group name", text: $groupName)
+                        .font(VoiidFont.rounded(16, .medium)).padding(16).liveGroupCard()
+                        .onChange(of: groupName) { _, value in groupName = String(value.prefix(64)) }
+                    if !selected.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(contacts.filter { selected.contains($0.userId) }) { contact in
+                                    Button { toggle(contact) } label: {
+                                        VStack(spacing: 6) {
+                                            ProfileAvatarButton(photoURL: contact.photoURL, name: contact.displayName, size: 40)
+                                                .overlay(alignment: .topTrailing) { Image(systemName: "minus.circle.fill").font(.system(size: 15)).foregroundStyle(VoiidColor.primary) }
+                                            Text(contact.displayName.split(separator: " ").first.map(String.init) ?? contact.displayName)
+                                                .font(VoiidFont.rounded(11)).lineLimit(1)
+                                        }.frame(width: 58)
+                                    }.buttonStyle(.plain)
+                                }
+                            }.padding(.vertical, 4)
                         }
                     }
+                }.frame(maxWidth: .infinity).listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 12, trailing: 0))
+            }
+            Section("Add members · \(selected.count) selected") {
+                if filtered.isEmpty { Text("No contacts on Voiid to add.").font(VoiidFont.rounded(14)).foregroundStyle(VoiidColor.textSecondary) }
+                ForEach(filtered) { contact in
+                    Button { toggle(contact) } label: { row(contact) }.buttonStyle(.plain).disabled(creating)
                 }
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .searchable(text: $search, prompt: "Search contacts")
+        }
+        .listStyle(.insetGrouped).scrollContentBackground(.hidden).softTopEdgeEffect()
+        .searchable(text: $search, prompt: "Search contacts")
+        .safeAreaInset(edge: .bottom) {
+            Button { Task { await create() } } label: {
+                HStack {
+                    if creating { ProgressView().tint(VoiidColor.textOnPrimary) }
+                    Text(creating ? "Creating group…" : "Create group").font(VoiidFont.rounded(16, .semibold))
+                }.frame(maxWidth: .infinity).frame(height: 50)
+                    .foregroundStyle(VoiidColor.textOnPrimary)
+                    .background(VoiidColor.primary.opacity(canCreate ? 1 : 0.45), in: Capsule())
+            }.buttonStyle(.plain).disabled(!canCreate).padding(16).background(VoiidColor.background)
         }
     }
 
     private func row(_ c: VContact) -> some View {
         HStack(spacing: VoiidSpacing.md) {
-            VoiidAvatar(size: 40, imageName: nil).clipShape(Circle())
+            ProfileAvatarButton(photoURL: c.photoURL, name: c.displayName, size: 40)
             Text(c.displayName).font(VoiidFont.rounded(16, .medium)).foregroundColor(VoiidColor.textPrimary)
             Spacer()
             Image(systemName: selected.contains(c.userId) ? "checkmark.circle.fill" : "circle")
@@ -174,11 +187,11 @@ struct NewGroupView: View {
         guard canCreate else { return }
         creating = true
         let chosen = contacts.filter { selected.contains($0.userId) }
-        let name = groupName.trimmingCharacters(in: .whitespaces)
+        let name = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
         if let conv = await chat.createGroup(name: name, members: chosen) {
             dismiss()
             onCreate(conv)
-        }
+        } else { creationError = chat.loadError ?? "Couldn’t create this group. Try again." }
         creating = false
     }
 }

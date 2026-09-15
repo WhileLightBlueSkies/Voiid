@@ -70,6 +70,7 @@ struct BlockedContactsView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .voiidSettingsPage()
         .task { await service.loadIfNeeded() }
         .refreshable { await service.refresh() }

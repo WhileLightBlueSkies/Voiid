@@ -50,6 +50,8 @@ final class EventService {
         /// decision — a suspended event is still 'published' and returns to sale unchanged.
         /// Optional because an older server does not send it; absent means not suspended.
         let suspended: Bool?
+        var can_manage: Bool? = nil
+        var can_checkin: Bool? = nil
 
         /// Trust the server's own verdict when it sends one, and fall back to the price only
         /// when it does not — the two cannot disagree, but the server is the authority.
@@ -109,13 +111,13 @@ final class EventService {
         }
         let r = try await api.request("POST", "events/\(eventId)/orders",
                                       body: Body(quantity: quantity), as: Response.self)
-        // A free order comes back already 'paid' and carries no checkout. Keyed on the
-        // checkout's presence rather than on the status string, because the server decides
-        // what needs paying and the client should not re-derive that from a label.
+        // Only the server's paid status confirms admission.
+        if r.order.status == "paid" { return .ticketed }
         if let checkout = r.checkout, r.order.status != "paid" {
             return .needsPayment(orderId: r.order.id, checkout: checkout)
         }
-        return .ticketed
+        throw NSError(domain: "EventCheckout", code: 1, userInfo: [NSLocalizedDescriptionKey:
+            "Payment is not confirmed. Check My Tickets before trying again."])
     }
 
     /// Kept for the free path's existing callers.
@@ -231,6 +233,7 @@ extension EventService {
     /// off `APIError.http`'s message — the reasons are written for the volunteer holding the
     /// scanner ("expired, ask them to refresh" vs "this is not one of ours").
     struct CheckIn: Decodable {
+        var people: Int? = nil
         let ok: Bool?
         let ticket_id: String?
         let holder_name: String?
@@ -258,9 +261,13 @@ extension EventService {
         case void
         case unpaid
         case already_checked_in
+        case group_code_required, group_unavailable, access_removed, event_unavailable
 
         var message: String {
             switch self {
+            case .group_code_required, .group_unavailable: return "Ask the guest to refresh their group ticket."
+            case .access_removed: return "Your check-in access is no longer active."
+            case .event_unavailable: return "This event is not open for check-in."
             case .expired:           return "That code has expired \u{2014} ask them to refresh it."
             case .bad_signature,
                  .malformed:         return "That isn't a Voiid ticket code."
@@ -283,6 +290,7 @@ extension EventService {
     /// needs to read, not an exception it needs to recover from.
     /// A ticket in the holder's own wallet.
     struct Ticket: Decodable, Identifiable {
+        var people: Int? = nil
         let id: String
         let event_id: String
         let state: String
@@ -298,7 +306,7 @@ extension EventService {
         /// The server refuses to mint a code for any of these, so the wallet must not offer
         /// one either — a button that only ever 409s is worse than no button.
         var canShowCode: Bool {
-            state == "valid" && order_status == "paid" && event_status != "cancelled"
+            state == "valid" && order_status == "paid" && event_status == "published" && !isCheckedIn
         }
     }
 
@@ -317,7 +325,7 @@ extension EventService {
     /// front of a scanner.
     struct TicketCode: Decodable {
         let code: String
-        let expires_at: String
+        let expires_at: Double
         let ticket_id: String
     }
 
@@ -347,5 +355,89 @@ extension EventService {
                            reason: reason?.rawValue,
                            message: reason?.message)
         }
+    }
+}
+
+extension EventService {
+    struct Earnings: Decodable {
+        let commission_bps: Int
+        let totals: [Total]
+        let payouts_ready: Bool
+        struct Total: Decodable {
+            let currency: String
+            let status: String
+            let orders: Int
+            let gross_minor: String
+            let commission_minor: String?
+            let organiser_minor: String?
+            let unpriced_orders: Int
+        }
+    }
+    func earnings(communityId: String) async throws -> Earnings {
+        try await api.request("GET", "communities/\(communityId)/wallet", as: Earnings.self)
+    }
+}
+
+
+extension EventService {
+    struct EventEdit: Encodable {
+        let title: String
+        let description: String
+        let starts_at: String
+        let ends_at: String?
+        let location_text: String
+        let capacity: Int?
+        enum CodingKeys: String, CodingKey { case title, description, starts_at, ends_at, location_text, capacity }
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(title, forKey: .title); try c.encode(description, forKey: .description)
+            try c.encode(starts_at, forKey: .starts_at); try c.encode(ends_at, forKey: .ends_at)
+            try c.encode(location_text, forKey: .location_text); try c.encode(capacity, forKey: .capacity)
+        }
+    }
+    func edit(eventId: String, changes: EventEdit) async throws -> Event? {
+        let response = try await api.request("PATCH", "events/\(eventId)", body: changes, as: EventEnvelope.self)
+        return response.event
+    }
+}
+
+extension EventService {
+    struct StaffInvite: Decodable, Identifiable {
+        let event_id: String
+        let title: String
+        let role: String
+        let state: String
+        let expires_at: String
+        var id: String { event_id }
+    }
+    struct StaffMember: Decodable, Identifiable {
+        let user_id: String
+        let full_name: String?
+        let username: String?
+        let role: String
+        let state: String
+        let expires_at: String
+        var id: String { user_id }
+    }
+    func staffInvites(communityId: String) async throws -> [StaffInvite] {
+        struct Result: Decodable { let invitations: [StaffInvite] }
+        return try await api.request("GET", "communities/\(communityId)/staff-invitations", as: Result.self).invitations
+    }
+    func acceptStaff(eventId: String) async throws {
+        struct Result: Decodable { let ok: Bool }
+        _ = try await api.request("POST", "events/\(eventId)/team/accept", as: Result.self)
+    }
+    func team(eventId: String) async throws -> [StaffMember] {
+        struct Result: Decodable { let staff: [StaffMember] }
+        return try await api.request("GET", "events/\(eventId)/team", as: Result.self).staff
+    }
+    func inviteStaff(eventId: String, username: String, role: String) async throws {
+        struct Body: Encodable { let username: String; let role: String }
+        struct Result: Decodable { let ok: Bool }
+        _ = try await api.request("POST", "events/\(eventId)/team", body: Body(username: username, role: role), as: Result.self)
+    }
+    func removeStaff(eventId: String, userId: String) async throws {
+        struct Result: Decodable { let ok: Bool }
+        _ = try await api.request("DELETE", "events/\(eventId)/team/\(userId)", as: Result.self)
     }
 }

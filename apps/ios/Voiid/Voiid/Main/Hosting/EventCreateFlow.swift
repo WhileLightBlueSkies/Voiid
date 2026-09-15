@@ -29,14 +29,15 @@ import Combine
 /// `CommunityDraftModel` and the other 48 stores in this app.
 final class EventDraftModel: ObservableObject {
     enum Step: Int, CaseIterable, Identifiable {
-        case what, when, whereAndWho
+        case what, when, whereAndWho, review
         var id: Int { rawValue }
 
         var title: String {
             switch self {
             case .what:         "Details"
-            case .when:         "When"
-            case .whereAndWho:  "Place"
+            case .when:         "Schedule"
+            case .whereAndWho:  "Tickets"
+            case .review:       "Review"
             }
         }
 
@@ -44,7 +45,8 @@ final class EventDraftModel: ObservableObject {
             switch self {
             case .what:        "What's happening?"
             case .when:        "When is it?"
-            case .whereAndWho: "Where, and how many?"
+            case .whereAndWho: "Your venue and tickets"
+            case .review:      "Ready to create?"
             }
         }
 
@@ -52,7 +54,8 @@ final class EventDraftModel: ObservableObject {
             switch self {
             case .what:        "A name and a line about it. You can edit both later."
             case .when:        "A start time is required. An end time is optional."
-            case .whereAndWho: "Both optional. Leave capacity empty for no limit."
+            case .whereAndWho: "Set your venue and the number of places available."
+            case .review: "Check the details before making your event available."
             }
         }
     }
@@ -89,6 +92,7 @@ final class EventDraftModel: ObservableObject {
         case .what:        return titleValid
         case .when:        return timesValid
         case .whereAndWho: return true
+        case .review: return titleValid && timesValid
         }
     }
 
@@ -130,7 +134,7 @@ struct EventCreateFlow: View {
     @State private var createError: String?
 
     private var stepIndex: Int { step.rawValue }
-    private var isLast: Bool { step == .whereAndWho }
+    private var isLast: Bool { step == .review }
 
     var body: some View {
         NavigationStack {
@@ -148,6 +152,7 @@ struct EventCreateFlow: View {
                             case .what:        whatStep
                             case .when:        whenStep
                             case .whereAndWho: placeStep
+                            case .review: reviewStep
                             }
                         }
                         .padding(.horizontal, VoiidSpacing.md)
@@ -392,6 +397,20 @@ struct EventCreateFlow: View {
                     .padding(.horizontal, VoiidSpacing.md)
                     .padding(.vertical, 11)
             }
+        }
+    }
+
+    private var reviewStep: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VoiidCardSection("Event details") {
+                VoiidSettingsRow(icon: "calendar", title: draft.trimmedTitle, detail: draft.startsAt.formatted(date: .abbreviated, time: .shortened))
+                VoiidRowDivider()
+                VoiidSettingsRow(icon: "mappin.and.ellipse", title: draft.location.isEmpty ? "Venue not specified" : draft.location)
+                VoiidRowDivider()
+                VoiidSettingsRow(icon: "person.2", title: draft.limitCapacity ? "\(draft.capacity) places" : "Unlimited capacity", detail: "Free entry · One QR per booking")
+            }
+            Text(draft.publishNow ? "This event will be published immediately." : "This event will be saved as a draft.")
+                .font(.subheadline).foregroundStyle(VoiidColor.textSecondary)
         }
     }
 

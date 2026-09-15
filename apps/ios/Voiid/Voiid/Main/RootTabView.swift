@@ -95,8 +95,8 @@ struct RootTabView: View {
         /// reached by any route.
         static var visible: [Tab] { allCases.filter { shipped.contains($0) } }
 
-        /// Memories (Moments) and Chats are enabled for the current test round.
-        private static let shipped: Set<Tab> = [.chat, .stories, .communities]
+        /// Main surfaces enabled for the current test round.
+        private static let shipped: Set<Tab> = [.chat, .stories, .communities, .games]
 
         /// SF Symbols, OUTLINE weight — the inactive state.
         ///
@@ -238,9 +238,9 @@ struct RootTabView: View {
             // safe area by default, so wrapping the page in one silently inset every tab
             // from the top and the designed headers vanished behind a blank strip.
             //
-            // Ignoring it here restores the previous geometry exactly: the pages own the
-            // full screen again, and each one applies its own insets as it always did.
-            .ignoresSafeArea()
+            // Keep the existing vertical underlap. Horizontal safe areas remain intact
+            // for asymmetric camera/control insets and resized iPhone Duo layouts.
+            .ignoresSafeArea(.container, edges: .vertical)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // THE BAR ANIMATED AND THE PAGE TELEPORTED.
             //

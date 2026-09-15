@@ -55,15 +55,12 @@ import com.google.maps.android.compose.MarkerState
 import com.google.maps.android.compose.rememberCameraPositionState
 import com.voiid.app.BuildConfig
 import com.voiid.app.model.ChatStore
-import com.voiid.app.model.LiveShareView
 import com.voiid.app.model.MapContact
 import com.voiid.app.model.MapFix
 import com.voiid.app.model.MapStore
 import com.voiid.app.model.MapSubject
 import com.voiid.app.model.MapSubjectState
 import com.voiid.app.model.MapVisibility
-import com.voiid.app.model.ShareState
-import com.voiid.app.net.LocationShareEngine
 import com.voiid.app.net.MapPlaceSearch
 import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
@@ -105,18 +102,8 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
         while (true) { delay(1_000); now = System.currentTimeMillis() }
     }
 
-    // Two sources, one map (docs/LOCATION.md §5 + §7):
-    //   (B) presence — ambient, coarse, 5 min / 250 m. Everyone who chose to be visible to us.
-    //   (A) conversation live shares — someone actively sharing WITH ME from a chat, at
-    //       10–15 s cadence. Their fixes are already decrypted and in memory for the bubble;
-    //       drawing them here publishes nothing new and changes no cadence for anyone.
-    // Dedupe by userId with the CONVERSATION share winning: it is strictly fresher than the
-    // ambient one, so a friend who is live-sharing with you moves in near-real-time instead of
-    // being pinned to their last 5-minute presence fix.
-    val liveSubjects = LocationShareEngine.inboundViews.values
-        .mapNotNull { it.asMapSubject(now) }
-    val subjects = (subjectsMap.values.associateBy { it.userId } + liveSubjects.associateBy { it.userId })
-        .values.toList()
+    // Friends Map uses its own audience; chat live shares never populate this map.
+    val subjects = subjectsMap.values.toList()
     val onMap = subjects.filter { it.isOnMap }
     val offMap = subjects.filter { !it.isOnMap }
 
@@ -716,36 +703,6 @@ internal const val VOIID_MAP_STYLE_DARK: String = """
   {"featureType":"administrative","elementType":"geometry","stylers":[{"visibility":"off"}]}
 ]
 """
-
-/**
- * Project a conversation live share (A) onto the Map's subject shape (B), so both sources can
- * be drawn by one renderer (docs/LOCATION.md §5, §7).
- *
- * This publishes NOTHING and changes no cadence: the fixes are already decrypted in memory for
- * the in-chat bubble, and this only makes them visible on the Map tab too — a friend who is
- * actively live-sharing with you moves at the share's 10–15 s cadence, while everyone else
- * keeps moving at the ambient 5-minute presence cadence.
- *
- * Null once the share has ENDED (it must leave the map, same as the bubble's terminal state)
- * or before its first fix has landed (nothing to draw yet — the presence entry, if any, still
- * shows and the "waiting" list already covers this case).
- */
-private fun LiveShareView.asMapSubject(now: Long): MapSubject? {
-    val fix = lastFix ?: return null
-    val mapped = when (state(now)) {
-        ShareState.LIVE -> MapSubjectState.LIVE
-        ShareState.STALE -> MapSubjectState.STALE
-        ShareState.ENDED -> return null
-    }
-    return MapSubject(
-        userId = ownerUserId,
-        fix = MapFix(
-            subjectUserId = ownerUserId, shareId = shareId,
-            lat = fix.lat, lon = fix.lon, acc = fix.acc, seq = fix.seq, fixedAt = fix.fixedAt,
-        ),
-        state = mapped,
-    )
-}
 
 /**
  * The card shown when you tap a friend's face on the Map. Replaces the SDK's default info

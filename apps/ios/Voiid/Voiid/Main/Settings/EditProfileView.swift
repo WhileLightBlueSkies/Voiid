@@ -205,6 +205,7 @@ struct EditProfileView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .voiidSettingsPage()
         // ── DELETING THE ACCOUNT ────────────────────────────────────────────────────────
         // Three steps, deliberately: confirm, report what the server actually did, then tear

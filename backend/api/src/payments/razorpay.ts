@@ -84,10 +84,8 @@ export class RazorpayProvider implements PaymentProvider {
     });
 
     if (!res.ok) {
-      // The body is logged, not returned: a gateway error can name the account or the key,
-      // and this string would otherwise travel to a buyer's phone.
-      const detail = await res.text().catch(() => '');
-      console.error(`[razorpay] createOrder ${res.status}: ${detail.slice(0, 500)}`);
+      // Gateway bodies may contain account details; log only the HTTP status.
+      console.error(`[razorpay] createOrder failed: HTTP ${res.status}`);
       throw new Error('could not open a checkout');
     }
 
@@ -107,6 +105,13 @@ export class RazorpayProvider implements PaymentProvider {
         description: req.description,
       },
     };
+  }
+
+  resumeCheckout(providerRef: string, amountMinor: number, currency: string): Record<string, unknown> {
+    if (!providerRef.startsWith('order_') || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+      throw new Error('invalid saved checkout');
+    }
+    return { key: this.keyId, order_id: providerRef, amount: amountMinor, currency, name: 'Voiid', description: 'Event tickets' };
   }
 
   verifyWebhook(rawBody: Buffer, headers: Record<string, unknown>): WebhookVerdict {

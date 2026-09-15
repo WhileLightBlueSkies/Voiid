@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { timingSafeEqual, createHash } from 'node:crypto';
+import { parseEnv } from 'node:util';
 import { asyncHandler } from '../util';
 
 const router = Router();
@@ -58,8 +59,8 @@ const ENV_FILE = process.env.VOIID_ENV_FILE ?? join(APP_DIR, '.env');
 // ─────────────────────────────────────────────────────────────────────────────────
 
 /**
- * 16 chars is the floor the caller specified; the token we actually issue is 43 chars of
- * base64url from 32 random bytes. The floor exists so a placeholder like "changeme" cannot
+ * 16 chars is the compatibility floor; the recommended token is 64 hexadecimal characters
+ * from 32 random bytes. The floor exists so a placeholder like "changeme" cannot
  * quietly become production auth on a plane that can restart the platform.
  */
 const MIN_TOKEN_LENGTH = 16;
@@ -121,7 +122,7 @@ export function assertBaskAgentConfig(): void {
     '[voiid:api] REFUSING TO START: BASK_AGENT_TOKEN is ' +
       (EXPECTED_TOKEN ? `${EXPECTED_TOKEN.length} chars — the minimum is ${MIN_TOKEN_LENGTH}` : 'not set') +
       '. The Bask control agent can restart services and rewrite .env; it does not run unauthenticated. ' +
-      'Generate one with: openssl rand -base64 32 | tr -d /+= | head -c 43'
+      'Generate one with: openssl rand -hex 32'
   );
   process.exit(1);
 }
@@ -160,51 +161,47 @@ interface CommandResult { exitCode: number; output: string }
  * Never rejects: a spawn failure is a result with a non-zero code, because the contract
  * says a command that ran and failed is still a successful HTTP call.
  */
-function run(argv: string[], timeoutMs = COMMAND_TIMEOUT_MS): Promise<CommandResult> {
-  const [command, ...args] = argv;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (exitCode: number, output: string) => {
-      if (settled) return;
-      settled = true;
-      resolve({ exitCode, output: truncate(output) });
-    };
+export function redactOutput(text: string): string {
+  let values = Object.values(process.env).filter((v): v is string => typeof v === 'string' && v.length >= 4);
+  try { values.push(...Object.values(parseEnv(readFileSync(ENV_FILE, 'utf8'))).filter((v): v is string => typeof v === 'string' && v.length >= 4)); } catch { /* process values remain available */ }
+  const variants = new Set(values.flatMap(value => [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value)]));
+  for (const value of [...variants].sort((a,b) => b.length-a.length)) text = text.split(value).join('[REDACTED]');
+  return text.replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
+    .replace(/((?:password|secret|token|api[_-]?key)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+}
 
-    let child;
-    try {
-      child = spawn(command, args, { shell: false, env: process.env });
-    } catch (err) {
-      return finish(1, `failed to run ${command}: ${(err as Error).message}`);
-    }
-
-    // Bounded in memory as well as in the response: a runaway `pm2 logs` must not grow the
-    // API's heap while we wait for it. We keep a little over the cap and truncate at the end.
+/** Raw capture is INTERNAL ONLY for structured PM2 parsing. Oversized output is withheld
+ * as a whole, so clipping cannot expose the remaining half of a secret. */
+export function run(argv: string[], timeoutMs = COMMAND_TIMEOUT_MS, raw = false,
+                    env: NodeJS.ProcessEnv = process.env): Promise<CommandResult> {
+  return new Promise(resolve => {
+    let finished = false, overflow = false, bytes = 0;
     const chunks: Buffer[] = [];
-    let bytes = 0;
-    const collect = (chunk: Buffer) => {
-      chunks.push(chunk);
-      bytes += chunk.length;
-      while (bytes > MAX_OUTPUT_BYTES * 2 && chunks.length > 1) {
-        bytes -= chunks.shift()!.length;
-      }
+    const limit = raw ? 4 * 1024 * 1024 : 1024 * 1024;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (exitCode: number, message?: string) => {
+      if (finished) return;
+      finished = true;
+      if (timer) clearTimeout(timer);
+      const output = message ?? (overflow ? 'Output exceeded the capture limit and was withheld.' : Buffer.concat(chunks).toString('utf8'));
+      resolve({exitCode: overflow ? 1 : exitCode, output: raw ? output : truncate(redactOutput(output))});
     };
-    child.stdout?.on('data', collect);
-    child.stderr?.on('data', collect);
-
-    const timer = setTimeout(() => {
+    let child;
+    try { child = spawn(argv[0], argv.slice(1), {shell:false, env}); }
+    catch { finish(1, 'Unable to start the requested operation.'); return; }
+    const collect = (chunk: Buffer) => {
+      if (overflow) return;
+      bytes += chunk.length;
+      if (bytes > limit) { overflow = true; chunks.length = 0; return; }
+      chunks.push(chunk);
+    };
+    child.stdout?.on('data', collect); child.stderr?.on('data', collect);
+    if (timeoutMs > 0) timer = setTimeout(() => {
       child.kill('SIGKILL');
-      finish(1, `${command} exceeded ${Math.round(timeoutMs / 1000)}s and was killed.\n` +
-                 Buffer.concat(chunks).toString('utf8'));
+      finish(1, 'Operation timed out; termination was requested. Verify service state before retrying.');
     }, timeoutMs);
-
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      finish(1, `failed to run ${command}: ${err.message}`);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      finish(code ?? 1, Buffer.concat(chunks).toString('utf8') || `(${command} produced no output)`);
-    });
+    child.on('error', () => finish(1, 'Unable to start the requested operation.'));
+    child.on('close', code => finish(code ?? 1));
   });
 }
 
@@ -244,9 +241,9 @@ async function pm2Action(action: 'restart' | 'stop' | 'start', service: ServiceN
  * `pm2 jlist` rather than the pretty table: the table's box drawing is unreadable once it
  * reaches an admin panel, and jlist gives us the fields worth showing without parsing columns.
  */
-async function serviceStatus(): Promise<CommandResult> {
-  const result = await run([PM2, 'jlist']);
-  if (result.exitCode !== 0) return result;
+export async function serviceStatus(): Promise<CommandResult> {
+  const result = await run([PM2, 'jlist'], COMMAND_TIMEOUT_MS, true);
+  if (result.exitCode !== 0) return {exitCode:1,output:'Unable to read PM2 service status.'};
   try {
     const procs = JSON.parse(result.output) as Array<{
       name: string;
@@ -256,16 +253,17 @@ async function serviceStatus(): Promise<CommandResult> {
     const lines = SERVICES.map((name) => {
       const proc = procs.find((p) => p.name === name);
       if (!proc) return `${name.padEnd(14)} not running (no pm2 process)`;
-      const status = proc.pm2_env?.status ?? 'unknown';
+      const reported = proc.pm2_env?.status;
+      const status = ['online','stopped','stopping','launching','errored','one-launch-status','waiting restart'].includes(reported ?? '') ? reported! : 'unknown';
       const uptime = proc.pm2_env?.pm_uptime ? humanDuration((Date.now() - proc.pm2_env.pm_uptime) / 1000) : '—';
-      const mem = proc.monit?.memory ? `${Math.round(proc.monit.memory / 1024 / 1024)}MB` : '—';
-      return `${name.padEnd(14)} ${status.padEnd(10)} up ${uptime.padEnd(12)} cpu ${String(proc.monit?.cpu ?? 0).padEnd(5)} mem ${mem.padEnd(8)} restarts ${proc.pm2_env?.restart_time ?? 0}`;
+      const mem = typeof proc.monit?.memory === 'number' && Number.isFinite(proc.monit.memory) ? `${Math.round(proc.monit.memory / 1024 / 1024)}MB` : '—';
+      return `${name.padEnd(14)} ${status.padEnd(10)} up ${uptime.padEnd(12)} cpu ${String(typeof proc.monit?.cpu === 'number' && Number.isFinite(proc.monit.cpu) ? proc.monit.cpu : 0).padEnd(5)} mem ${mem.padEnd(8)} restarts ${typeof proc.pm2_env?.restart_time === 'number' ? proc.pm2_env.restart_time : 0}`;
     });
     const unhealthy = lines.filter((l) => !l.includes('online')).length;
     return { exitCode: unhealthy > 0 ? 1 : 0, output: lines.join('\n') };
   } catch {
-    // pm2 printed something that is not JSON — hand it over rather than swallowing it.
-    return { exitCode: 1, output: `could not parse pm2 jlist output:\n${result.output}` };
+    // Never include malformed PM2 output: it may contain process credentials.
+    return { exitCode: 1, output: 'Unable to parse PM2 service status; raw output withheld.' };
   }
 }
 
@@ -322,25 +320,30 @@ async function diskUsage(): Promise<CommandResult> {
  * than answering late, so on timeout we report "still running" and LEAVE IT RUNNING — the
  * advisory lock means the next call reports the truth rather than starting a second copy.
  */
-async function runMigrations(): Promise<CommandResult> {
-  const script = join(APP_DIR, 'infrastructure', 'deployment', 'migrate.mjs');
-  if (!existsSync(script)) {
-    return { exitCode: 1, output: `migration runner not found at ${script} — is VOIID_APP_DIR correct?` };
-  }
-  const result = await run(['node', `--env-file=${ENV_FILE}`, script], MIGRATION_TIMEOUT_MS);
-  if (result.exitCode === 1 && result.output.includes('was killed')) {
-    return {
-      exitCode: 1,
-      output:
-        'Migrations are STILL RUNNING — they outlasted this request and were left running ' +
-        'deliberately rather than killed mid-statement.\n\n' +
-        'migrate.mjs holds a Postgres advisory lock, so nothing else will start a second copy. ' +
-        'Re-run this command in a minute: it will either report the completed set or wait on the ' +
-        'same lock. Check `pm2 logs` on the box if it never settles.',
-    };
-  }
-  return result;
+/** One in-flight migration per API process. HTTP timeouts never kill the runner.
+ * PostgreSQL's advisory lock additionally serializes against deploys/other API processes. */
+export function createMigrationRunner(execute: () => Promise<CommandResult>, waitMs = MIGRATION_TIMEOUT_MS) {
+  let active: Promise<CommandResult> | undefined;
+  return async (): Promise<CommandResult> => {
+    active ??= execute().catch(() => ({exitCode:1,output:'Migration runner failed; inspect the migration ledger before retrying.'}));
+    const job = active;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pending = {exitCode:1,output:'Migrations are still running. Poll run_migrations again for the result. Do not restart the API while a migration is running.'};
+    try {
+      const result = await Promise.race([job, new Promise<CommandResult>(resolve => {timer=setTimeout(() => resolve(pending),waitMs);})]);
+      if (result !== pending && active === job) active = undefined;
+      return result;
+    } finally { if (timer) clearTimeout(timer); }
+  };
 }
+let migrationRunning = false;
+const pollMigrations = createMigrationRunner(() => {
+  const script = join(APP_DIR, 'infrastructure', 'deployment', 'migrate.mjs');
+  if (!existsSync(join(APP_DIR, 'infrastructure/deployment/service-launcher.mjs')) || !existsSync(script)) return Promise.resolve({exitCode:1,output:'Migration runner is not installed.'});
+  migrationRunning = true;
+  return run([process.execPath, join(APP_DIR, 'infrastructure/deployment/service-launcher.mjs'), 'migrate'], 0).finally(() => { migrationRunning = false; });
+});
+async function runMigrations(): Promise<CommandResult> { return pollMigrations(); }
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /status
@@ -405,6 +408,8 @@ router.post('/command', asyncHandler(async (req, res) => {
     lines = parsed;
   }
 
+  if (migrationRunning && (name === 'reload_config' || (service === 'voiid-api' && ['restart_service','stop_service','start_service'].includes(name))))
+    return res.status(409).json({error:'migration_running'});
   const result = await dispatch(name, service, lines);
   // 200 even on a non-zero exit code: the command ran, so the CALL succeeded. Reserving
   // non-200 for auth/shape/agent errors is what lets the caller tell "your migration failed"
@@ -448,7 +453,7 @@ interface EnvChange { key: string; value: string | null }
  * a changed key is rewritten where it sits, a deleted key's line is dropped, and a new key
  * is appended.
  */
-function applyEnvChanges(original: string, changes: EnvChange[]): { text: string; updated: string[]; added: string[]; removed: string[]; missing: string[] } {
+export function applyEnvChanges(original: string, changes: EnvChange[]): { text: string; updated: string[]; added: string[]; removed: string[]; missing: string[] } {
   const lines = original.split('\n');
   const updated: string[] = [], added: string[] = [], removed: string[] = [], missing: string[] = [];
 
@@ -481,15 +486,20 @@ function applyEnvChanges(original: string, changes: EnvChange[]): { text: string
  * newline or a `#` needs quoting to come back the same. Values that need nothing are left
  * bare, so the file keeps looking like the hand-written file it is.
  */
-function renderValue(value: string): string {
-  if (value === '' || /[\s"'#$`\\]/.test(value)) {
-    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
+export function renderValue(value: string): string {
+  if (value.includes('\0') || value.includes('\r') || value.includes('\n')) throw new Error('unsupported environment value');
+  for (const rendered of [value, `"${value}"`, `'${value}'`, `\`${value}\``]) {
+    try {
+      const parsed = parseEnv(`BASK_VALUE=${rendered}\n`);
+      if (Object.keys(parsed).length === 1 && parsed.BASK_VALUE === value) return rendered;
+    } catch { /* try another delimiter */ }
   }
-  return value;
+  throw new Error('environment value cannot be represented safely');
 }
 
 router.post('/env', asyncHandler(async (req, res) => {
   const body = (req.body ?? {}) as { changes?: unknown; restart?: unknown };
+  if (migrationRunning) return res.status(409).json({error:'migration_running'});
 
   if (!Array.isArray(body.changes) || body.changes.length === 0) {
     return res.status(400).json({ error: 'changes_required' });
@@ -514,6 +524,11 @@ router.post('/env', asyncHandler(async (req, res) => {
     // and applying them in array order would be a coin flip dressed up as a rule.
     if (seen.has(entry.key)) return res.status(400).json({ error: 'duplicate_key', key: entry.key });
     seen.add(entry.key);
+    if (typeof entry.value === 'string') {
+      try { renderValue(entry.value); } catch { return res.status(400).json({error:'unsupported_value',key:entry.key}); }
+    }
+    if (entry.key === 'BASK_AGENT_TOKEN' && (entry.value === null || entry.value.length < MIN_TOKEN_LENGTH))
+      return res.status(400).json({error:'invalid_agent_token'});
     changes.push({ key: entry.key, value: entry.value as string | null });
   }
 
@@ -534,6 +549,13 @@ router.post('/env', asyncHandler(async (req, res) => {
     copyFileSync(ENV_FILE, join(backupDir, `env-${stamp}`));
 
     summary = applyEnvChanges(original, changes);
+    const expected = parseEnv(original);
+    for (const change of changes) {
+      if (change.value === null) delete expected[change.key]; else expected[change.key] = change.value;
+    }
+    const actual = parseEnv(summary.text);
+    if (Object.keys(actual).length !== Object.keys(expected).length || Object.entries(expected).some(([key,value]) => actual[key] !== value))
+      return res.status(409).json({error:'ambiguous_env_file',message:'Resolve duplicate or multiline assignments through SSH before editing this file.'});
 
     // ATOMIC: write a temp file in the SAME directory, then rename over the target. rename(2)
     // within a filesystem is atomic, so a crash or a full disk mid-write leaves the old file

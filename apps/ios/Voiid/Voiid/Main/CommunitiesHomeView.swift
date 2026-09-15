@@ -26,6 +26,8 @@ struct CommunitiesHomeView: View {
 
     @State private var mine: [CommunityService.CommunityCard] = []
     @State private var results: [CommunityService.CommunityCard] = []
+    @State private var recommendations: [CommunityService.CommunityCard] = []
+    @State private var recommendationError: String?
     @State private var search = ""
     @State private var showDiscover = false
     @State private var loading = false
@@ -43,11 +45,24 @@ struct CommunitiesHomeView: View {
     var body: some View {
         NavigationStack {
             content
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    // Discovery must remain reachable before the user joins anything,
+                    // including when their memberships are loading or failed to load.
+                    discoveryRow
+                        .padding(.horizontal, VoiidSpacing.md)
+                        .padding(.vertical, VoiidSpacing.sm)
+                        .background(VoiidColor.background)
+                }
                 .background(VoiidColor.background.ignoresSafeArea())
                 .navigationTitle("Communities")
                 .navigationBarTitleDisplayMode(.inline)
                 .searchable(text: $search, prompt: "Find a community")
                 .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("Communities").font(VoiidFont.screenTitle)
+                        .foregroundStyle(VoiidColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                     ToolbarItem(placement: .primaryAction) {
                         Button { Haptics.tap(); showCreate = true } label: {
                             Image(systemName: "plus")
@@ -104,7 +119,16 @@ struct CommunitiesHomeView: View {
         } else if isSearching {
             list(results, empty: "No communities match that.")
         } else if mine.isEmpty && !loading {
-            emptyState
+            if !recommendations.isEmpty {
+                list(recommendations, empty: "", heading: "Recommended communities")
+            } else if let recommendationError {
+                VStack(spacing: VoiidSpacing.md) {
+                    Text(recommendationError).foregroundColor(VoiidColor.textSecondary)
+                    Button("Try again") { Task { await loadMine() } }
+                }.padding()
+            } else {
+                emptyState
+            }
         } else {
             list(mine, empty: "")
         }
@@ -148,18 +172,14 @@ struct CommunitiesHomeView: View {
                 .stroke(VoiidColor.divider, lineWidth: 1))
         }
         .buttonStyle(PressableButtonStyle())
+        .accessibilityIdentifier("communities.discover")
     }
 
-    private func list(_ cards: [CommunityService.CommunityCard], empty: String) -> some View {
+    private func list(_ cards: [CommunityService.CommunityCard], empty: String, heading: String = "Your communities") -> some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                // Hidden while searching: the inline search is already a discovery act, and a
-                // second door to the same thing mid-query is noise.
                 if !isSearching {
-                    discoveryRow
-                        .padding(.bottom, VoiidSpacing.xs)
-
-                    Text("Your communities")
+                    Text(heading)
                         .font(VoiidFont.rounded(15, .semibold))
                         .foregroundColor(VoiidColor.textSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -198,7 +218,7 @@ struct CommunitiesHomeView: View {
             Text("No communities yet")
                 .font(VoiidFont.rounded(20, .semibold))
                 .foregroundColor(VoiidColor.textPrimary)
-            Text("Search for one above, open an invite link, or start your own.")
+            Text("Discover a community above, scan its QR code, or start your own.")
                 .font(VoiidFont.subhead)
                 .foregroundColor(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)
@@ -218,7 +238,14 @@ struct CommunitiesHomeView: View {
     private func loadMine() async {
         loading = true; loadError = nil
         defer { loading = false }
-        do { mine = try await CommunityService.shared.mine() }
+        do {
+            mine = try await CommunityService.shared.mine()
+            if mine.isEmpty {
+                recommendationError = nil
+                do { recommendations = try await CommunityService.shared.search("") }
+                catch { if !Task.isCancelled { recommendationError = "Couldn’t load recommended communities." } }
+            }
+        }
         catch { loadError = (error as? APIError)?.errorDescription ?? "Couldn't load your communities." }
     }
 

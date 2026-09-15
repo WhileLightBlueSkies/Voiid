@@ -196,10 +196,11 @@ function noteTokenAlive(token: string): void {
 }
 
 // --- FCM (Android) — data-only, high-priority, wake + routing -----------------------
-async function sendFcmWake(tokens: string[], meta?: PushMeta): Promise<void> {
+export async function sendFcmWake(tokens: string[], meta?: PushMeta, retryable = false): Promise<void> {
   const app = getFirebaseAdminApp();
   if (!app) {
     console.warn('[push] Firebase Admin not configured; skipping FCM wake');
+    if (retryable) throw new Error('Firebase Admin is not configured');
     return;
   }
   try {
@@ -233,8 +234,12 @@ async function sendFcmWake(tokens: string[], meta?: PushMeta): Promise<void> {
         console.warn(`[push] fcm send failed: ${code || r.error?.message}`);
       }
     });
+    if (retryable && resp.responses.some(r => !r.success && ![
+      'messaging/registration-token-not-registered', 'messaging/invalid-registration-token',
+    ].includes(r.error?.code ?? ''))) throw new Error('FCM rejected one or more notifications');
   } catch (e) {
     console.warn('[push] fcm send batch failed:', (e as Error).message);
+    if (retryable) throw e;
   }
 }
 

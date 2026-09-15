@@ -81,6 +81,7 @@ struct BackupRecoveryView: View {
                 }
                 .padding(VoiidSpacing.md)
             }
+            .softTopEdgeEffect()
             .voiidSettingsPage()
 
             if let toast { ToastBanner(text: toast) }

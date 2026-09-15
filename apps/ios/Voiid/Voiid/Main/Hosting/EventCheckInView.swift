@@ -1,27 +1,5 @@
-//
-//  EventCheckInView.swift
-//  Voiid
-//
-//  The door. A host reads a guest's ticket code and `POST /events/:id/check-in` decides
-//  whether they get in.
-//
-//  ── WHY THIS IS TYPED, NOT SCANNED ──────────────────────────────────────────────
-//  There is no QR scanner anywhere in this app, and `NSCameraUsageDescription` currently says
-//  the camera is for a profile photo. Shipping a scanner means a new capability, a new
-//  purpose string and a camera-permission flow — none of which is the thing that was missing.
-//  What WAS missing is the ability to check anyone in at all, and the endpoint takes a code
-//  either way. So the door reads the code the guest's phone is showing. Adding a scanner
-//  later changes how the string arrives here and nothing else on this screen.
-//
-//  ── EVERY DECISION IS THE SERVER'S ──────────────────────────────────────────────
-//  This screen validates nothing. It does not parse the code, does not check the signature,
-//  does not decide whether a ticket is spent. A valid signature says "the server minted
-//  this"; it does not say "let this person in", and every door system that has collapsed the
-//  two has honoured a revoked ticket. So the string goes up whole and the answer comes back
-//  whole — including "already used at 19:42", which is the useful answer at a door.
-//
-
 import SwiftUI
+import AVFoundation
 
 struct EventCheckInView: View {
     let eventId: String
@@ -32,6 +10,10 @@ struct EventCheckInView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var code = ""
+    @State private var cameraAllowed = false
+    @State private var cameraUnavailable = false
+    @State private var latched = false
+    @Environment(\.scenePhase) private var scenePhase
     @State private var checking = false
     /// The last verdict, kept apart from `admitted` so a refusal never renders in the shape
     /// of a success.
@@ -53,6 +35,19 @@ struct EventCheckInView: View {
                                                 ? "Read the code on the guest's ticket."
                                                 : eventTitle)
 
+                    if cameraAllowed && !cameraUnavailable {
+                        VoiidQRScannerPreview(isScanning: !checking && !latched && scenePhase == .active, torchOn: false,
+                            onCode: { value in
+                                guard !latched, !checking else { return }
+                                latched = true; code = value
+                                Task { await submit() }
+                            }, onUnavailable: { cameraUnavailable = true }, onTorchStatus: { _, _ in })
+                            .frame(height: 280).clipShape(RoundedRectangle(cornerRadius: 24))
+                    }
+                    if latched {
+                        Button("Scan next booking") { code = ""; admitted = nil; refusal = nil; latched = false }
+                            .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
+                    }
                     entryCard
                     verdictCard
 
@@ -74,7 +69,12 @@ struct EventCheckInView: View {
                         .tint(VoiidColor.accentInk)
                 }
             }
-            .onAppear { codeFocused = true }
+            .task {
+                cameraAllowed = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
+                if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
+                    cameraAllowed = await AVCaptureDevice.requestAccess(for: .video)
+                }
+            }
         }
     }
 
@@ -121,7 +121,7 @@ struct EventCheckInView: View {
         if let admitted {
             VoiidCardSection("Admitted") {
                 VoiidSettingsRow(icon: "checkmark.circle",
-                                 title: admitted.holder_name ?? "Ticket accepted",
+                                 title: "\(admitted.people ?? 1) \((admitted.people ?? 1) == 1 ? "person" : "people") admitted",
                                  detail: admitted.checked_in_at
                                     .flatMap(VoiidEventDate.display)
                                     .map { "Checked in at \($0)" })
@@ -140,6 +140,7 @@ struct EventCheckInView: View {
     private func submit() async {
         let value = trimmed
         guard !value.isEmpty, !checking else { return }
+        latched = true
         checking = true
         admitted = nil
         refusal = nil
@@ -148,9 +149,9 @@ struct EventCheckInView: View {
             let result = try await EventService.shared.checkIn(eventId: eventId, code: value)
             if result.ok == true {
                 admitted = result
-                admittedCount += 1
+                admittedCount += result.people ?? 1
                 code = ""
-                codeFocused = true
+                codeFocused = false
                 Haptics.success()
                 onAdmitted()
             } else {

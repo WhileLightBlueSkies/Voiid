@@ -80,21 +80,17 @@ actor AvatarStorage {
     /// Decode at a bounded pixel size. ImageIO downsamples while decoding, so the
     /// full-size bitmap never exists — unlike `UIImage(data:)` then resize, which
     /// allocates the full thing first and is what made this expensive.
-    nonisolated static func downsample(_ data: Data) -> UIImage? {
+    nonisolated static func downsample(_ data: Data, pixelLimit: CGFloat = maxPixelSize) -> UIImage? {
         let opts = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let src = CGImageSourceCreateWithData(data as CFData, opts) else {
             return nil
         }
-        // `...FromImageIfAbsent`, not `...Always`: "Always" synthesises a thumbnail even
-        // when the source is already smaller than the cap, and the result comes back at
-        // the renderer's scale — a 120x120 avatar was being UPSCALED to 360x360, costing
-        // 9x the memory to display fewer pixels than it started with. Found by measuring;
-        // the code read as obviously correct.
+        // Generate from the source pixels rather than an embedded low-resolution thumbnail.
         let thumbOpts = [
-            kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceThumbnailMaxPixelSize: pixelLimit,
         ] as CFDictionary
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, thumbOpts) else {
             // Not something ImageIO recognises. Do NOT fall back to UIImage(data:) —
@@ -154,6 +150,13 @@ actor AvatarStorage {
             return data
         }
         return try? await MediaService.shared.download(key: ref)
+    }
+
+    func expandedPhoto(_ ref: String) async -> UIImage? {
+        if let url = fileURL(ref), let data = try? Data(contentsOf: url), data.count <= Self.maxBytes,
+           let image = Self.downsample(data, pixelLimit: 1200) { return image }
+        guard let data = await Self.download(ref), data.count <= Self.maxBytes else { return nil }
+        return Self.downsample(data, pixelLimit: 1200)
     }
 
     func removeAll() {

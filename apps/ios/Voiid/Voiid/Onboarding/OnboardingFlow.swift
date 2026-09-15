@@ -122,15 +122,14 @@ struct SplashScreen: View {
     /// so the call site does not have to change if it is ever restored.
     var logoNS: Namespace.ID
 
-    // Ellipse scales per device (design ref 325 on 402).
-    private var ellipse: CGFloat { VoiidScreen.width * (325.0 / 402.0) }
-
     var body: some View {
-        ZStack {
+        GeometryReader { geometry in
             // NO GROUND OF ITS OWN. The container paints the near-black behind both branches
             // (see OnboardingFlow.body), so there is one continuous backdrop and no flash when
             // the splash is swapped out.
-            LogoMark(size: ellipse, fontSize: 80)
+            let side = min(geometry.size.width, geometry.size.height)
+            LogoMark(size: side * (325.0 / 402.0), fontSize: min(80, side * (80.0 / 402.0)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // The status bar's glyphs have to read against near-black, and in light mode they would
         // be drawn dark on dark.

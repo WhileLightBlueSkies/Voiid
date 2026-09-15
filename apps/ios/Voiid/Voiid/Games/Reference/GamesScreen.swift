@@ -159,7 +159,7 @@ struct GamesScreen: View {
                 // modifier is unconditional; Voiid deploys lower, so it is gated. On iOS 26
                 // the soft top edge is exactly the reference's; below it the scroll view
                 // simply has no edge effect, which is the OS default and not a layout change.
-                .modifier(SoftTopScrollEdge())
+                .softTopEdgeEffect()
                 // The floor matters: `bottomInset` is 0 until the tab bar measures itself a
                 // frame later, and the last card would already have laid out underneath it.
                 .contentMargins(.bottom, max(session.bottomInset, 96), for: .scrollContent)
@@ -321,7 +321,7 @@ struct GamesScreen: View {
         // round-trips and neither should be able to delay or fail the other. Visibility
         // failing silently leaves every game on the shelf — see `loadVisibility`.
         .task { await store.loadVisibility() }
-        .task { await store.loadTournaments() }
+        // Tournament loading stays disabled while its entry points are hidden.
         .task {
             // Polled rather than pushed: an invite arrives as a chat message, and the games
             // surface has no socket subscription of its own — a 20s poll while this tab is
@@ -383,7 +383,7 @@ struct GamesScreen: View {
             // Invites and tournaments still render below: an invite to a hidden game is
             // still a live invite, and a tournament is not a shelf listing.
             inviteBanners
-            tournaments
+            // Tournaments hidden until an explicit post-launch enablement.
         } else {
             browsingContent
         }
@@ -403,7 +403,7 @@ struct GamesScreen: View {
         // successful one that found nobody.
         if store.showFriendsSection { friendsSection }
         inviteBanners
-        tournaments
+        // Tournaments hidden until an explicit post-launch enablement.
     }
 
     // MARK: Header
@@ -1586,22 +1586,5 @@ private struct TournamentCard: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(VoiidColor.accent.opacity(0.3), lineWidth: 1)
         )
-    }
-}
-
-// MARK: - Availability shim
-
-/// Applies the reference's soft top scroll-edge effect where the OS has it.
-///
-/// The reference app targets iOS 26 and calls `.scrollEdgeEffectStyle(.soft, for: .top)`
-/// directly. Voiid's deployment target is lower, so the call has to be guarded — and a guard
-/// cannot sit inline in a modifier chain without changing the view's type on both branches.
-private struct SoftTopScrollEdge: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.scrollEdgeEffectStyle(.soft, for: .top)
-        } else {
-            content
-        }
     }
 }

@@ -289,14 +289,23 @@ final class LocationShareEngine: ObservableObject {
 
     // MARK: - Outbound fix stream (P3)
 
+    private var lastOutboundFixAt: Date?
+
     private func handleOutboundFix(_ loc: CLLocation) {
+        let now = Date()
+        let age = now.timeIntervalSince(loc.timestamp)
+        guard loc.horizontalAccuracy >= 0, age >= 0, age <= 60 else { return }
+        // Core Location may deliver faster than the live-share network cadence.
+        if let lastOutboundFixAt, now.timeIntervalSince(lastOutboundFixAt) < 15 { return }
+        lastOutboundFixAt = now
         guard !emitting.isEmpty else { return }
         let lat = LocationRounding.round(loc.coordinate.latitude, decimals: LocationRounding.liveDecimals)
         let lon = LocationRounding.round(loc.coordinate.longitude, decimals: LocationRounding.liveDecimals)
         let acc = loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : nil
-        let nowMillis = Date().timeIntervalSince1970 * 1000
+        let nowMillis = loc.timestamp.timeIntervalSince1970 * 1000
         let me = TokenStore.shared.userId ?? "me"
         for (shareId, var ctx) in emitting {
+            guard let share = outboundShares.first(where: { $0.id == shareId }), share.expiresAt > now else { continue }
             ctx.seq += 1
             emitting[shareId] = ctx
             let fix = LocationFix(shareId: shareId, seq: ctx.seq, timestampMillis: nowMillis,
@@ -412,8 +421,10 @@ final class LocationShareEngine: ObservableObject {
         let json = String(decoding: env.encoded(), as: UTF8.self)
         if isGroup {
             // The JSON rides as the MLS text plaintext; the far side recognises it by `_vloc`.
-            await GroupEngine.shared.sendGroupMessage(conversationId: conversationId, text: json)
-            return true
+            do {
+                try await GroupEngine.shared.sendGroupMessage(conversationId: conversationId, text: json)
+                return true
+            } catch { return false }
         }
         guard let peer = peerUserId else { return false }
         do {

@@ -41,6 +41,16 @@ final class CommunityService {
 
     private let api = APIClient()
 
+    struct NotificationPreference: Codable { let notification_mode: String }
+    func notificationPreference(communityId: String) async throws -> String {
+        let value: NotificationPreference = try await api.request("GET", "communities/\(communityId)/notifications")
+        return value.notification_mode
+    }
+    func setNotificationPreference(communityId: String, mode: String) async throws {
+        let _: NotificationPreference = try await api.request("PATCH", "communities/\(communityId)/notifications",
+            body: NotificationPreference(notification_mode: mode))
+    }
+
     /// The public info card — the object the server nests under `community`, plus the two facts
     /// the join sheet needs that arrive ALONGSIDE it rather than inside it.
     ///

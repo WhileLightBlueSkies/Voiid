@@ -52,7 +52,7 @@ struct ChatMediaViewer: UIViewControllerRepresentable {
 
 // MARK: - The viewer
 
-final class MediaViewerController: UIViewController {
+final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate {
 
     private let items: [ChatMediaItem]
     private var index: Int
@@ -96,6 +96,11 @@ final class MediaViewerController: UIViewController {
         pager.delegate = self
         pager.backgroundColor = .black
         view.addSubview(pager)
+        let dismissPan = UIPanGestureRecognizer(target: self, action: #selector(dragToClose(_:)))
+        dismissPan.maximumNumberOfTouches = 1
+        dismissPan.delegate = self
+        pager.addGestureRecognizer(dismissPan)
+        pager.panGestureRecognizer.require(toFail: dismissPan)
 
         for (i, item) in items.enumerated() {
             // Only the opened page pays the synchronous cache read — see MediaPageView.init.
@@ -107,6 +112,53 @@ final class MediaViewerController: UIViewController {
 
         buildChrome()
         buildStrip()
+        // UIKit scroll views do not inherit the SwiftUI app's scroll-edge style.
+        if #available(iOS 26.0, *) {
+            pager.topEdgeEffect.style = .soft
+            strip.topEdgeEffect.style = .soft
+            for page in pages {
+                page.topEdgeEffect.style = .soft
+            }
+        }
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+              pages.indices.contains(index), pages[index].zoomScale <= 1.01 else { return false }
+        let velocity = pan.velocity(in: view)
+        return velocity.y > 0 && velocity.y > abs(velocity.x) * 1.2
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var target: UIView? = touch.view
+        while let current = target {
+            if current is UIControl { return false }
+            target = current.superview
+        }
+        return true
+    }
+
+    @objc private func dragToClose(_ gesture: UIPanGestureRecognizer) {
+        let distance = max(0, gesture.translation(in: view).y)
+        let progress = min(1, distance / max(1, view.bounds.height * 0.45))
+        switch gesture.state {
+        case .changed:
+            pager.transform = CGAffineTransform(translationX: 0, y: distance)
+            topBar.alpha = (chromeVisible ? 1 : 0) * (1 - progress)
+            strip.alpha = (chromeVisible ? 1 : 0) * (1 - progress)
+        case .ended, .cancelled, .failed:
+            if gesture.state == .ended && (distance > 120 || (distance > 24 && gesture.velocity(in: view).y > 850)) {
+                onClose()
+            } else {
+                UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0.15 : 0.25,
+                               delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
+                    self.pager.transform = .identity
+                    self.topBar.alpha = self.chromeVisible ? 1 : 0
+                    self.strip.alpha = self.chromeVisible ? 1 : 0
+                }
+            }
+        default: break
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -178,7 +230,9 @@ final class MediaViewerController: UIViewController {
 
     private func layoutChrome() {
         let top = view.safeAreaInsets.top
-        topBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: top + 54)
+        let insets = view.safeAreaInsets
+        topBar.frame = CGRect(x: insets.left, y: 0,
+                              width: max(0, view.bounds.width - insets.left - insets.right), height: top + 54)
     }
 
     private func updateChromeText() {
@@ -218,8 +272,9 @@ final class MediaViewerController: UIViewController {
     private func layoutStrip() {
         let bottom = view.safeAreaInsets.bottom
         let height = Self.stripHeight + bottom
-        strip.frame = CGRect(x: 0, y: view.bounds.height - height,
-                             width: view.bounds.width, height: height)
+        let insets = view.safeAreaInsets
+        strip.frame = CGRect(x: insets.left, y: view.bounds.height - height,
+                             width: max(0, view.bounds.width - insets.left - insets.right), height: height)
         // Half a screen either side, so the FIRST and LAST thumbnails can sit centred like
         // every other one rather than jamming against the edge.
         let sideInset = max(0, (view.bounds.width - Self.thumbSide) / 2)
@@ -506,7 +561,8 @@ private final class ThumbCell: UICollectionViewCell {
         outgoingBar.isHidden = !item.isOutgoing
 
         Task { @MainActor in
-            let image = await ChatMediaThumbnails.shared.thumbnail(for: item, side: 50)
+            let image = await ChatMediaThumbnails.shared.thumbnail(for: item, side: 50,
+                                                                   displayScale: traitCollection.displayScale)
             // The cell may have been reused for a different item while the decode ran.
             guard itemId == item.id else { return }
             imageView.image = image

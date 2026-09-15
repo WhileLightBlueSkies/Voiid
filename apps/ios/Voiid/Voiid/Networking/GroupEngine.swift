@@ -402,12 +402,13 @@ final class GroupEngine {
     /// Encrypt `text` ONCE with the group session and fan the SAME ciphertext out to
     /// every member device (all conversation members' devices + our other devices,
     /// excluding this sending device). Appends a local echo so the UI renders it.
-    func sendGroupMessage(conversationId: String, text: String) async {
-        await withGroupState { await sendGroupMessageLocked(conversationId: conversationId, text: text) }
+    func sendGroupMessage(conversationId: String, text: String) async throws {
+        await syncGroupEvents()
+        try await withGroupState { try await sendGroupMessageLocked(conversationId: conversationId, text: text) }
     }
 
-    private func sendGroupMessageLocked(conversationId: String, text: String) async {
-        guard let m = ensureMember() else { NSLog("[VOIID] MLS send: no member"); return }
+    private func sendGroupMessageLocked(conversationId: String, text: String) async throws {
+        guard let m = ensureMember() else { throw APIError.notAuthenticated }
         do {
             try await flushCommunityOutboxLocked(conversationId: conversationId)
             let session = try loadSession(conversationId)
@@ -417,7 +418,7 @@ final class GroupEngine {
             let ctB64 = ct.base64EncodedString()
             let targets = try await resolveTargets(conversationId: conversationId)
             guard !targets.isEmpty else {
-                NSLog("[VOIID] MLS send: no target devices conv=\(conversationId)"); return
+                throw APIError.http(status: 0, message: "No group recipient devices are available. Refresh the group and try again.")
             }
             let messages = targets.map { DeviceCiphertext(recipient_device_id: $0.deviceId, ciphertext: ctB64) }
             let res: SendResponse = try await api.request(
@@ -443,6 +444,7 @@ final class GroupEngine {
             NSLog("[VOIID] MLS sent id=\(res.message_id) conv=\(conversationId) devices=\(messages.count)")
         } catch {
             NSLog("[VOIID] MLS send FAILED conv=\(conversationId): \(error)")
+            throw error
         }
     }
 
@@ -644,16 +646,16 @@ final class GroupEngine {
 
     /// Add a user's device(s) to an existing group: consume their KeyPackages, add each
     /// via MLS, and distribute Welcome (to them) + Commit (to existing members).
-    func addMember(conversationId: String, userId: String, existingMemberUserIds: [String]) async {
-        await withGroupState {
-            await addMemberLocked(conversationId: conversationId, userId: userId,
+    func addMember(conversationId: String, userId: String, existingMemberUserIds: [String]) async throws {
+        try await withGroupState {
+            try await addMemberLocked(conversationId: conversationId, userId: userId,
                                   existingMemberUserIds: existingMemberUserIds)
         }
     }
 
     private func addMemberLocked(conversationId: String, userId: String,
-                                 existingMemberUserIds: [String]) async {
-        guard let m = ensureMember() else { return }
+                                 existingMemberUserIds: [String]) async throws {
+        guard let m = ensureMember() else { throw NSError(domain: "GroupMembership", code: 1, userInfo: [NSLocalizedDescriptionKey: "Group encryption is not ready. Try again."]) }
         do {
             // ── SERVER ROSTER FIRST, BEFORE THE WELCOME ──────────────────────────────
             // The MLS group and the server's conversation roster are two different lists,
@@ -669,13 +671,16 @@ final class GroupEngine {
             //
             // Idempotent server-side (`on conflict (conversation_id, user_id)`), so a
             // retry after a partial failure is safe.
-            try await addToServerRoster(conversationId: conversationId, userId: userId)
-
             let session = try loadSession(conversationId)
             let keyBefore = callKeyPassphraseIfAvailable(conversationId)
             let kps = try await fetchKeyPackages(userId: userId)
+            guard !kps.isEmpty, kps.allSatisfy({ decodeB64($0.key_package) != nil }) else {
+                throw NSError(domain: "GroupMembership", code: 2, userInfo: [NSLocalizedDescriptionKey: "This contact has no usable encryption keys. Ask them to open Voiid and try again."])
+            }
+            let current: ConvDetailResponse = try await api.request("GET", "conversations/\(conversationId)")
+            try await addToServerRoster(conversationId: conversationId, userId: userId)
             var events: [GroupEventOut] = []
-            let existing = Set(existingMemberUserIds).subtracting([userId])
+            let existing = Set(current.members.map { $0.user_id }).subtracting([userId])
             for kp in kps {
                 guard let kpData = decodeB64(kp.key_package) else { continue }
                 let out = try session.addMember(member: m, theirKeyPackage: kpData)
@@ -694,28 +699,36 @@ final class GroupEngine {
             NSLog("[VOIID] MLS added user=\(userId) conv=\(conversationId)")
         } catch {
             NSLog("[VOIID] MLS addMember FAILED conv=\(conversationId): \(error)")
+            throw error
         }
     }
 
     /// Remove a user from the group: produce a removal commit per device identity and
     /// broadcast it to the remaining members (MLS rekeys so the removed member can't
     /// read later messages).
-    func removeMember(conversationId: String, userId: String, remainingMemberUserIds: [String]) async {
-        await withGroupState {
-            await removeMemberLocked(conversationId: conversationId, userId: userId,
+    func removeMember(conversationId: String, userId: String, remainingMemberUserIds: [String]) async throws {
+        try await withGroupState {
+            try await removeMemberLocked(conversationId: conversationId, userId: userId,
                                      remainingMemberUserIds: remainingMemberUserIds)
         }
     }
 
     private func removeMemberLocked(conversationId: String, userId: String,
-                                    remainingMemberUserIds: [String]) async {
-        guard let m = ensureMember() else { return }
+                                    remainingMemberUserIds: [String]) async throws {
+        guard let m = ensureMember() else { throw NSError(domain: "GroupMembership", code: 1, userInfo: [NSLocalizedDescriptionKey: "Group encryption is not ready. Try again."]) }
         do {
+            let detail: ConvDetailResponse = try await api.request("GET", "conversations/\(conversationId)")
+            let callerRole = detail.members.first { $0.user_id == TokenStore.shared.userId }?.role
+            let targetRole = detail.members.first { $0.user_id == userId }?.role
+            guard let targetRole, targetRole != "owner",
+                  callerRole == "owner" || (callerRole == "admin" && targetRole == "member") else {
+                throw NSError(domain: "GroupMembership", code: 403, userInfo: [NSLocalizedDescriptionKey: "You cannot remove this member with your current group role."])
+            }
             let session = try loadSession(conversationId)
             let keyBefore = callKeyPassphraseIfAvailable(conversationId)
             let deviceIds = try await deviceIds(of: userId)
             var events: [GroupEventOut] = []
-            let remaining = Set(remainingMemberUserIds).subtracting([userId])
+            let remaining = Set(detail.members.map { $0.user_id }).subtracting([userId])
             for deviceId in deviceIds {
                 let identity = Data("\(userId)::\(deviceId)".utf8)
                 let commit = try session.removeMember(member: m, identity: identity)
@@ -743,6 +756,7 @@ final class GroupEngine {
             NSLog("[VOIID] MLS removed user=\(userId) conv=\(conversationId)")
         } catch {
             NSLog("[VOIID] MLS removeMember FAILED conv=\(conversationId): \(error)")
+            throw error
         }
     }
 
@@ -757,7 +771,7 @@ final class GroupEngine {
     private struct TargetDevice { let userId: String; let deviceId: String }
     private struct DeviceDTO: Decodable { let id: String }
     private struct DevicesResponse: Decodable { let devices: [DeviceDTO] }
-    private struct ConvMemberDTO: Decodable { let user_id: String }
+    private struct ConvMemberDTO: Decodable { let user_id: String; let role: String? }
     private struct ConvDetailResponse: Decodable { let members: [ConvMemberDTO] }
 
     /// Every device we must deliver an app message to: all conversation members' devices

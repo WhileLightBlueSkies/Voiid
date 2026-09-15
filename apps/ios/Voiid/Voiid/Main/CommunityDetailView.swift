@@ -27,10 +27,11 @@ struct CommunityDetailView: View {
     @State private var showReport = false
     @State private var confirmLeave = false
     @State private var showInbox = false
-    @State private var showSettings = false
     @State private var adminCard: CommunityService.CommunityCard?
     @State private var tab: CommunityTab = .home
     @State private var openConversation: VConversation?
+    @State private var notificationMode: String?
+    @State private var savingNotificationMode = false
 
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var chat: ChatStore
@@ -118,23 +119,14 @@ struct CommunityDetailView: View {
             }
         }
         .refreshable { await load() }
-        .sheet(isPresented: $showInbox) { CommunityInboxView() }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("communityMembershipChanged"))) { note in
+            if note.userInfo?["community_id"] as? String == card?.id { Task { await load() } }
+        }
+        .sheet(isPresented: $showInbox) { CommunityRequestInbox(communityId: card?.id ?? "") }
         // Bound to the card rather than a bool: the console needs a community id, and the
         // only proof we have one is the card that produced the menu the host just tapped.
         .sheet(item: $adminCard) { c in
-            CommunityAdminPanel(communityId: c.id, communityName: c.name, isOwner: isOwner(c))
-        }
-        // Presented on the loaded card rather than on the handle, so the settings screen opens
-        // already holding the values it edits and never has to render its own second load of
-        // something this screen has in hand.
-        .sheet(isPresented: $showSettings) {
-            if let card {
-                CommunitySettingsView(card: card) { updated in
-                    // The SERVER's card, so the name, policy and discoverability behind the
-                    // sheet redraw from what was actually stored — not from what was sent.
-                    self.card = updated
-                }
-            }
+            CommunityAdminPanel(communityId: c.id, communityName: c.name, isOwner: isOwner(c), communityCard: c, onSettingsSaved: { card = $0 })
         }
         .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
         // A FAILED ACTION HAD NOWHERE TO GO. `error` is rendered only in the no-card branch,
@@ -275,7 +267,7 @@ struct CommunityDetailView: View {
         HStack(spacing: VoiidSpacing.sm) {
             joinButton(c)
 
-            if isOwner(c) {
+            if isOwner(c) || c.isManager {
                 Button {
                     Haptics.tap()
                     showInbox = true
@@ -321,6 +313,26 @@ struct CommunityDetailView: View {
     @ViewBuilder
     private func overflowMenu(_ c: CommunityService.CommunityCard) -> some View {
         Menu {
+            if c.isMember {
+                Menu("Notifications", systemImage: "bell") {
+                    ForEach(["all", "important", "none"], id: \.self) { mode in
+                        Button {
+                            savingNotificationMode = true
+                            Task {
+                                defer { savingNotificationMode = false }
+                                do {
+                                    try await CommunityService.shared.setNotificationPreference(communityId: c.id, mode: mode)
+                                    notificationMode = mode
+                                } catch { actionError = "Couldn’t save notification settings. Please try again." }
+                            }
+                        } label: {
+                            Label(mode.capitalized, systemImage: notificationMode == mode ? "checkmark.circle.fill" : "circle")
+                        }
+                        .disabled(savingNotificationMode)
+                    }
+                    Text("Important: announcements, events and public post mentions")
+                }
+            }
             // HOST ONLY, and gated on the SAME `isOwner` signal the Inbox action uses — that
             // is deliberate reuse rather than a second guess at manager-ness.
             //
@@ -337,13 +349,9 @@ struct CommunityDetailView: View {
                 // The console goes above settings because it is the thing a host opens to
                 // ACT — approve, moderate, promote — while settings is where they go to
                 // change what the community IS. Frequency, not importance, sets the order.
-                Button("Manage community", systemImage: "shield.lefthalf.filled") {
+                Button("Admin panel", systemImage: "shield.lefthalf.filled") {
                     Haptics.tap()
                     adminCard = c
-                }
-                Button("Community settings", systemImage: "slider.horizontal.3") {
-                    Haptics.tap()
-                    showSettings = true
                 }
                 Divider()
             }
@@ -464,8 +472,8 @@ struct CommunityDetailView: View {
                         // server by `communityAccess(..., needsAdmin: true)`; this flag only
                         // decides whether the buttons are drawn.
                         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                            CommunityEventsSection(communityId: c.id, isHost: isOwner(c) || c.isManager)
-                            CommunityTournamentsSection(communityId: c.id, isHost: isOwner(c) || c.isManager)
+                            CommunityEventsSection(communityId: c.id, isHost: isOwner(c) || c.isManager, isOwner: isOwner(c))
+                            // Tournaments hidden until an explicit post-launch enablement.
                         }
                     case .members:
                         CommunityMembersTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager, isOwner: isOwner(c))
@@ -537,7 +545,12 @@ struct CommunityDetailView: View {
 
     private func load() async {
         loading = true; defer { loading = false }
-        do { card = try await CommunityService.shared.resolve(CommunityLink(handle: handle, inviteToken: nil)) }
+        do {
+            card = try await CommunityService.shared.resolve(CommunityLink(handle: handle, inviteToken: nil))
+            if let card, card.isMember, !savingNotificationMode {
+                notificationMode = try? await CommunityService.shared.notificationPreference(communityId: card.id)
+            }
+        }
         catch { self.error = (error as? APIError)?.errorDescription }
     }
 

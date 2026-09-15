@@ -77,7 +77,7 @@ object LegalDocuments {
 
     /** MUST equal the `version` of the seeded `consent_notices` row and the key in the
      *  backend's `NOTICE_PURPOSES`. */
-    const val NOTICE_VERSION = "2026-08-01"
+    const val NOTICE_VERSION = "2026-09-10"
 
     /** BCP-47. Only English is published; whether the Eighth-Schedule translation
      *  obligation applies at Voiid's size is an open question for counsel, and shipping
@@ -115,12 +115,19 @@ object LegalDocuments {
         id = "privacy",
         title = "Privacy Notice",
         version = NOTICE_VERSION,
-        effectiveDate = "1 August 2026",
+        effectiveDate = "10 September 2026",
         summary = "Voiid cannot read your messages, hear your calls, see your live location or open your " +
             "moments. It can see who you exchange messages with and when, what kind of device you use, " +
             "and the IP address you connect from. This notice explains exactly where that line falls " +
             "and why it falls there.",
         sections = listOf(
+            LegalDocument.Section(id = "event-payments", heading = "Community events and payments", body = listOf(
+                "Community events, registrations, ticket identifiers, payment status, commission records and check-in records are processed by Voiid to operate event booking and admission. These records are not end-to-end encrypted.",
+                "Community organisers receive attendee display names, usernames and relevant registration and admission details. Community attendee tools do not share your mobile number. Payment providers may independently require contact information for checkout.",
+                "Where paid events and payouts are enabled, Razorpay processes payment and recipient verification information. Authorised payment administrators may access records needed for reconciliation, refunds and settlement. Bank details must not be exposed to ordinary community members or volunteers.",
+                "Apple Wallet or Google Wallet receives the ticket data you choose to save when that integration is available. Community earnings records are separate from passes saved to those services.",
+                "Payment onboarding, settlement tracking and wallet-pass delivery are being completed. Unavailable integrations are not enabled by accepting this notice. Applicable financial-record retention and recipient verification requirements must be disclosed before paid event activation.",
+            )),
             LegalDocument.Section(
                 id = "cannot-see",
                 heading = "What Voiid cannot see",
@@ -220,11 +227,18 @@ object LegalDocuments {
         id = "terms",
         title = "Terms of Use",
         version = NOTICE_VERSION,
-        effectiveDate = "1 August 2026",
+        effectiveDate = "10 September 2026",
         summary = "The short version: your account is yours, the content you send is yours and we cannot " +
             "read it, Clips you post are public, and if you use Voiid to harm people we will remove " +
             "what you posted and may close your account.",
         sections = listOf(
+            LegalDocument.Section(id = "event-payments", heading = "Community events and payments", body = listOf(
+                "Event organisers are responsible for the event description, venue, attendance arrangements and the cancellation policy shown before registration. A ticket does not grant community management permissions.",
+                "The default Voiid commission for new community event orders is 25% of the ticket subtotal. Voiid platform administrators may set a different community rate. Each new order records its applicable rate; later changes do not change existing orders. Processing fees, applicable taxes and their allocation must be disclosed separately before paid sales are enabled.",
+                "Where enabled, guest payments use Razorpay and organiser shares are transferred using Razorpay Route. Community Wallet shows earnings and settlement records; it is not a general-purpose stored-value account. An order balance is not a promise of immediate withdrawal or bank settlement.",
+                "Event cancellation, ticket revocation and payment refunds are different actions. The applicable refund policy must be shown before purchase, and a refund is complete only when confirmed through the payment provider. Verification, disputes or settlement failures may delay transfers.",
+                "Paid checkout, recipient onboarding and wallet passes are available only where enabled. Organisers must see and accept the applicable fee and payout terms before paid sales begin. This document does not activate unfinished payment features.",
+            )),
             LegalDocument.Section(
                 id = "account",
                 heading = "Your account",

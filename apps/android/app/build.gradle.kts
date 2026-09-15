@@ -214,6 +214,7 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
+    implementation("com.razorpay:checkout:1.6.40")
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     implementation(libs.androidx.core.ktx)

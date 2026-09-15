@@ -338,109 +338,29 @@ fun ContactProfileView(
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         ) {
-            // Header: a full-bleed portrait with the identity laid over it.
-            //
-            // WHY NOT A CENTERED AVATAR ON A CARD. That layout — round photo, name under it,
-            // buttons under that, all centered on a plain ground — is the 2016 profile, and
-            // it wastes the one asset the screen actually has: the person's photo, shown at
-            // 104dp while two thirds of the width sits empty. Apple stopped building profiles
-            // that way years ago. Mirrors iOS `headerCard`.
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(360.dp)
-                    // The portrait is a 320dp tap target that gave no sign it was tappable.
-                    // A gentler scale than a row: a full-bleed image shrinking 4% reads as a
-                    // shove, so it presses to 0.99.
-                    .softClickable(scale = 0.99f) { viewPhoto = true },
+            val resolvedPhoto = photoUrl
+                ?: UserDirectory.photoUrl(conversation.peerUserId ?: "")
+                ?: conversation.photoURL
+            Column(
+                Modifier.fillMaxWidth().statusBarsPadding().padding(top = 56.dp, start = 24.dp, end = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                val resolvedPhoto = photoUrl
-                    ?: UserDirectory.photoUrl(conversation.peerUserId ?: "")
-                    ?: conversation.photoURL
-                if (!resolvedPhoto.isNullOrEmpty()) {
-                    // fillsFrame: the banner is a RECTANGLE. Without it the shared avatar
-                    // clipped the photo to a circle in the corner of the 360dp frame.
-                    ProfileAvatar(
-                        photoUrl = resolvedPhoto,
-                        name = conversation.title,
-                        size = 360.dp,
-                        modifier = Modifier.fillMaxSize(),
-                        fillsFrame = true,
-                    )
-                } else {
-                    // NO PHOTO IS A COMMON CASE, not an edge case, so it gets a real design
-                    // rather than a grey box: the brand gradient with the person's initial.
-                    // Same 360dp shape, so the layout never jumps when a photo loads.
-                    Box(
-                        Modifier.fillMaxSize().background(
-                            Brush.linearGradient(
-                                listOf(
-                                    VoiidColor.primary.copy(alpha = 0.85f),
-                                    VoiidColor.primary.copy(alpha = 0.45f),
-                                ),
-                            ),
-                        ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            conversation.title.trim().take(1).uppercase().ifEmpty { "?" },
-                            style = VoiidFont.rounded(96, FontWeight.SemiBold),
-                            color = Color.White.copy(alpha = 0.9f),
-                        )
-                    }
-                }
-
-                // A bottom-anchored gradient, not a flat overlay. Flat dimming greys out the
-                // whole photo to protect two lines of text; a gradient leaves the face
-                // untouched and only darkens where the words actually are.
-                Box(
-                    Modifier.fillMaxSize().background(
-                        Brush.verticalGradient(
-                            0.5f to Color.Transparent,
-                            0.78f to Color.Black.copy(alpha = 0.15f),
-                            1f to Color.Black.copy(alpha = 0.72f),
-                        ),
-                    ),
+                ProfileAvatar(
+                    photoUrl = resolvedPhoto, name = conversation.title, size = 88.dp,
+                    modifier = Modifier.clip(CircleShape).softClickable {
+                        if (!resolvedPhoto.isNullOrBlank()) viewPhoto = true
+                    },
                 )
-
-                Column(
-                    Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp, vertical = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        conversation.title,
-                        // Optical tightening — default spacing reads loose above ~28sp.
-                        style = VoiidFont.rounded(32, FontWeight.Bold).copy(letterSpacing = (-0.6).sp),
-                        // Fixed white, NOT a theme token: this text sits on a photo, so it
-                        // must not follow the light/dark ground it is no longer standing on.
-                        color = Color.White,
-                        maxLines = 2,
-                    )
-
-                    // ONE line of secondary identity. The real name, handle and number were
-                    // each on their own line in near-identical styles, so none of them read
-                    // as THE way to identify this person. The handle leads (it is what you
-                    // share); the number follows, quieter, after a dot.
-                    val secondary = savedNumber ?: fullName?.takeIf { it != conversation.title }
-                    val handle = username?.let { "@$it" }
-                    if (handle != null || secondary != null) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            handle?.let {
-                                Text(it, style = VoiidFont.rounded(15, FontWeight.SemiBold), color = Color.White)
-                            }
-                            if (handle != null && secondary != null) {
-                                Box(Modifier.size(3.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.55f)))
-                            }
-                            secondary?.let {
-                                // A desaturated white reads as "quieter"; grey on a photo
-                                // reads as "disabled".
-                                Text(it, style = VoiidFont.rounded(15), color = Color.White.copy(alpha = 0.85f))
-                            }
-                        }
-                    }
+                Text(conversation.title, style = VoiidFont.rounded(22, FontWeight.Bold),
+                    color = VoiidColor.textPrimary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                username?.takeIf { it.isNotBlank() }?.let {
+                    Text("@$it", style = VoiidFont.rounded(14, FontWeight.Medium),
+                        color = VoiidColor.textSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                }
+                (savedNumber ?: fullName?.takeIf { it != conversation.title })?.let {
+                    Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 }
             }
 
@@ -672,25 +592,22 @@ fun ContactProfileView(
             }
     }
 
-    // BACK FLOATS OVER THE PORTRAIT. The old header carried VoiidCircleBack above the
-    // avatar; with the photo now running full-bleed under the status bar there is no bar to
-    // put it in, so it sits on the image — on a dark scrim disc, because a tinted chevron on
-    // an arbitrary photo is the one control that must always be findable and would have been
-    // the hardest thing to see.
+    // A full-size back target on the profile surface.
+
     Box(
         Modifier
             .statusBarsPadding()
             .padding(start = 8.dp, top = 4.dp)
-            .size(38.dp)
+            .size(48.dp)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.32f))
+            .background(VoiidColor.fieldFill)
             // The one control that must always work, and it had no press state.
             .softClickable { onBack() },
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             Icons.Default.ChevronLeft, "Back",
-            tint = Color.White,
+            tint = VoiidColor.textPrimary,
             modifier = Modifier.size(24.dp),
         )
     }
@@ -702,11 +619,24 @@ fun ContactProfileView(
         val viewerPhoto = photoUrl
             ?: UserDirectory.photoUrl(conversation.peerUserId ?: "")
             ?: conversation.photoURL
-        ProfilePhotoViewer(
-            title = conversation.title,
-            photoRef = viewerPhoto?.takeIf { it.isNotBlank() },
-            onClose = { viewPhoto = false },
-        )
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { viewPhoto = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth().padding(24.dp)) {
+                val diameter = minOf(maxWidth, 320.dp)
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                    ProfileAvatar(photoUrl = viewerPhoto, name = conversation.title, size = diameter)
+                    Text(conversation.title, style = VoiidFont.rounded(20, FontWeight.SemiBold),
+                        color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    androidx.compose.material3.TextButton(onClick = { viewPhoto = false },
+                        modifier = Modifier.height(48.dp)) {
+                        Text("Close", color = Color.White, style = VoiidFont.rounded(16, FontWeight.Medium))
+                    }
+                }
+            }
+        }
     }
     // Safety number, opened from the Encryption card. Full-screen: the digits are read aloud in
     // 5-groups and need the whole width.

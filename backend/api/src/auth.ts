@@ -1,3 +1,4 @@
+import { recordUsage } from './usageAnalytics';
 // OUR auth layer (Section 2.2 boundary): Firebase only sends OTP; identity + JWT are ours.
 import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
@@ -309,6 +310,7 @@ function authenticate(allowUnbound: boolean) {
       }
     }
 
+    if (!allowUnbound && claims.sid && claims.device_id) void recordUsage(claims.user_id, claims.device_id);
     (req as any).auth = claims;
     next();
   };

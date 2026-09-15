@@ -121,21 +121,17 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
             Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(contentAlignment = Alignment.BottomEnd) {
                     Box(
-                        Modifier.size(110.dp).clip(CircleShape).background(VoiidColor.fieldFill)
+                        Modifier.size(88.dp).clip(CircleShape).background(VoiidColor.fieldFill)
                             .clickable { haptics.tap(); viewPhoto = true },
                         contentAlignment = Alignment.Center,
                     ) {
                         VoiidWordmark(fontSize = 26, alpha = 0.25f)
                     }
-                    Box(
-                        Modifier.size(32.dp).clip(CircleShape).background(VoiidColor.accent).border(2.dp, VoiidColor.background, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Default.PhotoCamera, null, tint = VoiidColor.primary, modifier = Modifier.size(13.dp)) }
+
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(conversation.title, style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
-                    Icon(Icons.Default.Edit, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(14.dp))
                 }
                 Text("Group · ${members.size} members", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
             }
@@ -169,7 +165,6 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("${members.size} members", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary)
                     Spacer(Modifier.weight(1f))
-                    Icon(Icons.Default.Search, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(20.dp))
                 }
                 ProfileRow(Icons.Default.PersonAddAlt, "Add members", tint = VoiidColor.primary) { haptics.tap(); showAddMembers = true }
                 ProfileRow(Icons.Default.Link, "Invite via link", tint = VoiidColor.primary) { haptics.tap() }
@@ -249,10 +244,9 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
                 // NOT optimistic: the row leaves only when the removal succeeds.
                 chat.removeGroupMember(
                     conversation.id, m.id,
-                    onDone = { actionBusy = false; reloadMembers() },
+                    onDone = { actionBusy = false; reloadMembers(); memberAction = null },
                     onError = { msg -> actionError = msg; actionBusy = false },
                 )
-                memberAction = null
             }
             actionError?.let {
                 Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)

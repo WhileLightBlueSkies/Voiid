@@ -109,7 +109,7 @@ interface TicketClaims {
  * a timestamp the holder already knows. Confidentiality is not the property being bought here;
  * integrity is.
  */
-export function signTicketCode(ticketId: string, eventId: string, nonce: string): {
+export function signTicketCode(ticketId: string, eventId: string, nonce: string, group = false): {
   code: string;
   expiresAt: number;
 } | null {
@@ -117,14 +117,15 @@ export function signTicketCode(ticketId: string, eventId: string, nonce: string)
   if (!key) return null;
 
   const exp = Math.floor(Date.now() / 1000) + CODE_TTL_SECONDS;
+  const prefix = group ? 'g1' : PREFIX;
   const claims: TicketClaims = { t: ticketId, e: eventId, n: nonce, x: exp };
   const body = Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
-  const mac = createHmac('sha256', key).update(`${PREFIX}.${body}`).digest('base64url');
-  return { code: `${PREFIX}.${body}.${mac}`, expiresAt: exp * 1000 };
+  const mac = createHmac('sha256', key).update(`${prefix}.${body}`).digest('base64url');
+  return { code: `${prefix}.${body}.${mac}`, expiresAt: exp * 1000 };
 }
 
 export type TicketCheck =
-  | { ok: true; ticketId: string; eventId: string; nonce: string }
+  | { ok: true; ticketId: string; eventId: string; nonce: string; group?: boolean }
   | { ok: false; reason: 'unsigned' | 'malformed' | 'bad_signature' | 'expired' };
 
 /**
@@ -142,9 +143,9 @@ export function verifyTicketCode(code: unknown): TicketCheck {
   if (typeof code !== 'string' || code.length > 1024) return { ok: false, reason: 'malformed' };
 
   const parts = code.split('.');
-  if (parts.length !== 3 || parts[0] !== PREFIX) return { ok: false, reason: 'malformed' };
+  if (parts.length !== 3 || ![PREFIX, 'g1'].includes(parts[0])) return { ok: false, reason: 'malformed' };
 
-  const expected = createHmac('sha256', key).update(`${PREFIX}.${parts[1]}`).digest('base64url');
+  const expected = createHmac('sha256', key).update(`${parts[0]}.${parts[1]}`).digest('base64url');
   const given = Buffer.from(parts[2], 'utf8');
   const want = Buffer.from(expected, 'utf8');
   // Length check first: timingSafeEqual THROWS on a length mismatch, and a throw here would be
@@ -172,5 +173,5 @@ export function verifyTicketCode(code: unknown): TicketCheck {
   const now = Math.floor(Date.now() / 1000);
   if (claims.x + CLOCK_SKEW_SECONDS < now) return { ok: false, reason: 'expired' };
 
-  return { ok: true, ticketId: claims.t, eventId: claims.e, nonce: claims.n };
+  return { ok: true, ticketId: claims.t, eventId: claims.e, nonce: claims.n, ...(parts[0] === 'g1' ? { group: true } : {}) };
 }

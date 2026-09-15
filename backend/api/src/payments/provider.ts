@@ -81,6 +81,7 @@ export interface PaymentProvider {
   /** Goes straight into event_orders.provider. Lower-case, stable, never renamed. */
   readonly name: string;
   createCheckout(req: CheckoutRequest): Promise<CheckoutHandle>;
+  resumeCheckout?(providerRef: string, amountMinor: number, currency: string): Record<string, unknown>;
   verifyWebhook(rawBody: Buffer, headers: Record<string, unknown>): WebhookVerdict;
 }
 

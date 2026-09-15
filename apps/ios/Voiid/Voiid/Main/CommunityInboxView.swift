@@ -305,3 +305,59 @@ private struct StatusPill: View {
         }
     }
 }
+
+/// Community-scoped management queue. Personal host-message threads remain separate.
+struct CommunityRequestInbox: View {
+    let communityId: String
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var items: [CommunityService.QueueItem] = []
+    @State private var loading = false
+    @State private var busy = false
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            List {
+                if loading { ProgressView("Loading inbox") }
+                if let error { Text(error).foregroundStyle(.red); Button("Retry") { Task { await load() } }.disabled(loading) }
+                if items.isEmpty && !loading && error == nil { Text("No pending requests or reports.") }
+                ForEach(items) { item in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(item.kind == "join_request" ? "Join request" : "Reported post").font(.caption).foregroundStyle(.secondary)
+                        Text(item.username.map { "@\($0)" } ?? item.name).font(.headline)
+                        if let detail = item.detail { Text(detail).lineLimit(3) }
+                        if item.kind == "join_request", let userId = item.user_id {
+                            HStack {
+                                Button("Approve") { Task { await act(userId, approve: true) } }.buttonStyle(.borderedProminent)
+                                Button("Decline") { Task { await act(userId, approve: false) } }.buttonStyle(.bordered)
+                            }.disabled(busy)
+                        } else { Text("Review this report in Admin panel.").font(.footnote).foregroundStyle(.secondary) }
+                    }.padding(.vertical, 8)
+                }
+            }
+            .navigationTitle("Community Inbox")
+            .toolbar { Button("Done") { dismiss() } }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                while !Task.isCancelled {
+                    await load()
+                    do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                }
+            }.refreshable { await load() }
+        }
+    }
+    @MainActor private func load() async {
+        guard !loading, !communityId.isEmpty else { return }
+        loading = true; defer { loading = false }
+        do { items = try await CommunityService.shared.moderationQueue(communityId: communityId); error = nil }
+        catch { if !Task.isCancelled { self.error = "Couldn’t load community inbox." } }
+    }
+    @MainActor private func act(_ userId: String, approve: Bool) async {
+        guard !busy else { return }; busy = true; defer { busy = false }
+        do {
+            if approve { try await CommunityService.shared.approveMember(communityId: communityId, userId: userId) }
+            else { try await CommunityService.shared.removeMember(communityId: communityId, userId: userId) }
+            await load()
+        } catch { self.error = "Couldn’t update this request. Refresh and try again." }
+    }
+}

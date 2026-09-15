@@ -46,6 +46,7 @@ struct LegalView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .voiidSettingsPage()
         .task { await consent.refreshStatus() }
         .confirmationDialog("Withdraw consent?",

@@ -380,8 +380,8 @@ object TelecomBridge {
         runCatching { CallManager.onTelecomAssumedAudio(callId) }
     }
 
-    internal fun detach(callId: String) {
-        connections.remove(callId)
+    internal fun detach(callId: String, connection: VoiidConnection) {
+        connections.remove(callId, connection)
     }
 
     /** Non-null only while Telecom actually owns this call. */

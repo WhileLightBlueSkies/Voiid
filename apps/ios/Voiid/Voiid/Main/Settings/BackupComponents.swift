@@ -211,6 +211,7 @@ struct RecoveryPhraseView: View {
                     }
                 }
             }
+            .softTopEdgeEffect()
             VoiidPrimaryButton(title: confirmTitle) { Haptics.tap(); onConfirm() }
         }
         .padding(VoiidSpacing.lg)

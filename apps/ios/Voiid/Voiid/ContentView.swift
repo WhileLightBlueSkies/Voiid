@@ -8,6 +8,10 @@
 import SwiftUI
 
 struct ContentView: View {
+    @ObservedObject private var ticketLinks = EventTicketLinkRouter.shared
+    @ObservedObject private var notificationRouter = NotificationMessageRouter.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = AppSession()
     @StateObject private var chat = ChatStore()
     @ObservedObject private var call = CallService.shared
@@ -39,6 +43,40 @@ struct ContentView: View {
             case .main:
                 RootTabView()
             }
+        }
+        .overlay(alignment: .top) {
+            if session.route == .main, let banner = notificationRouter.banner {
+                VStack(spacing: 8) {
+                    MessageNotificationCapsule(banner: banner, onOpen: {
+                        Haptics.tap()
+                        notificationRouter.openBanner(banner)
+                    }, onDismiss: {
+                        withAnimation(.easeOut(duration: 0.15)) { notificationRouter.dismissBanner(banner.id) }
+                    })
+                    if notificationRouter.banners.count > 1 {
+                        Text("+\(notificationRouter.banners.count - 1) more notifications")
+                            .font(.caption2).foregroundStyle(VoiidColor.textSecondary)
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(.regularMaterial, in: Capsule())
+                    }
+                }
+                .padding(.horizontal, 24)
+                .transition(reduceMotion ? .opacity : .offset(y: -22).combined(with: .opacity).combined(with: .scale(scale: 0.97, anchor: .top)))
+                .task(id: banner.id) {
+                    do { try await Task.sleep(for: .seconds(6)) } catch { return }
+                    withAnimation(.easeOut(duration: 0.15)) { notificationRouter.dismissBanner(banner.id) }
+                }
+            }
+        }
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.25, bounce: 0.1), value: notificationRouter.banner != nil)
+        .onReceive(NotificationCenter.default.publisher(for: .voiidDidSignOut)) { _ in
+            notificationRouter.resetForSignOut()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { notificationRouter.dismissBanner() }
+        }
+        .onChange(of: session.route) { _, route in
+            if route != .main { notificationRouter.dismissBanner() }
         }
         .environmentObject(session)
         .environmentObject(chat)
@@ -85,6 +123,9 @@ struct ContentView: View {
         // session and there is nobody to resolve it for until then. The router HOLDS the
         // link rather than dropping it, so an invite tapped on a fresh install opens once
         // the user signs in — which is the whole point of an invite link on a fresh install.
+        .sheet(item: Binding(get: { session.route == .main ? ticketLinks.pending : nil }, set: { ticketLinks.pending = $0 })) { destination in
+            LinkedEventTicketView(ticketId: destination.id)
+        }
         .sheet(item: communityInvite) { link in
             CommunityJoinSheet(link: link)
         }
@@ -159,4 +200,57 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+}
+
+
+private struct MessageNotificationCapsule: View {
+    let banner: NotificationMessageRouter.Banner
+    let onOpen: () -> Void
+    let onDismiss: () -> Void
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 10) {
+                Circle().fill(VoiidColor.primary).frame(width: 34, height: 34)
+                    .overlay(Text(banner.title.split(separator: " ").prefix(2).compactMap { $0.first.map(String.init) }.joined())
+                        .font(.caption.bold()).foregroundStyle(.white))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(banner.title).font(.system(.subheadline, design: .rounded, weight: .semibold)).lineLimit(1)
+                    Text(banner.count > 1 ? "\(banner.count) messages · \(banner.body)" : banner.body)
+                        .font(.system(.caption, design: .rounded)).foregroundStyle(VoiidColor.textSecondary).lineLimit(2)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(VoiidColor.textPrimary)
+            .padding(13).padding(.trailing, 34)
+            .modifier(MessageCapsuleGlass(reduceTransparency: reduceTransparency, dark: scheme == .dark))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("notification.openMessage")
+        .accessibilityHint("Opens this message in its chat")
+        .overlay(alignment: .trailing) {
+            Button(action: onDismiss) {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Dismiss notification")
+        }
+        .shadow(color: .black.opacity(scheme == .dark ? 0.3 : 0.12), radius: 18, y: 7)
+    }
+}
+
+private struct MessageCapsuleGlass: ViewModifier {
+    let reduceTransparency: Bool
+    let dark: Bool
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(VoiidColor.surfaceCard, in: Capsule())
+        } else if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.tint(dark ? .black.opacity(0.22) : .white.opacity(0.18)).interactive(), in: Capsule())
+        } else {
+            content.background(.regularMaterial, in: Capsule())
+        }
+    }
 }

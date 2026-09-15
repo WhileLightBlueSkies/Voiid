@@ -28,6 +28,8 @@ class EventService(private val api: ApiClient) {
     data class Event(
         val id: String,
         val title: String,
+        val can_manage: Boolean = false,
+        val can_checkin: Boolean = false,
         val description: String? = null,
         val starts_at: String? = null,
         val ends_at: String? = null,
@@ -71,10 +73,54 @@ class EventService(private val api: ApiClient) {
      * capability (up to 10) but it needs a quantity picker and a paid flow to be worth
      * anything, and neither exists yet.
      */
-    suspend fun rsvp(eventId: String) {
-        api.request(
+    suspend fun rsvp(eventId: String, quantity:Int=1): String {
+        return api.request(
             "POST", "events/$eventId/orders",
-            jsonBody = ApiClient.json.encodeToString(OrderBody.serializer(), OrderBody()),
+            jsonBody = ApiClient.json.encodeToString(OrderBody.serializer(), OrderBody(quantity)),
         )
     }
+
+    suspend fun orderStatus(eventId: String): String? = org.json.JSONObject(
+        api.request("GET", "events/$eventId/my-order")
+    ).optJSONObject("order")?.optString("status")
+
+    @Serializable
+    data class Earnings(val commission_bps: Int, val totals: List<EarningsTotal>, val payouts_ready: Boolean)
+    @Serializable
+    data class EarningsTotal(val currency: String, val status: String, val orders: Int,
+        val gross_minor: String, val commission_minor: String?, val organiser_minor: String?, val unpriced_orders: Int)
+    suspend fun earnings(communityId: String): Earnings = ApiClient.json.decodeFromString(
+        Earnings.serializer(), api.request("GET", "communities/$communityId/wallet"))
+
+    @Serializable data class Ticket(val people:Int=1, val id:String,val event_id:String,val state:String,val checked_in_at:String?=null,
+        val title:String?=null,val starts_at:String?=null,val location_text:String?=null,val event_status:String?=null,val order_status:String?=null)
+    @Serializable private data class Tickets(val tickets:List<Ticket>)
+    @Serializable data class TicketCode(val code:String,val expires_at:Long)
+    suspend fun tickets():List<Ticket> = ApiClient.json.decodeFromString(Tickets.serializer(),api.request("GET","my/event-tickets")).tickets
+    suspend fun ticketCode(id:String):TicketCode = ApiClient.json.decodeFromString(TicketCode.serializer(),api.request("GET","event-tickets/$id/code"))
+    @Serializable data class HostOrder(val id:String,val full_name:String?=null,val username:String?=null,val quantity:Int,val status:String,val checked_in:Int=0)
+    @Serializable private data class Orders(val orders:List<HostOrder>)
+    suspend fun orders(id:String):List<HostOrder> = ApiClient.json.decodeFromString(Orders.serializer(),api.request("GET","events/$id/orders")).orders
+    suspend fun transition(id:String,action:String) { require(action in listOf("publish","cancel"));api.request("POST","events/$id/$action") }
+    @Serializable private data class CheckBody(val code:String)
+    @Serializable data class CheckResult(val ok:Boolean,val people:Int=1,val holder_name:String?=null,val checked_in_at:String?=null)
+    suspend fun checkIn(id:String,code:String):CheckResult = ApiClient.json.decodeFromString(CheckResult.serializer(),
+        api.request("POST","events/$id/check-in",jsonBody=ApiClient.json.encodeToString(CheckBody.serializer(),CheckBody(code))))
+
+    @OptIn(ExperimentalSerializationApi::class)
+    @Serializable data class EventDraft(val title:String,val description:String,val starts_at:String,@EncodeDefault val ends_at:String?=null,
+        val location_text:String,@EncodeDefault val capacity:Int?=null,val price_minor:Int=0,val currency:String="INR",val publish:Boolean=false)
+    suspend fun create(communityId:String,draft:EventDraft) {api.request("POST","communities/$communityId/events",jsonBody=ApiClient.json.encodeToString(EventDraft.serializer(),draft))}
+    suspend fun edit(eventId:String,draft:EventDraft) {api.request("PATCH","events/$eventId",jsonBody=ApiClient.json.encodeToString(EventDraft.serializer(),draft))}
+
+    @Serializable data class StaffInvite(val event_id:String,val title:String,val role:String,val state:String,val expires_at:String)
+    @Serializable private data class Invitations(val invitations:List<StaffInvite>)
+    @Serializable data class StaffMember(val user_id:String,val full_name:String?=null,val username:String?=null,val role:String,val state:String,val expires_at:String)
+    @Serializable private data class Team(val staff:List<StaffMember>)
+    @Serializable private data class InviteBody(val username:String,val role:String)
+    suspend fun invitations(communityId:String):List<StaffInvite> = ApiClient.json.decodeFromString(Invitations.serializer(),api.request("GET","communities/$communityId/staff-invitations")).invitations
+    suspend fun acceptInvite(id:String){api.request("POST","events/$id/team/accept")}
+    suspend fun team(id:String):List<StaffMember> = ApiClient.json.decodeFromString(Team.serializer(),api.request("GET","events/$id/team")).staff
+    suspend fun invite(id:String,username:String,role:String){api.request("POST","events/$id/team",jsonBody=ApiClient.json.encodeToString(InviteBody.serializer(),InviteBody(username,role)))}
+    suspend fun removeStaff(id:String,userId:String){api.request("DELETE","events/$id/team/$userId")}
 }

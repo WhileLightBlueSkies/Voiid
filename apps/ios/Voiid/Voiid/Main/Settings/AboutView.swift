@@ -122,6 +122,7 @@ struct AboutView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .voiidSettingsPage()
     }
 

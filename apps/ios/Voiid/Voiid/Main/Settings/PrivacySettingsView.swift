@@ -367,6 +367,7 @@ struct PrivacySettingsView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         // Row titles are `.body` in `VoiidColor.textPrimary`; `.fontDesign(.rounded)` turns
         // that into SF Pro Rounded while keeping full Dynamic Type. Section header/footer
         // typography is owned by `VoiidCardSection` and is not restated here.

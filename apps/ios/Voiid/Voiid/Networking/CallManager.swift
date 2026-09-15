@@ -253,6 +253,7 @@ final class CallManager: NSObject {
 
 extension CallManager: CXProviderDelegate {
     nonisolated func providerDidReset(_ provider: CXProvider) {
+        NSLog("[VOIID] call-end: CallKit provider reset")
         Task { @MainActor in self.service?.endActiveCall(notifyPeer: true, fromCallKit: true) }
     }
 

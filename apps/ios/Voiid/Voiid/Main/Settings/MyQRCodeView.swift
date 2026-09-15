@@ -67,6 +67,7 @@ struct MyQRCodeView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .scrollIndicators(.hidden)
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationTitle("My QR Code")

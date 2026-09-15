@@ -31,6 +31,11 @@ struct ContactProfileView: View {
     /// indistinguishable from a tap that did nothing.
     @State private var copiedLabel: String?
     @State private var viewPhoto = false
+    @State private var photoDrag: CGFloat = 0
+    @State private var expandedPhoto: UIImage?
+    @State private var avatarFrame: CGRect = .zero
+    @State private var photoExpanded = false
+    @Environment(\.accessibilityReduceMotion) private var photoReduceMotion
     @State private var showAllMedia = false
     @State private var profile: UserProfile?
     /// Blocking (043). Observed so the row flips between Block and Unblock the moment the
@@ -164,8 +169,70 @@ struct ContactProfileView: View {
         }
         .task { await loadProfile() }
         .task { await loadLocalContent() }
-        .fullScreenCover(isPresented: $viewPhoto) {
-            ProfilePhotoViewer(title: displayName, imageName: conversation.photoName) { viewPhoto = false }
+        .overlay {
+            if viewPhoto {
+                GeometryReader { geometry in
+                    ZStack {
+                        Color.black.opacity(photoExpanded ? 0.72 : 0).ignoresSafeArea()
+                            .onTapGesture { setPhotoVisible(false) }
+                        let diameter = max(88, min(geometry.size.width - 48, geometry.size.height - 96, 360))
+                        let origin = geometry.frame(in: .global)
+                        let side = photoExpanded ? diameter : avatarFrame.width
+                        Group {
+                            if let expandedPhoto {
+                                Image(uiImage: expandedPhoto).resizable().scaledToFill()
+                                    .frame(width: side, height: side).clipShape(Circle())
+                            } else {
+                                ProfileAvatarButton(photoURL: photoRef, name: displayName, size: side)
+                            }
+                        }
+                        .task(id: photoRef) {
+                            guard let ref = photoRef else { return }
+                            let image = await AvatarStorage.shared.expandedPhoto(ref)
+                            guard !Task.isCancelled else { return }
+                            expandedPhoto = image
+                        }
+                            .position(x: photoExpanded ? geometry.size.width / 2 : avatarFrame.midX - origin.minX,
+                                      y: photoExpanded ? geometry.size.height / 2 : avatarFrame.midY - origin.minY)
+                            .accessibilityLabel("Profile photo of \(displayName)")
+                            .offset(y: photoDrag)
+                            .gesture(DragGesture(minimumDistance: 12)
+                                .onChanged { value in
+                                    guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                                    photoDrag = max(0, value.translation.height)
+                                }
+                                .onEnded { value in
+                                    if photoDrag > 100 || (photoDrag > 24 && value.predictedEndTranslation.height > 260) {
+                                        setPhotoVisible(false)
+                                    } else {
+                                        withAnimation(.easeOut(duration: 0.2)) { photoDrag = 0 }
+                                    }
+                                })
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Button { setPhotoVisible(false) } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundStyle(.white).frame(width: 48, height: 48)
+                                        .background(.white.opacity(0.14), in: Circle())
+                                }.accessibilityLabel("Close profile photo")
+                            }
+                            Spacer()
+                        }.padding(16).opacity(photoExpanded ? 1 : 0)
+
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .accessibilityAddTraits(.isModal)
+                    .accessibilityAction(.escape) { setPhotoVisible(false) }
+                }
+                .onAppear {
+                    withAnimation(photoReduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 1)) {
+                        photoExpanded = true
+                    }
+                }
+                .zIndex(10)
+            }
         }
         .sheet(isPresented: $showSafetyNumber) {
             SafetyNumberView(peerUserId: conversation.peerUserId ?? "", peerName: displayName)
@@ -289,7 +356,14 @@ struct ContactProfileView: View {
     /// job is details.
     private var headerCard: some View {
         VStack(spacing: VoiidSpacing.sm) {
-            avatar
+            Button { setPhotoVisible(true) } label: {
+                avatar.opacity(viewPhoto ? 0 : 1)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { avatarFrame = $0 }
+
+            }
+                .buttonStyle(.plain)
+                .disabled(photoRef == nil && conversation.photoName == nil)
+                .accessibilityLabel("View profile photo")
                 .overlay(Circle().stroke(VoiidColor.accent.opacity(0.6), lineWidth: 2))
                 // 16, not the reference's 52.
                 //
@@ -334,24 +408,23 @@ struct ContactProfileView: View {
     }
 
     /// 88pt, no photo bleed. Falls back to initials on the brand gradient.
-    @ViewBuilder
-    private var avatar: some View {
-        if let url = profile?.photoURL, !url.isEmpty {
-            ClipThumbnail(url: url)
-                .frame(width: 88, height: 88)
-                .clipShape(Circle())
+    private func setPhotoVisible(_ visible: Bool) {
+        if visible {
+            photoExpanded = false
+            photoDrag = 0
+            viewPhoto = true
         } else {
-            ZStack {
-                Circle().fill(
-                    LinearGradient(colors: [VoiidColor.primary.opacity(0.85),
-                                            VoiidColor.primary.opacity(0.45)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing))
-                Text(AvatarPalette.initials(for: displayName))
-                    .font(VoiidFont.rounded(32, .semibold))
-                    .foregroundColor(.white)
+            withAnimation(.easeInOut(duration: photoReduceMotion ? 0.15 : 0.3), completionCriteria: .logicallyComplete) {
+                photoExpanded = false
+                photoDrag = 0
+            } completion: {
+                viewPhoto = false
             }
-            .frame(width: 88, height: 88)
         }
+    }
+
+    private var avatar: some View {
+        ProfileAvatarButton(photoURL: photoRef, name: displayName, size: 88)
     }
 
     /// The encryption guarantee, stated on the identity block rather than only as a row far

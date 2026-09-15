@@ -135,7 +135,10 @@ suspend fun loadMediaBitmap(
                 retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.asImageBitmap()
             } finally { retriever.release() }
         } else ChatImageDecoder.decode(bytes)?.asImageBitmap()
-    }.getOrNull()?.also { ib -> MediaCache.putImage(ref.mediaUrl, ib) }
+    }.getOrElse {
+        if (it is kotlinx.coroutines.CancellationException) throw it
+        null
+    }?.also { ib -> MediaCache.putImage(ref.mediaUrl, ib) }
 }
 
 @Composable
@@ -143,22 +146,30 @@ fun AsyncMediaImage(ref: ChatEngine.MediaRef, onTap: (() -> Unit)? = null) {
     val context = LocalContext.current
     var bitmap by remember(ref.mediaUrl) { mutableStateOf(MediaCache.image(ref.mediaUrl)) }
     var failed by remember(ref.mediaUrl) { mutableStateOf(false) }
+    var retryCount by remember(ref) { mutableIntStateOf(0) }
 
-    LaunchedEffect(ref.mediaUrl) {
+    LaunchedEffect(ref, retryCount) {
+        failed = false
         if (bitmap == null) bitmap = loadMediaBitmap(context, ref)
         failed = bitmap == null
     }
 
     Box(
         Modifier
-            .size(220.dp).clip(RoundedCornerShape(12.dp)).background(VoiidColor.accent.copy(alpha = 0.3f))
-            .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier),
+            .size(width = 260.dp, height = 220.dp).clip(RoundedCornerShape(18.dp)).background(VoiidColor.fieldFill)
+            .clickable(enabled = failed || (bitmap != null && onTap != null)) {
+                if (failed) retryCount++ else onTap?.invoke()
+            },
         Alignment.Center,
     ) {
         val b = bitmap
         when {
-            b != null -> Image(b, null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            failed -> Icon(Icons.Default.Image, null, tint = VoiidColor.primary, modifier = Modifier.size(40.dp))
+            b != null -> Image(b, "Message media", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            failed -> Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Image, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(32.dp))
+                Text("Couldn't load media", color = VoiidColor.textSecondary)
+                Text("Tap to retry", color = VoiidColor.textSecondary)
+            }
             else -> CircularProgressIndicator(color = VoiidColor.primary)
         }
         if (b != null && ref.mime.startsWith("video/")) {

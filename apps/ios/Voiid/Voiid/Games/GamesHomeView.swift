@@ -305,8 +305,13 @@ struct GamesHomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Games")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("Games").font(VoiidFont.screenTitle)
+                        .foregroundStyle(VoiidColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     // Standings sit behind an icon: a reference you check occasionally,
                     // not a thing you launch.

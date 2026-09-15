@@ -68,7 +68,7 @@ struct GroupCallScreen: View {
         .onAppear {
             // Guard: a 1:1 call already owns the audio route.
             guard GroupCallService.canStart() || call.isActive else { return }
-            if !call.isActive {
+            if !call.isActive && !conversationId.isEmpty {
                 Task { await call.join(conversationId: conversationId, title: title, isVideo: isVideo) }
             }
         }
@@ -78,7 +78,7 @@ struct GroupCallScreen: View {
         .onChange(of: call.state) { _, new in
             // Terminal states close the screen. `.failed` stays up so the user can
             // read why before dismissing.
-            if new == .idle { dismiss() }
+            if new == .idle && !conversationId.isEmpty { dismiss() }
         }
     }
 
@@ -198,7 +198,20 @@ struct GroupCallScreen: View {
                 .tint(isVideo ? .white : VoiidColor.primary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         default:
-            grid
+            if call.participants.isEmpty {
+                VStack(spacing: VoiidSpacing.md) {
+                    ProgressView().tint(fgSecondary)
+                    Text("Joining the call…")
+                        .font(VoiidFont.headline)
+                        .foregroundColor(fg)
+                    Text("Participants will appear when connected.")
+                        .font(VoiidFont.subhead)
+                        .foregroundColor(fgSecondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                grid
+            }
         }
     }
 
@@ -250,12 +263,13 @@ struct GroupCallScreen: View {
 
     private var grid: some View {
         GeometryReader { geo in
-            let count = max(call.participants.count, 1)
+            let participants = call.participants
+            let count = participants.count
             let spacing: CGFloat = 6
             let cols = columnCount(for: count, in: geo.size, spacing: spacing)
             let rows = Int(ceil(Double(count) / Double(cols)))
-            let tileW = (geo.size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols)
-            let tileH = (geo.size.height - CGFloat(rows - 1) * spacing) / CGFloat(rows)
+            let tileW = max(0, (geo.size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols))
+            let tileH = max(0, (geo.size.height - CGFloat(max(rows - 1, 0)) * spacing) / CGFloat(max(rows, 1)))
 
             // The LAST ROW IS CENTRED when it is not full. With 5 people in a 3-wide grid the
             // old LazyVGrid left the final two hugging the left edge with a tile-sized hole on
@@ -267,8 +281,8 @@ struct GroupCallScreen: View {
                     let start = row * cols
                     let end = min(start + cols, count)
                     HStack(spacing: spacing) {
-                        ForEach(start..<end, id: \.self) { i in
-                            GroupCallTile(participant: call.participants[i],
+                        ForEach(Array(participants[start..<end])) { participant in
+                            GroupCallTile(participant: participant,
                                           isVideoCall: isVideo,
                                           compact: tileW < 130)
                                 .frame(width: tileW, height: tileH)
@@ -284,7 +298,7 @@ struct GroupCallScreen: View {
             // spring from wherever the tiles currently are, whereas an ease restarts from a
             // stale value and visibly jumps. Critically damped (0.9): nothing was thrown, so
             // no overshoot is earned; the app's house style for chrome (see RootTabView).
-            .animation(reflowAnimation, value: call.participants.count)
+            .animation(reflowAnimation, value: participants.map(\.id))
         }
         .padding(.horizontal, VoiidSpacing.sm)
     }

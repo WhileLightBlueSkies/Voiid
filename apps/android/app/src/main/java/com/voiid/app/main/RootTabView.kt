@@ -1,5 +1,8 @@
 package com.voiid.app.main
 
+import androidx.compose.material3.Text
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
@@ -19,6 +22,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -117,7 +121,7 @@ private enum class Tab(
 
     companion object {
         // Keep declaration before visible: companion properties initialize in order.
-        private val SHIPPED = setOf(CHAT, STORIES, COMMUNITIES)
+        private val SHIPPED = setOf(CHAT, STORIES, COMMUNITIES, GAMES)
 
         /**
          * The tabs the bar actually shows, and the order it steps through.
@@ -315,15 +319,23 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // Notification deep-link: when MainActivity publishes a conversation id, switch to the
     // Chats tab and open that conversation (resolving/reloading it from the server if needed).
     val pendingConversation by com.voiid.app.net.DeepLinkRouter.pendingConversation.collectAsState()
-    androidx.compose.runtime.LaunchedEffect(pendingConversation) {
+    androidx.compose.runtime.LaunchedEffect(pendingConversation, chat.directConversations.map { it.id }, chat.groupConversations.map { it.id }) {
         val destination = pendingConversation ?: return@LaunchedEffect
         val conv = chat.conversationById(destination.conversationId)
         if (com.voiid.app.net.DeepLinkRouter.pendingConversation.value != destination) return@LaunchedEffect
         if (conv != null) {
             tab = Tab.CHAT
+            openStoryContext = null
             openConversation = conv
             com.voiid.app.net.DeepLinkRouter.consume(destination)
         }
+    }
+
+    val messageBanner by com.voiid.app.net.InAppMessageNotifications.current.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(messageBanner?.id) {
+        val banner = messageBanner ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(6000)
+        com.voiid.app.net.InAppMessageNotifications.dismiss(banner)
     }
 
     Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
@@ -874,6 +886,55 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     stories = stories,
                     onClose = { openStoryContext = null },
                 )
+            }
+        }
+
+        val bannerQueue by com.voiid.app.net.InAppMessageNotifications.banners.collectAsState()
+        var retainedBanner by remember { mutableStateOf(messageBanner) }
+        androidx.compose.runtime.LaunchedEffect(messageBanner) { if (messageBanner != null) retainedBanner = messageBanner }
+        AnimatedVisibility(
+            visible = messageBanner != null,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = with(androidx.compose.ui.platform.LocalDensity.current) {
+                androidx.compose.foundation.layout.WindowInsets.statusBars.getTop(this).toDp()
+            }).padding(horizontal = 24.dp),
+            enter = slideInVertically(tween(250, easing = androidx.compose.animation.core.CubicBezierEasing(0.23f, 1f, 0.32f, 1f))) { -it / 3 } + fadeIn(tween(150)) + scaleIn(tween(250), initialScale = 0.97f),
+            exit = slideOutVertically(tween(150)) { -it / 3 } + fadeOut(tween(150)),
+        ) {
+            (messageBanner ?: retainedBanner)?.let { banner ->
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.Surface(
+                        onClick = {
+                            com.voiid.app.net.InAppMessageNotifications.dismiss(banner)
+                            if (banner.communityHandle != null) {
+                                com.voiid.app.net.DeepLinkRouter.openCommunityInvite(com.voiid.app.net.CommunityLink(banner.communityHandle, null))
+                            } else com.voiid.app.net.DeepLinkRouter.open(banner.conversationId, banner.messageId)
+                        },
+                        shape = RoundedCornerShape(50), color = VoiidColor.surfaceCard.copy(alpha = 0.97f),
+                        border = androidx.compose.foundation.BorderStroke(0.5.dp, VoiidColor.divider), shadowElevation = 8.dp,
+                    ) {
+                        Row(Modifier.padding(start = 13.dp, top = 13.dp, bottom = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Box(Modifier.size(34.dp).background(VoiidColor.primary, androidx.compose.foundation.shape.CircleShape),
+                                contentAlignment = Alignment.Center) {
+                                Text(banner.title.split(" ").filter { it.isNotEmpty() }.take(2).map { it.first() }.joinToString(""),
+                                    style = VoiidFont.rounded(12, FontWeight.Bold), color = androidx.compose.ui.graphics.Color.White)
+                            }
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(banner.title, style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1)
+                                Text(if (banner.count > 1) "${banner.count} messages · ${banner.body}" else banner.body,
+                                    style = VoiidFont.rounded(12), color = VoiidColor.textSecondary, maxLines = 2)
+                            }
+                            androidx.compose.material3.IconButton(onClick = { com.voiid.app.net.InAppMessageNotifications.dismiss(banner) }) {
+                                Text("×", color = VoiidColor.textSecondary,
+                                    modifier = Modifier.semantics { contentDescription = "Dismiss notification" })
+                            }
+                        }
+                    }
+                    if (bannerQueue.size > 1) {
+                        Text("+${bannerQueue.size - 1} more chats", style = VoiidFont.rounded(11), color = VoiidColor.textSecondary,
+                            modifier = Modifier.background(VoiidColor.surfaceCard, RoundedCornerShape(50)).padding(horizontal = 12.dp, vertical = 5.dp))
+                    }
+                }
             }
         }
 

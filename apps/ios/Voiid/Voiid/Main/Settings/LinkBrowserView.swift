@@ -79,6 +79,7 @@ struct LinkBrowserView: View {
                 }
                 .multilineTextAlignment(.center).padding(24)
             }
+            .softTopEdgeEffect()
             .background(VoiidColor.background).foregroundStyle(VoiidColor.textPrimary)
             .navigationTitle("Link a Browser").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { cancel(); dismiss() }.disabled(busy && preview != nil) } }

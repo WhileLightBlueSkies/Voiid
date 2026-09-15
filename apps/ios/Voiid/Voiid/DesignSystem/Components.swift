@@ -7,6 +7,19 @@
 
 import SwiftUI
 
+extension View {
+    /// Shared scroll appearance for screens and presented sheets. iOS 27 changed
+    /// `.automatic`; explicitly retain the subtle blur at the top on iOS 26+.
+    @ViewBuilder
+    func softTopEdgeEffect() -> some View {
+        if #available(iOS 26.0, *) {
+            self.scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - Dismiss keyboard on tap outside any text field
 
 extension View {
@@ -25,6 +38,10 @@ extension View {
 struct ProfilePhotoViewer: View {
     let title: String
     var imageName: String? = nil
+    var photoRef: String? = nil
+    @State private var remoteImage: UIImage?
+    @State private var loading = true
+    @State private var attempt = 0
     let onClose: () -> Void
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
@@ -33,7 +50,17 @@ struct ProfilePhotoViewer: View {
         ZStack {
             Color.black.ignoresSafeArea()
             Group {
-                if let imageName, let ui = UIImage(named: imageName) {
+                if let remoteImage {
+                    Image(uiImage: remoteImage).resizable().scaledToFit()
+                } else if photoRef != nil {
+                    if loading { ProgressView().tint(.white) }
+                    else {
+                        Button { attempt += 1 } label: {
+                            Label("Photo unavailable · Tap to retry", systemImage: "arrow.clockwise")
+                                .foregroundStyle(.white).padding()
+                        }
+                    }
+                } else if let imageName, let ui = UIImage(named: imageName) {
                     Image(uiImage: ui).resizable().scaledToFit()
                 } else {
                     // placeholder avatar (no photo set)
@@ -47,7 +74,7 @@ struct ProfilePhotoViewer: View {
             .scaleEffect(scale)
             .gesture(
                 MagnificationGesture()
-                    .onChanged { v in scale = max(1, lastScale * v) }
+                    .onChanged { v in scale = min(5, max(1, lastScale * v)) }
                     .onEnded { _ in lastScale = scale
                         if scale < 1.05 { withAnimation(.spring()) { scale = 1; lastScale = 1 } } }
             )
@@ -60,12 +87,18 @@ struct ProfilePhotoViewer: View {
                     Text(title).font(VoiidFont.rounded(17, .semibold)).foregroundColor(.white)
                     Spacer()
                     Button { onClose() } label: {
-                        Image(systemName: "xmark").font(.title3).foregroundColor(.white).padding(8)
+                        Image(systemName: "xmark").font(.system(size: 18, weight: .semibold)).foregroundColor(.white)
+                            .frame(width: 44, height: 44).background(.ultraThinMaterial, in: Circle())
                     }
                 }
                 .padding()
                 Spacer()
             }
+        }
+        .task(id: "\(photoRef ?? ""):\(attempt)") {
+            loading = true
+            if let photoRef { remoteImage = await AvatarCache.resolve(photoRef) }
+            loading = false
         }
     }
 }

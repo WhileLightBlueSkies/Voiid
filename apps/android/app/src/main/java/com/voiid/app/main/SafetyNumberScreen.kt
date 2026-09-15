@@ -3,8 +3,6 @@ package com.voiid.app.main
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +14,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -90,6 +91,10 @@ fun SafetyNumberScreen(
     // loading | loaded | failed | noKeys
     var state by remember { mutableStateOf("loading") }
     var reload by remember { mutableIntStateOf(0) }
+    var scanningNumber by remember(peerUserId) { mutableStateOf<String?>(null) }
+    scanningNumber?.let { number ->
+        SafetyCodeScanner(expected = number, peerName = peerName, onClose = { scanningNumber = null })
+    }
 
     LaunchedEffect(peerUserId, reload) {
         state = "loading"
@@ -133,7 +138,8 @@ fun SafetyNumberScreen(
         Modifier
             .fillMaxSize()
             .background(VoiidColor.background)
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .navigationBarsPadding(),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = VoiidSpacing.md, vertical = VoiidSpacing.sm),
@@ -170,8 +176,8 @@ fun SafetyNumberScreen(
             // Opacity only, so it is safe under Reduce Motion with no gate.
             //
             // The scannable QR (iOS CIQRCodeGenerator equivalent) renders inside each
-            // NumberCard below — tap the card to swap digits/QR. Encoded with vetted pure-Java
-            // ZXing core at HIGH error correction and 600px so it stays crisp when scaled.
+            // NumberCard below alongside the digits. ZXing renders it at 600px with a
+            // four-module quiet zone so the white border remains readable in either theme.
             androidx.compose.animation.Crossfade(
                 targetState = state,
                 animationSpec = tween(220),
@@ -206,7 +212,15 @@ fun SafetyNumberScreen(
                     onAction = {},
                 )
 
-                else -> {
+                else -> Column(
+                    Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(peerName, color = VoiidColor.textPrimary, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                        Text("Compare your security code", color = VoiidColor.textSecondary, fontSize = 14.sp)
+                    }
                     entries.forEachIndexed { index, entry ->
                         Column(verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
                             // Only labelled when there is more than one — "Device 1 of 1" is noise.
@@ -220,6 +234,7 @@ fun SafetyNumberScreen(
                                 )
                             }
                             NumberCard(entry.number)
+                            androidx.compose.material3.Button(onClick = { scanningNumber = entry.number }) { Text("Scan QR code") }
                         }
                     }
                     Instructions(peerName)
@@ -239,73 +254,33 @@ fun SafetyNumberScreen(
  */
 @Composable
 private fun NumberCard(number: String) {
-    var showQr by remember { mutableStateOf(false) }
-    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
-
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(VoiidRadius.lg))
-            .background(VoiidColor.surfaceCard)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { haptics.selection(); showQr = !showQr }
-            .padding(vertical = VoiidSpacing.lg, horizontal = VoiidSpacing.md),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        androidx.compose.animation.Crossfade(
-            targetState = showQr,
-            animationSpec = tween(180),
-            label = "safetyNumberCard",
-        ) { qr ->
-            if (qr) {
-                // HIGH error correction and a large raster: this card is the anti-MITM
-                // artefact, so it must survive glare, compression and scaling.
-                val bmp = remember(number) {
-                    runCatching {
-                        val hints = mapOf<com.google.zxing.EncodeHintType, Any>(
-                            com.google.zxing.EncodeHintType.ERROR_CORRECTION to com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.H,
-                            com.google.zxing.EncodeHintType.MARGIN to 1,
-                        )
-                        val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(
-                            number, com.google.zxing.BarcodeFormat.QR_CODE, 600, 600, hints,
-                        )
-                        val out = android.graphics.Bitmap.createBitmap(600, 600, android.graphics.Bitmap.Config.ARGB_8888)
-                        for (x in 0 until 600) for (y in 0 until 600) {
-                            out.setPixel(x, y, if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
-                        }
-                        out
-                    }.getOrNull()
-                }
-                if (bmp != null) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "QR code for $number",
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp),
-                    )
-                } else {
-                    Text("Couldn't build the QR. Compare the digits instead.",
-                         fontSize = 13.sp, color = VoiidColor.error)
-                }
-            } else {
-                Text(
-                    number,
-                    color = VoiidColor.textPrimary,
-                    fontSize = 19.sp,
-                    fontWeight = FontWeight.Medium,
-                    fontFamily = FontFamily.Monospace,
-                    lineHeight = 30.sp,
-                    textAlign = TextAlign.Center,
-                )
+    val bitmap = remember(number) {
+        runCatching {
+            val hints = mapOf<com.google.zxing.EncodeHintType, Any>(
+                com.google.zxing.EncodeHintType.ERROR_CORRECTION to com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.H,
+                com.google.zxing.EncodeHintType.MARGIN to 4,
+            )
+            val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(number, com.google.zxing.BarcodeFormat.QR_CODE, 600, 600, hints)
+            android.graphics.Bitmap.createBitmap(600, 600, android.graphics.Bitmap.Config.ARGB_8888).also { out ->
+                for (x in 0 until 600) for (y in 0 until 600) out.setPixel(x, y, if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
             }
+        }.getOrNull()
+    }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(VoiidColor.surfaceCard).padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        if (bitmap != null) {
+            Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Security code QR",
+                modifier = Modifier.widthIn(max = 240.dp).fillMaxWidth().aspectRatio(1f))
+        } else {
+            Text("QR unavailable. Compare the digits below.", color = VoiidColor.textSecondary, fontSize = 13.sp)
         }
-        Text(
-            if (showQr) "Tap for digits" else "Tap for QR",
-            fontSize = 11.sp,
-            color = VoiidColor.textSecondary.copy(alpha = 0.7f),
-            modifier = Modifier.padding(top = VoiidSpacing.sm),
-        )
+        Text(number.filter(Char::isDigit).chunked(5).chunked(4).joinToString("\n") { it.joinToString(" ") },
+            color = VoiidColor.textPrimary, fontSize = 16.sp, fontWeight = FontWeight.Medium,
+            fontFamily = FontFamily.Monospace, lineHeight = 27.sp, textAlign = TextAlign.Center)
+        Text("Compare this code on both devices.", color = VoiidColor.textSecondary, fontSize = 12.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -315,12 +290,12 @@ private fun Instructions(peerName: String) {
         Step(1, "Compare in person or on a call",
             "Ask $peerName to open this same screen. Read the numbers to each other, or check " +
                 "them side by side.")
-        Step(2, "If they match, you're verified",
-            "Nobody is intercepting this chat. Your messages, photos, videos, voice notes and " +
-                "calls can only be read by the two of you.")
-        Step(3, "If they don't match, stop",
-            "The keys are not each other's. Don't send anything sensitive, and try again on a " +
-                "different device or connection.")
+        Step(2, "Check that every digit matches",
+            "Matching codes confirm the identity keys for this pair of devices. If there are " +
+                "multiple devices, compare each device's code.")
+        Step(3, "If the codes differ",
+            "Codes can change after reinstalling or changing devices. Confirm the change with " +
+                "$peerName through a trusted channel before sharing sensitive information.")
 
         // THE LOAD-BEARING CAVEAT. Comparing the number inside Voiid proves nothing — an attacker
         // relaying your messages would rewrite it in transit. Saying this plainly is the difference

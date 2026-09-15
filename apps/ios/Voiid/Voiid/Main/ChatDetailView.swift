@@ -28,6 +28,7 @@ struct ChatDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var draft = ""
+    @State private var transcriptNearBottom = true
     @State private var photoItem: PhotosPickerItem?
     /// The message whose media opened the gallery. An id, not a decoded UIImage: the
     /// viewer pages through the whole conversation, so it needs to know WHERE it started,
@@ -89,6 +90,11 @@ struct ChatDetailView: View {
             LocationBanner(conversationId: conversation.id)
             ongoingCallBanner
             messageList
+            if let error = chat.loadError {
+                Text(error).font(.footnote).foregroundStyle(VoiidColor.error)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
             inputBar
         }
         .background(VoiidColor.background.ignoresSafeArea())
@@ -158,7 +164,7 @@ struct ChatDetailView: View {
         .navigationDestination(isPresented: $showInfo) {
             switch conversation.type {
             case .group:
-                GroupInfoView(conversation: conversation)
+                GroupInfoView(conversation: conversation, pendingCall: $pendingCall)
             case .self:
                 // Note to Self has no peer, so ContactProfileView would open, find
                 // `peerUserId == nil`, and render a profile of nobody. There is no second
@@ -173,8 +179,11 @@ struct ChatDetailView: View {
     private var chatSheets: some View {
         chatContent
         .sheet(isPresented: $showSafetyNumber) {
-            SafetyNumberView(peerUserId: conversation.peerUserId ?? "",
-                             peerName: conversation.title)
+            if conversation.type == .group {
+                GroupSecurityVerificationSheet(conversationId: conversation.id)
+            } else {
+                SafetyNumberView(peerUserId: livePeerUserId ?? "", peerName: conversation.title)
+            }
         }
         .sheet(isPresented: $showGifPicker) {
             GifPickerSheet { data in
@@ -461,37 +470,24 @@ struct ChatDetailView: View {
             .accessibilityLabel(conversation.type == .group ? "Group info" : "Contact profile")
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-            // DRAWN 36pt circles, not bare toolbar glyphs — the reference's header chrome.
-            //
-            // Two reasons the bare version read as unfinished next to the design: a system
-            // toolbar glyph has no bounds, so the two sat as floating ink beside a 36pt
-            // avatar with nothing to align to; and it took the tint colour, which made the
-            // call buttons the loudest thing in a header whose subject is a person.
-            //
-            // OUTLINE glyphs rather than `.fill`, also the reference's: these are controls,
-            // not statuses, and the filled pair read as active-call indicators.
             Button { Haptics.tap(); startCall(.voice) } label: {
-                headerCircle("phone")
+                Image(systemName: "phone")
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(VoiidColor.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Voice call")
+            .accessibilityIdentifier("chat.header.voiceCall")
             Button { Haptics.tap(); startCall(.video) } label: {
-                headerCircle("video")
+                Image(systemName: "video")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(VoiidColor.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Video call")
-            // NO GALLERY BUTTON HERE. The viewer is reached by tapping a photo in the
-            // thread, which is the intent people actually have — "show me this one, and let
-            // me look around from there". A header entry point competed with the call
-            // buttons for a bar whose subject is the person, and every chat's media is
-            // already one tap away from any of it.
-            // NO OVERFLOW MENU. Every item it held now has a better home:
-            //   * "View profile" duplicated the title, which already opens the profile;
-            //   * "Select messages" moved onto the message long-press pill, because
-            //     selecting messages begins with a message — and it now starts with the one
-            //     you pressed, rather than dropping you into an empty selection;
-            //   * "Clear chat" moved to the profile's danger card, beside Block and Report,
-            //     which is where this conversation's other destructive actions already live.
-            // An ellipsis whose contents all belong elsewhere is a drawer for things nobody
-            // decided where to put.
+            .accessibilityIdentifier("chat.header.videoCall")
         }
     }
 
@@ -578,19 +574,7 @@ struct ChatDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: VoiidSpacing.sm) {
-                    // THE START OF THE CHAT, not the header.
-                    //
-                    // This is where the guarantee belongs: it is the first thing in the
-                    // conversation's history, above the first message, and it scrolls away
-                    // with everything else. Pinning it under the header made it a permanent
-                    // status bar — 34pt of chrome restating the same sentence on every
-                    // screen of every conversation forever, competing with the header for
-                    // the top of the screen.
-                    //
-                    // It reads once, at the moment it means something: when you open a
-                    // conversation and scroll to its beginning.
-                    if showsEncryptionNotice { encryptionBand }
-
+                    if conversation.type != .self { encryptionNotice }
                     ForEach(groupedByDay, id: \.0) { day, msgs in
                         DateSeparator(text: day)
                         ForEach(msgs) { msg in
@@ -621,6 +605,20 @@ struct ChatDetailView: View {
             .padding(.top, VoiidSpacing.sm)
                 .padding(.bottom, VoiidSpacing.md)
             }
+            .softTopEdgeEffect()
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 120
+            } action: { _, nearBottom in
+                transcriptNearBottom = nearBottom
+            }
+            .task(id: notificationRouter.pendingMessage?.id) {
+                guard let target = notificationRouter.pendingMessage,
+                      target.conversationId == conversation.id else { return }
+                // A tap may arrive before the websocket or NSE has refreshed this transcript.
+                if let id = target.messageId, !chat.messages(for: conversation.id).contains(where: { $0.id == id }) {
+                    await chat.syncMessages(conversation)
+                }
+            }
             .task(id: "\(notificationRouter.pendingMessage?.id.uuidString ?? "")-\(chat.messages(for: conversation.id).count)") {
                 guard let target = notificationRouter.pendingMessage,
                       target.conversationId == conversation.id, let messageId = target.messageId,
@@ -649,13 +647,14 @@ struct ChatDetailView: View {
                 // nothing. That is why opening a chat sat at the top.
                 if old == 0 {
                     proxy.scrollTo(lastID, anchor: .bottom)
-                } else {
+                } else if new > old && (transcriptNearBottom || chat.messages(for: conversation.id).last?.isMine == true) {
                     // A real new message DOES animate — the movement is what tells you
                     // something arrived.
                     withAnimation { proxy.scrollTo(lastID, anchor: .bottom) }
                 }
             }
             .onChange(of: chat.typingConversations) { _, _ in
+                guard transcriptNearBottom, chat.typingConversations.contains(conversation.id) else { return }
                 guard !notificationPositioned, notificationRouter.pendingMessage?.conversationId != conversation.id else { return }
                 withAnimation { proxy.scrollTo("typing", anchor: .bottom) }
             }
@@ -696,63 +695,6 @@ struct ChatDetailView: View {
         }
     }
 
-    /// The reference's encryption band: one centred line between two hairlines.
-    ///
-    /// Drawn at the START OF THE CHAT — first item in the transcript, above the first
-    /// message, scrolling away with everything else. It is not header chrome: pinned under
-    /// the header it became a permanent status bar restating the same sentence on every
-    /// screen of every conversation forever. See `showsEncryptionNotice` for why that
-    /// placement also means it retires once a conversation is established.
-    ///
-    /// Keeps OUR tap target — the verification sheet behind it is real anti-MITM
-    /// functionality the reference has no equivalent for, and dropping it to match a
-    /// mockup would trade a security feature for a layout.
-    ///
-    /// The copy is the reference's, naming the person: "Only you and <first name> can read
-    /// these messages" is concrete in a way that "not even Voiid can read them" is not —
-    /// it says who CAN rather than only who cannot.
-    private var encryptionBand: some View {
-        Button {
-            guard conversation.peerUserId != nil else { return }
-            Haptics.tap()
-            showSafetyNumber = true
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 11))
-                Text(encryptionLine)
-                    .font(VoiidFont.rounded(12))
-                    .multilineTextAlignment(.center)
-            }
-            .foregroundColor(VoiidColor.textSecondary)
-            .padding(.horizontal, VoiidSpacing.md)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(conversation.peerUserId == nil)
-        .overlay(alignment: .top) {
-            Rectangle().fill(VoiidColor.divider).frame(height: 0.5)
-        }
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(VoiidColor.divider).frame(height: 0.5)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityHint(conversation.peerUserId != nil
-                           ? "Verify this conversation with a safety number" : "")
-    }
-
-    private var encryptionLine: String {
-        // A group has no single "and <name>", and Note to Self has no second party at all
-        // (that case never reaches here — see showsEncryptionNotice).
-        guard conversation.type == .direct else {
-            return "End-to-end encrypted. Only members of this group can read these messages."
-        }
-        let first = VoiidName.short(conversation.title)
-        return "End-to-end encrypted. Only you and \(first) can read these messages."
-    }
-
     /// A header action: 32pt `surfaceCard` circle with a hairline, 14pt medium glyph.
     ///
     /// SIZED DOWN FROM THE REFERENCE'S 36, deliberately. The reference draws its own header
@@ -779,85 +721,22 @@ struct ChatDetailView: View {
             .contentShape(Rectangle())
     }
 
-    /// Whether to draw the end-to-end encryption notice.
-    ///
-    /// ONLY ON A NEW CHAT — see the body for why the placement forces that.
-    private var showsEncryptionNotice: Bool {
-        // Note to Self is excluded: a note you wrote to yourself has no second party for the
-        // guarantee to be about.
-        guard conversation.type != .self else { return false }
-
-        // The band sits at the START OF THE CHAT, inside the transcript — so it is subject
-        // to the constraint that placement implies: in a long conversation it would be
-        // pushed a thousand messages up where nobody will ever scroll. Showing it there
-        // unconditionally does not make it visible, it just makes it unreachable.
-        //
-        // The moment it is worth reading is the moment you open a conversation for the
-        // first time. Six messages is the cutoff: enough that a couple of exchanged
-        // greetings still show it, few enough that an established chat does not.
-        //
-        // Verification does NOT depend on this. The safety number is reachable for the life
-        // of the conversation from the header menu and from the contact screen, so retiring
-        // the band costs the user nothing they cannot still get to.
-        return chat.messages(for: conversation.id).count < 6
-    }
-
-    /// The E2EE notice.
-    ///
-    /// SAYS WHAT IS ACTUALLY TRUE, and says it specifically. "Your messages are encrypted"
-    /// is vague enough to be worthless — the question people actually have is whether the
-    /// PHOTOS and VOICE NOTES are covered too, because that is the part every other app is
-    /// evasive about. Naming them is the point.
-    ///
-    /// TAPPABLE, now that there is somewhere honest to go: it opens the safety number, the
-    /// same way WhatsApp's notice opens key verification. A claim the user cannot check is a
-    /// claim they have to take on faith, and the tap is what makes it checkable.
+    /// Centered verification badge at the beginning of the transcript, at any message count.
     private var encryptionNotice: some View {
-        Button {
-            guard conversation.peerUserId != nil else { return }
-            Haptics.tap()
-            showSafetyNumber = true
-        } label: {
-            encryptionNoticeLabel
-        }
-        .buttonStyle(.plain)
-        .disabled(conversation.peerUserId == nil)
-    }
-
-    private var encryptionNoticeLabel: some View {
-        HStack(alignment: .top, spacing: VoiidSpacing.sm) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(VoiidColor.textSecondary)
-                .padding(.top, 2)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Messages, photos, videos, voice notes and calls in this chat are "
-                     + "**end-to-end encrypted**. Not even Voiid can read or listen to them.")
-                    .font(VoiidFont.rounded(12, .regular))
-                    .foregroundStyle(VoiidColor.textSecondary)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if conversation.peerUserId != nil {
-                    // The affordance has to be visible or the tap is a secret. Groups have no
-                    // single peer to compare against, so they get the statement without it.
-                    Text("Tap to verify")
-                        .font(VoiidFont.rounded(12, .semibold))
-                        .foregroundStyle(VoiidColor.primary)
-                }
+        Button { Haptics.tap(); showSafetyNumber = true } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "lock.fill").font(.system(size: 10, weight: .medium))
+                Text("End-to-end encrypted").font(VoiidFont.rounded(12, .medium))
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
             }
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.vertical, 10)
-        .frame(maxWidth: 320)
-        // A soft tinted plate rather than a card: it must read as a system aside, not as a
-        // message someone sent. Centring it reinforces that — every real bubble is sided.
-        .background(VoiidColor.warning.opacity(0.10))
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-        .frame(maxWidth: .infinity)
-        .padding(.bottom, VoiidSpacing.sm)
-        .accessibilityElement(children: .combine)
+            .foregroundStyle(VoiidColor.textSecondary)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(VoiidColor.surfaceCard, in: Capsule())
+            .frame(minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .center)
+            .disabled(conversation.type != .group && livePeerUserId == nil)
+            .accessibilityLabel("Messages and calls are end-to-end encrypted")
+            .accessibilityHint("Verify security codes")
     }
 
     // Extracted per-message row (keeps messageList small enough for the type-checker).
@@ -1449,7 +1328,15 @@ struct CallLogBubble: View {
     }
 }
 
+private extension VerticalAlignment {
+    private enum GroupBubbleBottom: AlignmentID {
+        static func defaultValue(in dimensions: ViewDimensions) -> CGFloat { dimensions[.bottom] }
+    }
+    static let groupBubbleBottom = VerticalAlignment(GroupBubbleBottom.self)
+}
+
 struct MessageBubble: View {
+    @State private var showingSenderProfile = false
     let message: VMessage
     let isGroup: Bool
     var isLastMine: Bool = false      // (kept for call-site compatibility)
@@ -1498,15 +1385,32 @@ struct MessageBubble: View {
     }
 
     private var bubbleRow: some View {
-        HStack(alignment: .bottom, spacing: 6) {
+        HStack(alignment: .groupBubbleBottom, spacing: isGroup && !message.isMine ? 2 : 6) {
             if message.isMine { Spacer(minLength: 24) }
             // Group, incoming: the sender's real profile photo beside the bubble, so you can
             // see at a glance who's texting (WhatsApp-style).
             if isGroup && !message.isMine {
-                ProfileAvatarButton(photoURL: UserDirectory.shared.photoURL(message.senderId),
-                                    name: message.senderName, size: 28)
+                Button { showingSenderProfile = true } label: {
+                    ProfileAvatarButton(photoURL: UserDirectory.shared.photoURL(message.senderId), name: message.senderName, size: 32)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(selectionMode)
+                    .alignmentGuide(.groupBubbleBottom) { $0[.bottom] - 6 }
+                    .accessibilityLabel("View \(message.senderName)’s profile")
             }
             VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
+                if isGroup && !message.isMine && !message.senderName.isEmpty {
+                    HStack(spacing: 5) {
+                        Text(message.senderName)
+                            .font(VoiidFont.rounded(12, .semibold))
+                            .foregroundColor(message.senderColor)
+                        if let uname = UserDirectory.shared.user(message.senderId)?.username, !uname.isEmpty {
+                            Text("@\(uname)")
+                                .font(VoiidFont.rounded(11, .regular))
+                                .foregroundColor(VoiidColor.textSecondary)
+                        }
+                    }.padding(.leading, 14).padding(.bottom, 4)
+                }
+                Group {
                 if selectionMode {
                     bubbleContent
                         .overlay { Color.clear.contentShape(Rectangle()).onTapGesture(perform: onSelectTap) }
@@ -1522,6 +1426,8 @@ struct MessageBubble: View {
                             bubbleContent
                         }
                 }
+                }
+                .alignmentGuide(.groupBubbleBottom) { $0[.bottom] }
                 if !message.deletedForEveryone && !message.reactions.isEmpty {
                     MessageReactionBadges(reactions: message.reactions,
                         myUserId: TokenStore.shared.userId, messageId: message.id,
@@ -1529,12 +1435,15 @@ struct MessageBubble: View {
                 }
             }
             .frame(maxWidth: 300, alignment: message.isMine ? .trailing : .leading)
+            .sheet(isPresented: $showingSenderProfile) {
+                GroupMemberProfileSheet(member: .init(id: message.senderId, name: message.senderName,
+                                                     photoURL: UserDirectory.shared.photoURL(message.senderId)))
+            }
             .sheet(isPresented: $showEmojiPicker) {
                 EmojiPickerSheet(onPick: onReact)
             }
             if !message.isMine { Spacer(minLength: 24) }
         }
-        .padding(.vertical, 1)
     }
 
     private var bubble: some View {
@@ -1667,21 +1576,6 @@ struct MessageBubble: View {
                                    fill: message.isMine ? Color.white.opacity(0.16)
                                                         : VoiidColor.fieldFill.opacity(0.7))
                 }
-                // Sender identity (group, incoming only): the saved name (or phone) coloured
-                // per sender, with the @username in a lighter tone so you know exactly who's
-                // texting who.
-                if isGroup && !message.isMine && !message.senderName.isEmpty {
-                    HStack(spacing: 5) {
-                        Text(message.senderName)
-                            .font(VoiidFont.rounded(12, .semibold))
-                            .foregroundColor(message.senderColor)
-                        if let uname = UserDirectory.shared.user(message.senderId)?.username, !uname.isEmpty {
-                            Text("@\(uname)")
-                                .font(VoiidFont.rounded(11, .regular))
-                                .foregroundColor(VoiidColor.textSecondary)
-                        }
-                    }
-                }
                 if message.deletedForEveryone {
                     HStack(spacing: 5) {
                         Image(systemName: "slash.circle").font(.system(size: 13))
@@ -1705,6 +1599,13 @@ struct MessageBubble: View {
                         .font(.system(size: 34))
                         .padding(.vertical, 2)
                     metaRow.padding(.top, 2)
+                } else if message.kind == .image {
+                    content
+                    if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        styledText(message.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: 236, alignment: .leading).padding(8)
+                    }
                 } else if message.kind == .text {
                     textWithMeta
                 } else {
@@ -1715,8 +1616,8 @@ struct MessageBubble: View {
             }
             // 14/10, the reference's numbers. At 12/8 the text sat tight against the fill
             // and the bubbles read smaller-set than the design.
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, message.kind == .image && !message.deletedForEveryone ? 4 : 14)
+            .padding(.vertical, message.kind == .image && !message.deletedForEveryone ? 4 : 10)
             // YOUR bubble is filled peacock teal; theirs is the quiet card surface. This was
             // backwards — `isMine` drew `bubbleReceived` (white) and theirs drew `surfaceCard`
             // (also white), so the two sides were nearly indistinguishable and the eye could
@@ -1736,20 +1637,14 @@ struct MessageBubble: View {
             .accessibilityIdentifier("message.\(message.id).bubble")
     }
 
-    // Short messages keep time inline. Longer text gets the full line width, with
-    // metadata on its own trailing line instead of squeezing every line of prose.
+    // Match the preview's single layout: wrap the body while keeping metadata
+    // anchored at the bottom. Switching layouts during hosting-controller sizing
+    // can otherwise measure an inline row and render a taller stacked row.
     private var textWithMeta: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .bottom, spacing: 8) {
-                styledText(message.text).fixedSize(horizontal: true, vertical: true)
-                metaRow
-            }
-            VStack(alignment: .trailing, spacing: 4) {
-                styledText(message.text)
-                    .lineSpacing(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                metaRow
-            }
+        HStack(alignment: .bottom, spacing: 8) {
+            styledText(message.text)
+                .fixedSize(horizontal: false, vertical: true)
+            metaRow
         }
     }
 
@@ -1875,16 +1770,32 @@ struct MessageBubble: View {
         }
     }
 
+    private var imageDeliveryLabel: String {
+        switch message.status {
+        case .sending: return "Sending"
+        case .failed: return "Failed"
+        case .sent: return "Sent"
+        case .delivered: return "Delivered"
+        case .read: return "Seen"
+        }
+    }
+
     @ViewBuilder private var kindContent: some View {
         switch message.kind {
         case .image:
             if let ref = message.mediaRef {
                 AsyncMediaImage(ref: ref, onTap: onTapImage)
+                    .overlay(alignment: .bottomTrailing) {
+                        Text(VoiidDate.bubbleTime(message.createdAt) + (message.isMine ? " · " + imageDeliveryLabel : ""))
+                            .font(VoiidFont.rounded(11, .medium))
+                            .foregroundStyle(.white).padding(12)
+                            .allowsHitTesting(false)
+                    }
             } else {
                 // Local optimistic echo before upload completes (no ref yet).
                 RoundedRectangle(cornerRadius: VoiidRadius.md)
-                    .fill(VoiidColor.accent.opacity(0.4))
-                    .frame(width: 200, height: 200)
+                    .fill(VoiidColor.fieldFill)
+                    .frame(width: 260, height: 220)
                     .overlay(ProgressView())
             }
         case .voice:
@@ -2252,95 +2163,89 @@ struct BubbleShape: Shape {
 
 /// An image bubble that fetches + decrypts its blob via ChatEngine on appear.
 struct AsyncMediaImage: View {
-    /// One width for every photo in the thread, so bubbles line up rather than stepping in
-    /// and out with each image's shape.
-    private static let width: CGFloat = 240
-    /// A very wide panorama still needs enough height to be recognisable and tappable.
-    private static let minHeight: CGFloat = 120
-    /// And a very tall one must not run past the screen.
-    private static let maxHeight: CGFloat = 320
-
+    @Environment(\.displayScale) private var displayScale
+    private static let width: CGFloat = 260
+    private static let height: CGFloat = 220
     let ref: MediaRef
     var onTap: (UIImage) -> Void
-    /// `true` draws the 220pt chat thumbnail; `false` fits the image to whatever space it
-    /// is given, which is what the full-screen gallery needs. Same decrypt-and-cache path
-    /// either way — the bytes are already in memory by the time the gallery opens.
     var fill: Bool = true
     @State private var image: UIImage?
     @State private var failed = false
+    @State private var retryCount = 0
+    private struct LoadID: Hashable { let ref: MediaRef; let attempt: Int; let scale: CGFloat }
 
     var body: some View {
         Group {
-            if let image {
-                if fill {
-                    // THE PHOTO KEEPS ITS SHAPE.
-                    //
-                    // This was a forced 220×220 square with `scaledToFill`, so every image
-                    // was centre-cropped: a portrait photo lost its top and bottom, a
-                    // panorama became a slice of its middle, and a screenshot was
-                    // unreadable. WhatsApp and Iyour own eye read a thumbnail by its shape
-                    // as much as its content, and cropping to a square throws that away.
-                    //
-                    // The width is fixed so bubbles align down the thread; the HEIGHT
-                    // follows the image's own ratio, bounded so a tall panorama cannot
-                    // occupy the whole screen and a wide one stays tappable.
-                    let ratio = image.size.height / max(image.size.width, 1)
-                    let height = min(max(Self.width * ratio, Self.minHeight), Self.maxHeight)
-                    Image(uiImage: image).resizable().scaledToFill()
-                        .frame(width: Self.width, height: height)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                        .contentShape(Rectangle())
-                        .onTapGesture { onTap(image) }
-                } else {
-                    Image(uiImage: image).resizable().scaledToFit()
+            if fill {
+                ZStack {
+                    VoiidColor.fieldFill
+                    content
                 }
-            } else if !fill {
-                ProgressView().tint(.white)
-            } else {
-                // A 4:3 placeholder rather than a square: it is the commonest photo shape,
-                // so the bubble moves least when the real image lands.
-                RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-                    .fill(VoiidColor.fieldFill)
-                    .frame(width: Self.width, height: Self.width * 0.75)
-                    .overlay {
-                        if failed {
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.system(size: 26))
-                                .foregroundColor(VoiidColor.textSecondary)
-                        } else {
-                            ProgressView().tint(VoiidColor.textSecondary)
-                        }
+                // Reserve the same space during loading, failure and success.
+                .frame(width: Self.width, height: Self.height)
+                .overlay(alignment: .bottom) {
+                    LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 65).allowsHitTesting(false)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            } else { content }
+        }
+        .task(id: LoadID(ref: ref, attempt: retryCount, scale: displayScale)) { await load() }
+    }
+
+    @ViewBuilder private var content: some View {
+        if let image {
+            Image(uiImage: image).resizable()
+                .aspectRatio(contentMode: fill ? .fill : .fit)
+                .frame(width: fill ? Self.width : nil, height: fill ? Self.height : nil)
+                .clipped()
+                .contentShape(Rectangle())
+                .onTapGesture { onTap(image) }
+                .overlay {
+                    if ref.mime.hasPrefix("video/") {
+                        Image(systemName: "play.circle.fill").font(.system(size: 44))
+                            .foregroundStyle(.white).shadow(radius: 4).allowsHitTesting(false)
                     }
-            }
-        }
-        .overlay {
-            if ref.mime.hasPrefix("video/"), image != nil {
-                Image(systemName: "play.circle.fill").font(.system(size: 44))
-                    .foregroundStyle(.white).shadow(radius: 4).allowsHitTesting(false)
-            }
-        }
-        .task(id: ref.mediaUrl) { await load() }
+                }
+        } else if failed {
+            Button { retryCount += 1 } label: {
+                VStack(spacing: 8) {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 24))
+                    Text("Couldn't load media").font(VoiidFont.rounded(13))
+                    Text("Tap to retry").font(VoiidFont.rounded(12, .medium))
+                }.foregroundStyle(fill ? VoiidColor.textSecondary : .white)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }.buttonStyle(.plain)
+        } else { ProgressView().tint(fill ? VoiidColor.textSecondary : .white) }
     }
 
     private func load() async {
+        failed = false
+        image = nil
         if ref.mime.hasPrefix("video/") {
             let item = ChatMediaItem(id: "bubble:" + ref.mediaUrl, chatId: "", type: .video,
                 ref: ref, sentAt: .distantPast, senderId: "", senderName: nil,
                 isOutgoing: false, caption: nil, durationMs: nil)
-            image = await ChatMediaThumbnails.shared.thumbnail(for: item, side: Self.width)
-            failed = image == nil
+            let thumbnail = await ChatMediaThumbnails.shared.thumbnail(for: item, side: Self.width,
+                                                                       displayScale: displayScale)
+            guard !Task.isCancelled else { return }
+            image = thumbnail
+            failed = thumbnail == nil
             return
         }
-        // Local-first: memory → disk → (only then) network. Offline, a photo seen once or
-        // one you sent renders straight from disk with no spinner.
         if let cached = MediaCache.shared.image(ref.mediaUrl) { image = cached; return }
         do {
             let data = try await ChatEngine.shared.fetchMedia(ref)
-            MediaCache.shared.setData(data, ref.mediaUrl)          // persist the plaintext bytes
-            if let ui = UIImage(data: data) { MediaCache.shared.set(ui, ref.mediaUrl); image = ui }
-            else { failed = true }
-        } catch { failed = true }
+            try Task.checkCancellation()
+            guard let decoded = UIImage(data: data) else { failed = true; return }
+            MediaCache.shared.setData(data, ref.mediaUrl)
+            MediaCache.shared.set(decoded, ref.mediaUrl)
+            image = decoded
+        } catch {
+            // A lazy row disappearing during a scroll is not a failed download.
+            guard !Task.isCancelled else { return }
+            failed = true
+        }
     }
 }
 

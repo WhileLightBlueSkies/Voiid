@@ -66,6 +66,12 @@ class BackupRulesTest {
         "voiid_story_prefs" to "story state",
         "voiid_story_engine" to "story state",
         "voiid_flags" to "per-account flags",
+        // Plaintext, and both are a record of WHO this person deals with — restoring either
+        // onto another device hands over a slice of their social graph. `missed_call_pushes`
+        // holds the ids of calls they received (dedup state for the missed-call banner);
+        // `voiid_group_list` holds their group and community ids, keyed by user id.
+        "missed_call_pushes" to "ids of calls this user received",
+        "voiid_group_list" to "the user's group and community ids",
         // ── Local game state. Not sensitive, but per-install and meaningless elsewhere.
         "voiid.games" to "local game state",
         "voiid_bot_scores" to "local scores",

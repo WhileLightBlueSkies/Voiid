@@ -658,12 +658,11 @@ private struct StoryContextPlayer: View {
         return 44 + VoiidSpacing.sm + 48 + safeArea.bottom + VoiidSpacing.sm
     }
 
-    /// Bound the decode to what the screen can actually show — a 12MP still resampled to
-    /// ~1290px is the difference between a stall and a frame. `VoiidScreen.width` is the
-    /// floor because a page measured mid-layout can hand us a zero size, and a 3px thumbnail
-    /// blown up full-screen is worse than the stall we are removing.
+    /// Decode for the current page, including resized and folded layouts. Before the
+    /// first measurement use a bounded decode budget, without choosing another display.
     private var decodePixelSize: CGFloat {
-        max(pageSize.width, pageSize.height, VoiidScreen.width) * displayScale
+        let side = max(pageSize.width, pageSize.height)
+        return side > 0 ? side * displayScale : 2048
     }
 
     /// §8.4 prefetch, three deep and spilling into the next author.

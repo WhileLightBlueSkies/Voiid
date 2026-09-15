@@ -14,36 +14,9 @@
 //  (only an E2EE caption the server never sees) and expires in 24h, so this card carries
 //  a display name and a RELATIVE age instead. See StoriesHomeView for the full list.
 //
-//  ── THE TILE IS PORTRAIT, AND THE RATIO IS THE WHOLE POINT ──────────────────────
-//  Stories are shot on a phone held upright: the media is 9:16. The tile used to be given
-//  a hardcoded `height: 208` against a column that measures ~175pt on a 393pt iPhone —
-//  a 0.84 ratio, near-square. `scaledToFill` then had to crop away the top and bottom of
-//  every frame to fit it, so each tile showed a narrow horizontal band sliced out of the
-//  middle of something composed vertically. Heads left the frame. That is what read as
-//  "doesn't look good", and no amount of scrim or type work fixes it — the crop is the bug.
-//
-//  So the card now takes an `aspect` (portrait 3:4) and derives its height from its OWN
-//  measured width. Two consequences worth stating:
-//
-//    WHY DERIVED, NOT FIXED — one hardcoded height cannot be correct on both a 320pt-wide
-//    SE column and a 430pt Pro Max column; it would be near-square on one and a letterbox
-//    on the other. Width is the dimension the grid actually decides, so height is the one
-//    that must follow it. Nothing here needs to know the screen width or the column count.
-//
-//    WHY 3:4 AND NOT A FULL 9:16 — 9:16 at a ~175pt column is 311pt tall, so a single row
-//    plus the banner would overflow a 667pt SE before the user has seen one full tile, and
-//    a grid of them reads as a wall of slivers. 3:4 is the portrait ratio Photos and every
-//    phone photo grid settle on: it keeps the frame's vertical composition (a subject stays
-//    a subject) while staying a browsable tile. The remaining crop is symmetric top/bottom
-//    around the centre, which is where phone-shot subjects sit.
-//
-//  The old comment here warned that `.aspectRatio(.fit)` collapses a fixed-width child
-//  inside an HStack to a stub. That was true, and it was about a HORIZONTAL RAIL that no
-//  longer exists — this card has exactly one call site now, the grid. In a LazyVGrid the
-//  column hands the child a definite width and leaves height free, which is the opposite
-//  situation, so the ratio is resolved from the measured width instead (below). The rail's
-//  `width`/`compact` parameters are gone with the rail; re-adding a rail means solving the
-//  rail's own layout, not reviving a flag this file no longer has a use for.
+//  Voiid UI-sized previews keep the feed browsable. The grid controls the width;
+//  the thumbnail is explicitly bounded so a decoded portrait cannot enlarge the tile.
+//  Tapping still opens the original media in the full-screen viewer.
 //
 //  ── THE THUMBNAIL IS REAL, OR IT IS A GRADIENT ──────────────────────────────────
 //  The reference draws a gradient keyed to the item id because it has no files. We do
@@ -60,10 +33,9 @@ import SwiftUI
 struct StoryMomentCard: View {
     let context: StoryContext
 
-    /// Height ÷ width. Portrait by default — see the ratio note above. Injected rather than
-    /// baked in so a future caller (a rail, a wider iPad column) can pick its own without
-    /// this file growing a mode flag again.
-    var aspect: CGFloat = 4.0 / 3.0
+    var width: CGFloat? = nil
+    var height: CGFloat = 152
+    var compact: Bool = true
 
     let action: () -> Void
 
@@ -90,8 +62,14 @@ struct StoryMomentCard: View {
             // stand-in: it takes the column's width, reports it, and contributes no size of
             // its own, so the frame below is the single thing deciding the tile's height.
             Color.clear
-                .aspectRatio(1 / aspect, contentMode: .fit)
-                .overlay { cardBody }
+                .frame(width: width, height: height)
+                .overlay {
+                    GeometryReader { geometry in
+                        cardBody
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
+                    }
+                }
         }
         .buttonStyle(SoftPressStyle(scale: 0.97))
         .accessibilityElement(children: .combine)
@@ -123,7 +101,7 @@ struct StoryMomentCard: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(authorName)
-                    .font(VoiidFont.rounded(13, .semibold))
+                    .font(VoiidFont.rounded(compact ? 11.5 : 14, .semibold))
                     .foregroundColor(.white)
                     .lineLimit(2)                 // two lines, because a name is not truncatable
                     .minimumScaleFactor(0.8)
@@ -133,7 +111,7 @@ struct StoryMomentCard: View {
                 // in under a day; how long it has left is the only reading of time that
                 // means anything here.
                 Text(StoryTime.relative(context.newest?.createdAt))
-                    .font(VoiidFont.rounded(11, .regular))
+                    .font(VoiidFont.rounded(compact ? 9.5 : 11, .regular))
                     // 0.78 white on the scrim was the weakest text on the screen. 0.86 keeps
                     // it clearly secondary to the name while staying legible on a bright frame.
                     .foregroundColor(.white.opacity(0.86))
@@ -143,14 +121,14 @@ struct StoryMomentCard: View {
             // the one it cannot — a small bright specular highlight sitting directly behind a
             // letter, where a uniform scrim is still locally out-contrasted.
             .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 10)
+            .padding(.horizontal, compact ? 7 : 10)
+            .padding(.bottom, compact ? 8 : 10)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .overlay(alignment: .top) { pips }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 // The unviewed accent is carried on the card's own edge, which is what
                 // replaces the ring the old avatar row drew. Viewed falls back to the
                 // divider so the two are still distinguishable without colour alone —
@@ -164,11 +142,11 @@ struct StoryMomentCard: View {
         // strokeBorder (not stroke) keeps both lines fully inside the clip — a centred
         // stroke would lose its outer half to the corner radius.
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .inset(by: context.hasUnviewed ? 2.5 : 1)
                 .strokeBorder(Color.black.opacity(0.18), lineWidth: 0.5)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     // MARK: - Pips
@@ -204,15 +182,13 @@ struct StoryMomentCard: View {
     @ViewBuilder
     private var thumbnail: some View {
         if let frame {
-            // `.fill` still crops — but now it crops a 9:16 frame to 3:4 rather than to a
-            // square, which is a trim off the top and bottom instead of an excision of most
-            // of the picture. clipped() keeps the overflow from painting over neighbours
-            // before the rounded clip applies.
-            Image(uiImage: frame)
-                .resizable()
-                .scaledToFill()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+            GeometryReader { geometry in
+                Image(uiImage: frame)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+            }
         } else {
             // The stand-in, keyed off the author id so a given person's tile is the same
             // colour on every launch. `hashValue` is never used for this — Swift seeds it

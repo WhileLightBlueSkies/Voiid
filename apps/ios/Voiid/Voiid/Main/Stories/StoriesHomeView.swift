@@ -23,10 +23,6 @@
 //            can never exist. Rendering an always-empty rail would be a lie in the layout.
 //            The space it occupied is given to "Your moment", which IS true of this screen.
 //    REFUSED absolute dates ("Aug 9, 2024") — see StoryTime.
-//    REFUSED the reference's near-square tile. Its cards hold landscape trip photos; ours hold
-//            9:16 phone-shot video, and a square crop of that is a horizontal slice through the
-//            middle of the frame. The tiles are portrait here — see StoryMomentCard, which owns
-//            the ratio and derives its height from the column width this file gives it.
 //
 //  ── SECTIONS ────────────────────────────────────────────────────────────────────
 //  The reference groups by "Recent / This Month". That is meaningless for content with a
@@ -55,21 +51,11 @@ struct StoriesHomeView: View {
     private enum FeedPhase { case idle, loading, loaded, failed }
     @State private var phase: FeedPhase = .idle
 
-    /// Grid of two, not the reference's four. The reference's four-up tiles carry a title and
-    /// a date at ~10pt; ours carry a display name, which is arbitrary-length and non-truncatable
-    /// without losing who posted. Two columns give a name room to be read.
-    ///
-    /// RE-EXAMINED when the tiles became portrait (StoryMomentCard): now that a tile is taller
-    /// than wide, three columns would fit vertically — but the reason for two was never height.
-    /// A third column takes each tile to ~111pt: the name drops to two scaled-down lines for
-    /// anything longer than a first name, and the pips — 2.5pt capsules with 3pt gaps — fall
-    /// below the width where five of them are countable, which would break rule 4's promise
-    /// that the pips are readable, real data. Two it stays. The tiles being larger is the point:
-    /// a story is a picture, and this is the screen where you look at it.
-    private let gridColumns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-    ]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private var gridColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 10),
+              count: dynamicTypeSize.isAccessibilitySize ? 2 : 4)
+    }
 
     // MARK: - Sectioning
 
@@ -87,7 +73,7 @@ struct StoriesHomeView: View {
 
                         if !newContexts.isEmpty {
                             section("New", count: newContexts.count) {
-                                grid(newContexts)
+                                recentRail(newContexts)
                             }
                         }
 
@@ -119,10 +105,16 @@ struct StoriesHomeView: View {
             }
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Moments")
+            .navigationBarTitleDisplayMode(.inline)
             .alert("Moment unavailable", isPresented: Binding(get: { engine.actionError != nil }, set: { if !$0 { engine.actionError = nil } })) {
                 Button("OK") { engine.actionError = nil }
             } message: { Text(engine.actionError ?? "") }
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("Moments").font(VoiidFont.screenTitle)
+                        .foregroundStyle(VoiidColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink { StoryArchiveView() } label: {
                         Image(systemName: "archivebox")
@@ -153,12 +145,25 @@ struct StoriesHomeView: View {
 
     // MARK: - Grid
 
-    /// No height is passed any more. The card derives its own from the width this column
-    /// hands it (StoryMomentCard: portrait 3:4), which is the only way one tile definition
-    /// can be correct from a 320pt SE through a 430pt Pro Max. Row spacing matches the
-    /// column gutter so the grid reads as an even mesh rather than banded rows.
+    private func recentRail(_ contexts: [StoryContext]) -> some View {
+        ScrollView(.horizontal) {
+            LazyHStack(spacing: 10) {
+                ForEach(contexts) { ctx in
+                    StoryMomentCard(context: ctx, width: dynamicTypeSize.isAccessibilitySize ? 164 : 118,
+                                    height: dynamicTypeSize.isAccessibilitySize ? 230 : 190, compact: false) {
+                        openContext = ctx
+                    }
+                }
+            }
+            .padding(.horizontal, VoiidSpacing.md)
+            .scrollTargetLayout()
+        }
+        .scrollIndicators(.hidden)
+        .scrollTargetBehavior(.viewAligned)
+    }
+
     private func grid(_ contexts: [StoryContext]) -> some View {
-        LazyVGrid(columns: gridColumns, spacing: 12) {
+        LazyVGrid(columns: gridColumns, spacing: 10) {
             ForEach(contexts) { ctx in
                 StoryMomentCard(context: ctx) {
                     openContext = ctx
@@ -395,7 +400,7 @@ struct StoriesHomeView: View {
     /// from the card itself so the two can never drift apart.
     private var loadingState: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-            LazyVGrid(columns: gridColumns, spacing: 12) {
+            LazyVGrid(columns: gridColumns, spacing: 10) {
                 ForEach(0..<4, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .fill(VoiidColor.surfaceCard)

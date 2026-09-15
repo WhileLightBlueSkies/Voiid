@@ -337,6 +337,7 @@ struct SettingsSheet: View {
                 .padding(.top, VoiidSpacing.sm)
                 .padding(.bottom, VoiidSpacing.xl)
             }
+            .softTopEdgeEffect()
             .scrollIndicators(.hidden)
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Settings")
@@ -392,6 +393,7 @@ struct SettingsSheet: View {
                 }())
             }
         }
+        .softTopEdgeEffect()
         // Sheets do not reliably inherit the root tint.
         .tint(VoiidColor.primary)
         // Ask the server whether a backup actually exists, so the log-out warning and the

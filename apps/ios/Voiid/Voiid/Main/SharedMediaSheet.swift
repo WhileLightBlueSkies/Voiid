@@ -13,6 +13,9 @@ struct SharedMediaSheet: View {
     /// The conversation whose REAL shared media (from the decrypted message store) is shown.
     let conversationId: String
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var chat: ChatStore
+    private struct Selection: Identifiable { let id: String }
+    @State private var selectedMedia: Selection?
     @State private var tab: Tab = .photos
     @Namespace private var underline
 
@@ -65,6 +68,10 @@ struct SharedMediaSheet: View {
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } } }
         }
         .presentationDetents([.large])
+        .fullScreenCover(item: $selectedMedia) { selection in
+            ChatMediaViewer(chatId: conversationId, startMessageId: selection.id)
+                .environmentObject(chat)
+        }
     }
 
     @ViewBuilder private func mediaGrid(_ refs: [MediaRef], isVideo: Bool) -> some View {
@@ -72,8 +79,25 @@ struct SharedMediaSheet: View {
         else {
             LazyVGrid(columns: grid, spacing: 3) {
                 ForEach(refs, id: \.mediaUrl) { ref in
-                    SharedMediaThumb(ref: ref).aspectRatio(1, contentMode: .fill).clipped()
+                    Color.clear.aspectRatio(1, contentMode: .fit)
+                        .overlay {
+                            GeometryReader { geometry in
+                                SharedMediaThumb(ref: ref)
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
+                                    .clipped()
+                            }
+                        }
+                        .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if let message = ChatEngine.shared.messages(conversationId: conversationId)
+                                .first(where: { $0.media?.mediaUrl == ref.mediaUrl }) {
+                                selectedMedia = Selection(id: message.id)
+                            }
+                        }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityLabel(isVideo ? "Open video" : "Open photo")
                 }
             }
             .padding(3)

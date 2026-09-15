@@ -1,5 +1,7 @@
 package com.voiid.app.main
 
+import androidx.lifecycle.repeatOnLifecycle
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -62,140 +64,109 @@ import com.voiid.app.ui.theme.VoiidFont
  * that actually lets this device READ the channels is a separate client-driven step over the
  * existing /mls routes, exactly as group conversations already work.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CommunityJoinSheet(link: CommunityLink, onDismiss: () -> Unit) {
+fun CommunityJoinSheet(link: CommunityLink, onScanAgain: (() -> Unit)? = null, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
     val service = remember { CommunityService(context) }
-
     var card by remember(link) { mutableStateOf<CommunityService.CommunityCard?>(null) }
     var joined by remember(link) { mutableStateOf<String?>(null) }
     var alreadyIn by remember(link) { mutableStateOf(false) }
     var error by remember(link) { mutableStateOf<String?>(null) }
     var busy by remember(link) { mutableStateOf(false) }
-
-    // Keyed on the link, so a SECOND link tapped while this sheet is open re-resolves instead
-    // of showing the first community's card under the second community's name.
-    LaunchedEffect(link) {
-        error = null
-        card = null
-        runCatching { service.resolve(link) }
-            .onSuccess { card = it }
-            .onFailure { error = messageFor(it, handle = link.handle) }
+    var openCommunity by remember(link) { mutableStateOf(false) }
+    val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    var retry by remember(link) { mutableStateOf(0) }
+    LaunchedEffect(link, retry) {
+        error = null; card = null
+        try { card = service.resolve(link) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = messageFor(e, link.handle) }
     }
-
-    com.voiid.app.ui.components.VoiidSheet(
-        visible = true,
-        onDismiss = onDismiss,
-        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 24.dp)
-                .navigationBarsPadding(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            val c = card
-            when {
-                c == null && error == null -> {
-                    Spacer(Modifier.height(24.dp))
-                    CircularProgressIndicator(color = VoiidColor.primary)
-                    Text(
-                        "Looking up @${link.handle}…",
-                        style = VoiidFont.rounded(14),
-                        color = VoiidColor.textSecondary,
-                    )
-                    Spacer(Modifier.height(24.dp))
-                }
-
-                c == null -> {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Can’t open this link",
-                        style = VoiidFont.rounded(20, FontWeight.SemiBold),
-                        color = VoiidColor.textPrimary,
-                    )
-                    Text(
-                        error.orEmpty(),
-                        style = VoiidFont.rounded(14),
-                        color = VoiidColor.textSecondary,
-                        textAlign = TextAlign.Center,
-                    )
-                    SheetButton("Close", filled = false) { onDismiss() }
-                }
-
-                else -> {
-                    CommunityHeader(c)
-
-                    // The join outcome, once there is one. 'pending' is a REAL outcome and not
-                    // an error: an approval-gated community accepted the request and an admin
-                    // now has to act, and saying "joined" there would be a lie the user
-                    // discovers later when no channels appear.
-                    when (joined) {
-                        // `existed` is the server saying "you were already in" — the join is
-                        // idempotent, and two devices (or two taps) must not both claim credit
-                        // for a membership only one of them created.
-                        "active" -> Notice(
-                            if (alreadyIn) "You’re already a member of this community."
-                            else "You’re in. The community’s channels will sync to this device shortly.",
-                        )
-                        "pending" -> Notice(
-                            "Request sent. You’ll get in once an admin approves it.",
-                        )
-                        null -> JoinArea(
-                            card = c,
-                            busy = busy,
-                            error = error,
-                            onJoin = {
-                                haptics.rigid()
-                                busy = true
-                                error = null
-                            },
-                        )
-                    }
-
-                    if (joined != null) SheetButton("Done", filled = false) { onDismiss() }
+    LaunchedEffect(link, lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) {
+                kotlinx.coroutines.delay(5000)
+                if (!busy && (joined == "pending" || card?.isPending == true)) {
+                    try { val updated = service.resolve(link); card = updated; joined = updated.membership_state }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { /* Retry on the next visible poll. */ }
                 }
             }
         }
     }
+    val page: @Composable () -> Unit = {
+        if (openCommunity && card != null) {
+            CommunityDetailView(card!!, service, onBack = { openCommunity = false }, onOpenConversation = { id ->
+                com.voiid.app.net.DeepLinkRouter.open(id, null); onDismiss()
+            })
+        } else {
 
-    // The join call itself, driven off `busy` so the button stays a pure state flip and the
-    // request is cancelled with the composition if the sheet is dismissed mid-flight.
-    LaunchedEffect(busy) {
+        QrPreviewPage("Community preview", "Here’s the community from your QR code or link.",
+            onBack = onScanAgain ?: onDismiss, busy = busy,
+            actions = {
+                val c = card
+                if (c != null) {
+                    when (joined ?: c.membership_state) {
+                        "active" -> {
+                            Notice(if (alreadyIn) "You’re already a member of this community." else "You’re in. Spaces will become available when their keys sync to this device.")
+                            QrAction("Open community", onClick = { openCommunity = true })
+                        }
+                        "pending" -> {
+                            Notice("Request sent. You’ll get in once an admin approves it.")
+                            QrAction("Done", onClick = onDismiss)
+                        }
+                        else -> JoinArea(c, busy, error) {
+                            if (!busy) { haptics.rigid(); error = null; busy = true }
+                        }
+                    }
+                } else if (error != null) QrAction("Try again") { retry++ }
+                if (onScanAgain != null) QrAction("Scan again", secondary = true, enabled = !busy, tag = "scan.again", onClick = onScanAgain)
+            },
+        ) {
+            val c = card
+            if (c != null) {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(VoiidColor.surfaceCard).padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    CommunityHeader(c)
+                }
+            } else Column(Modifier.fillMaxWidth().padding(vertical = 60.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (error == null) CircularProgressIndicator(color = VoiidColor.primary)
+                Text(if (error == null) "Looking up @${link.handle}…" else "Can’t open this link", style = VoiidFont.rounded(18), color = VoiidColor.textPrimary)
+                error?.let { Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary, textAlign = TextAlign.Center) }
+            }
+        }
+    }
+    }
+    if (onScanAgain != null) page()
+    else androidx.compose.ui.window.Dialog(onDismissRequest = { if (!busy) onDismiss() },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false, dismissOnClickOutside = false)) { page() }
+
+    LaunchedEffect(busy, link) {
         if (!busy) return@LaunchedEffect
         val c = card ?: return@LaunchedEffect
-        // The id comes from the RESOLVED CARD, never from the URL. Handles can be released and
-        // re-registered (030_communities.sql keeps them in one pool with usernames and creator
-        // handles), so redeeming against the id the server just handed us is what stops a stale
-        // poster from enrolling someone into whatever community inherited the handle.
-        runCatching { service.join(c.id, link.inviteToken) }
-            .onSuccess { joined = it.state; alreadyIn = it.existed; haptics.success() }
-            .onFailure { error = messageFor(it, handle = link.handle) }
-        busy = false
+        try {
+            val result = service.join(c.id, link.inviteToken)
+            joined = result.state; alreadyIn = result.existed; haptics.success()
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = messageFor(e, link.handle) }
+        finally { busy = false }
     }
 }
 
 /** Name, handle, avatar, member count — the public card and nothing more. */
 @Composable
 private fun CommunityHeader(card: CommunityService.CommunityCard) {
-    val url = card.avatar_url
-    if (url != null && url.startsWith("http")) {
-        // A PLAINTEXT avatar, like creator profiles (029) — deliberately NOT the E2EE profile
-        // photo from 021. An outsider deciding whether to join has to be able to see it, and
-        // an encrypted image is unreadable to exactly the people this card exists for.
-        AsyncImage(
-            model = url,
-            contentDescription = null,
-            modifier = Modifier.size(72.dp).clip(RoundedCornerShape(20.dp)),
-        )
-    } else {
-        VoiidAvatar(size = 72.dp)
+    QrIdentityAvatar(card.avatar_url, card.name)
+    if (card.official == true) {
+        Text("✓ Official", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.accentInk,
+            modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(VoiidColor.accentTint).padding(horizontal = 12.dp, vertical = 6.dp))
     }
+    Text(when (card.join_policy) {
+        "approval" -> "Approval required"
+        "invite_only" -> "Invite-only community"
+        else -> "Public community"
+    }, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
     Text(
         card.name,
         style = VoiidFont.rounded(22, FontWeight.Bold),
@@ -216,6 +187,9 @@ private fun CommunityHeader(card: CommunityService.CommunityCard) {
             textAlign = TextAlign.Center,
         )
     }
+    Text("Joining doesn’t allow members to message you privately.",
+        style = VoiidFont.rounded(12), color = VoiidColor.textSecondary, textAlign = TextAlign.Center)
+
 }
 
 /**
@@ -275,16 +249,6 @@ private fun JoinArea(
         textAlign = TextAlign.Center,
     )
 
-    // JOINING IS NOT A MESSAGING RIGHT — and the sheet says so, because every other social app
-    // has trained people to expect otherwise. 020_reachability.sql defines the only three ways
-    // to open a 1:1, and a membership row is not one of them.
-    Text(
-        "Joining doesn’t let members message you privately. Messages in the community stay end-to-end encrypted.",
-        style = VoiidFont.rounded(12),
-        color = VoiidColor.textSecondary,
-        textAlign = TextAlign.Center,
-    )
-
     if (error != null) {
         Text(
             error,
@@ -318,31 +282,7 @@ private fun SheetButton(
     busy: Boolean = false,
     onClick: () -> Unit,
 ) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(28.dp))
-            .background(if (filled) VoiidColor.primary else VoiidColor.fieldFill)
-            // Not merely greyed out while busy: an enabled-looking button that fires a second
-            // join is how a max_uses invite gets spent twice by one impatient person.
-            .clickable(enabled = !busy, onClick = onClick)
-            .padding(vertical = 16.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (busy) {
-            CircularProgressIndicator(
-                color = VoiidColor.textOnPrimary,
-                modifier = Modifier.size(20.dp),
-                strokeWidth = 2.dp,
-            )
-        } else {
-            Text(
-                text,
-                style = VoiidFont.rounded(16, FontWeight.SemiBold),
-                color = if (filled) VoiidColor.textOnPrimary else VoiidColor.textPrimary,
-            )
-        }
-    }
+    QrAction(text, secondary = !filled, busy = busy, tag = "scan.joinCommunity", onClick = onClick)
 }
 
 /** "1 member" / "482 members" — plural handled rather than "1 members". */

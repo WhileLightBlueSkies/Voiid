@@ -1,3 +1,4 @@
+import { groupRemovalError } from '../groupMembershipPolicy';
 // Conversation routes (Section 10). Direct (1:1) and group conversations.
 // Server stores only metadata + membership; message content stays ciphertext (see messages.ts).
 import { Router } from 'express';
@@ -336,6 +337,17 @@ router.post('/:id/members', requireAuth, asyncHandler(async (req, res) => {
   try {
     await addClient.query('begin');
     await addClient.query(`select 1 from conversations where id = $1 for update`, [convId]);
+    // Recheck under the same lock used by role changes/removals: the caller may
+    // have lost admin access while waiting for this transaction.
+    const currentCaller = (await addClient.query(
+      'select role from conversation_members where conversation_id=$1 and user_id=$2 and left_at is null',
+      [convId, user_id]
+    )).rows[0];
+    if (!currentCaller || !['owner', 'admin'].includes(currentCaller.role)) {
+      await addClient.query('rollback');
+      return res.status(403).json({ error: 'only an admin can add members' });
+    }
+
 
     const active = Number((await addClient.query(
       `select count(*)::text as n from conversation_members
@@ -557,27 +569,50 @@ router.post('/:id/transfer-ownership', requireAuth, asyncHandler(async (req, res
 // reaching them; the MLS rekey/Commit that cryptographically removes them is
 // distributed separately by the client.
 router.delete('/:id/members/:userId', requireAuth, asyncHandler(async (req, res) => {
-  if ((await query(`select conversation_id from community_channels where conversation_id = $1`, [req.params.id])).length) {
-    return res.status(403).json({ error: 'manage membership and roles from the community' });
-  }
   const { user_id } = (req as any).auth;
   const convId = req.params.id;
   const target = req.params.userId;
 
-  const caller = (await query<{ role: string }>(
-    `select role from conversation_members where conversation_id = $1 and user_id = $2 and left_at is null`,
-    [convId, user_id]
-  ))[0];
-  if (!caller) return res.status(403).json({ error: 'not a member of this conversation' });
-  if (target !== user_id && caller.role !== 'admin') {
-    return res.status(403).json({ error: 'only an admin can remove another member' });
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(convId)
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target)) {
+    return res.status(400).json({ error: 'invalid group or member id' });
   }
-
-  await query(
-    `update conversation_members set left_at = now()
-       where conversation_id = $1 and user_id = $2 and left_at is null`,
-    [convId, target]
-  );
+  if ((await query(`select conversation_id from community_channels where conversation_id = $1`, [req.params.id])).length) {
+    return res.status(403).json({ error: 'manage membership and roles from the community' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const group = (await client.query('select type from conversations where id=$1 for update', [convId])).rows[0];
+    if (!group || group.type !== 'group') {
+      await client.query('rollback');
+      return res.status(400).json({ error: 'can only remove members from a group' });
+    }
+    const members = (await client.query(
+      'select user_id, role from conversation_members where conversation_id=$1 and left_at is null', [convId]
+    )).rows;
+    const caller = members.find(m => m.user_id === user_id);
+    const removed = members.find(m => m.user_id === target);
+    if (!caller) {
+      await client.query('rollback');
+      return res.status(403).json({ error: 'not a member of this conversation' });
+    }
+    if (!removed) {
+      await client.query('rollback');
+      return res.status(404).json({ error: 'member not found' });
+    }
+    const refusal = groupRemovalError(caller.role, removed.role, user_id === target, members.length);
+    if (refusal) {
+      await client.query('rollback');
+      return res.status(403).json({ error: refusal });
+    }
+    await client.query('update conversation_members set left_at=now() where conversation_id=$1 and user_id=$2 and left_at is null', [convId, target]);
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally { client.release(); }
+  await emitSystemEvent(convId, user_id, target === user_id ? 'member_left' : 'member_removed', { target_id: target });
   res.json({ removed: true });
 }));
 

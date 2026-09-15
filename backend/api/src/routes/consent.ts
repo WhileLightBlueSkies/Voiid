@@ -109,6 +109,9 @@ const NOTICE_PURPOSES: Record<string, Purpose[]> = {
   ],
 };
 
+// Event-payment notice preserves core account purposes; paid onboarding requires separate terms.
+NOTICE_PURPOSES['2026-09-10'] = NOTICE_PURPOSES['2026-08-01'];
+
 /** How the consent arrived. Mirrors the CHECK constraint in 030_dpdp.sql. */
 const GIVEN_VIA = ['app_onboarding', 'app_settings', 'backfill_prompt', 'support'] as const;
 /** How a withdrawal arrived. Mirrors the CHECK constraint in 030_dpdp.sql. */

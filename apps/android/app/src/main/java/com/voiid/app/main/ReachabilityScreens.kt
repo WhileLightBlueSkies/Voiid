@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -81,6 +82,7 @@ fun FindByUsernameScreen(
      * TYPING only — the PIN step and the accept-a-request step below are unchanged.
      */
     prefilledHandle: String? = null,
+    onScanAgain: (() -> Unit)? = null,
     /** (conversationId, pending) once a chat is opened. */
     onOpen: (String, Boolean) -> Unit,
 ) {
@@ -95,18 +97,28 @@ fun FindByUsernameScreen(
     var sending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
+    var pendingConversationId by remember { mutableStateOf<String?>(null) }
+    var lookupJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var lookupGeneration by remember { mutableStateOf(0) }
     val cleanHandle = handle.trim().lowercase().removePrefix("@")
 
     fun lookup() {
-        if (cleanHandle.isEmpty()) return
-        looking = true; error = null; profile = null
-        scope.launch {
-            runCatching { ContactPinService(context).lookup(cleanHandle) }
-                .onSuccess { profile = it }
-                // Do NOT distinguish "no such handle" from other failures — a precise message
-                // would help someone enumerate which handles exist.
-                .onFailure { error = "No one found with that username." }
-            looking = false
+        val requested = handle.trim().lowercase().removePrefix("@")
+        if (requested.isEmpty()) return
+        val generation = ++lookupGeneration
+        lookupJob?.cancel()
+        looking = true; error = null; profile = null; pin = ""
+        lookupJob = scope.launch {
+            try {
+                val found = ContactPinService(context).lookup(requested)
+                if (handle.trim().lowercase().removePrefix("@") == requested) profile = found
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) {
+                if (handle.trim().lowercase().removePrefix("@") == requested) {
+                    error = if ((e as? ApiError.Http)?.status == 404) "No one found with that username."
+                        else "Couldn’t load this profile. Check your connection and try again."
+                }
+            } finally { if (lookupGeneration == generation) looking = false }
         }
     }
 
@@ -117,6 +129,7 @@ fun FindByUsernameScreen(
     }
 
     fun send(p: ContactPinService.PublicProfile) {
+        if (sending || pendingConversationId != null || !p.reachable_by_username || (p.requires_pin && pin.length != 6)) return
         sending = true; error = null
         scope.launch {
             runCatching {
@@ -124,8 +137,12 @@ fun FindByUsernameScreen(
                     p.username ?: cleanHandle,
                     if (p.requires_pin) pin else null,
                 )
-            }.onSuccess { (id, pending) -> onOpen(id, pending) }
-                .onFailure { e ->
+            }.onSuccess { (id, pending) ->
+                if (onScanAgain != null && pending) {
+                    pendingConversationId = id; pin = ""; haptics.success()
+                } else onOpen(id, pending)
+            }.onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
                     // 403 is a wrong PIN, 429 the throttle. Both are actionable, so they are
                     // surfaced rather than flattened into "try again".
                     error = when ((e as? ApiError.Http)?.status) {
@@ -136,6 +153,61 @@ fun FindByUsernameScreen(
                 }
             sending = false
         }
+    }
+
+    if (onScanAgain != null) {
+        QrPreviewPage(
+            title = if (pendingConversationId == null) "Profile preview" else "Request sent",
+            subtitle = if (pendingConversationId == null) "Here’s the person from your QR code." else "They’ll decide whether to accept your request.",
+            onBack = onScanAgain, busy = sending,
+            actions = {
+                val p = profile
+                when {
+                    pendingConversationId != null -> QrAction("Done") { onOpen(pendingConversationId!!, true) }
+                    p?.reachable_by_username == true -> QrAction(
+                        if (p.is_mutual_contact) "Message" else "Send request",
+                        enabled = !p.requires_pin || pin.length == 6, busy = sending, tag = "scan.messageProfile",
+                    ) { haptics.rigid(); send(p) }
+                    !looking && p == null -> QrAction("Try again", onClick = ::lookup)
+                }
+                QrAction("Scan again", secondary = true, enabled = !sending, tag = "scan.again", onClick = onScanAgain)
+            },
+        ) {
+            val p = profile
+            if (p != null) {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(VoiidColor.surfaceCard).padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    val name = p.full_name?.takeIf { it.isNotBlank() } ?: p.username ?: "Voiid profile"
+                    QrIdentityAvatar(p.photo_url, name)
+                    Text(name, style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary, textAlign = TextAlign.Center)
+                    Text("@${p.username ?: cleanHandle}", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                    p.bio?.takeIf { it.isNotBlank() }?.let { Text(it, style = VoiidFont.rounded(15), color = VoiidColor.textSecondary, textAlign = TextAlign.Center) }
+                    androidx.compose.material3.HorizontalDivider(color = VoiidColor.divider)
+                    when {
+                        pendingConversationId != null -> Text("Waiting for them to accept", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.accentInk, modifier = Modifier.testTag("scan.requestSent"))
+                        !p.reachable_by_username -> Text("This person can’t be reached by username.", color = VoiidColor.textSecondary)
+                        p.requires_pin -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("Contact PIN", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                            Text("Ask them for their 6-digit PIN to send a request.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                            androidx.compose.material3.OutlinedTextField(
+                                value = pin, onValueChange = { pin = it.filter { digit -> digit in '0'..'9' }.take(6) },
+                                singleLine = true, label = { Text("6-digit PIN") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                                modifier = Modifier.fillMaxWidth().testTag("scan.contactPin"),
+                                shape = RoundedCornerShape(14.dp),
+                            )
+                        }
+                        else -> Text(if (p.is_mutual_contact) "You’re in each other’s contacts" else "They’ll receive a message request",
+                            style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                    }
+                }
+            } else Column(Modifier.fillMaxWidth().padding(vertical = 60.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (looking) CircularProgressIndicator(color = VoiidColor.primary)
+                Text(if (looking) "Looking up @$cleanHandle…" else "Couldn’t load this profile", color = VoiidColor.textSecondary)
+            }
+            error?.let { Text(it, color = VoiidColor.error, style = VoiidFont.rounded(14), modifier = Modifier.testTag("scan.profileError")) }
+        }
+        return
     }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
@@ -164,7 +236,7 @@ fun FindByUsernameScreen(
                     value = handle,
                     // A new handle invalidates whatever we resolved before — otherwise you
                     // could look one person up, retype, and send to the first.
-                    onValueChange = { handle = it; profile = null; error = null; pin = "" },
+                    onValueChange = { lookupGeneration++; lookupJob?.cancel(); looking = false; handle = it; profile = null; error = null; pin = "" },
                     singleLine = true,
                     textStyle = TextStyle(fontSize = 17.sp, color = VoiidColor.textPrimary),
                     cursorBrush = SolidColor(VoiidColor.primary),

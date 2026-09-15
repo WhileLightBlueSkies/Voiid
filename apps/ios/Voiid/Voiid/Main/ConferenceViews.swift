@@ -37,6 +37,7 @@ struct ConferenceInviteSheet: View {
     // ChatStore is injected, not a singleton — matching every other view in this app.
     @EnvironmentObject private var chat: ChatStore
     @State private var search = ""
+    @State private var selectedUserId: String?
 
     private var candidates: [VConversation] {
         let live = CallService.shared.active?.peerUserId
@@ -70,7 +71,9 @@ struct ConferenceInviteSheet: View {
                 } else {
                     List(candidates) { conv in
                         Button {
-                            if let uid = conv.peerUserId { onPick(uid) }
+                            guard selectedUserId == nil, let uid = conv.peerUserId else { return }
+                            selectedUserId = uid
+                            onPick(uid)
                         } label: {
                             HStack(spacing: VoiidSpacing.sm) {
                                 // ClipThumbnail already resolves a remote URL with a
@@ -89,7 +92,8 @@ struct ConferenceInviteSheet: View {
                             // The whole row is the target, not just the label.
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(SoftPressStyle())
+                        .disabled(selectedUserId != nil)
                         .listRowBackground(VoiidColor.background)
                     }
                     .listStyle(.plain)
@@ -105,6 +109,8 @@ struct ConferenceInviteSheet: View {
                 }
             }
         }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
         .task { if chat.directConversations.isEmpty { await chat.loadConversations() } }
     }
 }

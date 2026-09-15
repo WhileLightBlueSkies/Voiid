@@ -28,14 +28,20 @@ struct CommunityEventsSection: View {
     /// Whether to draw the host affordances. Defaults to false so every existing caller
     /// renders exactly the member's view it rendered before.
     var isHost: Bool = false
+    var isOwner: Bool = false
+    var managementContext: Bool = false
 
+    @State private var staffInvites: [EventService.StaffInvite] = []
+    @State private var staffError: String?
+    @State private var checkingIn: EventService.Event?
     @State private var events: [EventService.Event] = []
     @State private var loading = true
     @State private var failed = false
-    @State private var busyId: String?
     @State private var creating = false
     @State private var hosting: EventService.Event?
     @State private var showTickets = false
+    @State private var booking: EventService.Event?
+    @State private var bookingCompleted = false
     /// Owned by the SECTION, not the row — a sheet owned by a row in a lazy stack is torn
     /// down when that row scrolls out, which can happen while the user is mid-report.
     @State private var reporting: EventService.Event?
@@ -43,16 +49,27 @@ struct CommunityEventsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
             HStack(spacing: VoiidSpacing.sm) {
-                Text("Events")
-                    .font(VoiidFont.rounded(17, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
+                if !managementContext {
+                    Text("Events").font(VoiidFont.rounded(17, .semibold)).foregroundColor(VoiidColor.textPrimary)
+                }
                 Spacer(minLength: 0)
                 // Everyone, not just hosts: the wallet is the ATTENDEE's half, and it was the
                 // half with no client at all.
-                ticketsButton
-                if isHost { createButton }
+                if !managementContext { ticketsButton }
+                if isHost && managementContext { createButton }
             }
 
+                ForEach(staffInvites.filter { $0.state == "pending" }) { invite in
+                    VStack(alignment: .leading) {
+                        Text("Staff invitation: \(invite.title)").font(.headline)
+                        Text(invite.role == "volunteer" ? "Check-in access for this event only." : "Event editing, registrations and check-in access.").font(.footnote)
+                        Button("Accept invitation") { Task {
+                            do { try await EventService.shared.acceptStaff(eventId: invite.event_id); staffInvites = try await EventService.shared.staffInvites(communityId: communityId); await load() }
+                            catch { staffError = "Unable to accept invitation. Check membership and expiry." }
+                        } }
+                    }
+                }
+                if let staffError { Text(staffError).font(.footnote) }
             if loading {
                 ProgressView().tint(VoiidColor.primary)
             } else if failed {
@@ -65,10 +82,25 @@ struct CommunityEventsSection: View {
                     .font(VoiidFont.footnote)
                     .foregroundColor(VoiidColor.textSecondary)
             } else {
-                ForEach(events) { e in row(e) }
+                ForEach(events) { e in
+                    row(e)
+                    if !isHost && e.can_manage != true && e.can_checkin == true && e.status == "published" {
+                        Button("Check in: \(e.title)") { checkingIn = e }
+                    }
+                }
             }
         }
-        .task(id: communityId) { await load() }
+        .task(id: communityId) {
+            await load()
+            do { staffInvites = try await EventService.shared.staffInvites(communityId: communityId) }
+            catch { staffError = "Unable to load staff invitations." }
+        }
+        .sheet(item: $booking, onDismiss: {
+            if bookingCompleted { bookingCompleted = false; showTickets = true }
+        }) { event in
+            EventGroupBookingSheet(event: event) { bookingCompleted = true; booking = nil; Task { await load() } }
+        }
+        .sheet(item: $checkingIn) { e in EventCheckInView(eventId: e.id, eventTitle: e.title) {} }
         .sheet(isPresented: $creating) {
             EventCreateFlow(communityId: communityId) { _ in
                 Task { await load() }
@@ -85,7 +117,7 @@ struct CommunityEventsSection: View {
         }
         .sheet(item: $hosting) { event in
             NavigationStack {
-                EventHostView(event: event) { Task { await load() } }
+                EventHostView(event: event, canAssignStaff: isHost) { Task { await load() } }
             }
         }
     }
@@ -142,7 +174,7 @@ struct CommunityEventsSection: View {
     /// The row itself is UNCHANGED for a member. For a host it gains a tap target and a
     /// chevron; nothing about the member's rendering moved.
     @ViewBuilder private func row(_ e: EventService.Event) -> some View {
-        if isHost {
+        if isHost || e.can_manage == true {
             Button {
                 Haptics.tap()
                 hosting = e
@@ -219,7 +251,11 @@ struct CommunityEventsSection: View {
     }
 
     @ViewBuilder private func action(_ e: EventService.Event) -> some View {
-        if e.your_order_status == "paid" {
+        if isHost || e.can_manage == true {
+            Label("Manage event", systemImage: "chevron.right")
+                .font(VoiidFont.rounded(12, .semibold))
+                .foregroundColor(VoiidColor.primary)
+        } else if e.your_order_status == "paid" {
             Text("Going")
                 .font(VoiidFont.rounded(12, .semibold))
                 .foregroundColor(VoiidColor.primary)
@@ -238,17 +274,12 @@ struct CommunityEventsSection: View {
             Text(e.status == "cancelled" ? "Cancelled" : "Not open")
                 .font(VoiidFont.rounded(12, .regular))
                 .foregroundColor(VoiidColor.textSecondary)
-        } else if !e.free {
-            // The one honest thing to render: the server answers 501 here.
-            Text("Ticketing soon")
-                .font(VoiidFont.rounded(12, .regular))
-                .foregroundColor(VoiidColor.textSecondary)
         } else {
             Button {
                 Haptics.tap()
-                Task { await rsvp(e) }
+                booking = e
             } label: {
-                Text("RSVP")
+                Text(e.free ? "RSVP" : "Book tickets")
                     .font(VoiidFont.rounded(13, .semibold))
                     .foregroundColor(VoiidColor.textOnPrimary)
                     .padding(.horizontal, VoiidSpacing.md)
@@ -257,17 +288,7 @@ struct CommunityEventsSection: View {
                     .clipShape(Capsule())
             }
             .buttonStyle(.plain)
-            .disabled(busyId == e.id)
         }
-    }
-
-    private func rsvp(_ e: EventService.Event) async {
-        busyId = e.id
-        defer { busyId = nil }
-        // Capacity is the server's to enforce and people may be racing for the last seat, so
-        // the list is re-read rather than optimistically marked "Going".
-        _ = try? await EventService.shared.rsvp(eventId: e.id)
-        await load()
     }
 
     private func load() async {
@@ -281,5 +302,166 @@ struct CommunityEventsSection: View {
             // nothing to show, so a background refresh does not blank a working screen.
             failed = events.isEmpty
         }
+    }
+}
+
+struct CommunityEarningsView: View {
+    let communityId: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var earnings: EventService.Earnings?
+    @State private var error: String?
+    @State private var loading = false
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text("Your earnings").font(.largeTitle.weight(.semibold))
+                    Text("Event sales and your organiser share").font(.subheadline).foregroundStyle(.secondary)
+                    if loading { ProgressView("Loading earnings") }
+                    if let error { Text(error); Button("Retry") { Task { await load() } }.disabled(loading) }
+                    if let earnings {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Label("Your split", systemImage: "chart.pie").font(.headline)
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("\(Double(10000 - earnings.commission_bps) / 100, specifier: "%.2f")%")
+                                    .font(.largeTitle.weight(.semibold)).monospacedDigit()
+                                Spacer()
+                                Text("Voiid \(Double(earnings.commission_bps) / 100, specifier: "%.2f")%")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            ProgressView(value: Double(10000 - earnings.commission_bps), total: 10000).tint(VoiidColor.accentInk)
+                            Text("Applies to new orders. Existing orders keep their recorded rate.").font(.footnote).foregroundStyle(.secondary)
+                        }.padding(22).background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
+                        ForEach(Array(earnings.totals.enumerated()), id: \.offset) { _, total in
+                            VStack(alignment: .leading, spacing: 16) {
+                                HStack { Text(total.status.capitalized).font(.headline); Spacer(); Text("\(total.orders) orders").font(.subheadline).foregroundStyle(.secondary) }
+                                Text(amount(total.organiser_minor, total.currency)).font(.largeTitle.weight(.semibold))
+                                Text("Your share").font(.subheadline).foregroundStyle(.secondary)
+                                Divider()
+                                LabeledContent("Gross sales", value: amount(total.gross_minor, total.currency))
+                                LabeledContent("Voiid commission", value: amount(total.commission_minor, total.currency))
+                                if total.unpriced_orders > 0 { Text("Some older orders have no recorded commission.").font(.footnote).foregroundStyle(.secondary) }
+                            }.padding(22).background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
+                        }
+                        if earnings.totals.isEmpty { ContentUnavailableView("No earnings yet", systemImage: "banknote", description: Text("Your event orders will appear here.")) }
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Bank settlements", systemImage: "building.columns").font(.headline)
+                            Text("Bank account setup will be available after organiser onboarding is connected.")
+                            Text("Order totals are before processing fees and taxes. They are not a withdrawable balance.").font(.footnote).foregroundStyle(.secondary)
+                        }.padding(22).background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
+                    }
+                }.padding(20)
+            }.background(VoiidColor.background)
+                .navigationTitle("Earnings").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .task { await load() }.refreshable { await load() }
+        }
+    }
+    private func amount(_ minor: String?, _ currency: String) -> String {
+        guard let minor, let number = Decimal(string: minor) else { return "Not recorded" }
+        return "\(currency) \(NSDecimalNumber(decimal: number / 100).stringValue)"
+    }
+    @MainActor private func load() async {
+        guard !loading else { return }
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            let updated = try await EventService.shared.earnings(communityId: communityId)
+            try Task.checkCancellation()
+            earnings = updated
+        } catch is CancellationError {
+            return
+        } catch APIError.transport(let underlying) where (underlying as? URLError)?.code == .cancelled {
+            return
+        } catch let failure as APIError {
+            switch failure {
+            case .http(let status, _, _) where status == 401 || status == 403:
+                earnings = nil
+                self.error = status == 403 ? "Only the community owner can view earnings." : "Please sign in again."
+            case .http(let status, _, _) where status == 429:
+                self.error = "Please wait a moment before refreshing again."
+            default:
+                self.error = earnings == nil ? "Unable to load earnings. Please try again." : "Couldn't refresh. Showing the last loaded earnings."
+            }
+        } catch {
+            guard !Task.isCancelled, (error as? URLError)?.code != .cancelled else { return }
+            self.error = earnings == nil ? "Unable to load earnings. Please try again." : "Couldn't refresh. Showing the last loaded earnings."
+        }
+    }
+}
+
+
+
+private struct EventGroupBookingSheet: View {
+    let event: EventService.Event
+    let onBooked: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var quantity = 1
+    @State private var busy = false
+    @State private var error: String?
+    @State private var checkout: EventService.Checkout?
+    @State private var showingCheckout = false
+    @State private var submitted = false
+    private var maximum: Int { max(1, min(10, event.capacity ?? 10)) }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(event.title).font(.largeTitle.weight(.semibold))
+                    if let location = event.location_text { Label(location, systemImage: "mappin.and.ellipse").foregroundStyle(.secondary) }
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text("How many people?").font(.title2.weight(.semibold))
+                        Stepper(value: $quantity, in: 1...maximum) {
+                            Text("\(quantity) \(quantity == 1 ? "person" : "people")").font(.title3.weight(.medium))
+                        }.disabled(busy)
+                        Divider()
+                        Label("One QR for your whole booking", systemImage: "qrcode").font(.headline)
+                        Text("Arrive together. Scanning once checks in everyone in this booking.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }.padding(22).background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
+                    HStack { Text("Total"); Spacer(); Text(event.free ? "Free" : String(format: "%@ %.2f", event.currency ?? "INR", Double((event.price_minor ?? 0) * quantity) / 100)).font(.title2.weight(.semibold)) }
+                    if let error { Text(error).foregroundStyle(VoiidColor.error).font(.subheadline) }
+                    Button { Task { await book() } } label: {
+                        Text(busy ? "Please wait…" : event.free ? "Reserve \(quantity) \(quantity == 1 ? "place" : "places")" : "Continue to payment")
+                            .font(.headline).frame(maxWidth: .infinity).padding(12)
+                    }.buttonStyle(.borderedProminent).disabled(busy)
+                }.padding(20)
+            }.background(VoiidColor.background)
+                .navigationTitle("Book tickets").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.disabled(busy) } }
+        }.interactiveDismissDisabled(busy || showingCheckout)
+        .sheet(isPresented: $showingCheckout, onDismiss: { Task { await confirmPayment() } }) {
+            if let checkout {
+                EventCheckoutView(checkout: checkout) { success in
+                    submitted = success; showingCheckout = false
+                }.interactiveDismissDisabled()
+            }
+        }
+    }
+    private func confirmPayment() async {
+        busy = true
+        defer { busy = false }
+        for _ in 0..<(submitted ? 12 : 1) {
+            do {
+                if try await EventService.shared.orderStatus(eventId: event.id) == "paid" {
+                    Haptics.success(); onBooked(); return
+                }
+                if submitted { try await Task.sleep(for: .seconds(1)) }
+            } catch { break }
+        }
+        error = submitted ? "Payment confirmation is pending. Your ticket will appear after verification. Check My tickets before paying again." : "Checkout closed. No payment has been confirmed."
+    }
+    private func book() async {
+        guard !busy else { return }
+        busy = true; error = nil
+        defer { busy = false }
+        do {
+            let outcome = try await EventService.shared.placeOrder(eventId: event.id, quantity: quantity)
+            switch outcome {
+            case .ticketed: Haptics.success(); onBooked()
+            case let .needsPayment(_, payload):
+                checkout = payload; submitted = false; showingCheckout = true
+            }
+        } catch { self.error = (error as? APIError)?.errorDescription ?? "Unable to reserve places. Refresh the event and try again." }
     }
 }

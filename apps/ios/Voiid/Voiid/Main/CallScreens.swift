@@ -118,6 +118,7 @@ struct CallScreen: View {
     /// failure is a runtime crash rather than a compile error — so it is passed by hand.
     @EnvironmentObject private var chat: ChatStore
     @State private var showAddPerson = false
+    @State private var pendingInvitee: String?
 
     /// Reduce Motion gates the rolling digits: a number that animates every second is a
     /// small, repeating movement, which is exactly the kind this setting exists to stop.
@@ -238,7 +239,7 @@ struct CallScreen: View {
     /// True while the conference engine owns the leg this screen was showing.
     private var liveConferenceActive: Bool {
         guard let c = call.active else { return false }
-        return (conference.phase == .escalating || conference.phase == .conference)
+        return conference.phase == .conference
             && conference.callId == c.id
     }
 
@@ -333,6 +334,23 @@ struct CallScreen: View {
                 if request.kind == .voice { voiceCenter } else { videoCenter }
                 Spacer()
 
+                if conference.addingPerson || conference.phase == .escalating {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Adding to call…")
+                    }
+                    .font(VoiidFont.subhead)
+                    .padding(.bottom, VoiidSpacing.sm)
+                    .accessibilityElement(children: .combine)
+                }
+                if let error = conference.lastError {
+                    Text(error)
+                        .font(VoiidFont.subhead)
+                        .foregroundColor(VoiidColor.error)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                        .padding(.bottom, VoiidSpacing.sm)
+                }
                 controls
                     .padding(.bottom, VoiidSpacing.xxl)
             }
@@ -351,7 +369,11 @@ struct CallScreen: View {
                 dismiss()
             }
         }
-        .sheet(isPresented: $showAddPerson) { addPersonSheet }
+        .sheet(isPresented: $showAddPerson, onDismiss: {
+            guard let userId = pendingInvitee else { return }
+            pendingInvitee = nil
+            Task { await conference.escalate(inviteeUserId: userId) }
+        }) { addPersonSheet }
     }
 
     private func onAppearStart() {
@@ -644,8 +666,11 @@ struct CallScreen: View {
                 // would cost space every other button needs.
                 if conference.canEscalate {
                     ctrl("person.badge.plus", false) {
+                        guard !conference.addingPerson, conference.phase == .idle else { return }
                         Haptics.tap(); showAddPerson = true
                     }
+                    .disabled(conference.addingPerson || conference.phase != .idle)
+                    .accessibilityLabel("Add person to call")
                     .frame(maxWidth: .infinity)
                 }
 
@@ -674,8 +699,8 @@ struct CallScreen: View {
     /// never a conversation — inviting someone must not create or imply one.
     @ViewBuilder private var addPersonSheet: some View {
         ConferenceInviteSheet { userId in
+            pendingInvitee = userId
             showAddPerson = false
-            Task { await conference.escalate(inviteeUserId: userId) }
         } onCancel: {
             showAddPerson = false
         }

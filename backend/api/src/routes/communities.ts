@@ -1,3 +1,6 @@
+import { sendWakePush } from '../push';
+import { scheduleCommunityNotification } from '../communityNotifications';
+import { isCommunityNotificationMode } from '../notificationPolicy';
 // Communities — the server-side container that holds N end-to-end-encrypted channels.
 //
 // ============================ NOT END-TO-END ENCRYPTED ============================
@@ -59,6 +62,8 @@ import { communityAccess } from '../communityRoles';
 import { communityChannelSync, communityChannelEvents } from '../communityChannelSync';
 
 const router = Router();
+// Membership state must be revalidated after approval, never served from an HTTP cache.
+router.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 // An in-process capability, impossible to supply in JSON, headers or a URL.
 const officialDispatch = Symbol('official-community-admin');
 function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -246,6 +251,27 @@ async function findCommunity(idOrHandle: string): Promise<CommunityRow | undefin
 }
 
 type Membership = { role: string; state: string };
+
+router.get('/:id/notifications', requireAuth, asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (!UUID_RE.test(id)) return res.status(400).json({error:'invalid community id'});
+  const rows = await query<{notification_mode:string}>(
+    `select notification_mode from community_members where community_id=$1 and user_id=$2 and state='active'`,
+    [id, (req as any).auth.user_id]);
+  if (!rows[0]) return res.status(403).json({error:'active membership required'});
+  res.json(rows[0]);
+}));
+
+router.patch('/:id/notifications', requireAuth, asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (!UUID_RE.test(id)) return res.status(400).json({error:'invalid community id'});
+  if (!isCommunityNotificationMode(req.body?.notification_mode)) return res.status(400).json({error:'notification_mode must be all, important or none'});
+  const rows = await query(
+    `update community_members set notification_mode=$3 where community_id=$1 and user_id=$2 and state='active' returning notification_mode`,
+    [id, (req as any).auth.user_id, req.body.notification_mode]);
+  if (!rows[0]) return res.status(403).json({error:'active membership required'});
+  res.json(rows[0]);
+}));
 
 async function membershipOf(communityId: string, userId: string): Promise<Membership | undefined> {
   return (
@@ -909,6 +935,19 @@ router.post(
       if (landState === 'active') {
         void publishMembershipNotice(communityId, user_id, 'community_member_joined', channelIds);
       }
+      if (landState === 'pending') {
+        // Notify only active managers after commit; repeat pending joins return above.
+        void query<{ push_token: string; push_provider: string }>(
+          `select distinct d.push_token, d.push_provider from devices d
+           join community_members m on m.user_id = d.user_id
+           where m.community_id = $1 and m.state = 'active'
+             and (m.role in ('owner', 'admin') or m.user_id = $2)
+             and d.revoked_at is null and d.push_token is not null`,
+          [communityId, community.owner_id]
+        ).then(devices => sendWakePush(devices, {
+          type: 'community_request', community_id: communityId, community_handle: community.handle
+        })).catch(() => console.warn('[communities] request push unavailable'));
+      }
       return res.json({
         community_id: communityId,
         state: landState,
@@ -1099,9 +1138,9 @@ async function setMemberState(
         await client.query('rollback');
         return { status: 200, body: { state: 'active', changed: false } };
       }
-      if (current.state === 'banned') {
+      if (current.state !== 'pending') {
         await client.query('rollback');
-        return { status: 400, body: { error: 'unban this person before approving them' } };
+        return { status: 400, body: { error: 'there is no pending request to approve' } };
       }
       if (community.member_count >= community.max_members) {
         await client.query('rollback');
@@ -1160,6 +1199,12 @@ async function setMemberState(
       next === 'active' ? 'community_member_joined' : 'community_member_left',
       channelIds
     );
+    if (next === 'active' && current.state === 'pending') {
+      void query<{push_token: string; push_provider: string}>(
+        `select push_token,push_provider from devices where user_id=$1 and revoked_at is null and push_token is not null`, [targetUserId])
+        .then(devices => sendWakePush(devices, { type: 'community_approved', community_id: communityId, community_handle: community.handle }))
+        .catch(() => console.warn('[communities] approval push unavailable'));
+    }
     return { status: 200, body: { state: next, changed: true } };
   } catch (e) {
     await client.query('rollback');
@@ -1943,6 +1988,7 @@ router.post(
     );
     // A fresh post is never liked by its author, so `liked_by_me` is false by construction and
     // needs no probe.
+    scheduleCommunityNotification({communityId, actorId:user_id, kind:'post', publicBody:body});
     res.status(201).json({ post: postShape(rows[0]) });
   })
 );
@@ -2263,6 +2309,7 @@ router.post(
       );
       await client.query('commit');
       res.status(201).json({ announcement: announcementShape(rows.rows[0]) });
+      scheduleCommunityNotification({communityId:gate.community.id,actorId:user_id,kind:'announcement'});
     } catch (e) {
       await client.query('rollback');
       if (isUniqueViolation(e)) {

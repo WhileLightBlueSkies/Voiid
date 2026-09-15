@@ -31,8 +31,11 @@ import SwiftUI
 
 struct CommunityJoinSheet: View {
     let link: CommunityLink
+    var onScanAgain: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var openCommunity = false
     @State private var card: CommunityService.CommunityCard?
     @State private var joined: String?
     /// The server saying "you were already in" — the join is idempotent, and two devices (or
@@ -44,76 +47,122 @@ struct CommunityJoinSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: VoiidSpacing.md) {
+                VStack(alignment: .leading, spacing: 24) {
+                    QRScreenHeading(title: "Community preview", subtitle: "Here’s the community from your QR code or link.")
                     if let card {
                         header(card)
-                        outcome(card)
                     } else if let error {
                         failure(error)
                     } else {
-                        ProgressView()
-                            .padding(.top, VoiidSpacing.xl)
-                        Text("Looking up @\(link.handle)…")
-                            .font(VoiidFont.rounded(14))
-                            .foregroundStyle(VoiidColor.textSecondary)
+                        VStack(spacing: 16) {
+                            ProgressView()
+                            Text("Looking up @\(link.handle)…")
+                                .font(.system(.subheadline, design: .rounded))
+                                .foregroundStyle(VoiidColor.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 240)
                     }
                 }
+                .frame(maxWidth: 520)
                 .frame(maxWidth: .infinity)
-                .padding(VoiidSpacing.lg)
+                .padding(24)
             }
             .background(VoiidColor.background.ignoresSafeArea())
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 12) {
+                    if let card { outcome(card) }
+                    if let onScanAgain {
+                        Button("Scan again", action: onScanAgain)
+                            .buttonStyle(QRActionButtonStyle(secondary: true))
+                            .disabled(busy)
+                            .accessibilityIdentifier("scan.again")
+                    }
+                }
+                .frame(maxWidth: 520)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
+                .background(VoiidColor.background)
+            }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Close") { dismiss() }
-                        .foregroundStyle(VoiidColor.textSecondary)
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { if let onScanAgain { onScanAgain() } else { dismiss() } } label: {
+                        Image(systemName: "chevron.left").frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel(onScanAgain == nil ? "Close preview" : "Back to scanner")
+                    .disabled(busy)
                 }
             }
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(isPresented: $openCommunity) { CommunityDetailView(handle: link.handle) }
         }
         .tint(VoiidColor.primary)
-        // Keyed on the link, so a SECOND link tapped while this sheet is open re-resolves
-        // instead of showing the first community's card under the second community's name.
+        .interactiveDismissDisabled(busy)
         .task(id: link.id) { await resolve() }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                if joined == "pending" || card?.isPending == true { await refreshMembership() }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("communityMembershipChanged"))) { note in
+            if note.userInfo?["community_id"] as? String == card?.id { Task { await refreshMembership() } }
+        }
     }
 
-    // MARK: - Sections
-
-    /// Name, handle, avatar, member count — the public card and nothing more.
-    @ViewBuilder
     private func header(_ card: CommunityService.CommunityCard) -> some View {
-        // A PLAINTEXT avatar, like creator profiles (029) — deliberately NOT the E2EE profile
-        // photo from 021. An outsider deciding whether to join has to be able to see it, and an
-        // encrypted image is unreadable to exactly the people this card exists for.
-        ProfileAvatarButton(photoURL: card.avatar_url, name: card.name, size: 72)
-
-        Text(card.name)
-            .font(VoiidFont.rounded(22, .bold))
-            .foregroundStyle(VoiidColor.textPrimary)
-            .multilineTextAlignment(.center)
-
-        Text("@\(card.handle) · \(Self.memberCount(card.members))")
-            .font(VoiidFont.rounded(13))
-            .foregroundStyle(VoiidColor.textSecondary)
-
-        if let description = card.description, !description.isEmpty {
-            Text(description)
-                .font(VoiidFont.rounded(15))
+        VStack(spacing: 16) {
+            QRIdentityAvatar(photoURL: card.avatar_url, name: card.name)
+            Text(card.name)
+                .font(.system(.title2, design: .rounded, weight: .bold))
+                .foregroundStyle(VoiidColor.textPrimary)
+                .multilineTextAlignment(.center)
+            if card.official == true {
+                Label("Official", systemImage: "checkmark.seal.fill")
+                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .foregroundStyle(VoiidColor.accentInk)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(VoiidColor.accentTint, in: Capsule())
+            }
+            Label(card.policy == "invite_only" ? "Invite-only community" :
+                    card.policy == "approval" ? "Approval required" : "Public community",
+                  systemImage: card.policy == "invite_only" ? "lock" : "person.3")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(VoiidColor.textSecondary)
+            Text("@\(card.handle) · \(Self.memberCount(card.members))")
+                .font(.system(.footnote, design: .rounded))
+                .foregroundStyle(VoiidColor.textSecondary)
+            Divider().padding(.vertical, 4)
+            if let description = card.description, !description.isEmpty {
+                Text(description)
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            Text("Joining doesn’t allow members to message you privately.")
+                .font(.system(.footnote, design: .rounded))
                 .foregroundStyle(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)
         }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+        .background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 24))
+        .accessibilityIdentifier("scan.communityPreview")
     }
 
     /// The join outcome once there is one, otherwise the button.
     @ViewBuilder
     private func outcome(_ card: CommunityService.CommunityCard) -> some View {
-        switch joined ?? "" {
+        switch joined ?? card.membership_state ?? "" {
         // 'pending' is a REAL outcome and not an error: an approval-gated community accepted
         // the request and an admin now has to act. Saying "joined" there would be a lie the
         // user discovers later, when no channels appear.
         case "active":
             notice(alreadyIn
                    ? "You’re already a member of this community."
-                   : "You’re in. The community’s channels will sync to this device shortly.")
-            secondaryButton("Done") { dismiss() }
+                   : "You’re in. Spaces will become available when their keys sync to this device.")
+            secondaryButton("Open community") { openCommunity = true }
         case "pending":
             notice("Request sent. You’ll get in once an admin approves it.")
             secondaryButton("Done") { dismiss() }
@@ -148,23 +197,15 @@ struct CommunityJoinSheet: View {
                             .foregroundStyle(VoiidColor.textOnPrimary)
                     }
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, VoiidSpacing.md)
-                .background(VoiidColor.primary, in: Capsule())
             }
             // Not merely greyed out: an enabled-looking button that fires a second join is how
             // a max_uses invite gets spent twice by one impatient person.
+            .buttonStyle(QRActionButtonStyle())
             .disabled(busy)
+            .opacity(busy ? 0.65 : 1)
+            .accessibilityIdentifier("scan.joinCommunity")
 
             Text(Self.policyBlurb(card))
-                .font(VoiidFont.rounded(12))
-                .foregroundStyle(VoiidColor.textSecondary)
-                .multilineTextAlignment(.center)
-
-            // JOINING IS NOT A MESSAGING RIGHT — and the sheet says so, because every other
-            // social app has trained people to expect otherwise. 020_reachability.sql defines
-            // the only three ways to open a 1:1, and a membership row is not one of them.
-            Text("Joining doesn’t let members message you privately. Messages in the community stay end-to-end encrypted.")
                 .font(VoiidFont.rounded(12))
                 .foregroundStyle(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)
@@ -187,7 +228,8 @@ struct CommunityJoinSheet: View {
             .font(VoiidFont.rounded(14))
             .foregroundStyle(VoiidColor.textSecondary)
             .multilineTextAlignment(.center)
-        secondaryButton("Close") { dismiss() }
+        Button("Try again") { Task { await resolve() } }
+            .buttonStyle(QRActionButtonStyle(secondary: true))
     }
 
     /// Flat informational block — an outcome or a refusal, never an action.
@@ -202,29 +244,38 @@ struct CommunityJoinSheet: View {
     }
 
     private func secondaryButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(VoiidFont.rounded(16, .semibold))
-                .foregroundStyle(VoiidColor.textPrimary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, VoiidSpacing.md)
-                .background(VoiidColor.fieldFill, in: Capsule())
-        }
+        Button(title, action: action).buttonStyle(QRActionButtonStyle(secondary: true))
     }
 
     // MARK: - Actions
 
+    private func refreshMembership() async {
+        guard !busy else { return }
+        do {
+            let updated = try await CommunityService.shared.resolve(link)
+            guard !Task.isCancelled else { return }
+            card = updated
+            joined = updated.membership_state
+        } catch { /* Keep the last server state; the next poll or reopen retries. */ }
+    }
+
     private func resolve() async {
         error = nil
         card = nil
+        joined = nil
+        alreadyIn = false
         do {
-            card = try await CommunityService.shared.resolve(link)
+            let resolved = try await CommunityService.shared.resolve(link)
+            guard !Task.isCancelled else { return }
+            card = resolved
         } catch {
+            guard !Task.isCancelled else { return }
             self.error = Self.message(for: error, handle: link.handle)
         }
     }
 
     private func join(_ card: CommunityService.CommunityCard) async {
+        guard !busy else { return }
         busy = true
         error = nil
         do {

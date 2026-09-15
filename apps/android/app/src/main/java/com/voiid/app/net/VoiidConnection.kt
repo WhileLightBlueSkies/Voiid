@@ -1,6 +1,8 @@
 package com.voiid.app.net
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.Build
 import android.os.OutcomeReceiver
 import android.telecom.CallAudioState
@@ -47,6 +49,21 @@ class VoiidConnection(
     @Volatile private var pendingExplicitRoute: CallManager.AudioRoute? = null
     @Volatile private var endpoints: List<CallEndpoint> = emptyList()
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // A delayed Telecom callback must never control a newer call or connection.
+    private fun forCurrentCall(action: () -> Unit) {
+        mainHandler.post {
+            if (terminated || CallManager.state.value?.callId != callId ||
+                TelecomBridge.connection(callId) !== this) {
+                android.util.Log.i("VOIID", "Ignoring stale Telecom call action")
+                if (!terminated) finish(DisconnectCause.CANCELED)
+                return@post
+            }
+            action()
+        }
+    }
+
     // ---- OS -> engine ----------------------------------------------------------
 
     /**
@@ -57,7 +74,8 @@ class VoiidConnection(
      *
      * Budget: the notification must be posted within 5 seconds of `addNewIncomingCall`.
      */
-    override fun onShowIncomingCallUi() {
+    override fun onShowIncomingCallUi() = forCurrentCall {
+        if (!incoming || CallManager.state.value?.phase != CallManager.Phase.RINGING_IN) return@forCurrentCall
         runCatching { CallForegroundService.showIncoming(appContext, callId, peerName, video) }
     }
 
@@ -65,7 +83,7 @@ class VoiidConnection(
 
     override fun onAnswer(videoState: Int) = answer()
 
-    private fun answer() {
+    private fun answer() = forCurrentCall {
         // Answered from a watch / headset / Auto: bring the in-call UI forward too, so the user
         // isn't left in a call with no visible surface (and, for video, no preview). BEFORE the
         // ring notification is cancelled — this runs in a Telecom binder callback, so it is a
@@ -77,29 +95,32 @@ class VoiidConnection(
         endIfEngineGone(DisconnectCause.LOCAL)
     }
 
-    override fun onReject() {
+    override fun onReject() = forCurrentCall {
+        android.util.Log.i("VOIID", "Telecom action: reject")
         runCatching { CallForegroundService.cancelIncoming(appContext) }
         runCatching { CallManager.decline() }
         endIfEngineGone(DisconnectCause.REJECTED)
     }
 
-    override fun onDisconnect() {
+    override fun onDisconnect() = forCurrentCall {
+        android.util.Log.i("VOIID", "Telecom action: disconnect")
         runCatching { CallManager.hangup() }
         endIfEngineGone(DisconnectCause.LOCAL)
     }
 
     /** Telecom abandoned the call before it was ever set up (e.g. a failed outgoing dial). */
-    override fun onAbort() {
+    override fun onAbort() = forCurrentCall {
+        android.util.Log.i("VOIID", "Telecom action: abort")
         runCatching { CallManager.hangup() }
         endIfEngineGone(DisconnectCause.CANCELED)
     }
 
-    override fun onHold() {
+    override fun onHold() = forCurrentCall {
         if (CallManager.state.value?.onHold == false) runCatching { CallManager.toggleHold() }
         runCatching { setOnHold() }
     }
 
-    override fun onUnhold() {
+    override fun onUnhold() = forCurrentCall {
         if (CallManager.state.value?.onHold == true) runCatching { CallManager.toggleHold() }
         runCatching { setActive() }
     }
@@ -281,7 +302,7 @@ class VoiidConnection(
         terminated = true
         runCatching { setDisconnected(DisconnectCause(cause)) }
         runCatching { destroy() }
-        TelecomBridge.detach(callId)
+        TelecomBridge.detach(callId, this)
     }
 
     /**

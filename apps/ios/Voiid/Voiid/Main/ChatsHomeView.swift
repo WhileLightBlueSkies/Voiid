@@ -18,6 +18,7 @@ struct ChatsHomeView: View {
     @State private var search = ""
     @State private var tab: Tab = .chats
     @ObservedObject private var notificationRouter = NotificationMessageRouter.shared
+    @State private var notificationNavigationTask: Task<Void, Never>?
     @State private var openConversation: VConversation?
     @State private var deleteTarget: VConversation?
     @State private var callTarget: VConversation?
@@ -30,8 +31,6 @@ struct ChatsHomeView: View {
     @State private var searching = false
     @State private var showFindByUsername = false
     @State private var showScanner = false
-    /// A handle from a scanned code, handed to FindByUsernameView when it opens.
-    @State private var scannedHandle: String?
     @State private var showRequests = false
     /// Inbound requests waiting to be accepted. Drives the banner below the header; a count of
     /// zero hides it entirely rather than showing an empty affordance.
@@ -48,6 +47,31 @@ struct ChatsHomeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     enum Tab: String { case chats = "Chats", groups = "Groups" }
+
+    private func resolveNotification(_ destination: NotificationMessageRouter.Destination) -> Bool {
+        guard notificationRouter.pendingConversation == destination,
+              let conv = (chat.directConversations + chat.groupConversations).first(where: { $0.id == destination.conversationId }) else { return false }
+        showScanner = false
+        showSettings = false
+        showNewChat = false
+        showFindByUsername = false
+        showRequests = false
+        showNewGroup = false
+        showCallLog = false
+        openConversation = conv
+        notificationRouter.consumeConversation(destination)
+        return true
+    }
+
+    private func openUsernameConversation(_ conversationId: String, _ pending: Bool) {
+        guard !pending else { Task { await chat.loadConversations() }; return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            Task {
+                await chat.loadConversations()
+                openConversation = chat.directConversations.first { $0.id == conversationId }
+            }
+        }
+    }
 
     // 18pt, the reference's gutter — and the SAME value for rows below, so the grid reads
     // as an even mesh. Ours was 16 across and 24 down, which banded the tiles into rows.
@@ -213,19 +237,23 @@ struct ChatsHomeView: View {
             // OPENING A CHAT LIVES HERE. Removing the old toolbar block took this line and
             // the deep-link handler below with it, so every tap set `openConversation` and
             // nothing consumed it — the tile highlighted and the chat never appeared.
-            .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
-            .task(id: notificationRouter.pendingConversation?.id) {
-                guard let destination = notificationRouter.pendingConversation else { return }
-                let convId = destination.conversationId
-                let present = chat.directConversations.contains { $0.id == convId }
-                    || chat.groupConversations.contains { $0.id == convId }
-                if !present { await chat.loadConversations() }
-                guard !Task.isCancelled, notificationRouter.pendingConversation == destination else { return }
-                if let conv = chat.directConversations.first(where: { $0.id == convId })
-                    ?? chat.groupConversations.first(where: { $0.id == convId }) {
-                    openConversation = conv
-                    notificationRouter.consumeConversation(destination)
+            .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0).id($0.id) }
+            .onReceive(notificationRouter.$pendingConversation) { destination in
+                guard let destination else { return }
+                notificationNavigationTask?.cancel()
+                notificationNavigationTask = Task { @MainActor in
+                    // @Published emits before its stored value changes. Defer validation
+                    // until the new destination is committed, then use cached chats first.
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    if resolveNotification(destination) { return }
+                    await chat.loadConversations()
+                    guard !Task.isCancelled else { return }
+                    if !resolveNotification(destination) { notificationRouter.navigationFailed(destination) }
                 }
+            }
+            .onChange(of: chat.directConversations.map(\.id) + chat.groupConversations.map(\.id)) { _, _ in
+                if let destination = notificationRouter.pendingConversation { _ = resolveNotification(destination) }
             }
             .sheet(isPresented: $showCallLog) {
                 CallLogView()
@@ -239,34 +267,12 @@ struct ChatsHomeView: View {
                 SettingsSheet()
                     .preferredColorScheme(theme.mode.colorScheme)
             }
-            .sheet(isPresented: $showScanner, onDismiss: {
-                // Present only once the camera sheet has finished dismissing.
-                // Competing sheet presentations can otherwise lose the scanned handle.
-                if scannedHandle != nil { showFindByUsername = true }
-            }) {
-                ScanQRCodeView(onCommunityScan: { link in
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        CommunityLinkRouter.shared.handle(URL(string: CommunityLink.format(handle: link.handle, inviteToken: link.inviteToken)))
-                    }
-                }) { link in
-                    // Hand off rather than act: the scanner knows a handle, and every gate
-                    // after that belongs to the flow below.
-                    scannedHandle = link.username
-                }
+            .fullScreenCover(isPresented: $showScanner) {
+                ScanQRCodeView(onOpenConversation: openUsernameConversation)
+                    .preferredColorScheme(theme.mode.colorScheme)
             }
-            .sheet(isPresented: $showFindByUsername, onDismiss: { scannedHandle = nil }) {
-                FindByUsernameView(prefilledHandle: scannedHandle) { conversationId, pending in
-                    // A PENDING request has no chat to open yet — the recipient has not
-                    // accepted, so navigating into it would show an empty transcript that
-                    // looks broken. Refresh the list instead; it appears once accepted.
-                    guard !pending else { Task { await chat.loadConversations() }; return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        Task {
-                            await chat.loadConversations()
-                            openConversation = chat.directConversations.first { $0.id == conversationId }
-                        }
-                    }
-                }
+            .sheet(isPresented: $showFindByUsername) {
+                FindByUsernameView(onOpen: openUsernameConversation)
             }
             .sheet(isPresented: $showRequests) {
                 MessageRequestsView { conversationId in
@@ -455,7 +461,7 @@ struct ChatsHomeView: View {
     private var titleRow: some View {
         HStack(spacing: VoiidSpacing.sm) {
             Text(tab == .groups ? "Groups" : "Chats")
-                .font(VoiidFont.rounded(26, .bold))
+                .font(VoiidFont.screenTitle)
                 .foregroundColor(VoiidColor.textPrimary)
 
             Spacer(minLength: 0)

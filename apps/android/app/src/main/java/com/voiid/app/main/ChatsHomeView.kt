@@ -162,7 +162,6 @@ fun ChatsHomeView(
     var showFindByUsername by remember { mutableStateOf(false) }
     var showScanner by remember { mutableStateOf(false) }
     /** Handle carried from a scan into Find by username, cleared when that screen closes. */
-    var scannedHandle by remember { mutableStateOf<String?>(null) }
     var showRequests by remember { mutableStateOf(false) }
     /** Inbound requests waiting to be accepted. Zero hides the banner entirely rather than
      *  showing an affordance to an empty screen. */
@@ -460,8 +459,7 @@ fun ChatsHomeView(
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
             FindByUsernameScreen(
-                prefilledHandle = scannedHandle,
-                onClose = { showFindByUsername = false; scannedHandle = null },
+                onClose = { showFindByUsername = false },
                 onOpen = { conversationId, pending ->
                     showFindByUsername = false
                     reachScope.launch {
@@ -480,20 +478,16 @@ fun ChatsHomeView(
     if (showScanner) {
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { showScanner = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false, dismissOnClickOutside = false),
         ) {
             ScanQrCodeScreen(
                 onBack = { showScanner = false },
-                onCommunityScanned = { link ->
+                onOpen = { conversationId, pending ->
                     showScanner = false
-                    com.voiid.app.net.DeepLinkRouter.openCommunityInvite(link)
-                },
-                // HAND OFF, don't act: the scan supplies a handle and the PIN step plus the
-                // accept-a-request step still happen on the screen typing would have reached.
-                onScanned = { handle ->
-                    showScanner = false
-                    scannedHandle = handle
-                    showFindByUsername = true
+                    reachScope.launch {
+                        chat.loadConversations()
+                        if (!pending) chat.directConversations.firstOrNull { it.id == conversationId }?.let(onOpenConversation)
+                    }
                 },
             )
         }

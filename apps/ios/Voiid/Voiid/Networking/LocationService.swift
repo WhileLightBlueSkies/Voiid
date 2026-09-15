@@ -62,7 +62,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// whether it actually continues in the background depends on Always being granted.
     func startLive() {
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        manager.distanceFilter = 25
+        manager.distanceFilter = kCLDistanceFilterNone
         manager.activityType = .other
         // Never let the OS auto-pause an ACTIVE, timer-bounded share — the user asked for
         // it to run until their timer ends.

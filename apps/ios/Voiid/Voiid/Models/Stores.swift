@@ -333,6 +333,7 @@ final class ChatStore: ObservableObject {
     func reset() {
         directConversations = []
         groupConversations = []
+        communityConversations = []
         messagesByConversation = [:]
         typingExpiry.values.forEach { $0.cancel() }
         typingExpiry = [:]
@@ -355,7 +356,39 @@ final class ChatStore: ObservableObject {
     /// message history was on disk — the messages were unreachable because nothing
     /// knew which conversations existed. Now the database answers first and the
     /// network merely updates it: offline, you see your chats.
+    // Account-scoped, authoritative list membership. Keep channel transcripts in
+    // LocalStore for Communities, but never infer a standalone group from MLS type.
+    private var standaloneGroupIDs: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: standaloneGroupKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: standaloneGroupKey) }
+    }
+    private var communityChannelIDs: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: standaloneGroupKey + ".channels") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: standaloneGroupKey + ".channels") }
+    }
+    private var communityConversations: [VConversation] = []
+    private var encryptedGroupConversations: [VConversation] { groupConversations + communityConversations }
+    private var standaloneGroupKey: String {
+        "voiid.standalone-groups.v1.\(TokenStore.shared.userId ?? "signed-out")"
+    }
+    private var loadingConversationList = false
+    private var conversationListWaiters: [CheckedContinuation<Void, Never>] = []
+
     func loadConversations() async {
+        if loadingConversationList {
+            // Incoming messages must wait for the list they are about to look up.
+            await withCheckedContinuation { conversationListWaiters.append($0) }
+            return
+        }
+        loadingConversationList = true
+        defer {
+            loadingConversationList = false
+            let waiters = conversationListWaiters
+            conversationListWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+        let accountID = TokenStore.shared.userId
+        let previousGroupIDs = standaloneGroupIDs
         startRealtime()
 
         // One-time lift of the legacy app-group JSON blob into SQLite.
@@ -371,7 +404,24 @@ final class ChatStore: ObservableObject {
 
         do {
             let convs = try await ChatService.shared.fetchConversations()
+            // Do not publish a partial classification if a community request fails.
+            let communities = try await CommunityService.shared.mine()
+            // /mine is capped at 200. Never classify from a potentially truncated list.
+            guard communities.count < 200 else {
+                throw NSError(domain: "GroupList", code: 1, userInfo: [NSLocalizedDescriptionKey: "Couldn’t refresh groups from an incomplete community list."])
+            }
+            var channelIDs = Set<String>()
+            for community in communities where community.isMember || community.owner_id == accountID {
+                let channels = try await CommunityService.shared.channels(communityId: community.id)
+                channelIDs.formUnion(channels.map(\.conversation_id))
+            }
+            guard TokenStore.shared.userId == accountID else { return }
+            let confirmed = Set(convs.filter { $0.type == .group && !channelIDs.contains($0.id) }.map(\.id))
+            // A group created while the fetch was in flight must survive this older snapshot.
+            let newlyCreated = standaloneGroupIDs.subtracting(previousGroupIDs)
             LocalStore.saveConversations(convs)
+            standaloneGroupIDs = confirmed.union(newlyCreated.subtracting(channelIDs))
+            communityChannelIDs = channelIDs
             // Learn the peer names/photos this payload carried, so calls and headers
             // can resolve a name without a further round trip. Bulk, not per-row: the
             // single-row upsert reloads the whole table and republishes each time.
@@ -413,13 +463,15 @@ final class ChatStore: ObservableObject {
         // message array is decoded lazily by openConversation(...) when it's actually opened
         // (WhatsApp-style). Previews stay fresh via bumpPreview at message-write time.
         let convs = LocalStore.conversations()
-        guard !convs.isEmpty else { return }
         // Note to Self lives in CHATS, pinned to the top — it is the one conversation whose
         // position should never move, because you reach for it by muscle memory rather than
         // by recency. Filtering to `.direct` alone would have dropped it from both lists.
         let selfChats = convs.filter { $0.type == .self }
         directConversations = selfChats + convs.filter { $0.type == .direct }
-        groupConversations = convs.filter { $0.type == .group }
+        let channelIDs = communityChannelIDs
+        communityConversations = convs.filter { $0.type == .group && channelIDs.contains($0.id) }
+        let listedGroupIDs = standaloneGroupIDs
+        groupConversations = convs.filter { $0.type == .group && listedGroupIDs.contains($0.id) }
         backfillPreviewsIfNeeded()
     }
 
@@ -547,6 +599,7 @@ final class ChatStore: ObservableObject {
                                      photoName: nil, lastMessagePreview: nil, lastMessageAt: nil,
                                      unreadCount: 0, memberCount: members.count + 1)
             LocalStore.upsertConversation(conv)
+            standaloneGroupIDs.insert(conv.id)
             groupConversations.insert(conv, at: 0)
             return conv
         } catch {
@@ -852,11 +905,15 @@ final class ChatStore: ObservableObject {
         guard let conv = directConversations.first(where: { $0.id == conversationId }) else {
             // Group conversation: real MLS end-to-end encryption.
             if kind == .text,
-               groupConversations.contains(where: { $0.id == conversationId }) {
+               encryptedGroupConversations.contains(where: { $0.id == conversationId }) {
                 bumpPreview(conversationId, preview: text)
                 Task {
-                    await GroupEngine.shared.sendGroupMessage(conversationId: conversationId, text: text)
-                    refresh(conversationId)
+                    do {
+                        try await GroupEngine.shared.sendGroupMessage(conversationId: conversationId, text: text)
+                        refresh(conversationId)
+                    } catch {
+                        loadError = (error as? APIError)?.errorDescription ?? "Couldn’t send the group message."
+                    }
                 }
                 return
             }
@@ -986,14 +1043,14 @@ final class ChatStore: ObservableObject {
     private func handleIncoming(_ conversationId: String) async {
         NSLog("[VOIID] handleIncoming conv=\(conversationId) known=\(directConversations.contains { $0.id == conversationId })")
         if let conv = directConversations.first(where: { $0.id == conversationId })
-            ?? groupConversations.first(where: { $0.id == conversationId }) {
+            ?? encryptedGroupConversations.first(where: { $0.id == conversationId }) {
             await syncMessages(conv); return
         }
         // Unknown conversation (first message / a group we were just added to) — load the
         // list, THEN sync that conversation so the message actually appears (not just on open).
         await loadConversations()
         if let conv = directConversations.first(where: { $0.id == conversationId })
-            ?? groupConversations.first(where: { $0.id == conversationId }) {
+            ?? encryptedGroupConversations.first(where: { $0.id == conversationId }) {
             await syncMessages(conv)
         }
     }
@@ -1003,10 +1060,10 @@ final class ChatStore: ObservableObject {
     private func handleGroupEvent(_ conversationId: String) async {
         await GroupEngine.shared.syncGroupEvents()
         // A Welcome may have added us to a brand-new group not yet in our list.
-        if !groupConversations.contains(where: { $0.id == conversationId }) {
+        if !encryptedGroupConversations.contains(where: { $0.id == conversationId }) {
             await loadConversations()
         }
-        if let conv = groupConversations.first(where: { $0.id == conversationId }) {
+        if let conv = encryptedGroupConversations.first(where: { $0.id == conversationId }) {
             await syncMessages(conv)
         }
     }

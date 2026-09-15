@@ -78,6 +78,7 @@ struct ChatSettingsView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .scrollIndicators(.hidden)
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationTitle("Chats")

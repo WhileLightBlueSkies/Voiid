@@ -96,6 +96,7 @@ struct LinkedDevicesView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .voiidSettingsPage()
         .sheet(isPresented: $showingLinkBrowser, onDismiss: {
             Task { await load(showingSpinner: false) }

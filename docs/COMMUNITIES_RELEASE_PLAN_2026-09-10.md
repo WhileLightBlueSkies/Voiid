@@ -74,6 +74,8 @@ Public cards, Home posts, rules, links, events and moderation metadata are serve
 
 ## Production result and handoff
 
+- Follow-up: iOS Discover communities previously lived inside the membership list, so it disappeared when the user had no memberships or the initial load failed. It now sits above the page content in every state, including search. Signed iOS build and startup-resource validation passed for this placement fix.
+
 - Final backend revision **`c77987c`** deployed successfully through all quality gates: https://github.com/WhileLightBlueSkies/Voiid/actions/runs/34455136294 . Live `/health` reports that build, API status OK, database up and Redis up.
 - The explicitly authorized production reset deleted **7 communities and 6 associated conversations**. A fresh count after the final deployment confirms **0 communities, 0 Spaces, 0 posts, 0 memberships, 0 host threads and 0 event orders**. No identifiable R2 objects were queued by this reset (`media_queued: 0`).
 - **No replacement communities were seeded.** Voiid Jobs, Voiid Feedback and Voiid Updates are ready in the reviewed, tested seed script, but the user's owner account is still required.
@@ -82,3 +84,9 @@ Public cards, Home posts, rules, links, events and moderation metadata are serve
 - Additional phone-side hardening validates a KeyPackage's signed credential against the requested user/device **before changing the real Space**. An isolated temporary group checks the credential using the existing MLS library; none of its secrets are published. Android explicitly closes that temporary state. The real production Swift guard rejects a forged owner identity, a wrong device identity and malformed bytes, while a legitimate recipient still joins and decrypts successfully. `tools/check-community-keypackage-identity.py` runs this check and is wired into iOS CI. Both native builds passed after adding the guard. This follow-up changes no deployed backend behavior.
 - Source files used for the built native apps were compared with the workspace (26 files, no mismatches before the final guard; the guard files were then overlaid and rebuilt).
 - Remaining user inputs: the existing owner username/account ID; unlock the iPhone and reconnect Android for installation and live membership/QR/Space tests. Owner-online provisioning and lost-coordinator recovery remain the explicit limitations described above.
+
+## Official communities created — 2026-09-10
+
+The user delegated owner selection ("you see and create"). Production inspection found the Nehal platform admin and the existing @nehal app account with unrevoked iOS/web registrations. Used @nehal as owner; no admin credentials or roles were changed.
+
+The maintenance script passed a dry run, then ran with --seed --owner=nehal --confirm --expected-count=0 (no reset). Verified exactly Voiid Jobs, Voiid Feedback and Voiid Updates, each discoverable, open to join, unsuspended, correctly marked official, with one active owner and two Spaces. Jobs/Updates use manager posting; Feedback allows member posting. These records satisfy Discover and official admin-management filters. Native screens and authenticated browser interactions have not been re-tested live after creation. This supersedes the earlier owner/seed pending notes; no APK rebuild is needed for these server records.

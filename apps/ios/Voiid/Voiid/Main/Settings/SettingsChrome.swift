@@ -145,6 +145,7 @@ extension View {
     /// from the hand-rolled cards this replaces.
     func voiidSettingsList() -> some View {
         self
+            .softTopEdgeEffect()
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             // Rows are pinned to the Voiid card token rather than left to the platform's

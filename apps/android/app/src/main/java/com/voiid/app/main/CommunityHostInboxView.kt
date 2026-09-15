@@ -1,5 +1,8 @@
 package com.voiid.app.main
 
+import kotlinx.coroutines.launch
+import androidx.lifecycle.repeatOnLifecycle
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -126,5 +129,58 @@ fun CommunityHostInboxView(
 private fun InboxNote(text: String) {
     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
         Text(text, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    }
+}
+
+@androidx.compose.runtime.Composable
+internal fun CommunityRequestInbox(communityId: String, onClose: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val service = androidx.compose.runtime.remember { com.voiid.app.net.CommunityService(context) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var rows by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<List<com.voiid.app.net.CommunityService.QueueItem>>(emptyList()) }
+    var loading by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var busy by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var error by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    suspend fun load() {
+        if (loading) return
+        loading = true
+        try { rows = service.moderationQueue(communityId); error = null }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { error = "Couldn’t load community inbox." }
+        finally { loading = false }
+    }
+    val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.LaunchedEffect(communityId, lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) { load(); kotlinx.coroutines.delay(10000) }
+        }
+    }
+    EventControlPage("Community Inbox", onClose) {
+        androidx.compose.foundation.lazy.LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp)) {
+            item { androidx.compose.material3.TextButton(enabled = !loading, onClick = { scope.launch { load() } }) { Text(if (loading) "Loading…" else "Refresh") } }
+            error?.let { item { Text(it) } }
+            if (!loading && error == null && rows.isEmpty()) item { Text("No pending requests or reports.") }
+            items(rows, key = { it.id }) { row ->
+                androidx.compose.foundation.layout.Column(Modifier.padding(vertical = 12.dp)) {
+                    Text(if (row.kind == "join_request") "Join request" else "Reported post")
+                    Text(row.username?.let { "@$it" } ?: row.subject ?: "Someone")
+                    row.detail?.let { Text(it) }
+                    if (row.kind == "join_request" && row.user_id != null) {
+                        androidx.compose.foundation.layout.Row {
+                            listOf(true, false).forEach { approve ->
+                                androidx.compose.material3.TextButton(enabled = !busy, onClick = {
+                                    if (!busy) { busy = true; scope.launch {
+                                        try { if (approve) service.approveMember(communityId, row.user_id) else service.removeMember(communityId, row.user_id); load() }
+                                        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                                        catch (_: Exception) { error = "Couldn’t update this request. Refresh and try again." }
+                                        finally { busy = false }
+                                    } }
+                                }) { Text(if (approve) "Approve" else "Decline") }
+                            }
+                        }
+                    } else { Text("Review this report in Admin panel.") }
+                }
+            }
+        }
     }
 }

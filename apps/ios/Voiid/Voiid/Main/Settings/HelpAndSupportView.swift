@@ -118,6 +118,7 @@ struct HelpAndSupportView: View {
             }
             .padding(VoiidSpacing.md)
         }
+        .softTopEdgeEffect()
         .scrollIndicators(.hidden)
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationTitle("Help & support")

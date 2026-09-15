@@ -1,3 +1,4 @@
+import { sweepMissedCallNotifications } from './missedCallNotifications';
 import { sweepEventLiveActivities } from './eventLiveActivities';
 // VOIID API service (Phase 0/1). HTTPS-only in prod; JWT validation; rate limiting (Section 4.6/4.9).
 import { secretboxAvailable } from './secretbox';
@@ -376,6 +377,21 @@ app.listen(port, () => {
         'PINs cannot be shown after generation. Generate one with: openssl rand -base64 32'
   );
 });
+
+// Enable after migration 074. Persisted leases prevent duplicate work across replicas.
+if (process.env.VOIID_MISSED_CALL_PUSH === '1') {
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await sweepMissedCallNotifications(); }
+    catch (error) { console.warn('[missed-call-push] sweep failed:', (error as Error).message); }
+    finally { running = false; }
+  };
+  const timer = setInterval(() => { void tick(); }, 15_000);
+  timer.unref();
+  void tick();
+}
 
 // Event activity updates are device-scoped and leased across API replicas.
 if (process.env.VOIID_EVENT_LIVE_ACTIVITIES === '1') {

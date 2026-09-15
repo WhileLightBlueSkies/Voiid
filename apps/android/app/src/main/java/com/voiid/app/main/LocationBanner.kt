@@ -131,12 +131,12 @@ fun LocationBanner(conversationId: String? = null, modifier: Modifier = Modifier
         com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { if (!stopping) confirmStopAll = false },
             title = "Stop all live shares?",
-            body = "This ends every live share you have running.",
+            body = "This ends the chat live shares shown here. Friends Map sharing stays on.",
             confirmLabel = "Stop all",
             onConfirm = {
                 stopping = true
                 scope.launch {
-                    LocationShareEngine.stopAllFromSystem()
+                    shares.map { it.shareId }.forEach { LocationShareEngine.stopShare(it) }
                     stopping = false
                     confirmStopAll = false
                 }

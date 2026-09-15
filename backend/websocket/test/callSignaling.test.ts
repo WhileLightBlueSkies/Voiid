@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { callKeyCopies, callKeyDeliveryFrames, CALL_DEVICE_CLAIM_SCRIPT } from '../src/callSignaling';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
+import { encodeOneToOneCallGrant, encodeCallGrant, callGrantNeedsDeviceClaim, callGrantAllows } from '@voiid/common-utils';
+
+test('API 1:1 grant enables device arbitration without treating a two-person conference as 1:1', () => {
+  const pair = encodeOneToOneCallGrant('caller', 'callee');
+  assert.equal(JSON.parse(pair).v, 2);
+  assert.equal(callGrantNeedsDeviceClaim(JSON.parse(pair)), true);
+  assert.equal(callGrantAllows(pair, 'caller', 'callee'), true);
+  assert.equal(callGrantAllows(pair, 'caller', 'outsider'), false);
+  assert.equal(callGrantNeedsDeviceClaim({ a: 'caller', b: 'callee' } as any), true);
+  for (const roster of [['caller', 'callee'], ['caller', 'callee', 'third']])
+    assert.equal(callGrantNeedsDeviceClaim(JSON.parse(encodeCallGrant(roster))), false);
+});
 
 const expected = [{ device_id: 'phone', body: 'opaque-encrypted-body' }];
 test('iOS array, map and Android single-device keys normalize identically', () => {
@@ -56,6 +68,7 @@ test('real Redis arbitrates two simultaneous answers and rejects stale device ha
     assert.equal(answerDecline.filter(r => r[0] === 1).length, 1, 'answer/decline race has one verdict');
     await redis.del(...keys);
     assert.equal((await claim('caller', 'call_offer', true))[0], 1);
+    assert.equal((await claim('caller-sibling', 'call_hangup', true))[0], 0, 'a caller sibling cannot cancel the dialing device');
     assert.equal((await claim('caller', 'call_hangup', true))[0], 1);
     assert.equal((await claim('callee', 'call_answer'))[0], 0, 'answer after caller cancellation is rejected');
   } finally { await redis.del(...keys); redis.disconnect(); }

@@ -24,11 +24,70 @@ final class NotificationMessageRouter: ObservableObject {
     static let shared = NotificationMessageRouter()
     @Published private(set) var pendingConversation: Destination?
     @Published private(set) var pendingMessage: Destination?
+    struct Banner: Identifiable {
+        let id = UUID()
+        let conversationId: String
+        let messageId: String?
+        let title: String
+        let body: String
+        var count: Int = 1
+        var communityHandle: String? = nil
+    }
+    @Published private(set) var banners: [Banner] = []
+    var banner: Banner? { banners.first }
+    private var recentBannerIDs: [String] = []
+    func showBanner(conversationId: String, messageId: String?, title: String, body: String) {
+        guard !conversationId.isEmpty, !MuteStore.isMuted(conversationId),
+              ChatPresence.openConversationId != conversationId else { return }
+        if let messageId {
+            let key = conversationId + ":" + messageId
+            guard !recentBannerIDs.contains(key) else { return }
+            recentBannerIDs.append(key)
+            if recentBannerIDs.count > 128 { recentBannerIDs.removeFirst() }
+        }
+        let count = (banners.first { $0.conversationId == conversationId }?.count ?? 0) + 1
+        var next = banners.filter { $0.conversationId != conversationId }
+        next.insert(Banner(conversationId: conversationId, messageId: messageId,
+                           title: title.isEmpty ? "Voiid" : title, body: body.isEmpty ? "New message" : body,
+                           count: count), at: 0)
+        banners = Array(next.prefix(3))
+    }
+    func showCommunityApproval(_ handle: String, isRequest: Bool = false, isUpdate: Bool = false) {
+        let item = Banner(conversationId: "", messageId: nil, title: isUpdate ? "New community update" : isRequest ? "New community join request" : "Community request approved", body: "Tap to open the community", communityHandle: handle)
+        banners = Array(([item] + banners.filter { $0.communityHandle != handle }).prefix(3))
+    }
+    func openBanner(_ banner: Banner) {
+        if let handle = banner.communityHandle {
+            banners.removeAll { $0.id == banner.id }
+            CommunityLinkRouter.shared.handle(URL(string: "https://voiid.app/c/\(handle)"))
+        } else { open(conversationId: banner.conversationId, messageId: banner.messageId) }
+    }
+    func resetForSignOut() {
+        banners = []
+        pendingConversation = nil
+        pendingMessage = nil
+        recentBannerIDs.removeAll()
+    }
+    func dismissBanner(_ id: UUID? = nil) {
+        guard let id else { banners = []; return }
+        guard banner?.id == id else { return }
+        banners = Array(banners.dropFirst()).filter {
+            !MuteStore.isMuted($0.conversationId) && ChatPresence.openConversationId != $0.conversationId
+        }
+    }
     func open(conversationId: String, messageId: String?) {
         guard !conversationId.isEmpty else { return }
+        banners.removeAll { $0.conversationId == conversationId }
         let destination = Destination(conversationId: conversationId, messageId: messageId)
         pendingMessage = messageId?.isEmpty == false ? destination : nil
         pendingConversation = destination
+    }
+    func navigationFailed(_ destination: Destination) {
+        guard pendingConversation == destination else { return }
+        banners.removeAll { $0.conversationId == destination.conversationId }
+        banners.insert(Banner(conversationId: destination.conversationId, messageId: destination.messageId,
+                        title: "Couldn't open chat", body: "Tap to try again when you're connected."), at: 0)
+        banners = Array(banners.prefix(3))
     }
     func consumeConversation(_ destination: Destination) {
         if pendingConversation == destination { pendingConversation = nil }
@@ -126,7 +185,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        guard response.actionIdentifier != UNNotificationDismissActionIdentifier else { completionHandler(); return }
         let userInfo = response.notification.request.content.userInfo
+        if ["community_approved", "community_request", "community_update"].contains(userInfo["type"] as? String ?? ""),
+           let handle = userInfo["community_handle"] as? String,
+           handle.range(of: "^[a-z0-9_]{3,64}$", options: .regularExpression) != nil {
+            Task { @MainActor in CommunityLinkRouter.shared.handle(URL(string: "https://voiid.app/c/\(handle)")) }
+            completionHandler(); return
+        }
+
         if response.actionIdentifier == MissedCallNotifier.actionCallBack,
            userInfo["type"] as? String == MissedCallNotifier.typeValue,
            let callerId = userInfo["caller_id"] as? String, !callerId.isEmpty {
@@ -167,35 +234,32 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // A MUTED CONVERSATION IS SILENT IN THE FOREGROUND TOO.
-        //
-        // The NSE suppresses these while the app is backgrounded; this is the same rule for
-        // a notification that arrives while it is open. Delivered to the list but not
-        // banner-ed or sounded — muting means "stop interrupting me", not "hide it from me",
-        // so the message is still there when the user goes looking.
-        let convoId = notification.request.content.userInfo["conversation_id"] as? String
-        if let convoId, MuteStore.isMuted(convoId) {
-            completionHandler([.list])
-            return
+        let content = notification.request.content
+        let info = content.userInfo
+        let kind = info["type"] as? String
+        if kind == "community_approved" || kind == "community_request" || kind == "community_update" {
+            NotificationCenter.default.post(name: Notification.Name("communityMembershipChanged"), object: nil, userInfo: info)
+            if let handle = info["community_handle"] as? String,
+               handle.range(of: "^[a-z0-9_]{3,64}$", options: .regularExpression) != nil {
+                Task { @MainActor in
+                    NotificationMessageRouter.shared.showCommunityApproval(handle, isRequest: kind == "community_request", isUpdate: kind == "community_update")
+                }
+            }
+            completionHandler([]); return
         }
 
-        // ── NOT WHILE THEY ARE READING IT ──────────────────────────────────────────
-        // A banner for the thread that is open on screen announces a message the user is
-        // already looking at, and slides over the top of it to do so. Every messaging app
-        // suppresses this; this one banner-ed regardless, which is what made an in-app
-        // message feel like it arrived twice.
-        //
-        // Deliberately narrow — only the OPEN thread. Foreground on the chat list still
-        // banners, because the message is not visible there.
-        //
-        // `.list` is kept in every case: suppressing the banner must not hide the message
-        // from Notification Centre, exactly as the mute rule above already decided.
-        if let convoId, ChatPresence.openConversationId == convoId {
-            completionHandler([.list])
+        // Calls keep their established CallKit/system notification behavior.
+        if kind == "call" || kind == "group_call" || kind == MissedCallNotifier.typeValue {
+            completionHandler([.banner, .sound, .list])
             return
         }
-
-        completionHandler([.banner, .sound, .list])
+        completionHandler([])
+        guard let conversationId = info["conversation_id"] as? String else { return }
+        Task { @MainActor in
+            guard UIApplication.shared.applicationState == .active else { return }
+            NotificationMessageRouter.shared.showBanner(conversationId: conversationId,
+                messageId: info["message_id"] as? String, title: content.title, body: content.body)
+        }
     }
 
     // APNs token -> Firebase Auth (used for silent-push app verification) AND the
@@ -258,6 +322,8 @@ struct VoiidApp: App {
         WindowGroup {
             ContentView()
                 .voiidForceUpdateGate()   // /config on launch + blocking update screen on 426
+                // Inherited by every tab, navigation destination, and presented sheet.
+                .softTopEdgeEffect()
                 // Contact linking, inbound half: tapping a Voiid entry in the phone
                 // app's Recents, or the Voiid row inside a contact card, resumes the
                 // app with an INStartCallIntent naming the person to call.
@@ -295,6 +361,7 @@ struct VoiidApp: App {
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                     // Both routers see the URL; each ignores what is not its own shape, so
                     // order does not matter and neither can swallow the other's link.
+                    EventTicketLinkRouter.shared.handle(activity.webpageURL)
                     CommunityLinkRouter.shared.handle(activity.webpageURL)
                     ProfileLinkRouter.shared.handle(activity.webpageURL)
                 }

@@ -30,6 +30,7 @@ struct LudoGameView: View {
 
     /// Board square side, set by the layout pass and reused for tap math + animation centers.
     @State private var boardSide: CGFloat = 0
+    @State private var availableSize: CGSize = .zero
 
     var body: some View {
         let state = engine.ludoV2?.state
@@ -101,6 +102,7 @@ struct LudoGameView: View {
                     onBack: { onClose() })
             }
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { availableSize = $0 }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .task { await open() }
@@ -416,11 +418,11 @@ struct LudoGameView: View {
     }
 
     private var dieSide: CGFloat {
-        if UIDevice.current.userInterfaceIdiom == .pad { return LudoDimens.dieSizeTablet }
+        if min(availableSize.width, availableSize.height) >= 600 { return LudoDimens.dieSizeTablet }
         return compactLayout ? LudoDimens.dieSizeCompact : LudoDimens.dieSizeStandard
     }
 
-    private var compactLayout: Bool { UIScreen.main.bounds.height < 700 }
+    private var compactLayout: Bool { availableSize.height < 700 }
 
     /// The face the die shows.
     ///

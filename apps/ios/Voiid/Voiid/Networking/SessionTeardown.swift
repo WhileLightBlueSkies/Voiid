@@ -42,6 +42,7 @@ enum SessionTeardown {
     /// which needs exactly the same local wipe after the server-side delete.
     @MainActor
     static func wipeLocalAccountState() async {
+        await EventActivityController.shared.stopAll()
         await unregisterVoIPToken()   // 1 — needs the JWT, so it goes first
         wipeKeychain()                // 2
         wipeInMemoryState()           // 3 — BEFORE the files, or a flush rewrites them
