@@ -73,6 +73,29 @@ rollback() {
   fi
 }
 
+# Delete untracked files that the INCOMING commit tracks.
+#
+# `git checkout` refuses to clobber an untracked file, and aborts the whole deploy before
+# the `git reset --hard` below — which would have discarded that state anyway. This is not
+# hypothetical: a hand-created service-launcher.mjs on the box (put there so `npm start`
+# worked before the file was committed) blocked a deploy for 23 minutes the first time the
+# real file landed in git.
+#
+# DELIBERATELY NOT `git clean -fd`. That would also delete .env, uploaded media, logs and
+# anything else an operator left on the box. Only paths the new commit actually provides
+# are removed, because for those "untracked local copy" and "about to be overwritten by
+# the tracked version" are the same thing.
+clear_untracked_blockers() {
+  local target="$1" path
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ -e "$path" ] && ! git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+      echo "   removing untracked $path (tracked by $target)"
+      rm -f "$path"
+    fi
+  done < <(git ls-tree -r --name-only "$target")
+}
+
 echo "==> Fetching latest code"
 git fetch --prune origin
 
@@ -89,9 +112,11 @@ if [ -n "$DEPLOY_SHA" ]; then
     echo "!! $DEPLOY_SHA is not an ancestor of origin/$BRANCH — refusing to deploy" >&2
     exit 1
   fi
+  clear_untracked_blockers "$DEPLOY_SHA"
   git checkout --detach "$DEPLOY_SHA"
   git reset --hard "$DEPLOY_SHA"
 else
+  clear_untracked_blockers "origin/$BRANCH"
   git checkout "$BRANCH"
   git reset --hard "origin/$BRANCH"   # exact match to remote; no local drift
 fi
