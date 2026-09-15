@@ -1300,6 +1300,7 @@ object CallManager {
         if (!s.incoming) return
         if (expectedCallId != null && s.callId != expectedCallId) return
         if (s.phase != Phase.RINGING_IN) return
+        android.util.Log.i("VOIID", "call-answer: accepted incoming call")
         // ── CONFERENCE INVITE: the conference engine owns acceptance. ──────────────
         // An ad-hoc invitee never receives an SDP offer — they join the SFU by fetching an
         // ad-hoc token — so falling through to the 1:1 answer path set acceptPending and
@@ -1335,6 +1336,7 @@ object CallManager {
         val s = _state.value ?: return
         if (!isCurrentCall(s.callId)) return
         val p = pc ?: return
+        android.util.Log.i("VOIID", "call-answer: preparing media and SDP")
         acceptPending = false
         addLocalMedia(s.kind)
         applyAudioRoute(s.kind == CallKind.VIDEO)
@@ -1346,6 +1348,7 @@ object CallManager {
                     override fun onSetSuccess() {
                         if (!isCurrentCall(s.callId) || pc !== p) return
                         hasNegotiated = true
+                        android.util.Log.i("VOIID", "call-answer: local SDP installed")
                         attachFrameCryptorsIfReady()
                         sendVerificationTagIfReady()
                         WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
@@ -2173,6 +2176,11 @@ object CallManager {
     private fun endInternal(notifyPeer: Boolean, reason: String, conferenceLeg: Boolean = false) {
         val s = _state.value ?: return
         if (s.phase == Phase.ENDED) return
+        // Code locations only: no call IDs, peer identities, signaling payload or media.
+        val origin = Thread.currentThread().stackTrace
+            .filter { it.className.startsWith("com.voiid.app.") }
+            .take(5).joinToString(" <- ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+        android.util.Log.i("VOIID", "call-end: reason=$reason incoming=${s.incoming} accepted=${s.accepted} connected=${s.connectedAtMs != null} notifyPeer=$notifyPeer origin=$origin")
         val conference = ConferenceManager.state.value?.takeIf { it.callId == s.callId }
         val belongsToConference = conferenceLeg || s.isConferenceInvite || conference != null
         _state.value = s.copy(phase = Phase.ENDED, reconnecting = false, endReason = reason)
@@ -2196,7 +2204,10 @@ object CallManager {
             runCatching { WebSocketClient.get(appContext).sendCallHangup(s.peerUserId, s.callId, reason) }
         }
         if (!belongsToConference && reason !in setOf("answered-elsewhere", "declined-elsewhere")) {
-            scope.launch(Dispatchers.IO) { runCatching { CallApi(appContext).status(s.callId, "ended") } }
+            val reported = endReason ?: reason
+            scope.launch(Dispatchers.IO) {
+                runCatching { CallApi(appContext).status(s.callId, "ended", reported) }
+            }
         }
         // Anonymous aggregate — counters only, and it can never fail the call (see CallStats).
         runCatching {
@@ -2873,7 +2884,30 @@ private class CallApi(context: Context) {
             append(",\"conversation_id\":").append(JsonPrimitive(conversationId))
             append("}")
         }
-        val resp = api.request("POST", "calls/ring", jsonBody = body)
+        // RETRIED, because one lost packet must not kill a call. A failure here aborts the
+        // whole call, so on a weak connection the request times out after a second or two
+        // and the caller sees "call failed" almost immediately — even though the callee's
+        // device was reachable the entire time.
+        //
+        // Three quick attempts, not the slower backoff used for background work: a person
+        // holding a ringing phone will not wait several seconds, and /ring is idempotent on
+        // call_id so a duplicate the server already handled is harmless. Only TRANSPORT
+        // failures retry — a 4xx is the server's verdict and would return the same answer.
+        var resp: String? = null
+        var lastError: Exception? = null
+        repeat(3) { attempt ->
+            if (resp == null) {
+                try {
+                    resp = api.request("POST", "calls/ring", jsonBody = body)
+                    lastError = null
+                } catch (e: ApiError.Transport) {
+                    lastError = e
+                    kotlinx.coroutines.delay(400L * (attempt + 1))
+                }
+            }
+        }
+        lastError?.let { throw it }
+        val ringResponse = resp ?: throw IllegalStateException("ring produced no response")
         // ZERO DEVICES = NOBODY TO RING. The response has always carried this count and
         // both clients threw it away, so calling someone who is signed out rang for the
         // full cap against a phone that was never going to light up, then filed itself as
@@ -2882,7 +2916,7 @@ private class CallApi(context: Context) {
         // Only the ZERO case: a push token is not proof a device is reachable, but zero
         // registered devices means the server has nowhere to send, which is a fact.
         val rung = runCatching {
-            org.json.JSONObject(resp).optInt("ringing_devices", 1)
+            org.json.JSONObject(ringResponse).optInt("ringing_devices", 1)
         }.getOrDefault(1)
         if (rung == 0) throw CalleeUnavailable()
     }
@@ -2890,8 +2924,21 @@ private class CallApi(context: Context) {
     /** Thrown by [ring] when the callee has no registered devices. */
     class CalleeUnavailable : Exception("callee has no registered devices")
 
-    suspend fun status(callId: String, status: String) {
-        val body = "{\"status\":${JsonPrimitive(status)}}"
+    /**
+     * `endReason` rides with the status, and it is the whole point of the call.
+     *
+     * The server has accepted end_reason on this route all along and this client has always
+     * known the reason, but it was never put in the body — so calls.end_reason was NULL on
+     * every row in production and "why do calls fail" could not be answered from the data
+     * at all. The metrics endpoint carries it, but that is an anonymous aggregate with no
+     * per-call row to join against.
+     */
+    suspend fun status(callId: String, status: String, endReason: String? = null) {
+        val body = if (endReason == null) {
+            "{\"status\":${JsonPrimitive(status)}}"
+        } else {
+            "{\"status\":${JsonPrimitive(status)},\"end_reason\":${JsonPrimitive(endReason)}}"
+        }
         api.request("POST", "calls/$callId/status", jsonBody = body)
     }
 }

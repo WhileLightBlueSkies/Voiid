@@ -781,12 +781,40 @@ final class CallService: NSObject, ObservableObject {
                     let voip_devices: Int?
                 }
                 do {
-                    let result = try await api.request(
-                        "POST", "calls/ring",
-                        body: RingBody(to_user_id: peerUserId, call_id: callId,
-                                       call_kind: isVideo ? "video" : "voice",
-                                       conversation_id: convId),
-                        as: RingResult.self)
+                    // RETRIED, because one lost packet must not kill a call.
+                    //
+                    // This was a single attempt, and /ring failing aborts the whole call as
+                    // `setupFailed`. On a weak connection the request times out in a second
+                    // or two and the caller sees "call failed" almost instantly — which is
+                    // exactly the 1.5-3s unanswered rows filling the calls table, all of
+                    // them to a callee whose device WAS reachable.
+                    //
+                    // Three quick attempts rather than the 1.5s-per-step backoff used for
+                    // background work: a person holding a ringing phone will not wait 4.5
+                    // seconds, and /ring is idempotent on call_id so a retry that duplicates
+                    // a request the server already handled is harmless.
+                    let body = RingBody(to_user_id: peerUserId, call_id: callId,
+                                        call_kind: isVideo ? "video" : "voice",
+                                        conversation_id: convId)
+                    var ringResult: RingResult?
+                    var ringError: Error?
+                    for attempt in 0..<3 {
+                        do {
+                            ringResult = try await api.request("POST", "calls/ring", body: body,
+                                                               as: RingResult.self)
+                            ringError = nil
+                            break
+                        } catch let APIError.transport(e) {
+                            // TRANSPORT ONLY. A 4xx is the server's verdict — a retry would
+                            // get the same answer and only delay telling the caller.
+                            ringError = APIError.transport(e)
+                            NSLog("[VOIID] calls/ring transport failure \(attempt + 1)/3: \(e.localizedDescription)")
+                            guard !Task.isCancelled, isCurrentCall(callId) else { return }
+                            try? await Task.sleep(for: .milliseconds(400 * (attempt + 1)))
+                        }
+                    }
+                    if let ringError { throw ringError }
+                    guard let result = ringResult else { throw APIError.transport(URLError(.cannotConnectToHost)) }
 
                     // ZERO DEVICES = NOBODY TO RING.
                     //
@@ -2064,6 +2092,7 @@ final class CallService: NSObject, ObservableObject {
     }
 
     func hangUp() {
+        NSLog("[VOIID] call-end: in-app hangup requested")
         guard let call = active else { return }
         CallManager.shared.requestEnd(uuid: call.uuid)   // routes back via callKitEnd
     }
@@ -2071,6 +2100,7 @@ final class CallService: NSObject, ObservableObject {
     func callKitStart(uuid: UUID) { /* audio session handled by CallKit didActivate */ }
 
     func callKitEnd(uuid: UUID) {
+        NSLog("[VOIID] call-end: CallKit end callback current=%d", active?.uuid == uuid ? 1 : 0)
         // Declining the waiting call must leave the call we're actually on alone.
         if let waiting = waitingCall, waiting.uuid == uuid {
             clearWaitingCall(sendBusy: false, decline: true)
@@ -2103,6 +2133,9 @@ final class CallService: NSObject, ObservableObject {
     /// re-entering the CallKit end transaction.
     func endActiveCall(notifyPeer: Bool, fromCallKit: Bool, reportStatus: Bool = true) {
         guard let call = active, call.state != .ended else { return }
+        NSLog("[VOIID] call-end: reason=%@ outgoing=%d connected=%d notifyPeer=%d fromCallKit=%d",
+              String(describing: pendingEndReason), call.isOutgoing ? 1 : 0, everConnected ? 1 : 0,
+              notifyPeer ? 1 : 0, fromCallKit ? 1 : 0)
         let conferenceLeg = call.isConferenceInvite || CallConferenceService.shared.callId == call.id
         let conferenceMedia = call.isConferenceInvite || CallConferenceService.shared.phase == .conference
         active?.state = .ended
@@ -2208,10 +2241,20 @@ final class CallService: NSObject, ObservableObject {
 
         // Conference membership ends through /leave; a sibling verdict is local only.
         let callId = call.id
+        // WHY THE REASON RIDES ALONG WITH THE STATUS.
+        //
+        // The server has accepted `end_reason` on this route all along, and the client has
+        // always known it — `pendingEndReason` is set by whichever teardown path ran. It
+        // simply was never put in the body, so calls.end_reason was NULL on every row in
+        // production and the one question worth asking of that table — why do calls fail —
+        // could not be answered at all. `calls/metrics` carries it, but that is an
+        // anonymous aggregate with no per-call row to join against.
+        let reason = pendingEndReason.rawValue
         if reportStatus && !conferenceLeg { Task {
-            struct StatusBody: Encodable { let status: String }
+            struct StatusBody: Encodable { let status: String; let end_reason: String }
             _ = try? await api.request("POST", "calls/\(callId)/status",
-                                       body: StatusBody(status: "ended"), as: EmptyResponse.self)
+                                       body: StatusBody(status: "ended", end_reason: reason),
+                                       as: EmptyResponse.self)
         } }
 
         timer?.invalidate(); timer = nil
