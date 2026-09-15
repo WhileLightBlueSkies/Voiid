@@ -24,8 +24,8 @@
 #          and developer builds.
 #      Multiple fingerprints in the array is the supported way to cover all of them. Wrong or
 #      missing fingerprints fail SILENTLY: links just open Chrome, with no error anywhere.
-#      Verify with `adb shell pm verify-app-links --re-verify com.voiid.app` then
-#      `adb shell pm get-app-links com.voiid.app`.
+#      Verify with `adb shell pm verify-app-links --re-verify in.voiid.app` then
+#      `adb shell pm get-app-links in.voiid.app`.
 #
 #   2. The apex A/AAAA record for voiid.app (and www) has to point at whatever box runs this
 #      config. Today only api-dev.voiid.app is served (see ../Caddyfile.dev); this file is a

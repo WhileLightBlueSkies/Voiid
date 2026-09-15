@@ -541,6 +541,13 @@ jobs:
       #
       # The tag MUST match what the working copy uses (currently 12.15.0). If iOS starts
       # failing here right after a Firebase bump, this pin is the thing to update.
+      # Xcode silently rewrites DEVELOPMENT_TEAM and the bundle id when the machine is
+      # signed into a different Apple account, and both failures are invisible until
+      # production: universal links stop resolving (Apple matches the TEAM-prefixed id
+      # against the AASA) and pushes stop routing (the APNs topic IS the bundle id).
+      - name: Validate app signing identity
+        run: python3 apps/ios/checks/app-identity/check.py
+
       - name: Validate community QR links
         run: |
           swiftc apps/ios/Voiid/Voiid/Networking/CommunityLink.swift tools/test-community-links.swift -o /tmp/community-link-checks
