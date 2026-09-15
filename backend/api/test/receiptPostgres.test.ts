@@ -298,6 +298,37 @@ test('receipt and message authorization against PostgreSQL', { skip: !url }, asy
         await db.query('drop function fail_ciphertext()');
       }
     });
+    // The conversation-read sweep batches internally (2000 per pass) and must keep going
+    // until nothing is left unread. 2500 messages need at least two passes, so a sweep that
+    // stopped after one — the /mark ceiling bug in a larger disguise — fails here.
+    //
+    // Honest about its limits: this covers multi-pass termination, NOT the "batch matched
+    // rows it could not change" case. That case cannot be constructed against the current
+    // schema (a row is in `due` only when the user has no 'read' receipt, and the upsert
+    // skips only rows already 'read' at the conflict target — the same condition), which is
+    // why the endpoint counts what remains instead of inferring it from the batch.
+    await t.test('conversation read sweeps past a single batch', async () => {
+      await reset();
+      const bulk: string[] = [];
+      for (let i = 0; i < 2500; i++) bulk.push(randomUUID());
+      await db.query(
+        `insert into messages(id, conversation_id, sender_id, ciphertext)
+         select u, $2, $3, $4 from unnest($1::uuid[]) as u`,
+        [bulk, conv, ana, Buffer.from('opaque')],
+      );
+
+      assert.equal((await call(`/receipts/conversation/${conv}/read`, ben, benDev, {})).status, 200);
+
+      // Nothing from Ana may remain unread for Ben — no ceiling, no early exit.
+      const { rows: [{ unread }] } = await db.query(
+        `select count(*)::int as unread from messages m
+          where m.conversation_id = $1 and m.sender_id = $2
+            and not exists (select 1 from message_read_receipts r
+                             where r.message_id = m.id and r.user_id = $3 and r.status = 'read')`,
+        [conv, ana, ben]);
+      assert.equal(unread, 0);
+    });
+
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     (pool as any).query = originalQuery;

@@ -157,7 +157,7 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
     const MAX_PASSES = 50;          // 100k messages in one conversation; a runaway loop is worse
     const changed: { message_id: string; sender_id: string }[] = [];
     for (let pass = 0; pass < MAX_PASSES; pass++) {
-      const { rows: batch } = await client.query<{ message_id: string; sender_id: string; due_count: string }>(
+      const { rows: batch } = await client.query<{ message_id: string; sender_id: string }>(
         `with due as (
            select m.id, m.sender_id from messages m
             where m.conversation_id = $1 and m.sender_id <> $2
@@ -176,19 +176,37 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
            where message_read_receipts.status is distinct from 'read'
            returning message_id
          )
-         select ins.message_id, due.sender_id, (select count(*) from due) as due_count
-            from ins join due on due.id = ins.message_id`,
+         select ins.message_id, due.sender_id from ins join due on due.id = ins.message_id`,
         [conversationId, user_id, deviceId, BATCH],
       );
       changed.push(...batch);
-      // Stop on rows MATCHED (due_count), not rows changed. `ins` returns only rows whose
-      // status actually moved, so a full batch that raced another device to 'read' would
-      // return few or no rows while more unread messages remain behind it — exiting on
-      // that would strand them, which is the exact bug this endpoint exists to kill.
+
+      // Stop when nothing is left unread — asked directly, not inferred from the batch.
       //
-      // due_count is absent only when the batch is empty, which is itself the end.
-      const matched = batch.length ? Number(batch[0].due_count) : 0;
-      if (matched < BATCH) break;
+      // `batch.length < BATCH` would also be correct TODAY, and I verified that against the
+      // real schema rather than assuming it: a row enters `due` only when the user has no
+      // 'read' receipt for it, and the upsert skips a row only when the conflict-target row
+      // is already 'read' — which would have kept it out of `due`. So "matched but
+      // unchanged" cannot currently happen, and the two counts agree.
+      //
+      // That agreement is a coincidence of two separate predicates, not an invariant anyone
+      // declared. Narrow `due`, or change the conflict target, and a batch could match rows
+      // it cannot change — an empty batch would then end the sweep with thousands still
+      // unread, which is the exact failure this endpoint exists to prevent. One COUNT over
+      // an indexed predicate, once per 2000 rows, is cheap insurance against silently
+      // reintroducing it.
+      const { rows: [{ remaining }] } = await client.query<{ remaining: string }>(
+        `select count(*) as remaining from (
+           select 1 from messages m
+            where m.conversation_id = $1 and m.sender_id <> $2
+              and not exists (
+                select 1 from message_read_receipts r
+                 where r.message_id = m.id and r.user_id = $2 and r.status = 'read')
+            limit $3
+         ) t`,
+        [conversationId, user_id, BATCH],
+      );
+      if (Number(remaining) === 0) break;
     }
     await client.query('commit');
 
