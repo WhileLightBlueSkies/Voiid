@@ -129,11 +129,22 @@ test('recovery metering against PostgreSQL', { skip: !url }, async (t) => {
       assert.match(body.error, /fetch/i);
     });
 
-    await t.test('a refused fetch is still counted', async () => {
-      // An attacker hammering into a refusal is exactly the behaviour worth seeing.
+    await t.test('a refused fetch is counted, but cannot push the window forward', async () => {
+      // An attacker hammering into a refusal is exactly the behaviour worth seeing, so the
+      // refusal still counts. It is CAPPED at the limit + 1 rather than climbing forever:
+      // an unbounded counter, paired with a last_fetched_at that every refused request
+      // refreshed, meant the cooldown window could never expire and an honest user's own
+      // recovery key became permanently unfetchable.
       await db.query('update recovery_keys set fetch_count=1000 where user_id=$1', [user]);
       await getKey();
-      assert.equal(Number((await state()).fetch_count), 1001);
+      const after = await state();
+      assert.equal(Number(after.fetch_count), 26, 'the counter is bounded at the limit + 1');
+
+      // The load-bearing half: a blocked retry must not extend its own lockout.
+      const frozen = after.last_fetched_at;
+      await getKey();
+      assert.equal(+(await state()).last_fetched_at, +frozen,
+        'a refused retry that moves last_fetched_at makes the cooldown unexpirable');
     });
 
     await t.test('an honest client is not locked out of its own recovery', async () => {

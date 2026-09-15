@@ -27,7 +27,7 @@ struct BackupRecoveryView: View {
     @State private var showPhrase = false
     @State private var showChangePin = false
 
-    // Additional destinations (iCloud / Google Drive) for the SAME encrypted blob.
+    // iCloud destination for the SAME encrypted blob.
     @State private var destSnapshots: [BackupDestination: BackupSnapshot] = [:]
     @State private var togglingDestination: BackupDestination?
     @State private var destError: String?
@@ -134,23 +134,19 @@ struct BackupRecoveryView: View {
         }
     }
 
-    // MARK: Additional destinations (iCloud / Google Drive)
+    // MARK: iCloud destination
 
     private var destinationsCard: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
             VoiidCardSection(
                 "Additional backup locations",
                 footer: "The same encrypted backup is copied to each location you turn on. "
-                      + "iCloud and Google only ever store the encrypted file — never your "
+                      + "iCloud only stores the encrypted file — never your "
                       + "PIN, phrase, or messages."
             ) {
                 destinationRow(.iCloud,
                                available: ICloudBackupService.shared.isAvailable,
                                unavailableNote: "Sign in to iCloud in Settings to enable.")
-                VoiidRowDivider()
-                destinationRow(.googleDrive,
-                               available: GoogleDriveBackupService.shared.isSignedIn,
-                               unavailableNote: "Requires Google sign-in setup.")
             }
 
             if let destError {

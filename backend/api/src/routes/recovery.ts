@@ -203,7 +203,7 @@ router.post('/attempt-result', requireAuth, asyncHandler(async (req, res) => {
   // this increment; the database has already applied the +1.
   const state = applyFailure(rows[0].failed_attempts - 1);
   await query(
-    `update recovery_keys set locked_until = $2 where user_id = $1`,
+    `update recovery_keys set locked_until = greatest(locked_until, $2::timestamptz) where user_id = $1`,
     [user_id, state.locked_until]
   );
   if (state.retry_after != null) res.setHeader('Retry-After', String(state.retry_after));

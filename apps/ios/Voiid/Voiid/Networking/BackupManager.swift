@@ -50,7 +50,7 @@ final class BackupManager: ObservableObject {
     // MARK: - Destinations
 
     /// The transport service for each destination. `.server` is the always-available
-    /// default; `.iCloud`/`.googleDrive` are opt-in additional locations for the SAME
+    /// default; `.iCloud` is the opt-in cloud location for the SAME
     /// encrypted blob.
     private func service(for destination: BackupDestination) -> BackupDestinationService {
         switch destination {
@@ -77,7 +77,7 @@ final class BackupManager: ObservableObject {
 
     private static func loadEnabled() -> Set<BackupDestination> {
         let raw = UserDefaults.standard.stringArray(forKey: enabledKey) ?? []
-        return Set(raw.compactMap { BackupDestination(rawValue: $0) }).subtracting([.server])
+        return Set(raw.compactMap { BackupDestination(rawValue: $0) }).intersection([.iCloud])
     }
 
     /// Every destination the blob should currently be written to.
@@ -92,6 +92,9 @@ final class BackupManager: ObservableObject {
     /// a failure there is surfaced to the caller but never disturbs the other destinations.
     func setEnabled(_ destination: BackupDestination, _ on: Bool) async throws {
         guard !destination.isServer else { return }
+        guard destination == .iCloud else {
+            throw APIError.http(status: 400, message: "Use iCloud for cloud backups on iPhone.")
+        }
         if on, let secret = E2EManager.shared.masterSecret() {
             let plaintext = try ChatEngine.shared.exportStore()
             let blob = try encryptBackup(secret: secret, plaintext: plaintext)
@@ -173,7 +176,7 @@ final class BackupManager: ObservableObject {
     /// to nil; a destination that errors is swallowed to nil (never breaks the screen).
     func snapshots() async -> [BackupDestination: BackupSnapshot] {
         var out: [BackupDestination: BackupSnapshot] = [:]
-        for destination in BackupDestination.allCases {
+        for destination in [BackupDestination.server, .iCloud] {
             if let snap = try? await service(for: destination).fetchSnapshot() {
                 out[destination] = snap
             }

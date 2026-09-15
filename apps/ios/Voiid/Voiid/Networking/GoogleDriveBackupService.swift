@@ -116,7 +116,11 @@ final class GoogleDriveBackupService: BackupDestinationService, @unchecked Senda
         let token = try await tokenProvider.accessToken()
         guard let file = try await findBackupFile(token: token, allowLegacy: true) else { return nil }
         let size = Int(file.size ?? "0") ?? 0
-        let modified = file.modifiedTime.flatMap { ISO8601DateFormatter().date(from: $0) }
+        let modified = file.modifiedTime.flatMap { timestamp -> Date? in
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)
+        }
         return BackupSnapshot(sizeBytes: size, modified: modified)
     }
 

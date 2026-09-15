@@ -58,7 +58,7 @@ struct RestoreMessagesView: View {
     @State private var busy = false
 
     /// Which destination to pull the sealed blob from. Defaults to the newest available backup
-    /// across server / iCloud / Google Drive. The PIN or phrase unlocks the same master secret
+    /// across server / iCloud. The PIN or phrase unlocks the same master secret
     /// regardless of source.
     @State private var source: BackupDestination = .server
     @State private var candidates: [(destination: BackupDestination, snapshot: BackupSnapshot)] = []

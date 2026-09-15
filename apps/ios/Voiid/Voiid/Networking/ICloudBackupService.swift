@@ -9,7 +9,7 @@
 //  opaque blob (the master secret and plaintext never leave the device).
 //
 //  Requires the iCloud Documents capability + a ubiquity container entitlement
-//  (`iCloud.com.voiid.app`) on the target — see Voiid/Voiid.entitlements. When iCloud
+//  (`iCloud.voiid.app`) on the target — see Voiid/Voiid.entitlements. When iCloud
 //  is signed-out / unavailable the container URL is nil; every method degrades
 //  gracefully (feature disabled, never a crash): `fetchSnapshot` returns nil, and
 //  upload/download throw a clear, catchable error that the caller treats as
@@ -44,7 +44,7 @@ final class ICloudBackupService: BackupDestinationService, @unchecked Sendable {
 
     /// Ubiquity container id. MUST match the `com.apple.developer.icloud-container-identifiers`
     /// / `ubiquity-container-identifiers` entitlement (Voiid/Voiid.entitlements).
-    static let containerID = "iCloud.com.voiid.app"
+    static let containerID = "iCloud.voiid.app"
 
     /// Fixed backup filename inside the container's `Documents/`.
     private static let filename = "voiid-backup.enc"

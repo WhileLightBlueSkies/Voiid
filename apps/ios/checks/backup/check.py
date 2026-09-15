@@ -1,7 +1,11 @@
 """Compile production backup encode/import code against isolated storage fixtures."""
 from pathlib import Path
-import subprocess, tempfile
+import subprocess, tempfile, plistlib, re
 root=Path(__file__).resolve().parents[4]
+entitlements=plistlib.loads((root/'apps/ios/Voiid/Voiid/Voiid.entitlements').read_bytes())
+cloud=(root/'apps/ios/Voiid/Voiid/Networking/ICloudBackupService.swift').read_text()
+container=re.search(r'static let containerID = "([^"]+)"',cloud).group(1)
+assert container in entitlements['com.apple.developer.ubiquity-container-identifiers']
 s=(root/'apps/ios/Voiid/Voiid/Networking/ChatEngine.swift').read_text()
 models=s[s.index('struct MediaRef:'):s.index('@MainActor\nfinal class ChatEngine')]
 logic=s[s.index('    private struct BackupArchive:'):s.index('    /// Queue a text message')]

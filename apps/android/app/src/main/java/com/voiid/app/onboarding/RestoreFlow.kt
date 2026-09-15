@@ -91,6 +91,7 @@ private data class RestoreCandidate(
     val title: String,
     val updatedAt: String?,
     val sizeBytes: Long,
+    val modifiedEpoch: Long = 0,
 )
 
 /// Five named stages rather than a spinner: a single spinner tells the user nothing during a
@@ -140,15 +141,17 @@ fun RestoreFlow(    session: AppSession,
             found += RestoreCandidate(
                 BackupManager.RestoreSource.SERVER, "Voiid server",
                 formatUpdatedAt(m.updated_at), m.size_bytes,
+                runCatching { java.time.Instant.parse(m.updated_at).toEpochMilli() }.getOrDefault(0),
             )
         }
         manager.fetchDriveMeta()?.let { d ->
             found += RestoreCandidate(
                 BackupManager.RestoreSource.DRIVE, "Google Drive",
                 formatUpdatedAt(d.modifiedTime), d.sizeBytes,
+                runCatching { java.time.Instant.parse(d.modifiedTime).toEpochMilli() }.getOrDefault(0),
             )
         }
-        return found.sortedByDescending { it.updatedAt ?: "" }
+        return found.sortedByDescending { it.modifiedEpoch }
     }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
