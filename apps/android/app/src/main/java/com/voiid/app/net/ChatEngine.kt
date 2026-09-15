@@ -1558,30 +1558,22 @@ class ChatEngine private constructor(context: Context) {
     /** Serialize the ENTIRE decrypted message store to bytes (backup payload).
      *  Same JSON shape [loadStore]/[persist] use, so [importStore] can round-trip it. */
     fun exportStore(): ByteArray {
-        ensureLoaded()   // a backup must contain the whole history, not an empty just-launched store
-        return ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() }).toByteArray()
+        ensureLoaded()
+        check(storeLoaded) { "Couldn’t read local history. Backup was not replaced." }
+        return MessageBackupArchive.encode(tokens.userId ?: error("Sign in before backing up."),
+            store.mapValues { it.value.toList() })
     }
 
-    /** Replace the local message store with a restored backup blob, then persist to
-     *  the on-disk file. Bad/empty input is ignored (never crash a restore). */
+    /** Validate first, merge with local history, then require durable persistence. */
     fun importStore(bytes: ByteArray) {
-        if (bytes.isEmpty()) return
-        storeLoaded = true   // we are about to REPLACE the store wholesale; persist must be allowed
-        runCatching {
-            val decoded = ApiClient.json.decodeFromString(storeSerializer, String(bytes))
-            store.clear()
-            decoded.forEach { (k, v) -> store[k] = v.toMutableList() }
-        }.onSuccess {
-            // A restore REPLACES the store wholesale: wipe old shards, then write every
-            // restored conversation as its own shard (persist() only writes DIRTY shards, so
-            // mark them all).
-            runCatching { messagesDir.listFiles()?.forEach { it.delete() } }
-            store.keys.forEach { markDirty(it) }
-            persist()
-            android.util.Log.i("VOIID", "📥 importStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
-        }.onFailure {
-            android.util.Log.e("VOIID", "📥 importStore FAILED to parse backup blob", it)
+        val decoded = MessageBackupArchive.decode(bytes, tokens.userId ?: error("Sign in before restoring."))
+        ensureLoaded()
+        check(storeLoaded) { "Couldn’t load current messages to merge the backup." }
+        decoded.forEach { (id, messages) ->
+            store[id] = MessageBackupArchive.merge(store[id].orEmpty(), messages).toMutableList()
+            markDirty(id)
         }
+        check(persist()) { "Couldn’t save all restored messages. Free device storage and retry." }
     }
 
     // MARK: - Session persistence (pickled, encrypted at rest)

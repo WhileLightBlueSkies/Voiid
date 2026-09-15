@@ -52,6 +52,9 @@ class BackupManager(context: Context) {
      * we save locally only after the key upload succeeds).
      */
     suspend fun finalizeSetup(secret: ByteArray, pin: String) {
+        if (store.loadMasterSecret()?.contentEquals(secret) != true && backup.fetchBackupMeta() != null) {
+            throw ApiError.Http(409, "A backup already exists. Restore it before setting up a new backup.")
+        }
         val wrapped = wrapMasterSecretWithPin(secret, pin)
         recovery.putKey(wrapped)
         store.saveMasterSecret(secret)
@@ -74,7 +77,9 @@ class BackupManager(context: Context) {
         // break or roll back the server backup — swallow it here. The explicit
         // enable/backup entry points below surface Drive errors to the user directly.
         if (store.isDriveEnabled()) {
-            runCatching { drive.uploadBackup(blob) }
+            try { drive.uploadBackup(blob) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { throw ApiError.Http(503, "Server backup saved, but Google Drive failed. Retry to update that copy.") }
         }
     }
 

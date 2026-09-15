@@ -100,6 +100,7 @@ struct RestoreMessagesView: View {
                                            onSkip: onFinish)
             }
         }
+        .interactiveDismissDisabled(busy)
         .preferredColorScheme(.dark)
         .task { await loadCandidates() }
     }
@@ -132,12 +133,15 @@ struct RestoreMessagesView: View {
     }
 
     private func begin() {
+        guard !busy else { return }
         guard let credential else { step = .unlock; return }
+        busy = true
         errorText = nil
         stageIndex = 0
         step = .restoring
 
         Task {
+            defer { busy = false }
             do {
                 // The stages the user is shown map to what actually happens: the download and
                 // decrypt are inside this one call, so the index advances around it rather than
@@ -160,14 +164,15 @@ struct RestoreMessagesView: View {
                 errorText = e.errorDescription
                 Haptics.error()
                 step = .unlock
-            } catch {
-                // Wrong PIN / tampered wrap / download-decrypt failure. The attempt was
-                // already reported as failed inside restoreWithPin.
-                errorText = credentialIsPin
-                    ? "Wrong PIN. Please try again — attempts are limited."
-                    : "That recovery phrase didn't work. Check the words and try again."
+            } catch let e as BackupRestoreError {
+                errorText = e.errorDescription
                 Haptics.error()
                 step = credentialIsPin ? .unlock : .phrase
+            } catch {
+                errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                Haptics.error()
+                // Retain the credential for a transfer/disk retry without blaming the PIN.
+                step = .restoring
             }
         }
     }
@@ -189,11 +194,11 @@ private struct UnlockPage: View {
     let onRecoveryPhrase: () -> Void
     let onSkip: () -> Void
 
-    private let pinLength = 6
+    private let pinLength = PinRules.maxLen
     @State private var pin = ""
     @FocusState private var focused: Bool
 
-    private var isComplete: Bool { pin.count == pinLength }
+    private var isComplete: Bool { PinRules.valid(pin) }
 
     var body: some View {
         ZStack {
@@ -284,7 +289,7 @@ private struct UnlockPage: View {
                 .focused($focused)
                 .opacity(0.01)
                 .onChange(of: pin) { _, new in
-                    let filtered = String(new.filter(\.isNumber).prefix(pinLength))
+                    let filtered = String(new.filter { $0 >= "0" && $0 <= "9" }.prefix(pinLength))
                     if filtered != new { pin = filtered; return }
                     if !filtered.isEmpty && filtered.count < pinLength { Haptics.selection() }
                     if filtered.count == pinLength { focused = false; Haptics.soft() }

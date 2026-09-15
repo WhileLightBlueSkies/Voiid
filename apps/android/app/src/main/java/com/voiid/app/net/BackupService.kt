@@ -39,6 +39,7 @@ class BackupService(context: Context) {
 
     /** Upload the encrypted backup blob (raw octet-stream). */
     suspend fun uploadBackup(blob: ByteArray) {
+        require(blob.isNotEmpty() && blob.size <= 50 * 1024 * 1024) { "Backup is too large to upload (maximum 50 MiB)." }
         val resp = api.requestRaw("PUT", "backup", body = blob, contentType = "application/octet-stream")
         if (!resp.isSuccessful) {
             throw ApiError.Http(resp.code, "Backup upload failed (${resp.code}).")
@@ -59,11 +60,17 @@ class BackupService(context: Context) {
     suspend fun downloadBackup(): ByteArray {
         val meta = fetchBackupMeta() ?: throw ApiError.Http(404, "No backup found.")
         val url = meta.download_url ?: throw ApiError.Http(404, "No backup found.")
+        require(meta.size_bytes in 1..50L * 1024 * 1024) { "Invalid backup size." }
+        require(url.startsWith("https://")) { "Invalid backup download URL." }
         return withContext(Dispatchers.IO) {
             val req = Request.Builder().url(url).get().build()
             blobClient.newCall(req).execute().use {
                 if (!it.isSuccessful) throw ApiError.Http(it.code, "Backup download failed (${it.code}).")
-                it.body?.bytes() ?: ByteArray(0)
+                val body = it.body ?: throw ApiError.Http(422, "Empty backup download.")
+                val source = body.source()
+                val bytes = source.readByteArray(meta.size_bytes)
+                if (!source.exhausted()) throw ApiError.Http(422, "Backup size changed. Retry the restore.")
+                bytes
             }
         }
     }

@@ -119,13 +119,18 @@ router.get('/key', requireAuth, asyncHandler(async (req, res) => {
     wrapped_key: unknown;
     locked_until: Date | null;
     fetch_count: number;
+    last_fetched_at: Date;
   }>(
     `update recovery_keys
-        set fetch_count = fetch_count + 1,
-            last_fetched_at = now()
+        set fetch_count = case
+              when last_fetched_at is null or last_fetched_at <= now() - ($3 * interval '1 second') then 1
+              else least(fetch_count + 1, $2 + 1) end,
+            last_fetched_at = case
+              when last_fetched_at is null or last_fetched_at <= now() - ($3 * interval '1 second') or fetch_count < $2
+              then now() else last_fetched_at end
       where user_id = $1
-      returning wrapped_key, locked_until, fetch_count`,
-    [user_id]
+      returning wrapped_key, locked_until, fetch_count, last_fetched_at`,
+    [user_id, FETCH_LIMIT, FETCH_COOLDOWN_SECONDS]
   );
   const row = rows[0];
   if (!row) return res.status(404).json({ error: 'no recovery key found' });
@@ -141,10 +146,12 @@ router.get('/key', requireAuth, asyncHandler(async (req, res) => {
   // a say. It bounds how much a stolen token can harvest; it does not protect an
   // envelope already handed out.
   if (row.fetch_count > FETCH_LIMIT) {
-    res.setHeader('Retry-After', String(FETCH_COOLDOWN_SECONDS));
+    const retryAfterSeconds = Math.max(1, Math.ceil((new Date(row.last_fetched_at).getTime()
+      + FETCH_COOLDOWN_SECONDS * 1000 - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSeconds));
     return res.status(429).json({
       error: 'too many recovery key fetches',
-      retry_after: FETCH_COOLDOWN_SECONDS,
+      retry_after: retryAfterSeconds,
     });
   }
 

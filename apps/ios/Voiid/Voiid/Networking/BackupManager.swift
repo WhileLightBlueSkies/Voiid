@@ -18,6 +18,16 @@
 import Foundation
 import Combine
 
+enum BackupRestoreError: LocalizedError {
+    case wrongPin, invalidPhrase
+    var errorDescription: String? {
+        switch self {
+        case .wrongPin: return "Wrong PIN. Please try again."
+        case .invalidPhrase: return "Invalid recovery phrase. Check the words and try again."
+        }
+    }
+}
+
 @MainActor
 final class BackupManager: ObservableObject {
     static let shared = BackupManager()
@@ -29,6 +39,13 @@ final class BackupManager: ObservableObject {
     /// True once this device holds the backup master secret locally (backup is set
     /// up, or a restore has completed).
     var hasLocalSecret: Bool { E2EManager.shared.masterSecret() != nil }
+
+    private func saveSecret(_ secret: Data) throws {
+        E2EManager.shared.saveMasterSecret(secret)
+        guard E2EManager.shared.masterSecret() == secret else {
+            throw APIError.http(status: 500, message: "Couldn’t save the backup key on this device. Keep your recovery phrase and retry.")
+        }
+    }
 
     // MARK: - Destinations
 
@@ -45,11 +62,18 @@ final class BackupManager: ObservableObject {
 
     /// UserDefaults key for the set of user-enabled optional destinations. `.server` is
     /// implicit-on and never stored.
-    private static let enabledKey = "voiid.backup.enabledDestinations"
+    private static var enabledKey: String { "voiid.backup.enabledDestinations.\(TokenStore.shared.userId ?? "signed-out")" }
 
     /// Destinations the user has opted into, in addition to the always-on server. Published
     /// so the settings UI reacts. `.server` is always considered enabled.
-    @Published var optionalEnabled: Set<BackupDestination> = BackupManager.loadEnabled()
+    @Published private var enabledRevision = 0
+    var optionalEnabled: Set<BackupDestination> {
+        get { Self.loadEnabled() }
+        set {
+            UserDefaults.standard.set(newValue.map(\.rawValue), forKey: Self.enabledKey)
+            enabledRevision += 1
+        }
+    }
 
     private static func loadEnabled() -> Set<BackupDestination> {
         let raw = UserDefaults.standard.stringArray(forKey: enabledKey) ?? []
@@ -68,13 +92,13 @@ final class BackupManager: ObservableObject {
     /// a failure there is surfaced to the caller but never disturbs the other destinations.
     func setEnabled(_ destination: BackupDestination, _ on: Bool) async throws {
         guard !destination.isServer else { return }
-        if on { optionalEnabled.insert(destination) } else { optionalEnabled.remove(destination) }
-        UserDefaults.standard.set(optionalEnabled.map(\.rawValue), forKey: Self.enabledKey)
         if on, let secret = E2EManager.shared.masterSecret() {
-            let plaintext = ChatEngine.shared.exportStore()
+            let plaintext = try ChatEngine.shared.exportStore()
             let blob = try encryptBackup(secret: secret, plaintext: plaintext)
             try await service(for: destination).uploadBackup(blob)
         }
+        if on { optionalEnabled.insert(destination) } else { optionalEnabled.remove(destination) }
+        UserDefaults.standard.set(optionalEnabled.map(\.rawValue), forKey: Self.enabledKey)
     }
 
     // MARK: - Setup
@@ -92,9 +116,12 @@ final class BackupManager: ObservableObject {
     /// persist the secret locally, then take a first backup. Idempotent enough to
     /// retry on transient failure.
     func commitSetup(secret: Data, pin: String) async throws {
+        if E2EManager.shared.masterSecret() != secret, try await status() != nil {
+            throw APIError.http(status: 409, message: "A backup already exists. Restore it before setting up a new backup.")
+        }
         let wrapped = try wrapMasterSecretWithPin(secret: secret, pin: pin)
         try await recovery.putKey(wrapped)
-        E2EManager.shared.saveMasterSecret(secret)
+        try saveSecret(secret)
         try await backupNow()
     }
 
@@ -112,7 +139,7 @@ final class BackupManager: ObservableObject {
         guard let secret = E2EManager.shared.masterSecret() else {
             throw APIError.http(status: 412, message: "Set up backup before backing up.")
         }
-        let plaintext = ChatEngine.shared.exportStore()
+        let plaintext = try ChatEngine.shared.exportStore()
         // The blob is ALWAYS the encryptBackup ciphertext — identical bytes to every
         // destination. Google/Apple/our server only ever see this.
         let blob = try encryptBackup(secret: secret, plaintext: plaintext)
@@ -130,8 +157,10 @@ final class BackupManager: ObservableObject {
            let firstError = failures.values.first {
             throw firstError             // no server fallback and everything failed.
         }
-        // Otherwise: at least the server (or one destination) succeeded — treat as success;
-        // an aux-destination hiccup shouldn't fail the whole backup.
+        if !failures.isEmpty {
+            let names = failures.keys.map(\.title).sorted().joined(separator: ", ")
+            throw APIError.http(status: 503, message: "Server backup saved, but these copies failed: \(names). Retry to update them.")
+        }
     }
 
     /// Current server backup status (last-backup time/size), or nil when none exists. Kept
@@ -197,7 +226,7 @@ final class BackupManager: ObservableObject {
             secret = try unwrapMasterSecretWithPin(wrapped: wrapped, pin: pin)
         } catch {
             await recovery.reportAttempt(success: false)
-            throw error
+            throw BackupRestoreError.wrongPin
         }
         await recovery.reportAttempt(success: true)
         try await restore(with: secret, from: source)
@@ -207,7 +236,9 @@ final class BackupManager: ObservableObject {
     /// BIP39 phrase (throws on an invalid one), then we restore as usual. No PIN
     /// attempt is reported (the phrase path doesn't touch the server lock).
     func restoreWithPhrase(_ phrase: String, from source: BackupDestination = .server) async throws {
-        let secret = try phraseToMasterSecret(phrase: phrase)
+        let secret: Data
+        do { secret = try phraseToMasterSecret(phrase: phrase.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        catch { throw BackupRestoreError.invalidPhrase }
         try await restore(with: secret, from: source)
     }
 
@@ -217,7 +248,7 @@ final class BackupManager: ObservableObject {
     private func restore(with secret: Data, from source: BackupDestination = .server) async throws {
         let blob = try await service(for: source).downloadBackup()
         let plaintext = try decryptBackup(secret: secret, blob: blob)
-        ChatEngine.shared.importStore(plaintext)
-        E2EManager.shared.saveMasterSecret(secret)
+        try await ChatEngine.shared.importStore(plaintext)
+        try saveSecret(secret)
     }
 }

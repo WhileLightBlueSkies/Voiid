@@ -85,7 +85,13 @@ final class GoogleDriveBackupService: BackupDestinationService, @unchecked Senda
     static let scope = "https://www.googleapis.com/auth/drive.appdata"
 
     /// Fixed backup filename inside appDataFolder.
-    private static let filename = "voiid-backup.enc"
+    private static let legacyFilename = "voiid-backup.enc"
+    private var filename: String {
+        get throws {
+            guard let id = TokenStore.shared.userId, UUID(uuidString: id) != nil else { throw APIError.notAuthenticated }
+            return "voiid-backup-\(id.lowercased()).enc"
+        }
+    }
 
     private static let apiBase = "https://www.googleapis.com/drive/v3"
     private static let uploadBase = "https://www.googleapis.com/upload/drive/v3"
@@ -108,7 +114,7 @@ final class GoogleDriveBackupService: BackupDestinationService, @unchecked Senda
         // Not signed in → destination simply unavailable (nil), not an error.
         guard tokenProvider.isSignedIn else { return nil }
         let token = try await tokenProvider.accessToken()
-        guard let file = try await findBackupFile(token: token) else { return nil }
+        guard let file = try await findBackupFile(token: token, allowLegacy: true) else { return nil }
         let size = Int(file.size ?? "0") ?? 0
         let modified = file.modifiedTime.flatMap { ISO8601DateFormatter().date(from: $0) }
         return BackupSnapshot(sizeBytes: size, modified: modified)
@@ -116,7 +122,7 @@ final class GoogleDriveBackupService: BackupDestinationService, @unchecked Senda
 
     func downloadBackup() async throws -> Data {
         let token = try await tokenProvider.accessToken()
-        guard let file = try await findBackupFile(token: token) else { throw GoogleDriveError.noBackup }
+        guard let file = try await findBackupFile(token: token, allowLegacy: true) else { throw GoogleDriveError.noBackup }
         var req = URLRequest(url: url("\(Self.apiBase)/files/\(file.id)", query: [("alt", "media")]))
         req.httpMethod = "GET"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -142,10 +148,11 @@ final class GoogleDriveBackupService: BackupDestinationService, @unchecked Senda
     private struct DriveFileList: Decodable { let files: [DriveFile] }
 
     /// List appDataFolder for our fixed-name file. Returns nil if absent.
-    private func findBackupFile(token: String) async throws -> DriveFile? {
+    private func findBackupFile(token: String, allowLegacy: Bool = false, legacy: Bool = false) async throws -> DriveFile? {
+        let name = legacy ? Self.legacyFilename : (try filename)
         var req = URLRequest(url: url("\(Self.apiBase)/files", query: [
             ("spaces", "appDataFolder"),
-            ("q", "name = '\(Self.filename)'"),
+            ("q", "trashed = false and name = '\(name)'"),
             ("fields", "files(id,name,size,modifiedTime)"),
             ("pageSize", "1"),
         ]))
@@ -154,13 +161,14 @@ final class GoogleDriveBackupService: BackupDestinationService, @unchecked Senda
         let (data, resp) = try await send(req)
         try Self.ensureOK(resp, data)
         let list = try JSONDecoder().decode(DriveFileList.self, from: data)
+        if list.files.isEmpty && allowLegacy && !legacy { return try await findBackupFile(token: token, legacy: true) }
         return list.files.first
     }
 
     /// Multipart create in appDataFolder (metadata part + media part).
     private func createFile(blob: Data, token: String) async throws {
         let boundary = "voiid-\(UUID().uuidString)"
-        let metadata = #"{"name":"\#(Self.filename)","parents":["appDataFolder"]}"#
+        let metadata = #"{"name":"\#(try filename)","parents":["appDataFolder"]}"#
 
         var body = Data()
         body.append("--\(boundary)\r\n".utf8Data)

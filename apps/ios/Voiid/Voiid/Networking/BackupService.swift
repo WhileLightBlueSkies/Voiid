@@ -28,7 +28,11 @@ struct BackupMeta: Decodable, Identifiable {
     var id: String { download_url }
 
     /// `updated_at` parsed as a Date (ISO-8601), for display.
-    var updatedAtDate: Date? { ISO8601DateFormatter().date(from: updated_at) }
+    var updatedAtDate: Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: updated_at) ?? ISO8601DateFormatter().date(from: updated_at)
+    }
 }
 
 @MainActor
@@ -59,6 +63,7 @@ final class BackupService {
         guard let url = URL(string: full) else { throw APIError.http(status: 0, message: "bad backup url") }
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
+        req.timeoutInterval = 120
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.httpBody = blob
@@ -78,7 +83,10 @@ final class BackupService {
         guard let meta = try await fetchBackupMeta() else {
             throw APIError.http(status: 404, message: "No backup to download.")
         }
-        guard let url = URL(string: meta.download_url) else {
+        guard meta.size_bytes > 0, meta.size_bytes <= Self.maxBytes else {
+            throw APIError.http(status: 413, message: "Invalid backup size.")
+        }
+        guard let url = URL(string: meta.download_url), url.scheme == "https" else {
             throw APIError.http(status: 0, message: "bad download url")
         }
         let data: Data
@@ -88,6 +96,9 @@ final class BackupService {
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             throw APIError.http(status: status, message: "Backup download failed (\(status)).")
+        }
+        guard data.count == meta.size_bytes else {
+            throw APIError.http(status: 422, message: "Backup download was incomplete. Retry the restore.")
         }
         return data
     }

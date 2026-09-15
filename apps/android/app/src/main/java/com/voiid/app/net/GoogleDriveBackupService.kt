@@ -48,6 +48,10 @@ class GoogleDriveBackupService(
         GoogleSignInTokenProvider(context.applicationContext),
 ) {
     private val appContext = context.applicationContext
+    private val backupFileName: String get() {
+        val id = TokenStore.get(appContext).userId ?: error("Sign in before using backup.")
+        return "voiid-backup-${java.util.UUID.fromString(id)}.enc"
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -105,14 +109,14 @@ class GoogleDriveBackupService(
     /** Metadata for our backup file, or null if not signed in / no backup yet. */
     suspend fun fetchBackupMeta(): DriveBackupMeta? = withContext(Dispatchers.IO) {
         val token = tokenOrNull() ?: return@withContext null
-        val f = findBackupFile(token) ?: return@withContext null
+        val f = findBackupFile(token, allowLegacy = true) ?: return@withContext null
         DriveBackupMeta(f.id, f.size?.toLongOrNull() ?: 0L, f.modifiedTime)
     }
 
     /** Download the encrypted backup blob (`GET files/{id}?alt=media`). */
     suspend fun downloadBackup(): ByteArray = withContext(Dispatchers.IO) {
         val token = requireToken()
-        val f = findBackupFile(token) ?: throw ApiError.Http(404, "No Google Drive backup found.")
+        val f = findBackupFile(token, allowLegacy = true) ?: throw ApiError.Http(404, "No Google Drive backup found.")
         val req = Request.Builder()
             .url("https://www.googleapis.com/drive/v3/files/${f.id}?alt=media")
             .header("Authorization", "Bearer $token")
@@ -122,21 +126,23 @@ class GoogleDriveBackupService(
 
     // MARK: - Drive v3 REST internals
 
-    private fun findBackupFile(token: String): DriveFile? {
-        val q = URLEncoder.encode("name = '$BACKUP_FILE_NAME'", "UTF-8")
+    private fun findBackupFile(token: String, allowLegacy: Boolean = false, legacy: Boolean = false): DriveFile? {
+        val name = if (legacy) BACKUP_FILE_NAME else backupFileName
+        val q = URLEncoder.encode("trashed = false and name = '$name'", "UTF-8")
         val fields = URLEncoder.encode("files(id,name,size,modifiedTime)", "UTF-8")
         val req = Request.Builder()
             .url("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=$q&fields=$fields")
             .header("Authorization", "Bearer $token")
             .get().build()
         val bytes = execOrThrow(req, "Drive list failed")
-        return ApiClient.json.decodeFromString(DriveFileList.serializer(), String(bytes)).files.firstOrNull()
+        val found = ApiClient.json.decodeFromString(DriveFileList.serializer(), String(bytes)).files.firstOrNull()
+        return found ?: if (allowLegacy && !legacy) findBackupFile(token, legacy = true) else null
     }
 
     /** New file: multipart/related (metadata part pins parents=appDataFolder + name, then the media part). */
     private fun createMultipart(token: String, blob: ByteArray) {
         val boundary = "voiid_" + System.currentTimeMillis()
-        val meta = """{"name":"$BACKUP_FILE_NAME","parents":["appDataFolder"]}"""
+        val meta = """{"name":"$backupFileName","parents":["appDataFolder"]}"""
         val body = ByteArrayOutputStream().apply {
             fun w(s: String) = write(s.toByteArray(Charsets.UTF_8))
             w("--$boundary\r\n")

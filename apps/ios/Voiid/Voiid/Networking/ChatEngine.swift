@@ -331,25 +331,84 @@ final class ChatEngine {
     /// Serialize the entire decrypted-message store for an encrypted backup. The
     /// bytes are sealed under the backup master secret before they ever leave the
     /// device (see BackupManager), so the server only sees ciphertext.
-    func exportStore() -> Data {
-        ensureLoaded()   // a backup must contain the whole history, not an empty just-launched store
-        return (try? JSONEncoder().encode(store)) ?? Data()
+    private struct BackupArchive: Codable {
+        let format: String
+        let version: Int
+        let userId: String
+        let messages: [String: [DecryptedMessage]]
     }
 
-    /// Merge a restored message store into the current one. Messages are keyed by id
-    /// per conversation; existing entries win (never clobber a locally-decrypted
-    /// message with a restored copy), restored-only messages are appended. Persists.
-    func importStore(_ data: Data) {
-        ensureLoaded()   // merge INTO the real current store, never over an unloaded empty one
-        guard let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) else { return }
+    func exportStore() throws -> Data {
+        ensureLoaded()
+        guard storeLoaded, let userId = TokenStore.shared.userId else {
+            throw NSError(domain: "Backup", code: 1, userInfo: [NSLocalizedDescriptionKey: "Couldn’t read local history. Backup was not replaced."])
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var value = encoder.singleValueContainer()
+            try value.encode(Int64((date.timeIntervalSince1970 * 1000).rounded()))
+        }
+        return try encoder.encode(BackupArchive(format: "voiid-message-backup", version: 1,
+                                                userId: userId, messages: store))
+    }
+
+    /// Decode fully before mutation; merge without replacing newer local messages.
+    /// A restore only succeeds after every dirty shard reaches disk.
+    func importStore(_ data: Data) async throws {
+        guard !data.isEmpty, data.count <= 50 * 1024 * 1024,
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NSError(domain: "Backup", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid backup data."])
+        }
+        let versioned = root["format"] != nil
+        var raw: [String: Any]
+        if versioned {
+            guard root["format"] as? String == "voiid-message-backup", root["version"] as? Int == 1,
+                  root["userId"] as? String == TokenStore.shared.userId,
+                  let messages = root["messages"] as? [String: Any] else {
+                throw NSError(domain: "Backup", code: 3, userInfo: [NSLocalizedDescriptionKey: "This backup belongs to another account or needs a newer app."])
+            }
+            raw = messages
+        } else { raw = root }
+        // Old iOS archives used seconds since 2001; Android used Unix milliseconds.
+        let dates = raw.values.compactMap { $0 as? [[String: Any]] }.flatMap { $0 }.compactMap { $0["createdAt"] as? Double }
+        let legacyIOS = !versioned && !dates.contains { abs($0) >= 100_000_000_000 }
+        for (id, value) in raw {
+            guard UUID(uuidString: id) != nil, let messages = value as? [[String: Any]] else {
+                throw NSError(domain: "Backup", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid conversation in backup."])
+            }
+            raw[id] = try messages.map { row -> [String: Any] in
+                var row = row
+                for key in ["pending", "failed"] where row[key] == nil || row[key] is NSNull { row[key] = false }
+                if legacyIOS {
+                    for key in ["createdAt", "deliveredAt", "readAt"] {
+                        if let seconds = row[key] as? Double { row[key] = (seconds + 978307200) * 1000 }
+                    }
+                }
+                if row["locationJSON"] == nil, let location = row["location"] as? [String: Any] {
+                    var envelope = location
+                    envelope["_vloc"] = 1; envelope["k"] = location["kind"]
+                    envelope["s"] = location["shareId"]; envelope["cadence"] = location["cadenceSeconds"]
+                    envelope["t"] = row["createdAt"]
+                    row["locationJSON"] = String(data: try JSONSerialization.data(withJSONObject: envelope), encoding: .utf8)
+                }
+                return row
+            }
+        }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
+        let decoded = try decoder.decode([String: [DecryptedMessage]].self,
+                                         from: JSONSerialization.data(withJSONObject: raw))
+        ensureLoaded()
+        guard storeLoaded else { throw NSError(domain: "Backup", code: 1, userInfo: [NSLocalizedDescriptionKey: "Couldn’t load current messages to merge the backup."]) }
         for (conv, msgs) in decoded {
             var arr = store[conv] ?? []
-            let existing = Set(arr.map { $0.id })
-            for m in msgs where !existing.contains(m.id) { arr.append(m) }
+            var existing = Set(arr.map { $0.id })
+            for m in msgs where existing.insert(m.id).inserted { arr.append(m) }
             store[conv] = arr
             markDirty(conv)
         }
-        persistSoon()
+        guard await persist() else {
+            throw NSError(domain: "Backup", code: 4, userInfo: [NSLocalizedDescriptionKey: "Couldn’t save all restored messages. Free device storage and retry."])
+        }
     }
 
     /// Queue a text message for sending. Stores it locally as PENDING immediately

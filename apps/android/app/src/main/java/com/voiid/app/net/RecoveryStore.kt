@@ -32,7 +32,10 @@ class RecoveryStore private constructor(context: Context) {
     fun hasMasterSecret(): Boolean = prefs.contains(KEY_MASTER_SECRET)
 
     fun saveMasterSecret(secret: ByteArray) {
-        prefs.edit().putString(KEY_MASTER_SECRET, Base64.encodeToString(secret, Base64.NO_WRAP)).apply()
+        require(secret.size == 32) { "Invalid backup key." }
+        check(prefs.edit().putString(KEY_MASTER_SECRET, Base64.encodeToString(secret, Base64.NO_WRAP)).commit()) {
+            "Couldn’t save the backup key on this device. Keep your recovery phrase and retry."
+        }
     }
 
     /** The stored master secret, or null if backup was never set up on this device. */

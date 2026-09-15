@@ -72,7 +72,15 @@ final class ICloudBackupService: BackupDestinationService, @unchecked Sendable {
         return docs
     }
 
-    private func backupURL() -> URL? { documentsURL()?.appendingPathComponent(Self.filename) }
+    private func backupURL(allowLegacy: Bool = false) async -> URL? {
+        guard let userID = await MainActor.run(body: { TokenStore.shared.userId }), UUID(uuidString: userID) != nil,
+              let documents = documentsURL() else { return nil }
+        let scoped = documents.appendingPathComponent("voiid-backup-\(userID.lowercased()).enc")
+        if allowLegacy && !FileManager.default.fileExists(atPath: scoped.path) {
+            return documents.appendingPathComponent(Self.filename)
+        }
+        return scoped
+    }
 
     // MARK: BackupDestinationService
 
@@ -80,7 +88,7 @@ final class ICloudBackupService: BackupDestinationService, @unchecked Sendable {
     /// any previous backup. Runs off the main actor because ubiquity-URL resolution can block.
     func uploadBackup(_ blob: Data) async throws {
         try await runOffMain {
-            guard let url = self.backupURL() else { throw ICloudBackupError.unavailable }
+            guard let url = await self.backupURL() else { throw ICloudBackupError.unavailable }
             var coordinatorError: NSError?
             var writeError: Error?
             let coordinator = NSFileCoordinator()
@@ -98,7 +106,7 @@ final class ICloudBackupService: BackupDestinationService, @unchecked Sendable {
     /// Never throws for the "unavailable" case — iCloud being off is a normal state.
     func fetchSnapshot() async throws -> BackupSnapshot? {
         try await runOffMain {
-            guard let url = self.backupURL() else { return nil }
+            guard let url = await self.backupURL(allowLegacy: true) else { return nil }
             let fm = FileManager.default
             // The item may be present but not yet downloaded; either way its metadata is
             // readable from the ubiquitous placeholder.
@@ -114,7 +122,7 @@ final class ICloudBackupService: BackupDestinationService, @unchecked Sendable {
     /// Trigger + await download of a possibly-evicted ubiquitous item, then coordinated read.
     func downloadBackup() async throws -> Data {
         try await runOffMain {
-            guard let url = self.backupURL() else { throw ICloudBackupError.unavailable }
+            guard let url = await self.backupURL(allowLegacy: true) else { throw ICloudBackupError.unavailable }
             let fm = FileManager.default
             guard fm.fileExists(atPath: url.path) else { throw ICloudBackupError.noBackup }
 
@@ -124,15 +132,19 @@ final class ICloudBackupService: BackupDestinationService, @unchecked Sendable {
             // Poll the download status until current (or timeout). Simpler and just as
             // reliable here as an NSMetadataQuery for a single known file.
             let deadline = Date().addingTimeInterval(Self.downloadTimeout)
+            var downloaded = false
             while Date() < deadline {
+                try Task.checkCancellation()
                 let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
                 if let status = values?.ubiquitousItemDownloadingStatus,
                    status == .current || status == .downloaded {
+                    downloaded = true
                     break
                 }
-                try? await Task.sleep(nanoseconds: 300_000_000)
+                try await Task.sleep(nanoseconds: 300_000_000)
             }
 
+            guard downloaded else { throw ICloudBackupError.downloadTimedOut }
             var coordinatorError: NSError?
             var readData: Data?
             var readError: Error?
@@ -151,7 +163,7 @@ final class ICloudBackupService: BackupDestinationService, @unchecked Sendable {
     /// Delete the iCloud backup (used by "disable iCloud backup" — the blob is the user's).
     func deleteBackup() async throws {
         try await runOffMain {
-            guard let url = self.backupURL() else { return }
+            guard let url = await self.backupURL() else { return }
             let fm = FileManager.default
             guard fm.fileExists(atPath: url.path) else { return }
             var coordinatorError: NSError?

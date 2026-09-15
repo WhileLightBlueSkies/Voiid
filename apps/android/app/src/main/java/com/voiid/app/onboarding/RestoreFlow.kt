@@ -52,7 +52,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
-import com.voiid.app.main.VOIID_PIN_LENGTH
 import com.voiid.app.model.AppSession
 import com.voiid.app.net.BackupManager
 import com.voiid.app.net.BackupService
@@ -77,6 +76,8 @@ import kotlinx.coroutines.launch
  *
  * Platform note: destinations are SERVER + Google DRIVE (there is no iCloud on Android).
  */
+private const val RESTORE_PIN_MAX = 8
+
 private enum class RestoreStep { UNLOCK, PHRASE, CHOOSE, RESTORING }
 
 private sealed interface Credential {
@@ -172,6 +173,7 @@ fun RestoreFlow(    session: AppSession,
     }
 
     fun begin() {
+        if (busy) return
         val cred = credential ?: run { step = RestoreStep.UNLOCK; return }
         error = null
         stageIndex = 0
@@ -199,6 +201,7 @@ fun RestoreFlow(    session: AppSession,
                     is BackupManager.RestoreOutcome.WrongPin -> {
                         error = "Wrong PIN. Please try again — attempts are limited."
                         haptics.error()
+                        step = RestoreStep.UNLOCK
                     }
                     is BackupManager.RestoreOutcome.NoRecoveryKey -> {
                         error = "No recovery key found for this account."
@@ -236,7 +239,7 @@ fun RestoreFlow(    session: AppSession,
         RestoreStep.UNLOCK -> RestoreUnlockPage(
             meta = meta,
             pin = pin,
-            onPinChange = { pin = it.filter(Char::isDigit).take(VOIID_PIN_LENGTH); error = null },
+            onPinChange = { pin = it.filter { c -> c in '0'..'9' }.take(RESTORE_PIN_MAX); error = null },
             error = error,
             onSubmit = { unlock(Credential.Pin(pin)) },
             onRecoveryPhrase = { error = null; step = RestoreStep.PHRASE },
@@ -286,7 +289,7 @@ private fun RestoreUnlockPage(
     onRecoveryPhrase: () -> Unit,
     onSkip: () -> Unit,
 ) {
-    val complete = pin.length == VOIID_PIN_LENGTH
+    val complete = pin.length in 4..RESTORE_PIN_MAX
     OnbScaffold(showBack = false, onBack = {}) {
         Spacer(Modifier.weight(0.6f))
         Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
@@ -302,7 +305,7 @@ private fun RestoreUnlockPage(
             )
         }
         Spacer(Modifier.height(28.dp))
-        SixPinField(
+        RestorePinField(
             value = pin,
             onChange = onPinChange,
             modifier = Modifier.padding(horizontal = 24.dp),
@@ -331,13 +334,13 @@ private fun RestoreUnlockPage(
 
 /** Six separate masked boxes over one invisible field — mirrors the iOS unlock field. */
 @Composable
-private fun SixPinField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun RestorePinField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     BasicTextField(
         value = value,
         onValueChange = {
-            onChange(it.filter(Char::isDigit).take(VOIID_PIN_LENGTH))
-            if (it.length >= VOIID_PIN_LENGTH) focus.clearFocus()
+            onChange(it.filter { c -> c in '0'..'9' }.take(RESTORE_PIN_MAX))
+            if (it.length >= RESTORE_PIN_MAX) focus.clearFocus()
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
         textStyle = TextStyle(color = Color.Transparent),
@@ -345,12 +348,12 @@ private fun SixPinField(value: String, onChange: (String) -> Unit, modifier: Mod
         modifier = modifier.fillMaxWidth(),
         decorationBox = { inner ->
             Box(contentAlignment = Alignment.Center) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    repeat(VOIID_PIN_LENGTH) { i ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    repeat(RESTORE_PIN_MAX) { i ->
                         val filled = i < value.length
                         Box(
                             Modifier
-                                .size(width = 44.dp, height = 56.dp)
+                                .weight(1f).height(56.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(VoiidColor.fieldFill)
                                 .border(
