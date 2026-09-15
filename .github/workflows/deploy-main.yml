@@ -48,6 +48,28 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.VULTR_MAIN_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
+      # deploy-dev.sh clears these itself, but it cannot fix the deploy that installs it:
+      # bash reads the script from /opt/voiid BEFORE the checkout that would update it, so
+      # a blocker present now aborts the very deploy carrying the fix. Doing it here, from
+      # CI, is the only side of the chicken-and-egg that can move first.
+      #
+      # Same rule as the script: only paths the incoming commit TRACKS, never `git clean`,
+      # so .env, uploaded media and logs on the box are untouched.
+      - name: Clear untracked files the incoming commit tracks
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.VULTR_MAIN_USER }}@${{ secrets.VULTR_MAIN_HOST }}" \
+            'set -e
+             cd /opt/voiid
+             git fetch --prune origin
+             git ls-tree -r --name-only ${{ github.sha }} | while IFS= read -r p; do
+               if [ -e "$p" ] && ! git ls-files --error-unmatch "$p" >/dev/null 2>&1; then
+                 echo "   removing untracked $p"
+                 rm -f "$p"
+               fi
+             done'
+
       - name: Deploy over SSH
         run: |
           ssh -i ~/.ssh/id_ed25519 \

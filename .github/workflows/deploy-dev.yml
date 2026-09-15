@@ -83,6 +83,25 @@ jobs:
       # Without it the script resets to whatever origin/dev points at when the SSH session
       # opens, so a green run on commit X could deploy commit Y that landed thirty seconds
       # later and was never checked. The gate above is only worth as much as this pin.
+      # See deploy-main.yml: the script clears these itself, but cannot fix the deploy that
+      # installs it, because bash reads it from /opt/voiid before the checkout that updates
+      # it. Only paths the incoming commit TRACKS — never `git clean` — so .env, uploaded
+      # media and logs on the box are untouched.
+      - name: Clear untracked files the incoming commit tracks
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.VULTR_USER }}@${{ secrets.VULTR_HOST }}" \
+            'set -e
+             cd /opt/voiid
+             git fetch --prune origin
+             git ls-tree -r --name-only ${{ github.sha }} | while IFS= read -r p; do
+               if [ -e "$p" ] && ! git ls-files --error-unmatch "$p" >/dev/null 2>&1; then
+                 echo "   removing untracked $p"
+                 rm -f "$p"
+               fi
+             done'
+
       - name: Deploy over SSH
         run: |
           ssh -i ~/.ssh/id_ed25519 \
