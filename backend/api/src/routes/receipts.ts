@@ -109,7 +109,8 @@ router.post('/mark', requireAuth, asyncHandler(async (req, res) => {
  * production is sitting on exactly that.
  *
  * Opening a chat means "I have seen this conversation", not "I have seen these fifty
- * message ids". This expresses that directly, in one statement, with no ceiling.
+ * message ids". This expresses that directly, with no ceiling the caller has to know
+ * about: the work is batched internally and repeats until nothing is left unread.
  *
  * Authorisation is the same rule as /mark — the caller must be a current member — and the
  * insert is the same idempotent upsert, so a message already marked read is untouched and
@@ -143,31 +144,52 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
     const conflictTarget = deviceId
       ? '(message_id, user_id, device_id) where device_id is not null'
       : '(message_id, user_id) where device_id is null';
-    // Only messages from OTHERS, and only ones not already read. Bounded so a single call
-    // cannot lock the table on a very long history; the client repeats until nothing is
-    // returned, which is also what makes it safe to retry.
-    const { rows: changed } = await client.query<{ message_id: string; sender_id: string }>(
-      `with due as (
-         select m.id, m.sender_id from messages m
-          where m.conversation_id = $1 and m.sender_id <> $2
-            and not exists (
-              select 1 from message_read_receipts r
-               where r.message_id = m.id and r.user_id = $2 and r.status = 'read')
-          order by m.created_at desc limit 2000
-       ), ins as (
-         insert into message_read_receipts
-           (message_id, user_id, device_id, status, delivered_at, read_at)
-         select id, $2::uuid, $3::uuid, 'read', now(), now() from due
-         on conflict ${conflictTarget} do update
-           set status = 'read',
-               delivered_at = coalesce(message_read_receipts.delivered_at, excluded.delivered_at),
-               read_at = coalesce(message_read_receipts.read_at, excluded.read_at)
-         where message_read_receipts.status is distinct from 'read'
-         returning message_id
-       )
-       select ins.message_id, due.sender_id from ins join due on due.id = ins.message_id`,
-      [conversationId, user_id, deviceId],
-    );
+    // Only messages from OTHERS, and only ones not already read. Each pass is BOUNDED so a
+    // single statement cannot lock the table across a very long history — but the passes
+    // repeat HERE, server-side, until a pass changes nothing.
+    //
+    // The batching must not leak to the client. The whole reason this endpoint exists is
+    // that a ceiling the caller has to know about is a ceiling that silently strands
+    // messages: /mark's implicit 50-message limit is what left 112 of 162 unread forever.
+    // Re-introducing a 2000-message version of the same bug, and relying on every client
+    // to remember to loop, would be the same defect wearing a larger number.
+    const BATCH = 2000;
+    const MAX_PASSES = 50;          // 100k messages in one conversation; a runaway loop is worse
+    const changed: { message_id: string; sender_id: string }[] = [];
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      const { rows: batch } = await client.query<{ message_id: string; sender_id: string; due_count: string }>(
+        `with due as (
+           select m.id, m.sender_id from messages m
+            where m.conversation_id = $1 and m.sender_id <> $2
+              and not exists (
+                select 1 from message_read_receipts r
+                 where r.message_id = m.id and r.user_id = $2 and r.status = 'read')
+            order by m.created_at desc limit $4
+         ), ins as (
+           insert into message_read_receipts
+             (message_id, user_id, device_id, status, delivered_at, read_at)
+           select id, $2::uuid, $3::uuid, 'read', now(), now() from due
+           on conflict ${conflictTarget} do update
+             set status = 'read',
+                 delivered_at = coalesce(message_read_receipts.delivered_at, excluded.delivered_at),
+                 read_at = coalesce(message_read_receipts.read_at, excluded.read_at)
+           where message_read_receipts.status is distinct from 'read'
+           returning message_id
+         )
+         select ins.message_id, due.sender_id, (select count(*) from due) as due_count
+            from ins join due on due.id = ins.message_id`,
+        [conversationId, user_id, deviceId, BATCH],
+      );
+      changed.push(...batch);
+      // Stop on rows MATCHED (due_count), not rows changed. `ins` returns only rows whose
+      // status actually moved, so a full batch that raced another device to 'read' would
+      // return few or no rows while more unread messages remain behind it — exiting on
+      // that would strand them, which is the exact bug this endpoint exists to kill.
+      //
+      // due_count is absent only when the batch is empty, which is itself the end.
+      const matched = batch.length ? Number(batch[0].due_count) : 0;
+      if (matched < BATCH) break;
+    }
     await client.query('commit');
 
     // Tell each sender their message was read. Deduped by sender: a hundred messages from
