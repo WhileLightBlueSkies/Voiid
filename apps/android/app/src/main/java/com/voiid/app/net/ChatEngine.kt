@@ -59,6 +59,14 @@ class ChatEngine private constructor(context: Context) {
 
     private val prefs = SecurePrefs.open(appContext, "voiid_chat")
 
+    init {
+        // Drain queued read receipts when the app comes back. See pendingReadReceipts for
+        // why releasing an id on failure is not, by itself, a retry.
+        AppPresence.onForeground = {
+            receiptScope.launch { runCatching { flushPendingReceipts() } }
+        }
+    }
+
     // (peerUserId, deviceId) -> ALL candidate Olm sessions for THAT specific remote
     // device. Multi-device fan-out: E2EE gives every device its own vodozemac session,
     // so sessions MUST be keyed per remote device (not per conversation/user) — a peer's
@@ -597,8 +605,14 @@ class ChatEngine private constructor(context: Context) {
                         // a dropped request would otherwise strand it forever — the sender stuck
                         // on Delivered with nothing to retry it. Re-marking on the next sync is
                         // cheap; never re-marking is unrecoverable.
-                        if (status == "read") readReported.removeAll(ids.toSet())
-                        android.util.Log.w("VOIIDReceipt", "receipt $status failed, will retry", it)
+                        if (status == "read") {
+                            readReported.removeAll(ids.toSet())
+                            // AND QUEUE THEM. Releasing alone is not a retry; see
+                            // pendingReadReceipts. flushPendingReceipts drains this on
+                            // foreground.
+                            pendingReadReceipts.addAll(ids)
+                        }
+                        android.util.Log.w("VOIIDReceipt", "receipt $status failed, queued for retry", it)
                     }
             }
         }
@@ -663,6 +677,37 @@ class ChatEngine private constructor(context: Context) {
     private val readReported = java.util.Collections.newSetFromMap(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
     )
+
+    /**
+     * Read receipts whose POST failed, waiting for a retry.
+     *
+     * SEPARATE FROM [readReported], because the two answer different questions: that one is
+     * "have we already reported this id", this one is "does this id still owe a report".
+     *
+     * Without it the failure path was a dead end. Releasing an id from readReported only
+     * helps if something calls markRead again — and the only caller is gated on the chat
+     * being OPEN. So a user who read a message, lost signal for a second, then left the
+     * chat had the receipt dropped with nothing to re-send it, and the sender sat on
+     * Delivered until they happened to reopen that exact conversation. The log line said
+     * "will retry" and nothing did.
+     */
+    private val pendingReadReceipts = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+
+    /**
+     * Re-send receipts that failed earlier. Called when the app returns to the foreground,
+     * which is when connectivity has typically come back — the same trigger, and the same
+     * reasoning, as the iOS side.
+     */
+    suspend fun flushPendingReceipts() {
+        val ids = pendingReadReceipts.toList()
+        if (ids.isEmpty()) return
+        pendingReadReceipts.removeAll(ids.toSet())
+        // Re-claim before sending, exactly as markRead does; a failure below puts them back.
+        readReported.addAll(ids)
+        markReceipts(ids, "read")
+    }
 
     /**
      * Serialises markRead.

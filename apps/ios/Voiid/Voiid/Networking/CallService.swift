@@ -749,7 +749,26 @@ final class CallService: NSObject, ObservableObject {
         startOutgoingRingCap(for: callId)
 
         setupTask = Task {
-            guard await setupPeerConnection(isVideo: isVideo, callId: callId),
+            // ── TURN FETCH AND PEER SETUP OVERLAP THE RING, DELIBERATELY ─────────────
+            //
+            // Call setup was four strictly sequential round trips before a single packet
+            // of the offer left the device: GET /calls/turn, POST /calls/ring, the E2EE
+            // key fanout, then the offer. At ~500ms each on a weak network that is the
+            // 3-4 seconds of dead air a caller stares at.
+            //
+            // The TURN fetch does not depend on the ring and the ring does not depend on
+            // the peer connection, so starting the TURN request BEFORE awaiting setup
+            // lets it run while the peer connection is built. One full round trip comes
+            // out of the critical path.
+            //
+            // WHAT IS NOT PARALLELISED, AND MUST NOT BE: the ring still completes before
+            // the offer. It writes the Redis grant the WS relay gates every call frame
+            // on, and an offer that arrives before the grant is silently discarded — the
+            // "accepts nothing / stuck on Connecting" bug described below. Ordering there
+            // is load-bearing; ordering here was incidental.
+            async let warmIce = fetchIceServers()
+            guard await setupPeerConnection(isVideo: isVideo, callId: callId,
+                                            preloadedIce: await warmIce),
                   !Task.isCancelled, isCurrentCall(callId) else { return }
             CallManager.shared.startOutgoingCall(uuid: uuid, handle: peerUserId, displayName: title,
                                                  hasVideo: isVideo, phoneNumber: peerPhone(peerUserId))
@@ -771,6 +790,12 @@ final class CallService: NSObject, ObservableObject {
             // no offer to answer. That is the "accepts nothing / stuck on Connecting" bug.
             //
             // Awaited, not fire-and-forget, for the same reason.
+            // Started BEFORE the ring is awaited, collected after it. See the note at the
+            // await below: nothing in the key fanout depends on the ring's response, and
+            // nothing in the ring depends on the key.
+            async let keyExchange: Void =
+                CallKeyExchange.shared.beginOneToOne(callId: callId, peerUserId: peerUserId)
+
             if let convId {
                 struct RingBody: Encodable {
                     let to_user_id: String; let call_id: String
@@ -863,7 +888,13 @@ final class CallService: NSObject, ObservableObject {
             // proceeds as plain DTLS-SRTP with verification .unverified, exactly like
             // talking to an old client.
             watchForKeyRotation()
-            await CallKeyExchange.shared.beginOneToOne(callId: callId, peerUserId: peerUserId)
+            // AWAITED HERE, STARTED EARLIER. The key fanout is a ratchet round trip per
+            // peer device, and it used to begin only after the ring had fully returned —
+            // so the two ran back to back for no reason. It is kicked off alongside the
+            // ring above and merely COLLECTED here, which keeps the guarantee that
+            // matters (the callee holds the frame key before the offer, so media can
+            // never flow unprotected) while removing the wait that did not.
+            await keyExchange
             guard !Task.isCancelled, isCurrentCall(callId) else {
                 CallKeyExchange.shared.clear(callId: callId)
                 return
@@ -2342,8 +2373,14 @@ final class CallService: NSObject, ObservableObject {
 
     // MARK: - Peer connection setup
 
-    private func setupPeerConnection(isVideo: Bool, callId: String) async -> Bool {
-        let iceServers = await fetchIceServers()
+    /// `preloadedIce` lets the caller start the TURN fetch before this runs, so the
+    /// request overlaps the rest of setup instead of blocking it. Nil keeps the old
+    /// behaviour for the answer path, where there is nothing to overlap with.
+    private func setupPeerConnection(isVideo: Bool, callId: String,
+                                     preloadedIce: [LKRTCIceServer]? = nil) async -> Bool {
+        // Not `??`: its right-hand side is an autoclosure, which cannot carry an await.
+        let iceServers: [LKRTCIceServer]
+        if let preloadedIce { iceServers = preloadedIce } else { iceServers = await fetchIceServers() }
         guard isCurrentCall(callId), !Task.isCancelled else { return false }
         let config = LKRTCConfiguration()
         config.iceServers = iceServers

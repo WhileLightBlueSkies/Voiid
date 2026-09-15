@@ -32,15 +32,40 @@ object AppPresence {
 
     fun isForeground(): Boolean = foreground.get()
 
-    /** Called from MainActivity's onStart/onStop. */
+    /**
+     * Set when the app returns to or leaves the foreground, from MainActivity's
+     * onStart/onStop.
+     *
+     * Returning to the foreground also drains queued read receipts. A receipt whose POST
+     * failed is released and queued, but the only thing that re-sends one is markRead,
+     * which is gated on the chat being OPEN — so a user who read a message, lost signal for
+     * a moment and then left the chat had it dropped with nothing to retry it, and the
+     * sender sat on Delivered until they happened to reopen that conversation. Coming back
+     * to the foreground is when connectivity has typically returned, which is why iOS uses
+     * the same trigger for the same job.
+     */
     fun setForeground(value: Boolean) {
+        val wasBackground = !foreground.get()
         foreground.set(value)
+        if (value && wasBackground) {
+            onForeground?.invoke()
+        }
         // Leaving the app closes whatever chat was open. Without this, backgrounding while
         // inside a thread would leave the id set, and a push for that chat would be silently
         // dropped for as long as the app stayed backgrounded — the exact opposite of what
         // this class is for.
-        if (!value) openConversation.set(null)
+        if (!value) {
+            openConversation.set(null)
+            InAppMessageNotifications.clear()
+        }
     }
+
+    /**
+     * Invoked on a background→foreground transition. Set once at startup by the code that
+     * owns the retry (ChatEngine); kept as a callback rather than a direct call so this
+     * object stays free of dependencies it would otherwise have to construct.
+     */
+    @Volatile var onForeground: (() -> Unit)? = null
 
     /** Called when a chat thread opens (id) or closes (null). */
     fun setOpenConversation(id: String?) {
