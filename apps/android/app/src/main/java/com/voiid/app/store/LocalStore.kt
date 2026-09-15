@@ -69,7 +69,12 @@ object LocalStore {
                 type = type,
                 title = title,
                 lastMessagePreview = r.lastMessagePreview,
-                lastMessageAt = r.lastMessageAt?.let { it * 1000 },
+                // ZERO IS NOT A DATE. Rows written before the NULLIF fix in VoiidDatabase
+                // hold the epoch sentinel — MAX(COALESCE(x,0), COALESCE(y,0)) stored 0 when
+                // both sides were null — and every such install shows "1 Jan 1970" on the
+                // tile until that chat next receives a message. Treating 0 as absent
+                // repairs them on the next READ instead of the next write.
+                lastMessageAt = r.lastMessageAt?.takeIf { it > 0 }?.let { it * 1000 },
                 unreadCount = r.unreadCount,
                 peerUserId = r.peerUserId,
                 photoURL = r.photoUrl ?: r.peerUserId?.let { UserDirectory.photoUrl(it) },

@@ -741,6 +741,20 @@ class ChatEngine private constructor(context: Context) {
      *                   server looped an UPDATE per id. Only newly-read ids go now.
      */
     suspend fun markRead(conversationId: String) = readLock.withLock {
+        // WHOLE CONVERSATION FIRST, ids second.
+        //
+        // The id-based path below can only name messages this device HOLDS, and history is
+        // fetched 50 at a time — so a chat with 162 unread marked its newest 50 and left
+        // the other 112 unread permanently: nothing re-fetches them, so nothing can name
+        // them, and the badge survived every reopen.
+        //
+        // Opening a chat means "I have seen this conversation", not "I have seen these
+        // fifty ids". Best-effort: on failure the id path still covers what is on screen.
+        receiptScope.launch {
+            runCatching {
+                api.request("POST", "receipts/conversation/$conversationId/read", jsonBody = "{}")
+            }
+        }
         ensureLoaded()
         val inbound = (store[conversationId] ?: emptyList())
             .filter { !it.resolvingOwnership(tokens.userId).isMine && !it.control && !it.failed }

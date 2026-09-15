@@ -334,7 +334,7 @@ abstract class ConversationDao {
         VALUES (:id, 'direct', :ts, :preview, :ts)
         ON CONFLICT(id) DO UPDATE SET
             last_message_preview = :preview,
-            last_message_at      = MAX(:ts, COALESCE(last_message_at, 0)),
+            last_message_at      = NULLIF(MAX(:ts, COALESCE(last_message_at, 0)), 0),
             updated_at           = :ts
         """,
     )
@@ -347,7 +347,7 @@ abstract class ConversationDao {
             title           = COALESCE(:title, title),
             peer_user_id    = COALESCE(:peerUserId, peer_user_id),
             photo_url       = COALESCE(:photoUrl, photo_url),
-            last_message_at = MAX(COALESCE(:lastMessageAt, 0), COALESCE(last_message_at, 0)),
+            last_message_at = NULLIF(MAX(COALESCE(:lastMessageAt, 0), COALESCE(last_message_at, 0)), 0),
             unread_count    = :unreadCount,
             updated_at      = :now
         WHERE id = :id

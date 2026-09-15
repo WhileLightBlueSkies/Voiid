@@ -75,7 +75,11 @@ enum LocalStore {
                 title: title,
                 photoName: nil,
                 lastMessagePreview: row["last_message_preview"],
-                lastMessageAt: lastAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                // ZERO IS NOT A DATE. Rows written before the NULLIF fix below hold the
+                // epoch sentinel, and every one of those installs would keep showing
+                // "1 Jan 1970" until that chat next received a message. Treating 0 as
+                // absent repairs them on the next read rather than on the next write.
+                lastMessageAt: lastAt.flatMap { $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0)) : nil },
                 unreadCount: row["unread_count"] ?? 0,
                 peerUserId: peerUserId,
                 photoURL: row["photo_url"] ?? peerUserId.flatMap { UserDirectory.shared.photoURL($0) }
@@ -106,8 +110,14 @@ enum LocalStore {
                         title           = COALESCE(excluded.title, conversations.title),
                         peer_user_id    = COALESCE(excluded.peer_user_id, conversations.peer_user_id),
                         photo_url       = COALESCE(excluded.photo_url, conversations.photo_url),
-                        last_message_at = MAX(COALESCE(excluded.last_message_at, 0),
-                                              COALESCE(conversations.last_message_at, 0)),
+                        -- NULLIF around MAX, because COALESCE(...,0) writes the SENTINEL
+                        -- back into the column. When both sides are null — a chat with no
+                        -- messages yet — MAX(0, 0) stored 0, which the reader faithfully
+                        -- renders as "1 Jan 1970" on the tile. The zeros exist only so MAX
+                        -- can ignore a null; NULLIF turns the all-null result back into
+                        -- null instead of persisting epoch.
+                        last_message_at = NULLIF(MAX(COALESCE(excluded.last_message_at, 0),
+                                                     COALESCE(conversations.last_message_at, 0)), 0),
                         unread_count    = excluded.unread_count,
                         updated_at      = excluded.updated_at
                     """, arguments: [

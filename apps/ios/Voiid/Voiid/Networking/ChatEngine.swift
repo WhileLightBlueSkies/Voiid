@@ -1221,7 +1221,25 @@ final class ChatEngine {
     /// Control envelopes and undecryptable tombstones are excluded (neither was ever READ by
     /// a human), and each id is reported ONCE rather than resending the whole conversation on
     /// every sync.
+    private struct EmptyBody: Encodable {}
+
     func markRead(conversationId: String) async {
+        // WHOLE CONVERSATION FIRST, ids second.
+        //
+        // The id-based path below can only name messages this device HOLDS, and history is
+        // fetched 50 at a time — so a chat with 162 unread marked its newest 50 and left
+        // the other 112 unread permanently: nothing re-fetches them, so nothing can ever
+        // name them, and the badge survived every reopen. One production account is sitting
+        // on exactly that.
+        //
+        // Opening a chat means "I have seen this conversation", not "I have seen these
+        // fifty ids", so this says that directly and without a ceiling. Best-effort: on
+        // failure the id path still runs and still covers what is on screen.
+        let api = self.api
+        Task.detached {
+            _ = try? await api.request("POST", "receipts/conversation/\(conversationId)/read",
+                                       body: EmptyBody(), as: EmptyResponse.self)
+        }
         ensureLoaded()
         let ids = (store[conversationId] ?? [])
             .filter { !$0.resolvingOwnership(for: TokenStore.shared.userId).isMine && $0.control != true && !$0.failed }

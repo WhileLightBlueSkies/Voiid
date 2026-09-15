@@ -2,7 +2,9 @@
   "applinks": {
     "details": [
       {
-        "appIDs": ["ZX246KFTQD.in.voiid.app"],
+        "appIDs": [
+          "ZX246KFTQD.in.voiid.app"
+        ],
         "components": [
           {
             "/": "/c/*",
@@ -10,7 +12,11 @@
           },
           {
             "/": "/u/*",
-            "comment": "Personal profile links (https://voiid.app/u/<username>) — the QR code in Settings. Carries a username and nothing else; the Contact PIN is never in the link, so a scanned code still lands on the PIN step and then a request the owner must accept."
+            "comment": "Personal profile links (https://voiid.app/u/<username>) \u2014 the QR code in Settings. Carries a username and nothing else; the Contact PIN is never in the link, so a scanned code still lands on the PIN step and then a request the owner must accept."
+          },
+          {
+            "/": "/tickets/*",
+            "comment": "Authenticated ticket links; no admission credential is included."
           },
           {
             "/": "*",
