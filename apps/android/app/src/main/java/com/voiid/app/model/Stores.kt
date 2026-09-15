@@ -236,11 +236,16 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
      *  the launch path (IO, after the list is on screen). No-op for fresh installs. */
     private fun backfillPreviewsIfNeeded() {
         val prefs = appContext.getSharedPreferences("voiid_flags", android.content.Context.MODE_PRIVATE)
-        if (prefs.getBoolean("previews_backfilled_v1", false)) return
+        // v2, not v1: every device that hit the bug already has v1 set, so the fixed logic
+        // below would never run there. Bumping the key is what repairs existing installs.
+        if (prefs.getBoolean("previews_backfilled_v2", false)) return
         val ids = (directConversations + groupConversations).map { it.id }
         viewModelScope.launch(Dispatchers.IO) {
+            var wrote = 0
+            var sawMessages = false
             for (id in ids) {
                 val last = engine.messages(id).lastOrNull() ?: continue
+                sawMessages = true
                 val kind = when {
                     last.location != null -> MessageKind.LOCATION
                     last.media == null -> MessageKind.TEXT
@@ -248,10 +253,24 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                     else -> MessageKind.IMAGE
                 }
                 val preview = if (kind == MessageKind.TEXT) last.text else previewFor(kind)
-                if (preview.isNotBlank()) LocalStore.updatePreview(appContext, id, preview, last.createdAt)
+                if (preview.isNotBlank()) {
+                    LocalStore.updatePreview(appContext, id, preview, last.createdAt)
+                    wrote++
+                }
             }
-            prefs.edit().putBoolean("previews_backfilled_v1", true).apply()
-            withContext(Dispatchers.Main) { loadLocal() }   // re-render with backfilled previews
+            // ONLY BURN THE FLAG IF THERE WAS SOMETHING TO BACKFILL.
+            //
+            // This ran once unconditionally and set the flag whatever it found. But it
+            // reads messages ALREADY DECRYPTED into the local store, and on the launch
+            // where the column was new that store is often still empty — the first sync
+            // has not finished. So it wrote nothing, marked itself done, and every chat
+            // that predates the column kept a blank preview permanently, with no way back:
+            // the flag guaranteed it would never look again.
+            //
+            // Keying on "did we see any messages at all" lets an empty store retry next
+            // launch, while a genuinely backfilled account still runs exactly once.
+            if (sawMessages) prefs.edit().putBoolean("previews_backfilled_v2", true).apply()
+            if (wrote > 0) withContext(Dispatchers.Main) { loadLocal() }
         }
     }
 

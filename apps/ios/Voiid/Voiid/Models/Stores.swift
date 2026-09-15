@@ -480,20 +480,39 @@ final class ChatStore: ObservableObject {
     /// task, after the list is already on screen) and only once — new activity keeps previews
     /// fresh from then on. No-op for fresh installs (nothing to backfill).
     private func backfillPreviewsIfNeeded() {
-        let flag = "voiid.previews.backfilled.v1"
+        // v2, not v1: every device that hit the bug already has v1 set to true, so the fixed
+        // logic above would never get a chance to run there. Bumping the key is what actually
+        // repairs the existing installs; the guard inside then keeps it to one real pass.
+        let flag = "voiid.previews.backfilled.v2"
         guard !UserDefaults.standard.bool(forKey: flag) else { return }
         let ids = (directConversations + groupConversations).map { $0.id }
         Task(priority: .utility) {
+            var wrote = 0
+            var sawMessages = false
             for id in ids {
                 guard let last = ChatEngine.shared.messages(conversationId: id).last else { continue }
+                sawMessages = true
                 let preview = !last.text.isEmpty ? last.text
                     : (last.media.map { $0.mime.hasPrefix("audio/") ? "Voice message" : "Photo" } ?? "")
                 if !preview.isEmpty {
                     LocalStore.updatePreview(conversationId: id, preview: preview, at: last.createdAt)
+                    wrote += 1
                 }
             }
-            UserDefaults.standard.set(true, forKey: flag)
-            applyLocalConversations()   // re-render with the freshly backfilled previews
+            // ONLY BURN THE FLAG IF THERE WAS SOMETHING TO BACKFILL.
+            //
+            // This ran once, unconditionally, and set the flag whatever it found. But it
+            // reads messages that are ALREADY DECRYPTED into the local store, and on the
+            // launch where the column was new that store is often still empty — the first
+            // sync has not finished. So it wrote nothing, marked itself done, and every
+            // chat that existed before the column was added kept a blank preview forever,
+            // with no path back: the flag guaranteed it would never look again.
+            //
+            // Keying on "did we actually see any messages" means an empty store leaves the
+            // flag clear and the next launch retries, while a genuinely backfilled account
+            // still runs exactly once.
+            if sawMessages { UserDefaults.standard.set(true, forKey: flag) }
+            if wrote > 0 { applyLocalConversations() }
         }
     }
 
