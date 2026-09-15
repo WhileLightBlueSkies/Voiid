@@ -1,0 +1,106 @@
+{
+  "_readme": "Config for series_1_5_pipeline.py. See '00 - Start Here.md'. Only series with publish=true AND rating U or U/A 7+ are posted.",
+  "rated_by": "SET YOUR NAME (the person who watched and rated these series)",
+  "series": [
+    {
+      "id": "caminandes",
+      "number": 1,
+      "title": "Caminandes",
+      "publish": true,
+      "rating": "U",
+      "descriptors": [],
+      "films": [
+        {
+          "commons_file": "File:Caminandes- Llama Drama - Short Movie.ogv",
+          "film_title": "Llama Drama",
+          "expected_license": "CC BY 3.0",
+          "credit": "Llama Drama — Blender Foundation (Pablo Vazquez, Beorn Leonard, Francesco Siddi; music and sound by Jan Morgenstern), CC BY 3.0"
+        },
+        {
+          "commons_file": "File:Caminandes - Gran Dillama - Blender Foundation's new Open Movie.webm",
+          "film_title": "Gran Dillama",
+          "expected_license": "CC BY-SA 3.0",
+          "credit": "Gran Dillama — Blender Foundation (Pablo Vazquez, Beorn Leonard, Francesco Siddi; soundtrack by Jan Morgenstern), CC BY-SA 3.0. This edited version is shared under CC BY-SA 3.0"
+        },
+        {
+          "commons_file": "File:Caminandes 3 - Llamigos - Blender Animated Short.webm",
+          "film_title": "Llamigos",
+          "expected_license": "CC BY 3.0",
+          "credit": "Llamigos — Blender Foundation, CC BY 3.0"
+        }
+      ]
+    },
+    {
+      "id": "pepper-carrot",
+      "number": 2,
+      "title": "Pepper & Carrot",
+      "publish": true,
+      "rating": "U",
+      "descriptors": [],
+      "note": "Only Episode 6 has an official, license-tagged download (Wikimedia Commons). Episodes 3-5 are manual: see '00 - Start Here.md'.",
+      "films": [
+        {
+          "commons_file": "File:Morevna Project - Pepper&Carrot (animated comic) - Episode 6 - The Potion Contest.webm",
+          "film_title": "The Potion Contest",
+          "expected_license": "CC BY 4.0",
+          "credit": "Pepper&Carrot Episode 6: The Potion Contest — Morevna Project, Gregoire Lourme and David Revoy, CC BY 4.0"
+        }
+      ]
+    },
+    {
+      "id": "big-buck-bunny",
+      "number": 3,
+      "title": "Big Buck Bunny",
+      "publish": true,
+      "rating": "U",
+      "descriptors": [],
+      "films": [
+        {
+          "commons_file": "File:Big Buck Bunny 4K.webm",
+          "film_title": "Big Buck Bunny",
+          "expected_license": "CC BY 3.0",
+          "credit": "Big Buck Bunny — Blender Foundation, CC BY 3.0"
+        }
+      ]
+    },
+    {
+      "id": "sintel",
+      "number": 4,
+      "title": "Sintel",
+      "publish": false,
+      "rating": null,
+      "descriptors": ["Violence", "Themes and messages"],
+      "hold_reason": "Rating not confirmed (U/A 7+ or U/A 13+). Watch it, set rating, then set publish to true. U/A 13+ cannot be posted until parental locks exist.",
+      "films": [
+        {
+          "commons_file": "File:Sintel movie 4K.webm",
+          "film_title": "Sintel",
+          "expected_license": "CC BY 3.0",
+          "credit": "Sintel — Durian Open Movie Project, Blender Foundation, CC BY 3.0"
+        }
+      ]
+    },
+    {
+      "id": "blender-shorts",
+      "number": 5,
+      "title": "Blender Shorts",
+      "publish": true,
+      "rating": "U",
+      "descriptors": [],
+      "films": [
+        {
+          "commons_file": "File:Coffee Run - Blender Open Movie-full movie.webm",
+          "film_title": "Coffee Run",
+          "expected_license": "CC BY 4.0",
+          "credit": "Coffee Run — Blender Studio, CC BY 4.0"
+        },
+        {
+          "commons_file": "File:WING IT! - Blender Open Movie-full movie.webm",
+          "film_title": "Wing It!",
+          "expected_license": "CC BY 4.0",
+          "credit": "Wing It! — Blender Studio, CC BY 4.0"
+        }
+      ]
+    }
+  ]
+}
