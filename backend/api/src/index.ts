@@ -1,4 +1,5 @@
-import { sweepMissedCallNotifications } from './missedCallNotifications';
+import { sweepExpiredConferenceInvites } from './routes/calls';
+import { sweepMissedCallNotifications, sweepUnansweredCalls } from './missedCallNotifications';
 import { sweepEventLiveActivities } from './eventLiveActivities';
 // VOIID API service (Phase 0/1). HTTPS-only in prod; JWT validation; rate limiting (Section 4.6/4.9).
 import { secretboxAvailable } from './secretbox';
@@ -398,3 +399,12 @@ if (process.env.VOIID_EVENT_LIVE_ACTIVITIES === '1') {
   const timer=setInterval(() => { void sweepEventLiveActivities().catch(() => console.warn('[event-activity] sweep unavailable')); },30_000);
   timer.unref();
 }
+
+// Invitation expiry is required even when missed-call push delivery is disabled.
+let expiringConferences = false;
+setInterval(() => {
+  if (expiringConferences) return;
+  expiringConferences = true;
+  void sweepExpiredConferenceInvites().then(() => sweepUnansweredCalls()).catch(error => console.warn('[conference-expiry]', error))
+    .finally(() => { expiringConferences = false; });
+}, 15_000).unref();

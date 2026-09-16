@@ -138,6 +138,13 @@ struct VConversation: Identifiable, Hashable {
     var photoURL: String? = nil
     /// For direct chats: peer's last-seen time (from presence), nil if unknown/online.
     var lastSeenAt: Date? = nil
+    /// When this chat was pinned to the top of the grid, or nil if it is not pinned.
+    /// A DATE rather than a Bool because pinning a second chat has to sit deterministically
+    /// relative to the first, and a bool cannot express which was pinned when. Local-only:
+    /// it describes how you arrange your own home screen, not anything the peer can see.
+    var pinnedAt: Date? = nil
+    /// Marked important by this user. Local-only, like `pinnedAt`.
+    var isStarred: Bool = false
 }
 
 // VClip / VClipComment removed — the mock shapes for the dummy Clips feed. The real

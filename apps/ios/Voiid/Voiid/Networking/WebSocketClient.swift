@@ -180,6 +180,11 @@ final class WebSocketClient {
         if !otherUserId.isEmpty { frame["other_user_id"] = otherUserId }
         sendJSON(frame, queueIfDown: true)
     }
+    var onCallKeyRequest: ((String, String) -> Void)?
+    func sendCallKeyRequest(toUserId: String, callId: String) {
+        sendJSON(["type": "call_key_request", "to_user_id": toUserId, "call_id": callId], queueIfDown: true)
+    }
+
     func sendCallInviteAccept(toUserId: String, callId: String) {
         sendJSON(["type": "call_invite_accept", "to_user_id": toUserId, "call_id": callId],
                  queueIfDown: true)
@@ -224,6 +229,9 @@ final class WebSocketClient {
         task = t
         t.resume()
         connected = true
+        #if !NSE_EXTENSION
+        Task { await ChatEngine.shared.flushPendingReceipts() }
+        #endif
         NSLog("[VOIID] WS connecting → \(url.host ?? "")")
         receiveLoop()
         startHeartbeat()
@@ -477,6 +485,10 @@ final class WebSocketClient {
                               (obj["room"] as? String) ?? "",
                               (obj["call_kind"] as? String) ?? "voice",
                               (obj["other_user_id"] as? String) ?? "")
+            }
+        case "call_key_request":
+            if let from = obj["from_user_id"] as? String, let id = obj["call_id"] as? String {
+                onCallKeyRequest?(from, id)
             }
         case "call_invite_accept":
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String {

@@ -6,6 +6,7 @@ export function companionAllows(method: string, path: string, deviceId: string, 
   if (method === 'DELETE') return path === `/devices/${deviceId}`;
   if (method !== 'POST') return false;
   if (path === '/prekeys/upload' || path === '/prekeys/refresh') return body?.device_id === deviceId;
+  if (new RegExp(`^/receipts/conversation/${uuid}/read/?$`, 'i').test(path)) return body?.device_id === deviceId;
   return ['/messages/send', '/messages/ack', '/receipts/mark',
     '/media/presign-upload', '/media/presign-download', '/media/confirm', '/linking/socket-ticket'].includes(path);
 }

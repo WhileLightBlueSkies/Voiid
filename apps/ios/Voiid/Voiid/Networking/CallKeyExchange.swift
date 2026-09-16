@@ -95,12 +95,20 @@ final class CallKeyExchange: ObservableObject {
         var gen: Int?
         /// base64 SHA-256 commitment. Present only on kind "verify".
         var tag: String?
+        var scope: String?
     }
 
     // MARK: - State
 
     /// call_id -> the secret currently keying that call's media.
     private var secrets: [String: CallSecret] = [:]
+    private var roomSecrets: [String: CallSecret] = [:]
+    private var roomGenerations: [String: Int] = [:]
+    private var roomMinters: [String: String] = [:]
+    private var roomKeyPeers: [String: Set<String>] = [:]
+    func peerSupportsRoomKeys(callId: String, userId: String) -> Bool {
+        roomKeyPeers[callId]?.contains(userId) == true
+    }
     /// call_id -> generation of the held secret. Higher wins.
     private var generations: [String: Int] = [:]
     /// call_id -> user id of whoever minted the held secret. Tie-breaks equal generations
@@ -188,7 +196,7 @@ final class CallKeyExchange: ObservableObject {
     /// `BaseKeyProvider` takes a `String` and force-unwraps `.data(using: .utf8)`, so raw
     /// key bytes cannot be handed over — they are not valid UTF-8 and it would crash.
     func passphrase(callId: String) -> String? {
-        guard let secret = secrets[callId] else { return nil }
+        guard let secret = roomSecrets[callId] else { return nil }
         guard let keys = try? srtpKeysFor1to1(callSecret: secret) else {
             NSLog("[VOIID] call-key: srtpKeysFor1to1 failed for \(callId)")
             return nil
@@ -198,7 +206,7 @@ final class CallKeyExchange: ObservableObject {
 
     /// True once we hold a key for this call. Callers MUST NOT join a conference room
     /// without one — both group clients already refuse, and an ad-hoc room must too.
-    func hasKey(callId: String) -> Bool { secrets[callId] != nil }
+    func hasKey(callId: String) -> Bool { roomSecrets[callId] != nil }
 
     func verificationState(callId: String) -> CallKeyVerification {
         verification[callId] ?? .unverified
@@ -216,12 +224,12 @@ final class CallKeyExchange: ObservableObject {
     /// than failing the whole rekey, because the alternative is nobody getting the new key.
     /// The next membership change re-fans it.
     @discardableResult
-    func mintAndDistribute(callId: String, to userIds: [String]) async -> String? {
+    func mintAndDistribute(callId: String, to userIds: [String], scope: String = "room") async -> String? {
         let secret = newCallSecret()
-        let generation = (generations[callId] ?? 0) + 1
+        let generation = ((scope == "room" ? roomGenerations[callId] : generations[callId]) ?? 0) + 1
         let me = TokenStore.shared.userId ?? ""
-        install(secret: secret, callId: callId, generation: generation, minter: me)
-        await distribute(secret, callId: callId, generation: generation, to: userIds)
+        install(secret: secret, callId: callId, generation: generation, minter: me, scope: scope)
+        await distribute(secret, callId: callId, generation: generation, to: userIds, scope: scope)
         return passphrase(callId: callId)
     }
 
@@ -231,13 +239,19 @@ final class CallKeyExchange: ObservableObject {
     func redistribute(callId: String, to userIds: [String]) async {
         guard let secret = secrets[callId] else { return }
         await distribute(secret, callId: callId,
-                         generation: generations[callId] ?? 1, to: userIds)
+                         generation: generations[callId] ?? 1, to: userIds, scope: "p2p")
+    }
+
+    func redistributeRoom(callId: String, to userId: String) async {
+        guard let secret = roomSecrets[callId] else { return }
+        await distribute(secret, callId: callId, generation: roomGenerations[callId] ?? 1,
+                         to: [userId], scope: "room")
     }
 
     private func distribute(_ secret: CallSecret, callId: String,
-                            generation: Int, to userIds: [String]) async {
+                            generation: Int, to userIds: [String], scope: String) async {
         let envelope = Envelope(v: 1, k: "secret", call_id: callId,
-                                secret: secret.secret, gen: generation, tag: nil)
+                                secret: secret.secret, gen: generation, tag: nil, scope: scope)
         guard let body = try? JSONEncoder().encode(envelope) else { return }
         let myDevice = E2EManager.shared.deviceId
         let me = TokenStore.shared.userId
@@ -295,7 +309,7 @@ final class CallKeyExchange: ObservableObject {
             env = Envelope(v: 1, k: "secret", call_id: (obj["call_id"] as? String),
                            secret: secret,
                            gen: (obj["epoch"] as? Int) ?? 1,
-                           tag: nil)
+                           tag: nil, scope: obj["scope"] as? String)
         } else {
             NSLog("[VOIID] call-key: malformed envelope from \(fromUserId) for \(callId)")
             return
@@ -308,10 +322,18 @@ final class CallKeyExchange: ObservableObject {
             return
         }
 
+        if env.scope == "p2p" { roomKeyPeers[callId, default: []].insert(fromUserId) }
         switch env.k {
         case "secret":
             guard let raw = env.secret, !raw.isEmpty else { return }
             let generation = env.gen ?? 1
+            let scope = env.scope ?? "p2p"
+            guard scope == "p2p" || scope == "room" else { return }
+            if scope == "room" {
+                install(secret: CallSecret(secret: raw), callId: callId,
+                        generation: generation, minter: fromUserId, scope: scope)
+                return
+            }
             guard supersedes(callId: callId, generation: generation, minter: fromUserId) else {
                 NSLog("[VOIID] call-key: ignoring superseded key gen=\(generation) for \(callId)")
                 return
@@ -342,7 +364,18 @@ final class CallKeyExchange: ObservableObject {
         return minter < heldMinter
     }
 
-    private func install(secret: CallSecret, callId: String, generation: Int, minter: String) {
+    private func install(secret: CallSecret, callId: String, generation: Int, minter: String, scope: String = "p2p") {
+        // A room shares the call ID with the P2P leg, but never its encryption state.
+        if scope == "room" {
+            guard frameMediaKey(secret) != nil, generation > 0 else { return }
+            let held = roomGenerations[callId] ?? 0
+            guard generation > held || (generation == held && minter < (roomMinters[callId] ?? "~")) else { return }
+            roomSecrets[callId] = secret
+            roomGenerations[callId] = generation
+            roomMinters[callId] = minter
+            secretRotated.send(callId)
+            return
+        }
         guard let mediaKey = frameMediaKey(secret) else {
             NSLog("[VOIID] call-key: invalid media secret rejected")
             return
@@ -358,10 +391,7 @@ final class CallKeyExchange: ObservableObject {
             remoteTags[callId] = nil; remoteTagGenerations[callId] = nil
         }
         if verification[callId] != nil { verification[callId] = .pending }
-        // Roll the frame key with the secret. setSharedKey at the same index triggers the
-        // provider's ratchet on every cryptor attached to it; the window size is 0 and
-        // failureTolerance -1, so a frame encrypted under the previous key still decrypts
-        // briefly across the switch instead of shredding live audio.
+        // Only P2P keys reach this provider. Room rotations must never interrupt it.
         if let provider = frameProviders[callId],
            providerGeneration[callId] != generation {
             let key = mediaKey.withUnsafeBytes { Data($0) }
@@ -376,6 +406,8 @@ final class CallKeyExchange: ObservableObject {
     /// Forget everything about a call. Called on teardown — a call secret outliving its call
     /// is pure liability, and this class is the only place it exists on this device.
     func clear(callId: String) {
+        roomKeyPeers[callId] = nil
+        roomSecrets[callId] = nil; roomGenerations[callId] = nil; roomMinters[callId] = nil
         secrets[callId] = nil
         generations[callId] = nil
         minters[callId] = nil
@@ -390,6 +422,8 @@ final class CallKeyExchange: ObservableObject {
 
     /// Drop every call secret. Sign-out only.
     func wipe() {
+        roomKeyPeers.removeAll()
+        roomSecrets.removeAll(); roomGenerations.removeAll(); roomMinters.removeAll()
         secrets.removeAll()
         generations.removeAll()
         minters.removeAll()
@@ -410,7 +444,7 @@ final class CallKeyExchange: ObservableObject {
     func beginOneToOne(callId: String, peerUserId: String) async {
         guard !peerUserId.isEmpty else { return }
         verification[callId] = .pending
-        await mintAndDistribute(callId: callId, to: [peerUserId])
+        await mintAndDistribute(callId: callId, to: [peerUserId], scope: "p2p")
     }
 
     /// Compute and send this side's commitment once BOTH DTLS fingerprints are known.
@@ -432,7 +466,7 @@ final class CallKeyExchange: ObservableObject {
         evaluateVerification(callId: callId)
 
         let envelope = Envelope(v: 1, k: "verify", call_id: callId,
-                                secret: nil, gen: generations[callId], tag: tag)
+                                secret: nil, gen: generations[callId], tag: tag, scope: "p2p")
         guard let body = try? JSONEncoder().encode(envelope) else { return }
         let myDevice = E2EManager.shared.deviceId
         let generation = generations[callId]

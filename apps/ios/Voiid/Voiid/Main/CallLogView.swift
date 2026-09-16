@@ -17,11 +17,16 @@
 //
 
 import SwiftUI
+// `.receive(on:)` below is a Combine operator on NotificationCenter's publisher. SwiftUI
+// re-exports enough of Combine for `onReceive` itself, but not for the operator, so this
+// import is what makes the main-thread hop compile.
+import Combine
 
 struct CallLogView: View {
     @EnvironmentObject var chat: ChatStore
     @EnvironmentObject var session: AppSession
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var entries: [LocalStore.CallLogEntry] = []
     @State private var filter: Filter = .all
@@ -83,7 +88,7 @@ struct CallLogView: View {
                                 titleVisibility: .visible) {
                 Button("Clear", role: .destructive) {
                     LocalStore.clearCallHistory()
-                    entries = []
+                    entries = LocalStore.allCalls()
                     Haptics.success()
                 }
                 Button("Cancel", role: .cancel) {}
@@ -95,7 +100,20 @@ struct CallLogView: View {
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
         }
         .tint(VoiidColor.primary)
-        .task { entries = LocalStore.allCalls() }
+        .task {
+            entries = LocalStore.allCalls()
+            await LocalStore.recoverMissedCalls()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: LocalStore.callHistoryDidChange)
+            .receive(on: RunLoop.main)) { _ in
+            entries = LocalStore.allCalls()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                entries = LocalStore.allCalls()
+                Task { await LocalStore.recoverMissedCalls() }
+            }
+        }
     }
 
     // MARK: - Pieces
@@ -170,7 +188,7 @@ struct CallLogView: View {
             // Names the LIMITATION rather than only the absence: this log is written by this
             // device, so a user who has definitely made calls elsewhere is not left thinking
             // the screen is broken.
-            Text("Calls you make and receive on this device will appear here.")
+            Text("Your calls and recovered missed calls will appear here.")
                 .font(VoiidFont.rounded(14, .regular))
                 .foregroundStyle(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)

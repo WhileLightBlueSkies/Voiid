@@ -28,6 +28,7 @@ struct GroupCallScreen: View {
     /// Presents the participant roster. Past a handful of people the tiles are too small to
     /// read a name off, so the roster — not the grid — is what answers "who is here".
     @State private var showRoster = false
+    @State private var showInvite = false
 
     /// Reduce Motion does not mean NO feedback — it means non-vestibular feedback. The grid
     /// is the one place here that moves large objects across the screen (every tile re-lays
@@ -71,6 +72,12 @@ struct GroupCallScreen: View {
             if !call.isActive && !conversationId.isEmpty {
                 Task { await call.join(conversationId: conversationId, title: title, isVideo: isVideo) }
             }
+        }
+        .sheet(isPresented: $showInvite) {
+            ConferenceInviteSheet(onPick: { userId in
+                showInvite = false
+                Task { await conference.escalate(inviteeUserId: userId) }
+            }, onCancel: { showInvite = false })
         }
         .sheet(isPresented: $showRoster) {
             GroupCallRosterSheet(participants: call.participants)
@@ -317,6 +324,10 @@ struct GroupCallScreen: View {
     /// fixed anchor, so the row fits at any size and the hang-up never moves.
     private var controls: some View {
         HStack(spacing: 0) {
+            if call.adhocCallId != nil && conference.canEscalate {
+                ctrl("person.badge.plus", false, label: "Add person") { showInvite = true }
+                    .frame(maxWidth: .infinity)
+            }
             ctrl(call.muted ? "mic.slash.fill" : "mic.fill", call.muted,
                  label: call.muted ? "Unmute" : "Mute") {
                 call.toggleMute()

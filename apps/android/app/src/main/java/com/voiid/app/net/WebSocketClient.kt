@@ -40,6 +40,7 @@ class WebSocketClient private constructor(context: Context) {
         private const val IDLE_BACKOFF_CAP_MS = 30_000L
     }
 
+    private val appContext = context.applicationContext
     private val tokens = TokenStore.get(context)
     private val client = OkHttpClient.Builder()
         .pingInterval(30, TimeUnit.SECONDS)   // OkHttp-level keepalive
@@ -373,6 +374,11 @@ class WebSocketClient private constructor(context: Context) {
     }
 
     /** Invitee -> inviter: "I took it." The inviter uses this to start the rekey. */
+    fun sendCallKeyRequest(toUserId: String, callId: String) {
+        send(org.json.JSONObject().put("type", "call_key_request").put("to_user_id", toUserId)
+            .put("call_id", callId).toString(), queueIfDown = true)
+    }
+
     fun sendCallInviteAccept(toUserId: String, callId: String) {
         send("""{"type":"call_invite_accept","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
     }
@@ -416,6 +422,7 @@ class WebSocketClient private constructor(context: Context) {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             open = true
             connected = true
+            scope.launch { runCatching { ChatEngine.get(appContext).flushPendingReceipts() } }
             reconnectAttempts = 0
             android.util.Log.i("VOIID", "WS open")
             // Anything that piled up while we were down goes out now, in the order it was made.
@@ -552,7 +559,7 @@ class WebSocketClient private constructor(context: Context) {
             // so the 1:1 signaling struct keeps meaning "one peer-to-peer session" and the
             // conference engine can consume these without CallManager having to forward them.
             // `ciphertext` is copied to the relay seam verbatim and NEVER parsed or logged here.
-            "call_invite", "call_invite_accept", "call_invite_decline", "call_migrate", "call_key" -> {
+            "call_invite", "call_invite_accept", "call_invite_decline", "call_migrate", "call_key", "call_key_request" -> {
                 val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val copies = (obj["ciphertexts"] as? kotlinx.serialization.json.JsonArray)

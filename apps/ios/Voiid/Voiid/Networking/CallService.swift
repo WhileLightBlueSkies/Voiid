@@ -1738,6 +1738,7 @@ final class CallService: NSObject, ObservableObject {
         pendingEndReason = .declined   // ⇒ outcome "declined", never "missed"
         CallManager.shared.endCall(uuid: call.uuid,
                                    reason: reason == "answer" ? .answeredElsewhere : .declinedElsewhere)
+        if call.isConferenceInvite { CallConferenceService.shared.forgetTakenInvite(callId: callId) }
         endActiveCall(notifyPeer: false, fromCallKit: true, reportStatus: false)
         // recordCall upserts on the call id, so this corrects the row endActiveCall
         // just wrote — a call answered on your tablet belongs in history as answered.
@@ -2314,7 +2315,7 @@ final class CallService: NSObject, ObservableObject {
         // id matches, so calling it unconditionally is safe — and without it an escalated
         // call left its roster poll hitting GET /calls/:id/participants every 3 seconds
         // forever, and its per-call keys uncleared.
-        if call.isConferenceInvite, CallConferenceService.shared.callId != call.id {
+        if reportStatus, call.isConferenceInvite, CallConferenceService.shared.callId != call.id {
             Task { await CallConferenceService.shared.declineInvite(callId: call.id, inviterUserId: nil) }
         }
         CallConferenceService.shared.callEnded(callId: call.id)
@@ -2511,8 +2512,17 @@ final class CallService: NSObject, ObservableObject {
         let callId = call.id
         Task {
             struct StatusBody: Encodable { let status: String }
-            _ = try? await api.request("POST", "calls/\(callId)/status",
-                                       body: StatusBody(status: "connected"), as: EmptyResponse.self)
+            var delaySeconds = 1
+            while active?.id == callId && active?.state != .ended && !Task.isCancelled {
+                do {
+                    _ = try await api.request("POST", "calls/\(callId)/status",
+                        body: StatusBody(status: "connected"), as: EmptyResponse.self)
+                    return
+                } catch {
+                    try? await Task.sleep(for: .seconds(delaySeconds))
+                    delaySeconds = min(15, delaySeconds * 2)
+                }
+            }
         }
     }
 }

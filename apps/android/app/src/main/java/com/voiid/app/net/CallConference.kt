@@ -213,6 +213,8 @@ data class CallParticipantsResponse(
  * `POST /calls/ring` and every WS call frame already use.
  */
 class ConferenceApi(context: Context) {
+    private val e2e = E2EManager.get(context)
+    private fun deviceBody() = org.json.JSONObject().put("device_id", e2e.deviceId).put("protocol_version", 2).toString()
     private val api = ApiClient(TokenStore.get(context))
 
     /**
@@ -222,17 +224,17 @@ class ConferenceApi(context: Context) {
      * contract — one non-defaulted field, so `encodeDefaults = false` cannot drop it.
      */
     suspend fun escalate(callId: String, inviteeUserId: String): EscalateResponse {
-        val body = ApiClient.json.encodeToString(EscalateBody.serializer(), EscalateBody(inviteeUserId))
+        val body = ApiClient.json.encodeToString(EscalateBody.serializer(), EscalateBody(inviteeUserId, e2e.deviceId, 2))
         return api.requestAs("POST", "calls/$callId/escalate", jsonBody = body)
     }
 
     /** A LiveKit JWT for `voiid-call-<callId>`. Gated on a live participant row, NOT membership. */
     suspend fun adhocToken(callId: String): AdhocTokenResponse =
-        api.requestAs("POST", "calls/$callId/adhoc-token", jsonBody = "{}")
+        api.requestAs("POST", "calls/$callId/adhoc-token", jsonBody = deviceBody())
 
     /** invited|joined => joined. The membership event the rekey hangs off. */
     suspend fun join(callId: String): CallJoinResponse =
-        api.requestAs("POST", "calls/$callId/join", jsonBody = "{}")
+        api.requestAs("POST", "calls/$callId/join", jsonBody = deviceBody())
 
     /**
      * Leave — and the DECLINE path: an invitee who never joined declines by calling this.
@@ -240,7 +242,10 @@ class ConferenceApi(context: Context) {
      * `was_participant:false`).
      */
     suspend fun leave(callId: String): CallLeaveResponse =
-        api.requestAs("POST", "calls/$callId/leave", jsonBody = "{}")
+        api.requestAs("POST", "calls/$callId/leave", jsonBody = deviceBody())
+
+    suspend fun completeEscalation(callId: String) { api.request("POST", "calls/$callId/complete-escalation", jsonBody = deviceBody()) }
+    suspend fun abortEscalation(callId: String) { api.request("POST", "calls/$callId/abort-escalation", jsonBody = deviceBody()) }
 
     /** The roster. @username only — see [CallRosterEntry.displayName]. */
     suspend fun participants(callId: String): CallParticipantsResponse =
@@ -248,7 +253,7 @@ class ConferenceApi(context: Context) {
 
     /** Single non-defaulted field — see the serialization note above. */
     @Serializable
-    private data class EscalateBody(val invitee_user_id: String)
+    private data class EscalateBody(val invitee_user_id: String, val device_id: String?, val protocol_version: Int)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -282,6 +287,7 @@ data class CallKeyEnvelope(
      * today's DTLS-only 1:1 behaviour rather than failing the call.
      */
     @EncodeDefault val srtp_commit: Boolean = false,
+    @EncodeDefault val scope: String = "p2p",
 )
 
 /**
@@ -322,15 +328,15 @@ class CallKeyCourier(context: Context) {
      */
     suspend fun mintAndDistribute(callId: String, epoch: Int, recipientUserIds: List<String>): String {
         val secret = uniffi.voiid.newCallSecret().secret
-        distribute(callId, epoch, secret, recipientUserIds)
+        distribute(callId, epoch, secret, recipientUserIds, scope = "room")
         return secret
     }
 
     /** Re-fan an ALREADY MINTED secret (a late joiner catching up on the current epoch). */
-    suspend fun distribute(callId: String, epoch: Int, secret: String, recipientUserIds: List<String>) {
+    suspend fun distribute(callId: String, epoch: Int, secret: String, recipientUserIds: List<String>, scope: String = "p2p") {
         val myId = TokenStore.get(appContext).userId
         val envelope = CallKeyEnvelope(
-            call_id = callId, epoch = epoch, secret = secret, srtp_commit = true,
+            call_id = callId, epoch = epoch, secret = secret, srtp_commit = true, scope = scope,
         )
         val plaintext = ApiClient.json
             .encodeToString(CallKeyEnvelope.serializer(), envelope)
@@ -401,6 +407,7 @@ class CallKeyCourier(context: Context) {
                     epoch = obj["gen"]?.jsonPrimitive?.intOrNull ?: 1,
                     secret = obj["secret"]?.jsonPrimitive?.contentOrNull ?: return@runCatching null,
                     srtp_commit = false,
+                    scope = obj["scope"]?.jsonPrimitive?.contentOrNull ?: "p2p",
                 )
             }.getOrNull()
         if (env == null || env.t != "voiid:call_key" || env.call_id != expectedCallId) {

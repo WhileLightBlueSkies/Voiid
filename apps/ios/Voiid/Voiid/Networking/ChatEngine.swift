@@ -1261,7 +1261,65 @@ final class ChatEngine {
     /// Called on websocket reconnect and app foreground, which are the two moments
     /// connectivity typically comes back. Without a caller like this the retry queue is
     /// just a slower way of losing the receipt.
+    private var maySendReadReceipts: Bool {
+        #if NSE_EXTENSION
+        return false
+        #else
+        return PrivacySettings.shared.sendReadReceipts
+        #endif
+    }
+
+    #if !NSE_EXTENSION
+    private var flushingConversationReads = false
+    private var readQueueKey: String { "voiid.read-intents.\(TokenStore.shared.userId ?? "signed-out")" }
+
+    /// Persist before starting HTTP, so leaving the screen or restarting cannot lose it.
+    func queueConversationRead(_ id: String) {
+        guard TokenStore.shared.userId != nil else { return }
+        let now = Date().timeIntervalSince1970
+        var pending = UserDefaults.standard.dictionary(forKey: readQueueKey) ?? [:]
+        pending[id] = ["through": now, "disclose": maySendReadReceipts]
+        UserDefaults.standard.set(pending, forKey: readQueueKey)
+        LocalStore.rememberReadPosition(id, through: now)
+    }
+
+    private func flushConversationReads() async {
+        guard !flushingConversationReads, let account = TokenStore.shared.userId,
+              let device = E2EManager.shared.deviceId else { return }
+        flushingConversationReads = true
+        defer { flushingConversationReads = false }
+        let key = readQueueKey
+        let pending = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        struct Body: Encodable { let device_id: String; let read_before: String; let send_receipts: Bool }
+        for (id, raw) in pending {
+            guard TokenStore.shared.userId == account,
+                  let intent = raw as? [String: Any], let through = intent["through"] as? Double else { continue }
+            let disclose = (intent["disclose"] as? Bool ?? false) && maySendReadReceipts
+            do {
+                _ = try await api.request("POST", "receipts/conversation/\(id)/read",
+                    body: Body(device_id: device,
+                        read_before: formatter.string(from: Date(timeIntervalSince1970: through)),
+                        send_receipts: disclose), as: EmptyResponse.self)
+                var latest = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+                if (latest[id] as? [String: Any])?["through"] as? Double == through {
+                    latest.removeValue(forKey: id)
+                    UserDefaults.standard.set(latest, forKey: key)
+                }
+            } catch {
+                NSLog("[VOIID] conversation read pending retry: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    #endif
     func flushPendingReceipts() async {
+        #if !NSE_EXTENSION
+        Task { await LocalStore.recoverMissedCalls() }
+        await flushConversationReads()
+        #endif
+        guard maySendReadReceipts else { return }
         let ids = Array(Self.pendingReadReceipts)
         guard !ids.isEmpty else { return }
         Self.pendingReadReceipts.removeAll()
@@ -1283,22 +1341,11 @@ final class ChatEngine {
     private struct EmptyBody: Encodable {}
 
     func markRead(conversationId: String) async {
-        // WHOLE CONVERSATION FIRST, ids second.
-        //
-        // The id-based path below can only name messages this device HOLDS, and history is
-        // fetched 50 at a time — so a chat with 162 unread marked its newest 50 and left
-        // the other 112 unread permanently: nothing re-fetches them, so nothing can ever
-        // name them, and the badge survived every reopen. One production account is sitting
-        // on exactly that.
-        //
-        // Opening a chat means "I have seen this conversation", not "I have seen these
-        // fifty ids", so this says that directly and without a ceiling. Best-effort: on
-        // failure the id path still runs and still covers what is on screen.
-        let api = self.api
-        Task.detached {
-            _ = try? await api.request("POST", "receipts/conversation/\(conversationId)/read",
-                                       body: EmptyBody(), as: EmptyResponse.self)
-        }
+        #if !NSE_EXTENSION
+        queueConversationRead(conversationId)
+        Task { await flushConversationReads() }
+        #endif
+        guard maySendReadReceipts else { return }
         ensureLoaded()
         let ids = (store[conversationId] ?? [])
             .filter { !$0.resolvingOwnership(for: TokenStore.shared.userId).isMine && $0.control != true && !$0.failed }

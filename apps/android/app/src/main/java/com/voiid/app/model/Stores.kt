@@ -288,7 +288,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
             // Titles come from the directory, not the server: if you saved this person as
             // "Mum" in your address book, every screen says "Mum" whatever they signed up as.
-            val convs = chatService.fetchConversations().map { c ->
+            val convs = chatService.fetchConversations().map { LocalStore.applyingReadPosition(appContext, it) }.map { c ->
                 val peer = c.peerUserId
                 if (c.type == ConversationType.DIRECT && peer != null) {
                     c.copy(title = UserDirectory.displayName(peer, fallback = c.title))
@@ -402,6 +402,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         // Clear the badge NOW rather than waiting for the next /conversations poll to report
         // it. The receipt round-trip takes a moment, and a chat you are staring at showing
         // "3 unread" is the single most obvious way for the count to look broken.
+        engine.queueConversationRead(conv.id)
+        viewModelScope.launch { engine.flushPendingReceipts() }
         clearUnreadLocally(conv.id)
         refresh(conv.id)
         viewModelScope.launch { syncMessages(conv) }
@@ -433,10 +435,6 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 "VOIIDReceipt",
                 "markOpen SKIPPED: open=$openConversationId asked=$conversationId",
             )
-            return
-        }
-        if (!PrivacySettings.sendReadReceipts(appContext)) {
-            android.util.Log.i("VOIIDReceipt", "markOpen SKIPPED: read receipts disabled in settings")
             return
         }
         engine.markRead(conversationId)

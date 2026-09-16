@@ -95,6 +95,7 @@ object CallManager {
          * any moment, so this must never be confused with ENDED. Cleared on ICE recovery.
          */
         val reconnecting: Boolean = false,
+        val supportsRoomKeys: Boolean = false,
         /**
          * The CALLEE'S DEVICE IS GENUINELY ALERTING — set when their `call_ringing` frame
          * arrives, never when we merely sent the offer.
@@ -443,7 +444,6 @@ object CallManager {
                 exec.execute {
                     if (isCurrentCall(callId)) {
                         applyFrameSecret(secret, epoch = 1)
-                        ConferenceManager.seedOneToOneSecret(callId, secret, epoch = 1)
                     }
                 }
             }.onFailure {
@@ -643,6 +643,10 @@ object CallManager {
     fun retire1to1LegForConference(notifyPeer: Boolean, onReleased: () -> Unit = {}) {
         val s = _state.value ?: return
         retiredPeerCallId = s.callId
+        qualityJob?.cancel(); qualityJob = null
+        netMonitor?.let { runCatching { it.stop() } }; netMonitor = null
+        metrics?.let { runCatching { it.stop() } }
+        update(s.callId) { it.copy(reconnecting = false) }
         cancelOfferTimeout()
         CallTones.stopRingback()
         if (notifyPeer && s.phase != Phase.ENDED) {
@@ -1936,7 +1940,12 @@ object CallManager {
         TelecomBridge.setActive(s.callId)
         startForegroundService()
         scope.launch(Dispatchers.IO) {
-            runCatching { CallApi(appContext).status(s.callId, "connected") }
+            var backoff = 1000L
+            while (isCurrentCall(s.callId)) {
+                if (runCatching { CallApi(appContext).status(s.callId, "connected") }.isSuccess) break
+                kotlinx.coroutines.delay(backoff)
+                backoff = minOf(15000L, backoff * 2)
+            }
         }
     }
 
@@ -1955,6 +1964,9 @@ object CallManager {
             val plain = ChatEngine.get(appContext).decryptBroadcast(mine, fromUserId, senderDeviceId) ?: return@launch
             val obj = runCatching { ApiClient.json.parseToJsonElement(plain).jsonObject }.getOrNull() ?: return@launch
             if (obj["call_id"]?.jsonPrimitive?.contentOrNull != callId) return@launch
+            if (obj["scope"]?.jsonPrimitive?.contentOrNull == "p2p") {
+                update(callId) { it.copy(supportsRoomKeys = true) }
+            }
             if (obj["k"]?.jsonPrimitive?.contentOrNull == "verify") {
                 val tag = obj["tag"]?.jsonPrimitive?.contentOrNull ?: return@launch
                 val epoch = obj["gen"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return@launch
@@ -1970,8 +1982,11 @@ object CallManager {
                 .getOrNull() ?: parseIosEnvelope(plain, callId) ?: return@launch
             exec.execute {
                 if (!isCurrentCall(callId) || parsed.epoch < 1) return@execute
-                applyFrameSecret(parsed.secret, parsed.epoch)
-                ConferenceManager.seedOneToOneSecret(callId, parsed.secret, parsed.epoch, fromUserId)
+                if (parsed.scope == "room") {
+                    ConferenceManager.installRoomSecret(callId, parsed.secret, parsed.epoch, fromUserId)
+                } else if (parsed.scope == "p2p") {
+                    applyFrameSecret(parsed.secret, parsed.epoch)
+                }
             }
         }
     }
@@ -1992,6 +2007,7 @@ object CallManager {
             epoch = obj["gen"]?.jsonPrimitive?.int ?: 1,
             secret = obj["secret"]?.jsonPrimitive?.content ?: return@runCatching null,
             srtp_commit = false,
+            scope = obj["scope"]?.jsonPrimitive?.contentOrNull ?: "p2p",
         )
     }.getOrNull()
 
@@ -2031,7 +2047,7 @@ object CallManager {
         verificationTagJob?.cancel()
         verificationTagJob = scope.launch(Dispatchers.IO) {
             val envelope = JsonObject(mapOf("v" to JsonPrimitive(1), "k" to JsonPrimitive("verify"),
-                "call_id" to JsonPrimitive(s.callId), "gen" to JsonPrimitive(epoch), "tag" to JsonPrimitive(tag))).toString().toByteArray()
+                "call_id" to JsonPrimitive(s.callId), "scope" to JsonPrimitive("p2p"), "gen" to JsonPrimitive(epoch), "tag" to JsonPrimitive(tag))).toString().toByteArray()
             // Key frames are ephemeral. Retry fresh encrypted copies, bounded to this call/key.
             repeat(3) { attempt ->
                 if (attempt > 0) kotlinx.coroutines.delay(1000L shl attempt)
@@ -2230,8 +2246,10 @@ object CallManager {
         // our `call_history` can never disagree about what happened.
         TelecomBridge.setDisconnected(s.callId, disconnectCause(s, reason, outcome))
         endCallSession()
-        if (ConferenceManager.activeCallId == s.callId) ConferenceManager.leave()
-        else if (s.isConferenceInvite) ConferenceManager.declineInvite(appContext, s.callId, "")
+        if (reason !in setOf("answered-elsewhere", "declined-elsewhere")) {
+            if (ConferenceManager.activeCallId == s.callId) ConferenceManager.leave()
+            else if (s.isConferenceInvite) ConferenceManager.declineInvite(appContext, s.callId, "")
+        }
         ConferenceManager.forgetCallKey(s.callId)
         exec.execute { releaseWebRtc() }
         restoreAudioRoute()
@@ -2372,9 +2390,10 @@ object CallManager {
      */
     private fun requestIceRestart(reason: String) {
         val s = _state.value ?: return
+        if (retiredPeerCallId == s.callId) return
         if (s.phase != Phase.CONNECTING && s.phase != Phase.CONNECTED) return
         exec.execute {
-            if (!isCurrentCall(s.callId)) return@execute
+            if (!isCurrentCall(s.callId) || pc == null || retiredPeerCallId == s.callId) return@execute
             // A transport-change hint can arrive while media still works. Only show
             // reconnecting for a lost ICE path, not merely a refreshed offer.
             if (pc?.iceConnectionState() !in setOf(PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED)) markReconnecting(true)

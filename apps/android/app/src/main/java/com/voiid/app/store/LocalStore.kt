@@ -75,7 +75,7 @@ object LocalStore {
                 // tile until that chat next receives a message. Treating 0 as absent
                 // repairs them on the next READ instead of the next write.
                 lastMessageAt = r.lastMessageAt?.takeIf { it > 0 }?.let { it * 1000 },
-                unreadCount = r.unreadCount,
+                unreadCount = if ((r.lastMessageAt ?: Long.MAX_VALUE) <= readPositions(context).getLong(r.id, 0) / 1000) 0 else r.unreadCount,
                 peerUserId = r.peerUserId,
                 photoURL = r.photoUrl ?: r.peerUserId?.let { UserDirectory.photoUrl(it) },
             )
@@ -88,10 +88,23 @@ object LocalStore {
      * Deliberately an UPSERT and not a replace-all: rows the server omits (a conversation
      * created on this device and not yet pushed) must survive a sync.
      */
+    private fun readPositions(context: Context) = context.getSharedPreferences(
+        "voiid_read_positions_${com.voiid.app.net.TokenStore.get(context).userId}", Context.MODE_PRIVATE)
+
+    fun rememberReadPosition(context: Context, id: String, through: Long) {
+        val prefs = readPositions(context)
+        synchronized(prefs) { prefs.edit().putLong(id, maxOf(prefs.getLong(id, 0), through)).commit() }
+    }
+
+    fun applyingReadPosition(context: Context, c: VConversation): VConversation {
+        val through = readPositions(context).getLong(c.id, 0)
+        return if (through > 0 && c.lastMessageAt?.let { it <= through } == true) c.copy(unreadCount = 0) else c
+    }
+
     fun saveConversations(context: Context, convs: List<VConversation>) {
         if (convs.isEmpty()) return
         val now = System.currentTimeMillis() / 1000
-        val rows = convs.map { c ->
+        val rows = convs.map { applyingReadPosition(context, it) }.map { c ->
             ConversationRow(
                 id = c.id,
                 kind = when (c.type) {

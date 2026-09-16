@@ -35,9 +35,12 @@ enum LocalStore {
         let rows = db.read { database -> [Row] in
             try Row.fetchAll(database, sql: """
                 SELECT id, kind, title, peer_user_id, photo_url,
-                       last_message_at, unread_count, last_message_preview
+                       last_message_at, unread_count, last_message_preview,
+                       pinned_at, starred
                   FROM conversations
-                 ORDER BY COALESCE(last_message_at, 0) DESC
+                 ORDER BY CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END,
+                          pinned_at DESC,
+                          COALESCE(last_message_at, 0) DESC
                 """)
         } ?? []
 
@@ -82,7 +85,11 @@ enum LocalStore {
                 lastMessageAt: lastAt.flatMap { $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0)) : nil },
                 unreadCount: row["unread_count"] ?? 0,
                 peerUserId: peerUserId,
-                photoURL: row["photo_url"] ?? peerUserId.flatMap { UserDirectory.shared.photoURL($0) }
+                photoURL: row["photo_url"] ?? peerUserId.flatMap { UserDirectory.shared.photoURL($0) },
+                pinnedAt: (row["pinned_at"] as Int64?).flatMap {
+                    $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0)) : nil
+                },
+                isStarred: (row["starred"] as Int64?) == 1
             )
         }
     }
@@ -96,11 +103,55 @@ enum LocalStore {
     /// converge across a user's devices, and the server is the only party that sees
     /// all of them. The cost is that reading a chat on your phone zeroes the badge
     /// here on the next sync, which is the behaviour you want.
+    private static var readPositionKey: String { "voiid.read-position.\(TokenStore.shared.userId ?? "signed-out")" }
+
+    static func rememberReadPosition(_ id: String, through: Double) {
+        var positions = UserDefaults.standard.dictionary(forKey: readPositionKey) ?? [:]
+        positions[id] = max(positions[id] as? Double ?? 0, through)
+        UserDefaults.standard.set(positions, forKey: readPositionKey)
+        db.write { database in
+            try database.execute(sql: "UPDATE conversations SET unread_count = 0 WHERE id = ?", arguments: [id])
+        }
+    }
+
+    /// Pin a chat to the top of the grid, or unpin it.
+    ///
+    /// The timestamp is what orders multiple pins against each other; `conversations()`
+    /// reads pinned rows first, newest pin highest, then everything else by recency.
+    static func setPinned(_ id: String, _ pinned: Bool) {
+        db.write { database in
+            try database.execute(
+                sql: "UPDATE conversations SET pinned_at = ? WHERE id = ?",
+                arguments: [pinned ? Int64(Date().timeIntervalSince1970) : nil, id])
+        }
+    }
+
+    /// Mark a chat important, or clear it. Does not affect ordering — a star is a label,
+    /// and silently moving a chat because it was starred would make the grid unpredictable
+    /// in exactly the way pinning is meant to be explicit about.
+    static func setStarred(_ id: String, _ starred: Bool) {
+        db.write { database in
+            try database.execute(
+                sql: "UPDATE conversations SET starred = ? WHERE id = ?",
+                arguments: [starred ? 1 : 0, id])
+        }
+    }
+
+    static func applyingReadPosition(_ conversation: VConversation) -> VConversation {
+        var result = conversation
+        let positions = UserDefaults.standard.dictionary(forKey: readPositionKey) ?? [:]
+        if let through = positions[conversation.id] as? Double,
+           let last = conversation.lastMessageAt, last.timeIntervalSince1970 <= through {
+            result.unreadCount = 0
+        }
+        return result
+    }
+
     static func saveConversations(_ convs: [VConversation]) {
         guard !convs.isEmpty else { return }
         let now = Int64(Date().timeIntervalSince1970)
         db.write { database in
-            for c in convs {
+            for c in convs.map(applyingReadPosition) {
                 try database.execute(sql: """
                     INSERT INTO conversations
                         (id, kind, title, peer_user_id, photo_url, last_message_at, unread_count, updated_at)
@@ -270,10 +321,89 @@ enum LocalStore {
     // New capability, not a port: calls previously left no local trace at all, so a
     // missed call was invisible once the CallKit banner went away.
 
+    private static let callWriteLock = NSRecursiveLock()
+    private static var pendingCallKey: String { "voiid.pending-calls.\(TokenStore.shared.userId ?? "signed-out")" }
+    private struct PendingCall: Codable {
+        let id: String; let conversationId: String?; let peerUserId: String?
+        let kind: String; let direction: String; let outcome: String
+        let startedAt: Date; let endedAt: Date?; let connectedAt: Date?
+    }
+
+    static func retryPendingCalls() {
+        callWriteLock.lock(); defer { callWriteLock.unlock() }
+        let pending = UserDefaults.standard.dictionary(forKey: pendingCallKey) ?? [:]
+        for data in pending.values {
+            guard let data = data as? Data,
+                  let call = try? JSONDecoder().decode(PendingCall.self, from: data) else { continue }
+            recordCall(id: call.id, conversationId: call.conversationId, peerUserId: call.peerUserId,
+                kind: call.kind, direction: call.direction, outcome: call.outcome,
+                startedAt: call.startedAt, endedAt: call.endedAt, connectedAt: call.connectedAt)
+        }
+    }
+
+    @MainActor private static var recoveringCalls = false
+    @MainActor private static var lastCallRecovery: [String: Date] = [:]
+    @MainActor static func recoverMissedCalls() async {
+        retryPendingCalls()
+        guard !recoveringCalls, let account = TokenStore.shared.userId else { return }
+        if let last = lastCallRecovery[account], Date().timeIntervalSince(last) < 60 { return }
+        recoveringCalls = true; defer { recoveringCalls = false }
+        struct Wire: Decodable {
+            let id: String; let conversation_id: String; let peer_user_id: String
+            let kind: String; let started_at: Date; let ended_at: Date
+        }
+        struct Page: Decodable { let calls: [Wire]; let next_cursor: String? }
+        var cursor: String?
+        do {
+            repeat {
+                let suffix = cursor.map { "?cursor=\($0)" } ?? ""
+                let page = try await APIClient().request("GET", "calls/history/missed\(suffix)", as: Page.self)
+                guard TokenStore.shared.userId == account else { return }
+                let clearedThrough = UserDefaults.standard.double(forKey: "voiid.calls-cleared.\(account)")
+                for call in page.calls {
+                    if call.started_at.timeIntervalSince1970 <= clearedThrough { continue }
+                    // Existing local outcomes (answered, declined, taken elsewhere) win.
+                    let committed = db.writeCommitted { database in
+                        try database.execute(sql: """
+                            INSERT OR IGNORE INTO call_history
+                              (id,conversation_id,peer_user_id,kind,direction,outcome,started_at,ended_at)
+                            VALUES (?,?,?,?,'incoming','missed',?,?)
+                            """, arguments: [call.id,call.conversation_id,call.peer_user_id,call.kind,
+                                Int64(call.started_at.timeIntervalSince1970),Int64(call.ended_at.timeIntervalSince1970)])
+                    }
+                    guard committed else { return } // no page is acknowledged on failure
+                }
+                NotificationCenter.default.post(name: callHistoryDidChange, object: nil)
+                cursor = page.next_cursor
+            } while cursor != nil && !Task.isCancelled
+            if !Task.isCancelled { lastCallRecovery[account] = Date() }
+        } catch { NSLog("[VOIID] missed-call recovery will retry: \(error.localizedDescription)") }
+    }
+
+    static let callHistoryDidChange = Notification.Name("VoiidCallHistoryDidChange")
+
+    @discardableResult
     static func recordCall(id: String, conversationId: String?, peerUserId: String?,
                            kind: String, direction: String, outcome: String,
-                           startedAt: Date, endedAt: Date? = nil, connectedAt: Date? = nil) {
-        db.write { database in
+                           startedAt: Date, endedAt: Date? = nil, connectedAt: Date? = nil) -> Bool {
+        callWriteLock.lock(); defer { callWriteLock.unlock() }
+        let key = pendingCallKey
+        var pending = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+        let incoming = PendingCall(id: id, conversationId: conversationId, peerUserId: peerUserId,
+            kind: kind, direction: direction, outcome: outcome,
+            startedAt: startedAt, endedAt: endedAt, connectedAt: connectedAt)
+        // Preserve a final failed write when a delayed provisional write arrives.
+        if let data = pending[id] as? Data,
+           let previous = try? JSONDecoder().decode(PendingCall.self, from: data),
+           previous.endedAt != nil && endedAt == nil {
+            return recordCall(id: previous.id, conversationId: previous.conversationId,
+                peerUserId: previous.peerUserId, kind: previous.kind, direction: previous.direction,
+                outcome: previous.outcome, startedAt: previous.startedAt,
+                endedAt: previous.endedAt, connectedAt: previous.connectedAt)
+        }
+        pending[id] = try? JSONEncoder().encode(incoming)
+        UserDefaults.standard.set(pending, forKey: key)
+        let committed = db.writeCommitted { database in
             try database.execute(sql: """
                 INSERT INTO call_history
                     (id, conversation_id, peer_user_id, kind, direction, outcome, started_at, ended_at, connected_at)
@@ -291,6 +421,12 @@ enum LocalStore {
                                  endedAt.map { Int64($0.timeIntervalSince1970) },
                                  connectedAt.map { Int64($0.timeIntervalSince1970) }])
         }
+        if committed {
+            pending.removeValue(forKey: id)
+            UserDefaults.standard.set(pending, forKey: key)
+            NotificationCenter.default.post(name: callHistoryDidChange, object: nil)
+        }
+        return committed
     }
 
     /// One conversation's finished calls, oldest first — the transcript's call bubbles.
@@ -355,8 +491,14 @@ enum LocalStore {
 
     /// Delete every call row. Backs "Clear call history".
     static func clearCallHistory() {
-        db.write { database in
+        callWriteLock.lock(); defer { callWriteLock.unlock() }
+        if db.writeCommitted({ database in
             try database.execute(sql: "DELETE FROM call_history")
+        }) {
+            UserDefaults.standard.removeObject(forKey: pendingCallKey)
+            UserDefaults.standard.set(Date().timeIntervalSince1970,
+                forKey: "voiid.calls-cleared.\(TokenStore.shared.userId ?? "signed-out")")
+            NotificationCenter.default.post(name: callHistoryDidChange, object: nil)
         }
     }
 

@@ -46,6 +46,12 @@ import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+
 /**
  * The UI for turning a 1:1 call into a small conference. Port of iOS `ConferenceViews.swift`.
  *
@@ -78,8 +84,24 @@ fun ConferenceInviteSheet(
     onDismiss: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
+    val context = LocalContext.current
+    var invitable by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var loading by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf(false) }
+    val callId = com.voiid.app.net.CallManager.state.value?.callId
+    LaunchedEffect(callId) {
+        try {
+            if (callId != null) {
+                val response = com.voiid.app.net.ApiClient(com.voiid.app.net.TokenStore.get(context))
+                    .request("GET", "calls/$callId/invitable")
+                val users = org.json.JSONObject(response).getJSONArray("users")
+                invitable = (0 until users.length()).map { users.getJSONObject(it).getString("user_id") }.toSet()
+            }
+        } catch (_: Exception) { loadError = true }
+        finally { loading = false }
+    }
     val candidates = chat.directConversations.filter {
-        it.peerUserId != null && it.peerUserId != excludeUserId && it.type != ConversationType.SELF
+        it.peerUserId in invitable && it.peerUserId != excludeUserId && it.type != ConversationType.SELF
     }
 
     Column(
@@ -96,7 +118,10 @@ fun ConferenceInviteSheet(
         )
         Spacer(Modifier.height(12.dp))
 
-        if (candidates.isEmpty()) {
+        if (loading || loadError) {
+            Text(if (loading) "Loading people…" else "Couldn't load people. Close and try again.",
+                modifier = Modifier.padding(horizontal = 20.dp))
+        } else if (candidates.isEmpty()) {
             Text(
                 "You can add people you already have a chat with.",
                 style = VoiidFont.rounded(14),

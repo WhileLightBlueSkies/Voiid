@@ -173,6 +173,9 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     }
 
     var tab by remember { mutableStateOf(Tab.CHAT) }
+    // Read here rather than at the later `context`: that one is declared further down, and
+    // the open-thread effect below runs before it exists.
+    val notificationContext = androidx.compose.ui.platform.LocalContext.current
     var openConversation by remember { mutableStateOf<VConversation?>(null) }
     // Mirror the open thread into process-global state so VoiidMessagingService — a
     // background service that cannot read Compose — can skip notifying about a message the
@@ -180,6 +183,14 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // opens or closes a thread, so no call site has to remember to update it.
     LaunchedEffect(openConversation?.id) {
         com.voiid.app.net.AppPresence.setOpenConversation(openConversation?.id)
+        // Opening a thread answers every banner that was pointing at it, so they go now
+        // rather than waiting for the next foreground transition — the user is already
+        // reading the thing they were being notified about.
+        openConversation?.id?.let {
+            com.voiid.app.net.ChatEngine
+                .get(notificationContext.applicationContext)
+                .clearMessageNotifications(it)
+        }
     }
     // WHICH grid was tapped and where in it. The fullscreen player is a pager over a list,
     // and there are three lists that can produce one (explore, following, a creator's page),

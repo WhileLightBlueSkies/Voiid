@@ -133,7 +133,9 @@ struct ChatsHomeView: View {
                             items: tab == .chats ? $chat.directConversations : $chat.groupConversations,
                             onOpen: { openConversation = $0 },
                             onCall: { callTarget = $0 },
-                            onDelete: { deleteTarget = $0 }
+                            onDelete: { deleteTarget = $0 },
+                            onPin: { chat.setPinned($0.id, $0.pinnedAt == nil) },
+                            onStar: { chat.setStarred($0.id, !$0.isStarred) }
                         )
                     } else {
                         chatListLayout(items)

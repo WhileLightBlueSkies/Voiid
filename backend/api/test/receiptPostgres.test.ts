@@ -327,6 +327,52 @@ test('receipt and message authorization against PostgreSQL', { skip: !url }, asy
                              where r.message_id = m.id and r.user_id = $3 and r.status = 'read')`,
         [conv, ana, ben]);
       assert.equal(unread, 0);
+      assert.equal(events.length, bulk.length + 2);
+      assert.deepEqual(new Set(events.map(e => e.message_id)), new Set([...bulk, msg, fanout]));
+      assert.ok(events.every(e => e.type === 'receipt' && e.by_user === ben && e.status === 'read'));
+      // An idempotent retry does not emit duplicate ticks; later messages stay untouched.
+      events.length = 0;
+      assert.equal((await call(`/receipts/conversation/${conv}/read`, ben, benDev, {})).status, 200);
+      assert.equal(events.length, 0);
+      const later = randomUUID();
+      await db.query('insert into messages(id,conversation_id,sender_id,ciphertext) values($1,$2,$3,$4)',
+        [later, conv, ana, Buffer.from('later')]);
+      assert.equal((await db.query('select 1 from message_read_receipts where message_id=$1', [later])).rowCount, 0);
+    });
+
+    await t.test('private reads clear badges without disclosure; retry boundary excludes newer messages', async () => {
+      await reset();
+      await db.query('update conversation_members set last_read_at=null');
+      const before = (await db.query('select clock_timestamp()::text as at')).rows[0].at;
+      const path = `/receipts/conversation/${conv}/read`;
+      assert.equal((await call(path, ben, benDev, {read_before: before, send_receipts: false})).status, 200);
+      assert.equal(events.length, 0);
+      assert.equal((await db.query('select 1 from message_read_receipts')).rowCount, 0);
+      const unread = async () => (await db.query(`select count(*)::int as n from messages m
+        join conversation_members cm on cm.conversation_id=m.conversation_id and cm.user_id=$1
+        where m.conversation_id=$2 and m.sender_id<>$1 and (cm.last_read_at is null or m.created_at>cm.last_read_at)`, [ben,conv])).rows[0].n;
+      assert.equal(await unread(), 0);
+      const later = randomUUID();
+      await db.query('insert into messages(id,conversation_id,sender_id,ciphertext) values($1,$2,$3,$4)',
+        [later,conv,ana,Buffer.from('new')]);
+      assert.equal((await call(path, ben, benDev, {read_before: before, send_receipts: false})).status, 200);
+      assert.equal(await unread(), 1, 'retry must not read messages received after leaving');
+      assert.equal((await call(path, ben, benDev, {read_before: before, send_receipts: true})).status, 200);
+      assert.deepEqual(new Set(events.map(e=>e.message_id)), new Set([msg,fanout]));
+      assert.ok(events.every(e=>e.message_id!==later));
+      assert.equal((await call(path, ben, benDev, {read_before:'invalid'})).status, 400);
+    });
+
+    await t.test('conversation read validates body device ownership and revocation', async () => {
+      await reset();
+      const path = `/receipts/conversation/${conv}/read`;
+      assert.equal((await call(path, ben, undefined, {device_id: malDev})).status, 403);
+      await db.query('update devices set revoked_at=now() where id=$1', [benOther]);
+      assert.equal((await call(path, ben, undefined, {device_id: benOther})).status, 403);
+      assert.equal(events.length, 0);
+      assert.equal((await call(path, ben, undefined, {device_id: benDev})).status, 200);
+      const receipts = (await db.query('select device_id from message_read_receipts')).rows;
+      assert.ok(receipts.length > 0 && receipts.every(r => r.device_id === benDev));
     });
 
   } finally {

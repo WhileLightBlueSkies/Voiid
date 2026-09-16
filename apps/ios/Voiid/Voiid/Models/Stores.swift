@@ -403,7 +403,7 @@ final class ChatStore: ObservableObject {
         _ = try? await ChatService.shared.createSelfChat()
 
         do {
-            let convs = try await ChatService.shared.fetchConversations()
+            let convs = try await ChatService.shared.fetchConversations().map(LocalStore.applyingReadPosition)
             // Do not publish a partial classification if a community request fails.
             let communities = try await CommunityService.shared.mine()
             // /mine is capped at 200. Never classify from a potentially truncated list.
@@ -462,7 +462,7 @@ final class ChatStore: ObservableObject {
         // instantly and offline regardless of how much history exists. Each chat's full
         // message array is decoded lazily by openConversation(...) when it's actually opened
         // (WhatsApp-style). Previews stay fresh via bumpPreview at message-write time.
-        let convs = LocalStore.conversations()
+        let convs = LocalStore.conversations().map(LocalStore.applyingReadPosition)
         // Note to Self lives in CHATS, pinned to the top — it is the one conversation whose
         // position should never move, because you reach for it by muscle memory rather than
         // by recency. Filtering to `.direct` alone would have dropped it from both lists.
@@ -642,7 +642,13 @@ final class ChatStore: ObservableObject {
         // @StateObject rather than a singleton. Rather than make it one (every call site
         // then has two ways to get at the same state, and they drift), the one field the
         // delegate needs is published here. Mirrors Android's AppPresence.
-        didSet { ChatPresence.openConversationId = openConversationId }
+        didSet {
+            ChatPresence.openConversationId = openConversationId
+            // Opening a thread answers every banner pointing at it, so they go now rather
+            // than waiting for the next foreground transition — the user is already reading
+            // the thing they were being notified about. Mirrors Android's RootTabView hook.
+            if let id = openConversationId { MessageNotifications.clear(conversationId: id) }
+        }
     }
 
     /// Open a conversation: show cached messages, then sync (fetch + decrypt-new) from server.
@@ -651,6 +657,8 @@ final class ChatStore: ObservableObject {
         // Clear the badge NOW rather than waiting for the next /conversations poll. The
         // receipt round-trip takes a moment, and a chat you are staring at showing "3 unread"
         // is the single most obvious way for the count to look broken.
+        ChatEngine.shared.queueConversationRead(conv.id)
+        Task { await ChatEngine.shared.flushPendingReceipts() }
         clearUnreadLocally(conv.id)
         refresh(conv.id)
         Task { await syncMessages(conv) }
@@ -677,8 +685,7 @@ final class ChatStore: ObservableObject {
     /// Mark the open chat read. Called on open, and whenever a message lands WHILE it is
     /// open — the arrival path must not rely on the next manual sync.
     func markOpenConversationRead(_ conversationId: String) async {
-        guard openConversationId == conversationId,
-              PrivacySettings.shared.sendReadReceipts else { return }
+        guard openConversationId == conversationId else { return }
         await ChatEngine.shared.markRead(conversationId: conversationId)
     }
 
@@ -1186,6 +1193,28 @@ final class ChatStore: ObservableObject {
     /// Clear all messages in a conversation but keep it in the list.
     func clearChat(_ convId: String) {
         deleteMessages(Set(messages(for: convId).map(\.id)), in: convId, forEveryone: false)
+    }
+
+    /// Pin or unpin a chat, and re-publish so the grid reorders immediately.
+    ///
+    /// Writes to SQLite FIRST and then republishes from it, rather than reordering the
+    /// in-memory array and hoping the next refresh agrees. The grid is rebuilt from the
+    /// database on every sync, so an arrangement that lives only in memory is discarded
+    /// the moment anything refreshes — which is precisely the bug that made dragging a
+    /// tile look like it worked and then silently snap back.
+    func setPinned(_ convId: String, _ pinned: Bool) {
+        LocalStore.setPinned(convId, pinned)
+        Haptics.tap()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+            applyLocalConversations()
+        }
+    }
+
+    /// Star or unstar a chat. Does not reorder — see LocalStore.setStarred.
+    func setStarred(_ convId: String, _ starred: Bool) {
+        LocalStore.setStarred(convId, starred)
+        Haptics.tap()
+        applyLocalConversations()
     }
 
     /// Optimistic, per-user reactions. Serialize sends per message so quick changes arrive

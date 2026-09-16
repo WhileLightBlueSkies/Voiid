@@ -51,7 +51,7 @@ version=re.search(r'^kotlin = "([^"]+)"',(root/'apps/android/gradle/libs.version
 def jar(group,name,v=None):
     path=cache/group/name
     if v:path/=v
-    return str(sorted(path.rglob('*.jar'))[-1])
+    return str(sorted(p for p in path.rglob('*.jar') if not p.name.endswith(('-sources.jar', '-javadoc.jar')))[-1])
 runtime=[jar('org.jetbrains.kotlin','kotlin-stdlib',version),jar('org.jetbrains','annotations')]
 compiler=[jar('org.jetbrains.kotlin',m,version) for m in ['kotlin-compiler-embeddable','kotlin-script-runtime','kotlin-reflect']]+runtime+[jar('org.jetbrains.intellij.deps','trove4j'),jar('org.jetbrains.kotlinx','kotlinx-coroutines-core-jvm','1.9.0')]
 kotlin='''

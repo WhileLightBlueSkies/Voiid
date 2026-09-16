@@ -183,7 +183,7 @@ final class CallConferenceService: ObservableObject {
     var canEscalate: Bool {
         guard !conferenceUnavailable else { return false }
         guard let call = CallService.shared.active else { return false }
-        return call.state == .connected && !call.isConferenceInvite
+        return call.state == .connected && roster.count < 8
     }
 
     // MARK: Internals
@@ -198,6 +198,9 @@ final class CallConferenceService: ObservableObject {
     /// The original 1:1 peer, remembered across the migration so we know when BOTH
     /// originals are on the SFU.
     private var originalPeerUserId: String?
+    private var initiatedEscalation = false
+    private var peerRetirementRequested = false
+    private var claimingHandover = false
     /// The room we are escalating into, from the server (never derived optimistically).
     private var room: String?
     private var livekitURL: String?
@@ -212,7 +215,7 @@ final class CallConferenceService: ObservableObject {
     /// How long the SFU leg gets to come up before we abandon the upgrade and keep the
     /// perfectly good 1:1 call. Generous: a cold LiveKit connect on a bad network is slow,
     /// and the user is still talking the whole time.
-    private static let handoverTimeout: Duration = .seconds(20)
+    private static let handoverTimeout: Duration = .seconds(30)
 
     private init() {}
 
@@ -238,6 +241,13 @@ final class CallConferenceService: ObservableObject {
             }
         }.store(in: &cancellables)
 
+        socket.onCallKeyRequest = { [weak self] from, id in
+            Task { @MainActor in
+                guard let self, self.callId == id, self.shouldMint(),
+                      self.roster.contains(where: { $0.userId == from }) else { return }
+                await CallKeyExchange.shared.redistributeRoom(callId: id, to: from)
+            }
+        }
         socket.onCallInvite = { [weak self] from, callId, room, kind, otherUserId in
             Task { @MainActor in
                 self?.handleInvite(from: from, callId: callId, room: room,
@@ -282,6 +292,10 @@ final class CallConferenceService: ObservableObject {
             return
         }
         guard phase == .idle || phase == .escalating || phase == .conference else { return }
+        if phase != .conference && !CallKeyExchange.shared.peerSupportsRoomKeys(callId: call.id, userId: call.peerUserId) {
+            lastError = "Both people need the latest app version to add someone."
+            return
+        }
         guard !inviteeUserId.isEmpty, inviteeUserId != TokenStore.shared.userId else { return }
 
         guard !addingPerson else { return }
@@ -293,11 +307,11 @@ final class CallConferenceService: ObservableObject {
         let session = generation
         lastError = nil
 
-        struct Body: Encodable { let invitee_user_id: String }
+        struct Body: Encodable { let invitee_user_id: String; let device_id: String?; let protocol_version = 2 }
         let response: EscalateResponse
         do {
             response = try await api.request("POST", "calls/\(id)/escalate",
-                                             body: Body(invitee_user_id: inviteeUserId),
+                                             body: Body(invitee_user_id: inviteeUserId, device_id: E2EManager.shared.deviceId),
                                              as: EscalateResponse.self)
         } catch let APIError.http(status, message, _) {
             guard isCurrent(id, session) else { return }
@@ -336,7 +350,7 @@ final class CallConferenceService: ObservableObject {
                                                   otherUserId: peer)
         }
 
-        if phase == .idle { await enterEscalating(callId: id, isVideo: call.isVideo) }
+        if phase == .idle { initiatedEscalation = true; await enterEscalating(callId: id, isVideo: call.isVideo) }
         guard isCurrent(id, session) else { return }
         startRosterPolling(callId: id)
     }
@@ -367,7 +381,7 @@ final class CallConferenceService: ObservableObject {
         guard isCurrent(id, session) else { return false }
         let auth: AdhocTokenResponse
         do {
-            struct Empty: Encodable {}
+            struct Empty: Encodable { let device_id = E2EManager.shared.deviceId; let protocol_version = 2 }
             auth = try await api.request("POST", "calls/\(id)/adhoc-token",
                                          body: Empty(), as: AdhocTokenResponse.self)
         } catch let APIError.http(status, message, _) {
@@ -421,8 +435,20 @@ final class CallConferenceService: ObservableObject {
                     self.completeHandover(callId: id)
                     return
                 }
-                if self.peerIsOnSFU() {
+                if self.peerRetirementRequested {
                     self.completeHandover(callId: id)
+                    return
+                }
+                if self.initiatedEscalation && self.peerIsOnSFU() && !self.claimingHandover {
+                    self.claimingHandover = true
+                    do {
+                        struct Empty: Encodable {}
+                        _ = try await self.api.request("POST", "calls/\(id)/complete-escalation", body: Empty(), as: EmptyResponse.self)
+                        guard self.callId == id, self.phase == .escalating else { return }
+                        self.completeHandover(callId: id)
+                    } catch {
+                        self.abortEscalation(reason: "Couldn't complete the conference upgrade.")
+                    }
                     return
                 }
             }
@@ -449,7 +475,7 @@ final class CallConferenceService: ObservableObject {
         phase = .conference
         // Normal `call_hangup` to the peer — the relay's existing cleanup applies. The peer's
         // CallService recognises a hangup during migration and keeps the conference.
-        CallService.shared.finishMigration(callId: id, notifyPeer: true)
+        CallService.shared.finishMigration(callId: id, notifyPeer: initiatedEscalation)
         // Only now may the SFU own the audio route: the 1:1 engine has released it.
         GroupCallService.shared.adoptAudioSession()
     }
@@ -458,20 +484,42 @@ final class CallConferenceService: ObservableObject {
     /// attempt an upgrade — and leave the ad-hoc room so nobody is stranded in it.
     private func abortEscalation(reason: String) {
         handoverTask?.cancel(); handoverTask = nil
-        let id = callId
+        guard let id = callId else { return }
+        let peerRetired = peerRetirementRequested
         stopRosterPolling()
         resetLocalState()
         lastError = reason
-        // Keep the original participants' authorization while their 1:1 call is alive.
-        if let id {
-            Task { await GroupCallService.shared.leaveAdhoc(callId: id) }
+        Task {
+            await GroupCallService.shared.leaveAdhoc(callId: id)
             CallService.shared.cancelMigration(callId: id)
+            if peerRetired {
+                CallService.shared.retireConferenceLeg(callId: id)
+                await postLeave(callId: id)
+                return
+            }
+            var backoff = 1
+            while CallService.shared.active?.id == id && !Task.isCancelled {
+                do {
+                    struct Empty: Encodable {}
+                    _ = try await api.request("POST", "calls/\(id)/abort-escalation", body: Empty(), as: EmptyResponse.self)
+                    return
+                } catch let APIError.http(status, _, _) where status == 409 {
+                    CallService.shared.retireConferenceLeg(callId: id)
+                    await postLeave(callId: id)
+                    return
+                } catch {
+                    NSLog("[VOIID] escalation rollback pending retry")
+                    try? await Task.sleep(for: .seconds(backoff))
+                    backoff = min(15, backoff * 2)
+                }
+            }
         }
     }
 
     /// A migration signal retires only the original media connection.
     func completeRemoteHandover(callId id: String) {
         guard callId == id, phase == .escalating || phase == .conference else { return }
+        peerRetirementRequested = true
         guard GroupCallService.shared.adhocCallId == id,
               GroupCallService.shared.state == .connected else { return }
         completeHandover(callId: id)
@@ -512,8 +560,14 @@ final class CallConferenceService: ObservableObject {
     private func awaitCallKey(callId id: String, timeout: Duration = .seconds(8)) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         let session = generation
+        var nextRequest = ContinuousClock.now
         while isCurrent(id, session), ContinuousClock.now < deadline {
             if CallKeyExchange.shared.hasKey(callId: id) { return true }
+            if ContinuousClock.now >= nextRequest,
+               let peer = Self.keyCoordinator(roster) ?? inviterUserId ?? originalPeerUserId {
+                WebSocketClient.shared.sendCallKeyRequest(toUserId: peer, callId: id)
+                nextRequest = ContinuousClock.now.advanced(by: .seconds(2))
+            }
             try? await Task.sleep(for: .milliseconds(200))
         }
         return isCurrent(id, session) && CallKeyExchange.shared.hasKey(callId: id)
@@ -591,7 +645,7 @@ final class CallConferenceService: ObservableObject {
         // `POST /join` flips our row invited → joined and rewrites the relay grant. It is
         // ALSO the membership event the inviter hangs the rekey off, so it must precede the
         // key wait: the fresh secret is minted in response to this call.
-        struct Empty: Encodable {}
+        struct Empty: Encodable { let device_id = E2EManager.shared.deviceId; let protocol_version = 2 }
         do {
             let joined: JoinResponse = try await api.request("POST", "calls/\(id)/join",
                                                              body: Empty(), as: JoinResponse.self)
@@ -638,6 +692,12 @@ final class CallConferenceService: ObservableObject {
 
     /// Decline a conference invite. `POST /leave` IS the decline path server-side — one
     /// transition, one place that rewrites the relay grant.
+    func forgetTakenInvite(callId id: String) {
+        guard callId == id else { return }
+        resetLocalState()
+        CallKeyExchange.shared.clear(callId: id)
+    }
+
     func declineInvite() async {
         guard let id = callId else { return }
         await declineInvite(callId: id, inviterUserId: inviterUserId)
@@ -682,12 +742,13 @@ final class CallConferenceService: ObservableObject {
     /// and a failure here can never strand the caller. Rewrites the relay grant WITHOUT us,
     /// which is what stops our frames being relayed the moment we go.
     private func postLeave(callId id: String) async {
-        struct Empty: Encodable {}
+        struct Empty: Encodable { let device_id = E2EManager.shared.deviceId; let protocol_version = 2 }
         CallKeyExchange.shared.clear(callId: id)
         _ = try? await api.request("POST", "calls/\(id)/leave", body: Empty(), as: LeaveResponse.self)
     }
 
     private func resetLocalState() {
+        initiatedEscalation = false; peerRetirementRequested = false; claimingHandover = false
         generation = UUID()
         joiningInvite = false
         phase = .idle

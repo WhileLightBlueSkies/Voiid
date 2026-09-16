@@ -331,6 +331,14 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
     return rows(u ? [{ ok: !u.deleted_at }] : []);
   }
 
+  if (s.startsWith('select 1 as one from devices where id =')) {
+    return rows(db.devices.filter(d => d.id === p[0] && d.user_id === p[1] && !d.revoked_at).map(()=>({one:1})));
+  }
+  if (s.startsWith("update call_participants set state='declined'")) {
+    for (const cp of db.call_participants.filter(cp => cp.call_id === p[0] && cp.state === 'invited'
+      && Date.parse(cp.state_changed_at) <= Date.now()-60000)) Object.assign(cp,{state:'declined',left_at:now(),state_changed_at:now()});
+    return rows([]);
+  }
   // ── calls.ts: loadCall
   if (s.startsWith('select id, conversation_id, caller_user_id, call_kind, status from calls')) {
     return rows(db.calls.filter((c) => c.id === p[0]));
@@ -499,7 +507,7 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
 
   // ── calls.ts: push targets
   if (s.includes('from devices')) {
-    return rows(db.devices.filter((d) => d.user_id === p[0] && !d.revoked_at));
+    return rows(db.devices.filter((d) => d.user_id === p[0] && !d.revoked_at && (d.push_token || d.voip_push_token)));
   }
 
   // ── calls.ts: last-one-out ends the call record
@@ -584,6 +592,9 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
 (pool as any).query = fakeQuery;
 (pool as any).connect = async () => ({ query: fakeQuery, release() {} });
 // Auth's liveness cache: answer "active" so requireAuth never needs the DB for it.
+(redis as any).hset = async () => 1;
+(redis as any).expire = async () => 1;
+(redis as any).publish = async () => 1;
 (redis as any).get = async (k: string) => (k.startsWith('auth:active:') ? '1' : redisStore.get(k) ?? null);
 (redis as any).set = async (k: string, v: string) => { redisStore.set(k, v); return 'OK'; };
 (redis as any).del = async (k: string) => { redisStore.delete(k); return 1; };
@@ -617,7 +628,8 @@ test.after(() => {
   server?.close();
 });
 
-function tokenFor(userId: string, deviceId?: string) {
+const deviceFor = (user: string) => user === A ? DEV_A : user.slice(0,8) + '-7777-4777-8777-777777777777';
+function tokenFor(userId: string, deviceId: string | undefined = db.devices.find(d => d.user_id === userId)?.id) {
   return issueToken(deviceId ? { user_id: userId, device_id: deviceId } : { user_id: userId });
 }
 
@@ -656,6 +668,7 @@ async function seedScenario() {
     { id: C, username: 'cara', full_name: 'Cara Real Name', deleted_at: null, contact_pin_hash: null, contact_pin_enc: null },
     { id: D, username: 'dan', full_name: 'Dan Real Name', deleted_at: null, contact_pin_hash: null, contact_pin_enc: null }
   );
+  db.devices.push(...[A,B,C,D].map(user => ({id:deviceFor(user),user_id:user,revoked_at:null})));
   // Ana <-> Ben: an accepted 1:1 conversation. This is the call they are on.
   db.conversations.push({ id: CONV, type: 'direct', created_by: A });
   db.conversation_members.push(
@@ -729,19 +742,19 @@ test('the invited stranger gets an SFU token; an outsider does not', async () =>
   await seedScenario();
   await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
 
-  const mine = await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: DEV_A });
+  const mine = await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: deviceFor(C) });
   assert.equal(mine.status, 200, JSON.stringify(mine.body));
   assert.equal(mine.body.room, `voiid-call-${CALL}`);
-  assert.equal(mine.body.identity, `${C}:${DEV_A}`);
+  assert.equal(mine.body.identity, `${C}:${deviceFor(C)}`);
   assert.equal(mine.body.state, 'invited');
 
-  const outsider = await call('POST', `/calls/${CALL}/adhoc-token`, { user: D, device: DEV_A });
+  const outsider = await call('POST', `/calls/${CALL}/adhoc-token`, { user: D, device: deviceFor(D) });
   assert.equal(outsider.status, 403);
 
   // Leaving revokes the token immediately — the gate is the row, not the JWT.
   const left = await call('POST', `/calls/${CALL}/leave`, { user: C });
   assert.equal(left.status, 200);
-  const after = await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: DEV_A });
+  const after = await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: deviceFor(C) });
   assert.equal(after.status, 403);
   assert.equal(callGrantAllows(redisStore.get(`callgrant:${CALL}`) ?? null, B, C), false);
 });
@@ -768,12 +781,12 @@ test('the roster discloses @username and NOTHING else', async () => {
 test('only a participant may escalate, and only to someone THEY can reach', async () => {
   await seedScenario();
   // Dan is on nobody's call.
-  const outsider = await call('POST', `/calls/${CALL}/escalate`, { user: D, device: DEV_A }, { invitee_user_id: C });
+  const outsider = await call('POST', `/calls/${CALL}/escalate`, { user: D, device: deviceFor(D) }, { invitee_user_id: C });
   assert.equal(outsider.status, 403);
 
   // Ben IS on the call, but has no relationship with Cara — he cannot pull her in. The
   // invite right is the inviter's own 020 reachability, never the call's.
-  const noRight = await call('POST', `/calls/${CALL}/escalate`, { user: B, device: DEV_A }, { invitee_user_id: C });
+  const noRight = await call('POST', `/calls/${CALL}/escalate`, { user: B, device: deviceFor(B) }, { invitee_user_id: C });
   assert.equal(noRight.status, 403);
 
   // Ana can, because Ana and Cara are mutual contacts.
@@ -782,7 +795,7 @@ test('only a participant may escalate, and only to someone THEY can reach', asyn
 
   // ...and being IN the call still does not give Ben the right to add Dan, whom he does
   // not know: sharing a call with Ana does not inherit Ana's contacts.
-  const stillNo = await call('POST', `/calls/${CALL}/escalate`, { user: B, device: DEV_A }, { invitee_user_id: D });
+  const stillNo = await call('POST', `/calls/${CALL}/escalate`, { user: B, device: deviceFor(B) }, { invitee_user_id: D });
   assert.equal(stillNo.status, 403);
 });
 
@@ -807,8 +820,8 @@ test('after a full escalation, the stranger STILL needs the PIN to message the p
 
   // Full lifecycle: invite, join, talk, leave. Everything a real conference does.
   assert.equal((await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C })).status, 200);
-  assert.equal((await call('POST', `/calls/${CALL}/join`, { user: C, device: DEV_A })).status, 200);
-  assert.equal((await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: DEV_A })).status, 200);
+  assert.equal((await call('POST', `/calls/${CALL}/join`, { user: C, device: deviceFor(C) })).status, 200);
+  assert.equal((await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: deviceFor(C) })).status, 200);
   assert.equal((await call('GET', `/calls/${CALL}/participants`, { user: C })).status, 200);
   assert.equal((await call('POST', `/calls/${CALL}/leave`, { user: C })).status, 200);
 
@@ -867,7 +880,7 @@ test('the escalation changes NOTHING about the reachability outcome — control 
 
   await seedScenario();
   await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
-  await call('POST', `/calls/${CALL}/join`, { user: C, device: DEV_A });
+  await call('POST', `/calls/${CALL}/join`, { user: C, device: deviceFor(C) });
   const escalated = await requestWithoutPin();
 
   assert.deepEqual(escalated, control, 'a shared call must not change the reachability answer');
@@ -876,7 +889,7 @@ test('the escalation changes NOTHING about the reachability outcome — control 
 test('the reachability path never reads call state, even when a call is in flight', async () => {
   await seedScenario();
   await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
-  await call('POST', `/calls/${CALL}/join`, { user: C, device: DEV_A });
+  await call('POST', `/calls/${CALL}/join`, { user: C, device: deviceFor(C) });
 
   sqlLog = [];
   await fetch(`${base}/reachability/request`, {
@@ -920,7 +933,7 @@ test('inviting an unknown user id is indistinguishable from inviting an unreacha
 test('re-inviting someone who already joined does not demote them to "Ringing…"', async () => {
   await seedScenario();
   await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
-  await call('POST', `/calls/${CALL}/join`, { user: C, device: DEV_A });
+  await call('POST', `/calls/${CALL}/join`, { user: C, device: deviceFor(C) });
   await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
   const cara = db.call_participants.find((cp) => cp.user_id === C)!;
   assert.equal(cara.state, 'joined');
@@ -965,7 +978,7 @@ test('the cap refuses the seat past the last one, and only that seat', async () 
   assert.equal(db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length, MAX_CALL_PARTICIPANTS);
 
   // And a seat freed by someone leaving is reusable — the cap counts live seats, not history.
-  await call('POST', `/calls/${CALL}/leave`, { user: filler[0], device: DEV_A });
+  await call('POST', `/calls/${CALL}/leave`, { user: filler[0] });
   const readmitted = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: over });
   assert.equal(readmitted.status, 200, JSON.stringify(readmitted.body));
 });
@@ -1009,7 +1022,7 @@ test('leaving is idempotent', async () => {
 test('join requires an invite — a known call_id is not a way into the room', async () => {
   await seedScenario();
   await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
-  const res = await call('POST', `/calls/${CALL}/join`, { user: D, device: DEV_A });
+  const res = await call('POST', `/calls/${CALL}/join`, { user: D, device: deviceFor(D) });
   assert.equal(res.status, 403);
 });
 
@@ -1061,5 +1074,5 @@ test('pending invitations cannot outlive the last joined member', async () => {
   assert.equal(db.calls[0].status, 'ended');
   assert.equal(redisStore.has(`callgrant:${CALL}`), false);
   assert.equal((await call('POST', `/calls/${CALL}/join`, { user: C })).status, 409);
-  assert.equal((await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: DEV_A })).status, 409);
+  assert.equal((await call('POST', `/calls/${CALL}/adhoc-token`, { user: C, device: deviceFor(C) })).status, 409);
 });

@@ -22,6 +22,7 @@ import { isBlockedEitherWay } from '../blocking';
 import jwt from 'jsonwebtoken';
 import { sendWakePush, sendVoipPush, voipConfigured } from '../push';
 import { redis } from '../redis';
+import { resolveActiveDevice } from '../deviceAuthorization';
 import {
   adhocRoomName,
   buildLiveKitCallGrant,
@@ -929,11 +930,14 @@ export async function admitParticipant(input: {
 
     // Bring the original 1:1 pair in (idempotent), then record the requester's device. Inside
     // the lock, so the seeded pair is counted by any admission that follows.
+    await execute(`update call_participants set state='declined',left_at=now(),state_changed_at=now()
+      where call_id=$1 and state='invited' and state_changed_at<=now()-interval '60 seconds'`, [callId]);
     await seedOriginalParticipants(call, execute);
     const requester = await execute<{ one: number }>(
       `select 1 as one from call_participants
-        where call_id = $1 and user_id = $2 and state = 'joined'`,
-      [callId, requesterId]
+        where call_id = $1 and user_id = $2 and state = 'joined'
+          and (device_id is null or device_id=$3::uuid)`,
+      [callId, requesterId, requesterDeviceId]
     );
     if (!requester.length) return { status: 403, body: { error: 'not joined to this call' } };
     await execute(
@@ -979,7 +983,8 @@ export async function admitParticipant(input: {
       `insert into call_participants (call_id, user_id, state, invited_by, state_changed_at)
        values ($1, $2, 'invited', $3, now())
        on conflict (call_id, user_id) do update
-          set state = case when call_participants.state = 'joined' then 'joined' else 'invited' end,
+          set device_id = case when call_participants.state = 'joined' then call_participants.device_id else null end,
+              state = case when call_participants.state = 'joined' then 'joined' else 'invited' end,
               invited_by = coalesce(call_participants.invited_by, excluded.invited_by),
               left_at = null,
               state_changed_at = now()`,
@@ -1011,6 +1016,7 @@ async function liveParticipantIds(callId: string, execute: typeof query = query)
   const rows = await execute<{ user_id: string }>(
     `select user_id from call_participants
       where call_id = $1 and state in ('invited', 'joined')
+        and (state <> 'invited' or state_changed_at > now()-interval '60 seconds')
       order by joined_at asc, user_id asc`,
     [callId]
   );
@@ -1084,6 +1090,7 @@ async function loadRoster(callId: string, selfId: string): Promise<CallRosterEnt
        from call_participants cp
        join users u on u.id = cp.user_id
       where cp.call_id = $1 and cp.state in ('invited', 'joined')
+        and (cp.state <> 'invited' or cp.state_changed_at > now()-interval '60 seconds')
       order by cp.joined_at asc, cp.user_id asc`,
     [callId]
   );
@@ -1107,11 +1114,15 @@ async function loadRoster(callId: string, selfId: string): Promise<CallRosterEnt
 // "unknown participant" case the whole feature exists for.
 // ─────────────────────────────────────────────────────────────────────────────────
 router.post('/:id/escalate', requireAuth, asyncHandler(async (req, res) => {
-  const { user_id, device_id } = (req as any).auth;
+  const { user_id } = (req as any).auth;
+  if (req.body?.protocol_version !== 2) return res.status(409).json({error:'update the app to use conference calls'});
   const callId = req.params.id;
   const { invitee_user_id } = req.body ?? {};
 
   if (!UUID_RE.test(callId)) return res.status(400).json({ error: 'invalid call id' });
+  const device_id = await resolveActiveDevice(req, user_id,
+    async (sql, params) => ({ rows: await query(sql, params) }), req.body?.device_id);
+  if (device_id === undefined) return res.status(403).json({ error: 'invalid device' });
   if (typeof invitee_user_id !== 'string' || !UUID_RE.test(invitee_user_id)) {
     return res.status(400).json({ error: 'invitee_user_id must be a uuid' });
   }
@@ -1237,9 +1248,12 @@ router.post('/:id/escalate', requireAuth, asyncHandler(async (req, res) => {
 // Read-only: minting a token does not change the roster. POST /calls/:id/join does.
 // ─────────────────────────────────────────────────────────────────────────────────
 router.post('/:id/adhoc-token', requireAuth, asyncHandler(async (req, res) => {
-  const { user_id, device_id } = (req as any).auth;
+  const { user_id } = (req as any).auth;
   const callId = req.params.id;
   if (!UUID_RE.test(callId)) return res.status(400).json({ error: 'invalid call id' });
+  const device_id = await resolveActiveDevice(req, user_id,
+    async (sql, params) => ({ rows: await query(sql, params) }), req.body?.device_id);
+  if (device_id === undefined) return res.status(403).json({ error: 'invalid device' });
 
   const lk = livekitConfig();
   if (!lk) {
@@ -1259,8 +1273,10 @@ router.post('/:id/adhoc-token', requireAuth, asyncHandler(async (req, res) => {
   // and NOT "is the call live" — an invitee answers before anyone marks them joined.
   const rows = await query<{ state: CallParticipantState }>(
     `select state from call_participants
-      where call_id = $1 and user_id = $2 and state in ('invited', 'joined')`,
-    [callId, user_id]
+      where call_id = $1 and user_id = $2 and state in ('invited', 'joined')
+        and (state <> 'invited' or state_changed_at > now()-interval '60 seconds')
+        and (device_id is null or device_id = $3::uuid)`,
+    [callId, user_id, device_id]
   );
   if (!rows[0]) return res.status(403).json({ error: 'not a participant of this call' });
 
@@ -1312,6 +1328,8 @@ export async function transitionConferenceParticipant(
                 joined_at = case when state = 'invited' then now() else joined_at end,
                 state_changed_at = now()
           where call_id = $1 and user_id = $2 and state in ('invited', 'joined')
+            and (state <> 'invited' or state_changed_at > now()-interval '60 seconds')
+            and (device_id is null or device_id = $3::uuid)
           returning state`, [callId, userId, deviceId]
       );
       return { status: updated.length ? 200 : 403, outcome: updated[0]?.state };
@@ -1321,7 +1339,8 @@ export async function transitionConferenceParticipant(
           set state = case when state = 'invited' then 'declined' else 'left' end,
               left_at = now(), state_changed_at = now()
         where call_id = $1 and user_id = $2 and state in ('invited', 'joined')
-        returning state`, [callId, userId]
+          and (state = 'invited' or device_id is null or device_id = $3::uuid)
+        returning state`, [callId, userId, deviceId]
     );
     if (!updated.length) {
       const member = await execute<{ state: string }>(
@@ -1350,9 +1369,13 @@ export async function transitionConferenceParticipant(
 }
 
 router.post('/:id/join', requireAuth, asyncHandler(async (req, res) => {
-  const { user_id, device_id } = (req as any).auth;
+  const { user_id } = (req as any).auth;
+  if (req.body?.protocol_version !== 2) return res.status(409).json({error:'update the app to use conference calls'});
   const callId = req.params.id;
   if (!UUID_RE.test(callId)) return res.status(400).json({ error: 'invalid call id' });
+  const device_id = await resolveActiveDevice(req, user_id,
+    async (sql, params) => ({ rows: await query(sql, params) }), req.body?.device_id);
+  if (device_id === undefined) return res.status(403).json({ error: 'invalid device' });
 
   const call = await loadCall(callId);
   if (!call) return res.status(404).json({ error: 'call not found' });
@@ -1362,6 +1385,13 @@ router.post('/:id/join', requireAuth, asyncHandler(async (req, res) => {
     return res.status(result.status).json({ error: result.status === 409 ? 'call is not live' : 'not a participant of this call' });
   }
 
+  if (device_id) {
+    const frame = JSON.stringify({ type: 'call_taken', call_id: callId,
+      from_user_id: user_id, reason: 'answer', winner_device_id: device_id });
+    await redis.hset(`call:taken:${user_id}`, callId, frame);
+    await redis.expire(`call:taken:${user_id}`, 60);
+    await redis.publish(`channel:user:${user_id}`, frame);
+  }
   const participants = await refreshCallGrant(call);
   return res.json({
     call_id: callId,
@@ -1393,11 +1423,14 @@ router.post('/:id/leave', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const callId = req.params.id;
   if (!UUID_RE.test(callId)) return res.status(400).json({ error: 'invalid call id' });
+  const device_id = await resolveActiveDevice(req, user_id,
+    async (sql, params) => ({ rows: await query(sql, params) }), req.body?.device_id);
+  if (device_id === undefined) return res.status(403).json({ error: 'invalid device' });
 
   const call = await loadCall(callId);
   if (!call) return res.status(404).json({ error: 'call not found' });
 
-  const result = await transitionConferenceParticipant(callId, user_id, 'leave');
+  const result = await transitionConferenceParticipant(callId, user_id, 'leave', device_id);
   if (result.status !== 200) return res.status(result.status).json({ error: 'not a participant of this call' });
   const remaining = await refreshCallGrant(call);
 
@@ -1426,6 +1459,121 @@ router.post('/:id/leave', requireAuth, asyncHandler(async (req, res) => {
 // UserDirectory (saved contact or accepted-conversation peer) show the saved name; for
 // everyone else show @username, or "Unknown" if username is null — NEVER a raw user id.
 // ─────────────────────────────────────────────────────────────────────────────────
+async function resolveEscalation(callId: string, userId: string, complete: boolean): Promise<number> {
+  return withTransaction(async execute => {
+    const calls = await execute<{ status: string; conversation_id: string; escalation_completed_at: string | null }>(
+      'select status,conversation_id,escalation_completed_at from calls where id=$1 for update', [callId]);
+    const call = calls[0];
+    if (!call || !['ringing','connected'].includes(call.status)) return 409;
+    const originals = await execute<{ user_id: string }>(
+      'select user_id from conversation_members where conversation_id=$1 and left_at is null order by user_id', [call.conversation_id]);
+    if (originals.length !== 2 || !originals.some(p=>p.user_id===userId)) return 403;
+    if (complete) {
+      const invited = await execute(`select 1 from call_participants where call_id=$1 and invited_by is not null limit 1`, [callId]);
+      if (!invited.length) return 409;
+      await execute('update calls set escalation_completed_at=coalesce(escalation_completed_at,now()) where id=$1', [callId]);
+      return 200;
+    }
+    if (call.escalation_completed_at) return 409;
+    const removed = await execute<{ user_id: string }>(
+      `update call_participants set state='left',left_at=now(),state_changed_at=now()
+        where call_id=$1 and user_id<>all($2::uuid[]) and state in ('invited','joined') returning user_id`,
+      [callId, originals.map(p=>p.user_id)]);
+    // Cancel through a stored server verdict: even an offline invitee sees this
+    // before its stale ring can remove anyone or enter an abandoned room.
+    for (const participant of removed) {
+      const frame = JSON.stringify({type:'call_taken',call_id:callId,from_user_id:userId,reason:'conference-aborted',winner_device_id:'server'});
+      await redis.hset(`call:taken:${participant.user_id}`, callId, frame);
+      await redis.expire(`call:taken:${participant.user_id}`, 60);
+      await redis.publish(`channel:user:${participant.user_id}`, frame);
+    }
+    // Remove conference bookkeeping so the ordinary status endpoint owns the call again.
+    await execute('delete from call_participants where call_id=$1', [callId]);
+    await redis.set(ringGrantKey(callId), encodeOneToOneCallGrant(originals[0].user_id, originals[1].user_id),
+      'EX', CONFERENCE_GRANT_TTL_SECONDS);
+    return 200;
+  });
+}
+for (const action of ['abort-escalation','complete-escalation']) {
+  router.post(`/:id/${action}`, requireAuth, asyncHandler(async (req,res) => {
+    if (!UUID_RE.test(req.params.id)) return res.status(400).json({error:'invalid call id'});
+    const status = await resolveEscalation(req.params.id,(req as any).auth.user_id,action==='complete-escalation');
+    res.status(status).json(status===200 ? {ok:true} : {error:'escalation cannot transition'});
+  }));
+}
+
+/** Release expired seats and revoke their relay access on the next sweep. */
+export async function sweepExpiredConferenceInvites(): Promise<void> {
+  const due = await query<{ call_id: string }>(
+    `select distinct call_id from call_participants where state='invited'
+      and state_changed_at<=now()-interval '60 seconds' limit 100`);
+  for (const { call_id } of due) {
+    await withTransaction(async execute => {
+      await execute('select status from calls where id=$1 for update', [call_id]);
+      await execute(`update call_participants set state='declined',left_at=now(),state_changed_at=now()
+        where call_id=$1 and state='invited' and state_changed_at<=now()-interval '60 seconds'`, [call_id]);
+    });
+    const call = await loadCall(call_id);
+    if (call) await refreshCallGrant(call);
+  }
+}
+
+router.get('/:id/invitable', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: 'invalid call id' });
+  const call = await loadCall(req.params.id);
+  if (!call || !['ringing','connected'].includes(call.status) || !(await isLiveCallParticipant(call,user_id))) {
+    return res.status(403).json({ error: 'not a live participant' });
+  }
+  const roster = await liveParticipantIds(call.id);
+  if (roster.length >= MAX_CALL_PARTICIPANTS) return res.json({ users: [] });
+  const candidates = await query<{ user_id: string; username: string | null }>(
+    `select distinct u.id as user_id,u.username from users u
+      where u.id<>$1 and u.deleted_at is null and (
+        exists(select 1 from contact_sync where owner_user_id=$1 and contact_user_id=u.id)
+        or exists(select 1 from conversation_members a join conversation_members b on a.conversation_id=b.conversation_id
+          where a.user_id=$1 and b.user_id=u.id and a.left_at is null and b.left_at is null
+            and a.request_state='accepted' and b.request_state='accepted'))
+      order by u.id`, [user_id]);
+  const users = [];
+  for (const candidate of candidates) {
+    if (!roster.includes(candidate.user_id) && await canReachForCall(user_id,candidate.user_id)) users.push(candidate);
+  }
+  res.json({ users });
+}));
+
+// Recovery source for missed rings that never reached this phone. Membership and
+// blocking checks apply on every page; the opaque keyset cursor cannot grant access.
+router.get('/history/missed', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  let before: { at: string; id: string } | null = null;
+  if (req.query.cursor) {
+    try {
+      before = JSON.parse(Buffer.from(String(req.query.cursor), 'base64url').toString());
+      if (!before || !UUID_RE.test(before.id) || !Number.isFinite(Date.parse(before.at))) throw new Error();
+    } catch { return res.status(400).json({ error: 'invalid cursor' }); }
+  }
+  const rows = await query<{ id: string; started_at: string }>(
+    `select c.id, c.conversation_id, c.caller_user_id as peer_user_id,
+            c.call_kind as kind, c.started_at, c.ended_at
+       from calls c join conversations cv on cv.id=c.conversation_id
+       join conversation_members m on m.conversation_id=c.conversation_id and m.user_id=$1
+      where cv.type='direct' and m.left_at is null and m.request_state='accepted'
+        and c.caller_user_id<>$1 and c.answered_at is null
+        and c.status in ('missed','ended') and c.ended_at is not null
+        and coalesce(c.end_reason,'') not in ('declined','busy','failed','cancelled','canceled')
+        and not exists(select 1 from call_participants p where p.call_id=c.id)
+        and not exists(select 1 from user_blocks b where
+          (b.blocker_user_id=$1 and b.blocked_user_id=c.caller_user_id) or
+          (b.blocked_user_id=$1 and b.blocker_user_id=c.caller_user_id))
+        and ($2::timestamptz is null or (c.started_at,c.id)<($2::timestamptz,$3::uuid))
+      order by c.started_at desc,c.id desc limit 100`,
+    [user_id, before?.at ?? null, before?.id ?? null]);
+  const last = rows.at(-1);
+  res.json({ calls: rows, next_cursor: rows.length === 100 && last
+    ? Buffer.from(JSON.stringify({ at: last.started_at, id: last.id })).toString('base64url') : null });
+}));
+
 router.get('/:id/participants', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const callId = req.params.id;

@@ -64,6 +64,35 @@ class ChatEngine private constructor(context: Context) {
         // why releasing an id on failure is not, by itself, a retry.
         AppPresence.onForeground = {
             receiptScope.launch { runCatching { flushPendingReceipts() } }
+            // A message banner tells you about something you have not seen yet. Once the app
+            // is open in front of you, every one of them is stale — they were answering a
+            // question you are now answering for yourself. Leaving them in the tray means a
+            // shade full of notifications for chats already read, and the only way to clear
+            // them is to swipe each one.
+            clearMessageNotifications()
+        }
+    }
+
+    /// Remove delivered MESSAGE notifications: all of them, or just one conversation's.
+    ///
+    /// Call notifications are deliberately untouched. A missed call is a record of something
+    /// that happened, not an alert about unseen text, and its notification is how the user
+    /// gets back to it — cancelAll() here would delete that history.
+    fun clearMessageNotifications(conversationId: String? = null) {
+        runCatching {
+            val manager = appContext.getSystemService(android.content.Context.NOTIFICATION_SERVICE)
+                as android.app.NotificationManager
+            manager.activeNotifications.forEach { active ->
+                // A GROUP KEY IS THE MARKER. Only message notifications call setGroup, with
+                // the conversation id (VoiidMessagingService); incoming-call, call-waiting,
+                // group-call and community notifications set none. Keying off that rather
+                // than off the id means a new kind of call notification is safe by default
+                // — it would have to opt IN to being cleared by this.
+                val group = active.notification.group ?: return@forEach
+                if (conversationId == null || group == conversationId) {
+                    manager.cancel(active.tag, active.id)
+                }
+            }
         }
     }
 
@@ -700,7 +729,43 @@ class ChatEngine private constructor(context: Context) {
      * which is when connectivity has typically come back — the same trigger, and the same
      * reasoning, as the iOS side.
      */
+    private val conversationReadLock = Mutex()
+    private val conversationReads = ConversationReadQueue(
+        load = { key -> prefs.getString(key, "{}") },
+        save = { key, value -> prefs.edit().putString(key, value).commit() },
+    )
+
+    fun queueConversationRead(id: String) {
+        val account = tokens.userId ?: return
+        val now = System.currentTimeMillis()
+        val intent = ConversationReadQueue.Intent(now, com.voiid.app.model.PrivacySettings.sendReadReceipts(appContext))
+        if (!conversationReads.enqueue(account, id, intent)) {
+            android.util.Log.w("VOIIDReceipt", "Could not persist conversation read")
+            return
+        }
+        com.voiid.app.store.LocalStore.rememberReadPosition(appContext, id, now)
+    }
+
+    private suspend fun flushConversationReads() = conversationReadLock.withLock {
+        val account = tokens.userId ?: return@withLock
+        val device = e2e.deviceId ?: return@withLock
+        for ((id, intent) in conversationReads.snapshot(account)) {
+            if (tokens.userId != account) return@withLock
+            try {
+                val body = org.json.JSONObject().put("device_id", device)
+                    .put("read_before", java.time.Instant.ofEpochMilli(intent.through).toString())
+                    .put("send_receipts", intent.shouldDisclose(com.voiid.app.model.PrivacySettings.sendReadReceipts(appContext)))
+                api.request("POST", "receipts/conversation/$id/read", jsonBody = body.toString())
+                conversationReads.acknowledge(account, id, intent)
+            } catch (error: Exception) {
+                android.util.Log.w("VOIIDReceipt", "Conversation read pending retry", error)
+            }
+        }
+    }
+
     suspend fun flushPendingReceipts() {
+        flushConversationReads()
+        if (!com.voiid.app.model.PrivacySettings.sendReadReceipts(appContext)) return
         val ids = pendingReadReceipts.toList()
         if (ids.isEmpty()) return
         pendingReadReceipts.removeAll(ids.toSet())
@@ -741,20 +806,9 @@ class ChatEngine private constructor(context: Context) {
      *                   server looped an UPDATE per id. Only newly-read ids go now.
      */
     suspend fun markRead(conversationId: String) = readLock.withLock {
-        // WHOLE CONVERSATION FIRST, ids second.
-        //
-        // The id-based path below can only name messages this device HOLDS, and history is
-        // fetched 50 at a time — so a chat with 162 unread marked its newest 50 and left
-        // the other 112 unread permanently: nothing re-fetches them, so nothing can name
-        // them, and the badge survived every reopen.
-        //
-        // Opening a chat means "I have seen this conversation", not "I have seen these
-        // fifty ids". Best-effort: on failure the id path still covers what is on screen.
-        receiptScope.launch {
-            runCatching {
-                api.request("POST", "receipts/conversation/$conversationId/read", jsonBody = "{}")
-            }
-        }
+        queueConversationRead(conversationId)
+        receiptScope.launch { flushConversationReads() }
+        if (!com.voiid.app.model.PrivacySettings.sendReadReceipts(appContext)) return
         ensureLoaded()
         val inbound = (store[conversationId] ?: emptyList())
             .filter { !it.resolvingOwnership(tokens.userId).isMine && !it.control && !it.failed }

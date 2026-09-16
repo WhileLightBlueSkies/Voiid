@@ -1,4 +1,6 @@
 import { test } from 'node:test';
+import { redis, publisher } from '../src/redis';
+redis.disconnect(); publisher.disconnect();
 import assert from 'node:assert/strict';
 import { sweepMissedCallNotifications } from '../src/missedCallNotifications';
 import type { query } from '../src/db';
@@ -17,7 +19,8 @@ test('a provider failure preserves the leased call for retry; success settles it
     let step=0;
     const execute = (async () => {
       if (step++ === 0) return [{id:'call',conversation_id:'chat',caller_user_id:'caller',call_kind:'voice'}];
-      if (step===2) return [{push_token:'device'}];
+      if (step===2) return [];
+      if (step===3) return [{push_token:'device'}];
       settled=true; return [];
     }) as typeof query;
     await sweepMissedCallNotifications({query:execute,send:async(tokens,meta,retryable)=>{
@@ -32,8 +35,23 @@ test('large device sets respect FCM multicast limits', async () => {
   let step=0; const batches:number[]=[];
   await sweepMissedCallNotifications({query:(async()=>{
     if(step++===0)return [{id:'call',conversation_id:'chat',caller_user_id:'caller',call_kind:'video'}];
-    if(step===2)return Array.from({length:501},(_,i)=>({push_token:String(i)}));
+    if(step===2)return [];
+    if(step===3)return Array.from({length:501},(_,i)=>({push_token:String(i)}));
     return [];
   }) as typeof query,send:async tokens=>{batches.push(tokens.length);}});
   assert.deepEqual(batches,[500,1]);
+});
+
+test('relay answer evidence prevents a false missed notification', async () => {
+  const sql: string[] = [];
+  await sweepMissedCallNotifications({
+    query: (async (statement: string) => {
+      sql.push(statement);
+      return sql.length === 1 ? [{id:'call',conversation_id:'chat',caller_user_id:'caller',call_kind:'voice'}] : [];
+    }) as typeof query,
+    answered: async () => '2026-09-16T00:00:00Z',
+    send: async () => { assert.fail('an answered call must not send a missed notification'); },
+  });
+  assert.equal(sql.length, 2);
+  assert.match(sql[1], /answered_at=coalesce/);
 });

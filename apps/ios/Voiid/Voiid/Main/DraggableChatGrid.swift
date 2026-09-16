@@ -2,9 +2,25 @@
 //  DraggableChatGrid.swift
 //  Voiid
 //
-//  Home-screen-style chat grid: tap a card opens the chat; touch-and-drag
-//  (immediate, no long-press) picks it up to reorder. Two side drop zones
-//  appear while dragging — left = Call, right = Delete. Drop on a zone to fire.
+//  Home-screen-style chat grid: tap a card opens the chat; HOLDING a card for five
+//  seconds fills a border around it and then opens an actions sheet (pin, star, delete).
+//
+//  ── WHY HOLD-AND-SHEET REPLACED DRAG-TO-REORDER ─────────────────────────────────
+//
+//  Dragging a tile to a new position was never persisted. The grid is rebuilt from
+//  SQLite on every refresh (ChatStore.applyLocalConversations), ordered by recency, so
+//  a rearrangement that lived only in the in-memory array was discarded the moment
+//  anything refreshed — opening a chat and coming back was enough. It looked like a
+//  reordering bug; it was a feature that never had storage behind it.
+//
+//  Order now belongs to the data: recency, with pinned chats above it. Pinning is the
+//  explicit, durable version of what dragging was gesturing at.
+//
+//  The five-second hold is long on purpose. This grid sits under a horizontal tab pager,
+//  and a short press that arms on a moving finger is exactly what let one fast swipe both
+//  pick up a tile and turn the page. A hold that requires the finger to STAY PUT cannot be
+//  confused with a swipe, and the filling border says how long is left rather than leaving
+//  the user to discover the threshold.
 //
 
 import SwiftUI
@@ -14,16 +30,23 @@ struct DraggableChatGrid: View {
     var onOpen: (VConversation) -> Void
     var onCall: (VConversation) -> Void
     var onDelete: (VConversation) -> Void
+    /// Pin/unpin and star/unstar, persisted by the store.
+    var onPin: (VConversation) -> Void = { _ in }
+    var onStar: (VConversation) -> Void = { _ in }
 
-    @State private var dragItem: VConversation?
-    @State private var dragOffset: CGSize = .zero
-    @State private var dragStart: CGPoint = .zero      // touch start in grid space
-    @State private var hoverZone: Zone? = nil
-    @State private var cellCenters: [String: CGPoint] = [:]   // id -> center in grid space
-    @State private var armed: VConversation? = nil     // long-press has "picked up" this card
+    /// The card currently being held, and how far through the hold it is (0...1).
+    @State private var holding: VConversation?
+    @State private var holdProgress: CGFloat = 0
+    @State private var holdStart: Date?
+    /// The card whose actions sheet is open.
+    @State private var sheetItem: VConversation?
     @State private var gridWidth: CGFloat = 0
 
-    enum Zone { case call, delete }
+    /// How long the finger must stay down before the actions sheet appears.
+    private static let holdDuration: TimeInterval = 5
+    /// How far the finger may stray before the hold is abandoned. Generous enough for a
+    /// resting thumb's natural drift, tight enough that a deliberate swipe cancels.
+    private static let holdSlop: CGFloat = 12
 
     // EXACTLY THREE COLUMNS, 18pt gutters — the reference's grid.
     //
@@ -36,136 +59,106 @@ struct DraggableChatGrid: View {
                            GridItem(.flexible(), spacing: 18)]
 
     var body: some View {
-        ZStack {
-            // The grid
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 18) {
-                    ForEach(items) { conv in
-                        cell(conv)
-                            .opacity(dragItem?.id == conv.id ? 0.001 : 1)   // hide original while dragging
-                            .background(centerReader(conv))
-                    }
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 18) {
+                ForEach(items) { conv in
+                    cell(conv)
                 }
-                .padding(.horizontal, VoiidSpacing.lg)
-                .padding(.top, VoiidSpacing.lg)
-                .padding(.bottom, 110)
             }
-            .scrollDisabled(dragItem != nil)   // lock scroll while dragging a card
-            .coordinateSpace(name: "grid")
-
-            // Side drop zones (only while dragging) — round icons, brand palette
-            if dragItem != nil {
-                HStack {
-                    dropZone(.call, "phone.fill", "Call", VoiidColor.primary)
-                    Spacer()
-                    dropZone(.delete, "trash.fill", "Delete", VoiidColor.error)
-                }
-                .padding(.horizontal, VoiidSpacing.md)
-                .transition(.scale.combined(with: .opacity))
-                .allowsHitTesting(false)
-            }
-
-            // The floating dragged card
-            if let d = dragItem {
-                cardView(d)
-                    .frame(width: 96)
-                    .scaleEffect(1.12)
-                    .shadow(color: .black.opacity(0.2), radius: 14, y: 8)
-                    .position(x: dragStart.x + dragOffset.width, y: dragStart.y + dragOffset.height)
-                    .allowsHitTesting(false)
-            }
+            .padding(.horizontal, VoiidSpacing.lg)
+            .padding(.top, VoiidSpacing.lg)
+            .padding(.bottom, 110)
         }
         .coordinateSpace(name: "grid")
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
             gridWidth = width
-            // A fold or Split View resize invalidates the active drag coordinates.
-            dragItem = nil
-            armed = nil
-            dragOffset = .zero
-            hoverZone = nil
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: items)
-        .animation(.easeInOut(duration: 0.15), value: hoverZone)
-    }
-
-    // MARK: a cell — tap opens; long-press picks up, THEN drag reorders/zones.
-    // (Vertical scroll keeps working because we only grab after the long-press fires.)
-    private func cell(_ conv: VConversation) -> some View {
-        cardView(conv)
-            .contentShape(Rectangle())
-            .scaleEffect(armed?.id == conv.id ? 1.08 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: armed?.id)
-            .onTapGesture { if dragItem == nil { Haptics.tap(); onOpen(conv) } }
-            .gesture(pickAndDrag(conv))
-    }
-
-    private func pickAndDrag(_ conv: VConversation) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.15)
-            .onEnded { _ in
-                Haptics.rigid(); armed = conv          // picked up
+        // The hold's progress is driven here rather than by a Timer per cell: one clock for
+        // the whole grid, and it stops existing the moment no card is held.
+        .modifier(HoldClock(active: holding != nil, onTick: tick))
+        .confirmationDialog(sheetItem?.title ?? "", isPresented: Binding(
+            get: { sheetItem != nil },
+            set: { if !$0 { sheetItem = nil } }
+        ), titleVisibility: .visible) {
+            if let conv = sheetItem {
+                Button(conv.pinnedAt == nil ? "Pin" : "Unpin") { onPin(conv) }
+                Button(conv.isStarred ? "Remove Star" : "Star") { onStar(conv) }
+                Button("Call") { onCall(conv) }
+                Button("Delete Chat", role: .destructive) { onDelete(conv) }
+                Button("Cancel", role: .cancel) { }
             }
-            .sequenced(before:
-                DragGesture(minimumDistance: 0, coordinateSpace: .named("grid"))
-                    .onChanged { v in
-                        guard armed?.id == conv.id else { return }
-                        if dragItem == nil {
-                            dragItem = conv
-                            dragStart = cellCenters[conv.id] ?? v.startLocation
+        }
+    }
+
+    /// Advance the active hold, and fire once it completes.
+    private func tick() {
+        guard let conv = holding, let start = holdStart else { return }
+        let elapsed = Date().timeIntervalSince(start)
+        holdProgress = min(1, CGFloat(elapsed / Self.holdDuration))
+        guard elapsed >= Self.holdDuration else { return }
+        // Clear the hold BEFORE presenting: the finger is still down, and leaving the
+        // border filled behind the sheet reads as though it is still counting.
+        holding = nil
+        holdStart = nil
+        holdProgress = 0
+        Haptics.success()
+        sheetItem = conv
+    }
+
+    // MARK: a cell — tap opens; a five-second hold opens the actions sheet.
+    private func cell(_ conv: VConversation) -> some View {
+        let held = holding?.id == conv.id
+        return cardView(conv)
+            .overlay(holdBorder(for: conv))
+            .contentShape(Rectangle())
+            .scaleEffect(held ? 0.96 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: held)
+            .onTapGesture { if holding == nil { Haptics.tap(); onOpen(conv) } }
+            // A 0-distance drag is the only way to observe touch-down and touch-up without
+            // claiming the gesture from the scroll view or the tab pager: SwiftUI hands this
+            // one over the moment either of them recognises real movement, which is exactly
+            // when the hold should be abandoned anyway.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if holding?.id != conv.id {
+                            guard value.translation == .zero else { return }   // began, not a swipe
+                            holding = conv
+                            holdStart = Date()
+                            holdProgress = 0
+                            Haptics.tap()
+                            return
                         }
-                        dragOffset = v.translation
-                        let p = CGPoint(x: dragStart.x + v.translation.width, y: dragStart.y + v.translation.height)
-                        updateHoverAndReorder(p, dragging: conv)
-                    }
-                    .onEnded { _ in
-                        defer { dragItem = nil; dragOffset = .zero; hoverZone = nil; armed = nil }
-                        guard let d = dragItem else { return }
-                        switch hoverZone {
-                        case .call:   Haptics.success(); onCall(d)
-                        case .delete: Haptics.rigid();  onDelete(d)
-                        case .none:   break
+                        // Moved too far: this is a scroll or a page swipe, not a hold.
+                        if hypot(value.translation.width, value.translation.height) > Self.holdSlop {
+                            cancelHold()
                         }
                     }
+                    .onEnded { _ in cancelHold() }
             )
     }
 
-    // Hover detection for zones + live reorder
-    private func updateHoverAndReorder(_ p: CGPoint, dragging conv: VConversation) {
-        // zones: left/right 70pt gutters
-        let w = gridWidth
-        guard w > 0 else { return }
-        if p.x < 70 { hoverZone = .call; return }
-        if p.x > w - 70 { hoverZone = .delete; return }
-        hoverZone = nil
-        // reorder: find nearest other cell center, swap order
-        if let target = cellCenters
-            .filter({ $0.key != conv.id })
-            .min(by: { hypot($0.value.x - p.x, $0.value.y - p.y) < hypot($1.value.x - p.x, $1.value.y - p.y) }),
-           hypot(target.value.x - p.x, target.value.y - p.y) < 60,
-           let from = items.firstIndex(where: { $0.id == conv.id }),
-           let to = items.firstIndex(where: { $0.id == target.key }), from != to {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                let m = items.remove(at: from); items.insert(m, at: to)
-            }
-        }
+    private func cancelHold() {
+        guard holding != nil else { return }
+        holding = nil
+        holdStart = nil
+        withAnimation(.easeOut(duration: 0.18)) { holdProgress = 0 }
     }
 
-    private func dropZone(_ zone: Zone, _ icon: String, _ label: String, _ color: Color) -> some View {
-        let active = hoverZone == zone
-        return VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(color)
-                    .frame(width: 60, height: 60)
-                    .overlay(Circle().stroke(VoiidColor.textOnPrimary.opacity(active ? 0.9 : 0), lineWidth: 2))
-                    .shadow(color: color.opacity(active ? 0.5 : 0.25), radius: active ? 14 : 8, y: 4)
-                Image(systemName: icon).font(.system(size: 24)).foregroundColor(VoiidColor.textOnPrimary)
-            }
-            Text(label)
-                .font(VoiidFont.rounded(12, .semibold))
-                .foregroundColor(color)
+    /// The border that fills over the five seconds of a hold — the affordance that tells
+    /// the user something is happening and roughly how much longer it needs.
+    @ViewBuilder
+    private func holdBorder(for conv: VConversation) -> some View {
+        if holding?.id == conv.id {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .trim(from: 0, to: holdProgress)
+                .stroke(VoiidColor.primary,
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))   // start the fill at the top, not the right
+                .animation(.linear(duration: 0.05), value: holdProgress)
+                .allowsHitTesting(false)
         }
-        .opacity(active ? 1 : 0.85)
-        .scaleEffect(active ? 1.2 : 1)
     }
 
     // MARK: card visual (shared by grid cell + floating drag)
@@ -231,6 +224,26 @@ struct DraggableChatGrid: View {
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(1, contentMode: .fit)
+        // Pin and star live in the one free corner — the time owns top-trailing and the
+        // unread badge owns bottom-trailing. Small and low-contrast on purpose: these are
+        // states you set deliberately and then want to recognise at a glance, not signals
+        // competing with unread for attention.
+        .overlay(alignment: .topLeading) {
+            HStack(spacing: 4) {
+                if conv.pinnedAt != nil {
+                    Image(systemName: "pin.fill")
+                        .rotationEffect(.degrees(45))
+                }
+                if conv.isStarred {
+                    Image(systemName: "star.fill")
+                }
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.white.opacity(0.95))
+            .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+            .padding(.leading, 9)
+            .padding(.top, 9)
+        }
         .overlay(alignment: .topTrailing) {
             if let at = conv.lastMessageAt {
                 // The SAME formatter the list row uses, so one conversation reads
@@ -273,14 +286,6 @@ struct DraggableChatGrid: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.72), value: conv.unreadCount)
     }
 
-    // record each cell's center in grid space
-    private func centerReader(_ conv: VConversation) -> some View {
-        GeometryReader { g in
-            Color.clear
-                .onAppear { cellCenters[conv.id] = CGPoint(x: g.frame(in: .named("grid")).midX, y: g.frame(in: .named("grid")).midY) }
-                .onChange(of: g.frame(in: .named("grid"))) { _, f in cellCenters[conv.id] = CGPoint(x: f.midX, y: f.midY) }
-        }
-    }
 }
 
 /// Square peer image for a chat-grid card. Resolves the peer's `photoURL` (an R2 object key
@@ -328,5 +333,28 @@ private struct GridPeerImage: View {
             if let hit = AvatarCache.cached(photoURL) { resolved = hit; return }
             resolved = await AvatarCache.resolve(photoURL)
         }
+    }
+}
+
+/// Drives the hold countdown while a card is held, and owns no timer at all when none is.
+///
+/// A `TimelineView` would redraw the whole grid on every tick; a `Timer` left running would
+/// keep firing after the finger lifts. This starts on the way in and invalidates on the way
+/// out, so the cost is exactly the duration of a hold.
+private struct HoldClock: ViewModifier {
+    let active: Bool
+    let onTick: () -> Void
+    @State private var timer: Timer?
+
+    func body(content: Content) -> some View {
+        content.onChange(of: active) { _, isActive in
+            timer?.invalidate()
+            timer = nil
+            guard isActive else { return }
+            timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+                Task { @MainActor in onTick() }
+            }
+        }
+        .onDisappear { timer?.invalidate(); timer = nil }
     }
 }

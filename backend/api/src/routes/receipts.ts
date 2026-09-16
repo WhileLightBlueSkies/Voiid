@@ -121,6 +121,11 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
   const conversationId = req.params.id;
   if (!UUID_RE.test(conversationId)) return res.status(403).json({ error: 'forbidden' });
 
+  const readBefore = req.body?.read_before;
+  const disclose = req.body?.send_receipts !== false;
+  if (readBefore !== undefined && (typeof readBefore !== 'string' || !Number.isFinite(Date.parse(readBefore)))) {
+    return res.status(400).json({ error: 'invalid read_before' });
+  }
   const client = await pool.connect();
   try {
     await client.query('begin');
@@ -139,6 +144,20 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
     if (!member.length) {
       await client.query('rollback');
       return res.status(403).json({ error: 'forbidden' });
+    }
+
+    // Freeze the boundary once, including across client retries. New arrivals must
+    // remain unread after the user leaves the conversation.
+    const { rows: [position] } = await client.query<{ read_before: string }>(
+      `update conversation_members set last_read_at = greatest(last_read_at,
+          least(coalesce($3::timestamptz, now()), now()))
+        where conversation_id = $1 and user_id = $2
+        returning least(coalesce($3::timestamptz, now()), now())::text as read_before`,
+      [conversationId, user_id, readBefore ?? null],
+    );
+    if (!disclose) {
+      await client.query('commit');
+      return res.json({ marked: 0, read_before: position.read_before });
     }
 
     const conflictTarget = deviceId
@@ -161,6 +180,7 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
         `with due as (
            select m.id, m.sender_id from messages m
             where m.conversation_id = $1 and m.sender_id <> $2
+              and m.created_at <= $5::timestamptz
               and not exists (
                 select 1 from message_read_receipts r
                  where r.message_id = m.id and r.user_id = $2 and r.status = 'read')
@@ -177,7 +197,7 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
            returning message_id
          )
          select ins.message_id, due.sender_id from ins join due on due.id = ins.message_id`,
-        [conversationId, user_id, deviceId, BATCH],
+        [conversationId, user_id, deviceId, BATCH, position.read_before],
       );
       changed.push(...batch);
 
@@ -199,29 +219,31 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
         `select count(*) as remaining from (
            select 1 from messages m
             where m.conversation_id = $1 and m.sender_id <> $2
+              and m.created_at <= $4::timestamptz
               and not exists (
                 select 1 from message_read_receipts r
                  where r.message_id = m.id and r.user_id = $2 and r.status = 'read')
             limit $3
          ) t`,
-        [conversationId, user_id, BATCH],
+        [conversationId, user_id, BATCH, position.read_before],
       );
       if (Number(remaining) === 0) break;
+      if (pass === MAX_PASSES - 1) throw new Error('conversation read sweep limit reached');
     }
     await client.query('commit');
 
-    // Tell each sender their message was read. Deduped by sender: a hundred messages from
-    // one person is one fact about that conversation, not a hundred relay publishes.
-    for (const senderId of new Set(changed.map((r) => r.sender_id))) {
+    // Use the existing message receipt protocol understood by all three clients.
+    // Publishing exact changed IDs also avoids marking concurrently sent messages read.
+    for (const receipt of changed) {
       try {
-        await publisher.publish(`channel:user:${senderId}`, JSON.stringify({
-          type: 'receipt', conversation_id: conversationId, by_user: user_id, status: 'read',
+        await publisher.publish(`channel:user:${receipt.sender_id}`, JSON.stringify({
+          type: 'receipt', message_id: receipt.message_id, by_user: user_id, status: 'read',
         }));
       } catch {
         console.warn('[receipts] conversation relay notification failed');
       }
     }
-    res.json({ marked: changed.length });
+    res.json({ marked: changed.length, read_before: position.read_before });
   } catch (error) {
     await client.query('rollback').catch(() => {});
     throw error;

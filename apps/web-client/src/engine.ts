@@ -257,9 +257,12 @@ async function flush() {
   }
 }
 async function markRead() {
-  const ids = state!.messages.filter(m => m.conversation_id === selected && m.sender_id !== state!.auth!.user_id && m.text !== undefined && (!m.content_type || m.content_type === 'text')).slice(-100).map(m => m.id);
-  if (ids.length) await api('/receipts/mark', { message_ids: ids, status: 'read', device_id: state!.auth!.device_id });
+  if (!selected) return;
+  await api(`/receipts/conversation/${selected}/read`, {
+    device_id: state!.auth!.device_id, read_before: new Date().toISOString(),
+  });
 }
+
 async function connectSocket() {
   if (socket || !state?.auth) return;
   try { await openSocket(); } catch (error) {

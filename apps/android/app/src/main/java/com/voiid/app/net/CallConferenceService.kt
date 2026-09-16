@@ -213,6 +213,12 @@ object ConferenceManager {
             "call_invite_decline" -> onInviteDeclined(frame)
             // A copy of the per-call secret addressed to this device.
             "call_key" -> onCallKey(frame)
+            "call_key_request" -> if (isCurrent(frame.callId) && shouldMint()) {
+                val secret = currentSecret
+                if (secret != null && _state.value?.roster?.any { it.user_id == frame.fromUserId } == true) {
+                    scope.launch { courier?.distribute(frame.callId, keyEpoch, secret, listOf(frame.fromUserId), scope = "room") }
+                }
+            }
         }
     }
 
@@ -269,17 +275,11 @@ object ConferenceManager {
         scope.launch {
             val env = c.open(frame, callId) ?: return@launch
             if (_state.value?.callId != callId && pendingKeyCallId != callId && CallManager.state.value?.let { it.callId == callId && it.phase != CallManager.Phase.ENDED } != true) return@launch
-            if (secretCallId != callId) { keyEpoch = 0; currentSecret = null; keyMinter = null; secretCallId = callId }
-            if (env.epoch < keyEpoch || (env.epoch == keyEpoch && keyMinter?.let { frame.fromUserId > it } == true)) {
-                Log.i("VOIID", "conference: ignoring stale call key epoch=${env.epoch} < $keyEpoch")
-                return@launch
+            if (env.scope == "p2p") {
+                CallManager.applyOpenedCallSecret(callId, env.secret, env.epoch)
+            } else if (env.scope == "room") {
+                installRoomSecret(callId, env.secret, env.epoch, frame.fromUserId)
             }
-            CallManager.applyOpenedCallSecret(callId, env.secret, env.epoch)
-            keyMinter = frame.fromUserId
-            keyEpoch = env.epoch
-            keyGenerations[callId] = env.epoch
-            currentSecret = env.secret
-            applySecret(env.secret)
         }
     }
 
@@ -305,15 +305,13 @@ object ConferenceManager {
         if (pendingKeyCallId == callId) pendingKeyCallId = null
     }
 
-    /** Carry the 1:1 generation forward so escalation always supersedes the peer's key. */
-    fun seedOneToOneSecret(callId: String, secret: String, epoch: Int, minterUserId: String? = null) {
-        if (CallManager.state.value?.callId != callId) return
-        if (secretCallId == callId && keyEpoch > epoch) return
-        secretCallId = callId
+    fun installRoomSecret(callId: String, secret: String, epoch: Int, minterUserId: String) {
+        if (epoch < 1 || CallKeyCourier.liveKitSharedKey(secret) == null) return
+        if (secretCallId != callId) { keyEpoch = 0; currentSecret = null; keyMinter = null; secretCallId = callId }
+        if (epoch < keyEpoch || (epoch == keyEpoch && keyMinter?.let { minterUserId >= it } == true)) return
+        keyEpoch = epoch; keyMinter = minterUserId; keyGenerations[callId] = epoch
         currentSecret = secret
-        keyEpoch = epoch
-        keyGenerations[callId] = epoch
-        keyMinter = minterUserId ?: appContext?.let { TokenStore.get(it).userId }
+        applySecret(secret)
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -341,6 +339,10 @@ object ConferenceManager {
         onResult: (String?) -> Unit = {},
     ) {
         init(context)
+        if (_state.value?.stage != Stage.CONFERENCE && CallManager.state.value?.supportsRoomKeys != true) {
+            onResult("Both people need the latest app version to add someone.")
+            return
+        }
         val ctx = appContext ?: return
         if (!addingPerson.compareAndSet(false, true)) return
         val session = generation
@@ -402,7 +404,7 @@ object ConferenceManager {
 
             // §3.3 — mint a FRESH secret and fan it pairwise. Every participant, including the
             // original peer, gets the new epoch: a key the invitee never had is not a key.
-            val secret = mintAndFan(callId, res.participants)
+            val secret = if (shouldMint()) mintAndFan(callId, res.participants) else currentSecret
             if (!isCurrent(callId, session)) return@launch
             if (secret == null) {
                 fail("Couldn't share the call's encryption key.", keepCall = true)
@@ -551,7 +553,7 @@ object ConferenceManager {
 
     private suspend fun mintAndFanSerial(callId: String, roster: List<CallRosterEntry>): String? {
         val session = generation
-        if (!isCurrent(callId, session)) return null
+        if (!isCurrent(callId, session) || !shouldMint()) return null
         val c = courier ?: return null
         val ctx = appContext ?: return null
         val myId = TokenStore.get(ctx).userId
@@ -665,7 +667,7 @@ object ConferenceManager {
     /** For the "add person" sheet and any surface that wants the current roster on demand. */
     fun refreshRosterNow() {
         val callId = _state.value?.callId ?: return
-        scope.launch { refreshRoster(callId) }
+        _state.value?.callId?.let { id -> scope.launch { refreshRoster(id) } }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -714,7 +716,14 @@ object ConferenceManager {
         // NEVER JOIN WITHOUT A KEY. Both group clients already refuse; so does this one. A room
         // joined with no frame encryption hands plaintext media to the SFU.
         val keyDeadline = android.os.SystemClock.elapsedRealtime() + 8_000
+        var nextRequest = 0L
         while (isCurrent(callId, session) && currentSecret == null && android.os.SystemClock.elapsedRealtime() < keyDeadline) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now >= nextRequest) {
+                val peer = conferenceKeyCoordinator(_state.value?.roster.orEmpty()) ?: inviterUserId ?: originalPeerUserId
+                if (peer != null) WebSocketClient.get(ctx).sendCallKeyRequest(peer, callId)
+                nextRequest = now + 2000
+            }
             delay(100)
         }
         if (!isCurrent(callId, session)) return
@@ -751,7 +760,7 @@ object ConferenceManager {
             // only loaded once LiveKit has initialized WebRTC. Constructing it first throws
             // UnsatisfiedLinkError on the first conference in a process.
             LiveKit.init(ctx)
-            E2EEOptions().also {
+            E2EEOptions(keyProvider = io.livekit.android.e2ee.BaseKeyProvider(ratchetWindowSize = 0, keyRingSize = 16, failureTolerance = -1)).also {
                 it.keyProvider.setSharedKey(keyB64, KEY_INDEX)
                 keyProvider = it.keyProvider
                 lastAppliedKey = keyB64
@@ -856,7 +865,7 @@ object ConferenceManager {
                     -> {
                         // Membership moved: re-key (§3.3) and re-check whether both original
                         // participants are now on the SFU, which is the cutover condition.
-                        scheduleRekey("SFU membership changed")
+                        _state.value?.callId?.let { id -> scope.launch { refreshRoster(id) } }
                         maybeCutOver()
                     }
                     else -> Unit
@@ -966,9 +975,11 @@ object ConferenceManager {
      * escalation and retires its own leg the same way (see [CallManager.retire1to1LegForConference]).
      * One owner of the decision means the two sides cannot disagree about which leg is live.
      */
+    private var claimingHandover = false
+
     private fun maybeCutOver() {
         val s = _state.value ?: return
-        if (s.stage != Stage.ESCALATING || !s.sfuConnected) return
+        if (s.stage != Stage.ESCALATING || !s.sfuConnected || claimingHandover) return
         if (!s.isInviter) return
         val ctx = appContext ?: return
         val myId = TokenStore.get(ctx).userId ?: return
@@ -976,6 +987,11 @@ object ConferenceManager {
         val onSfu = sfuUserIds()
         if (myId !in onSfu || peer !in onSfu) return
 
+        claimingHandover = true
+        scope.launch {
+            try {
+                ConferenceApi(ctx).completeEscalation(s.callId)
+                if (!isCurrent(s.callId) || _state.value?.stage != Stage.ESCALATING) return@launch
         cutoverJob?.cancel(); cutoverJob = null
         Log.i("VOIID", "conference: both original participants on the SFU — retiring the 1:1 leg")
         _state.value = s.copy(stage = Stage.CONFERENCE, notice = null)
@@ -984,6 +1000,9 @@ object ConferenceManager {
         // call — which is the honest outcome for a client that never made it onto the SFU.
         CallManager.retire1to1LegForConference(notifyPeer = true) {
             if (isCurrent(s.callId)) scope.launch { publishLocalMedia() }
+        }
+            } catch (_: Exception) { fail("Couldn't complete the conference upgrade.", keepCall = true) }
+            finally { claimingHandover = false }
         }
     }
 
@@ -1196,12 +1215,29 @@ object ConferenceManager {
     private fun fail(message: String, keepCall: Boolean) {
         val cur = _state.value ?: return
         if (cur.stage == Stage.ENDED) return
-        val hasOriginalCall = keepCall && cur.stage == Stage.ESCALATING &&
+        val hasOriginalCall = keepCall && !peerRetirementRequested && cur.stage == Stage.ESCALATING &&
             CallManager.state.value?.let { it.callId == cur.callId && !it.isConferenceInvite && it.phase != CallManager.Phase.ENDED } == true
         generation++
         val session = generation
         if (cur != null) _state.value = cur.copy(stage = Stage.ENDED, error = message, notice = null)
         teardownRoom()
+        if (hasOriginalCall) {
+            appContext?.let { ctx -> scope.launch {
+                var backoff = 1000L
+                while (CallManager.state.value?.let { it.callId == cur.callId && it.phase != CallManager.Phase.ENDED } == true) {
+                    try { ConferenceApi(ctx).abortEscalation(cur.callId); break }
+                    catch (e: ApiError.Http) {
+                        if (e.status == 409) {
+                            CallManager.retireConferenceLeg(cur.callId)
+                            runCatching { ConferenceApi(ctx).leave(cur.callId) }
+                            break
+                        }
+                    } catch (e: Exception) { Log.w("VOIID", "conference rollback pending retry", e) }
+                    delay(backoff)
+                    backoff = minOf(15000L, backoff * 2)
+                }
+            } }
+        }
         if (!hasOriginalCall) {
             CallManager.retireConferenceLeg(cur.callId)
             val ctx = appContext

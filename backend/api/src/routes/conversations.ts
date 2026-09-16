@@ -252,6 +252,7 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
            left join message_read_receipts r
              on r.message_id = m.id and r.user_id = $1 and r.status = 'read'
           where m.conversation_id = c.id and m.sender_id <> $1 and r.id is null
+            and (me.last_read_at is null or m.created_at > me.last_read_at)
        ) uc on true
       order by coalesce(lm.last_message_at, c.updated_at) desc`,
     [user_id, deviceId]

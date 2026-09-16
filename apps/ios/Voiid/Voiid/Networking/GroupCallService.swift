@@ -140,7 +140,20 @@ final class GroupCallService: NSObject, ObservableObject {
     private var epochSubscription: AnyCancellable?
     private var callKeySubscription: AnyCancellable?
 
-    private override init() { super.init() }
+    private func roomEncryption(_ passphrase: String) -> EncryptionOptions {
+        let provider = BaseKeyProvider(options: KeyProviderOptions(
+            sharedKey: true, ratchetWindowSize: 0, failureTolerance: -1, keyRingSize: 16))
+        provider.setKey(key: passphrase)
+        return EncryptionOptions(keyProvider: provider)
+    }
+
+    private override init() {
+        super.init()
+        // Configure before creating any Room. CallKit owns sessions for incoming calls
+        // and upgrades; standalone group calls use our explicit session methods below.
+        AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = false
+        AudioManager.shared.audioSession.isAutomaticDeactivationEnabled = false
+    }
 
     // MARK: - Token
 
@@ -223,9 +236,11 @@ final class GroupCallService: NSObject, ObservableObject {
             defaultCameraCaptureOptions: CameraCaptureOptions(position: .front),
             adaptiveStream: true,   // don't decode tiles nobody is looking at
             dynacast: true,         // stop publishing layers nobody subscribes to
-            encryptionOptions: EncryptionOptions.sharedKey(passphrase)
+            encryptionOptions: roomEncryption(passphrase)
         )
 
+        speakerOn = true
+        configureAudioSession()
         let room = Room(delegate: self, roomOptions: options)
         self.room = room
 
@@ -298,12 +313,14 @@ final class GroupCallService: NSObject, ObservableObject {
         state = .connecting
         videoEnabled = deferAudioSession ? CallService.shared.videoEnabled : isVideo
         muted = deferAudioSession ? CallService.shared.muted : false
+        speakerOn = CallService.shared.active != nil ? CallService.shared.speakerOn : isVideo
+        if !deferAudioSession { configureAudioSession() }
 
         let options = RoomOptions(
             defaultCameraCaptureOptions: CameraCaptureOptions(position: .front),
             adaptiveStream: true,
             dynacast: true,
-            encryptionOptions: EncryptionOptions.sharedKey(passphrase)
+            encryptionOptions: roomEncryption(passphrase)
         )
         let room = Room(delegate: self, roomOptions: options)
         self.room = room
@@ -345,6 +362,8 @@ final class GroupCallService: NSObject, ObservableObject {
     /// still configuring the same session.
     func adoptAudioSession() {
         guard state.isActive, let room else { return }
+        // The user may have changed the route while the room was connecting.
+        if deferredMedia { speakerOn = CallService.shared.speakerOn }
         configureAudioSession()
         guard deferredMedia else { return }
         deferredMedia = false
@@ -558,11 +577,13 @@ final class GroupCallService: NSObject, ObservableObject {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord,
-                                    mode: .voiceChat,
-                                    options: speakerOn ? [.defaultToSpeaker, .allowBluetooth]
-                                                       : [.allowBluetooth])
-            try session.setActive(true)
+            if CallService.shared.active == nil {
+                try session.setCategory(.playAndRecord,
+                                        mode: .voiceChat,
+                                        options: speakerOn ? [.defaultToSpeaker, .allowBluetooth]
+                                                           : [.allowBluetooth])
+                try session.setActive(true)
+            }
             try session.overrideOutputAudioPort(speakerOn ? .speaker : .none)
         } catch {
             // A failed route change must not end the call — audio may still work.
@@ -570,7 +591,9 @@ final class GroupCallService: NSObject, ObservableObject {
     }
 
     private func deactivateAudioSession() {
-        // Let other audio (music, another call) resume promptly.
+        // A failed upgrade can clear migratingCallId before room teardown completes.
+        // The active CallKit call still owns this session in that case.
+        guard CallService.shared.active == nil else { return }
         try? AVAudioSession.sharedInstance()
             .setActive(false, options: .notifyOthersOnDeactivation)
     }

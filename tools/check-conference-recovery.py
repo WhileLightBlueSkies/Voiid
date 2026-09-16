@@ -95,5 +95,5 @@ with tempfile.TemporaryDirectory(prefix='voiid-conference-recovery-') as directo
     temp = Path(directory)
     source = temp / 'Check.swift'
     source.write_text(prelude + handler + '\n' + unsubscribe + '\n' + coordinator + '\n' + checks)
-    subprocess.run(['xcrun', 'swiftc', '-parse-as-library', str(source), '-o', str(temp / 'check')], check=True)
+    subprocess.run(['xcrun', 'swiftc', '-module-cache-path', str(temp / 'cache'), '-parse-as-library', str(source), '-o', str(temp / 'check')], check=True)
     subprocess.run([str(temp / 'check')], check=True)

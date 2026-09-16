@@ -264,6 +264,20 @@ final class VoiidDatabase {
         m.registerMigration("v5_call_connected_at") { db in
             try db.execute(sql: "ALTER TABLE call_history ADD COLUMN connected_at INTEGER")
         }
+
+        // Pin and star, from the grid's long-press sheet.
+        //
+        // Both are LOCAL-ONLY and deliberately so: they describe how this person arranges
+        // their own home screen, not anything the other participant can observe. Keeping
+        // them out of the sync payload also means they survive a server that knows nothing
+        // about them.
+        //
+        // `pinned_at` rather than a bool: pinning a second chat must place it above or
+        // below the first deterministically, and a bool cannot say which came first.
+        m.registerMigration("v6_conversation_pin_star") { db in
+            try db.execute(sql: "ALTER TABLE conversations ADD COLUMN pinned_at INTEGER")
+            try db.execute(sql: "ALTER TABLE conversations ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+        }
         return m
     }
 

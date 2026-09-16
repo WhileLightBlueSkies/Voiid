@@ -38,12 +38,15 @@ struct ConferenceInviteSheet: View {
     @EnvironmentObject private var chat: ChatStore
     @State private var search = ""
     @State private var selectedUserId: String?
+    @State private var invitable = Set<String>()
+    @State private var loading = true
+    @State private var loadError: String?
 
     private var candidates: [VConversation] {
         let live = CallService.shared.active?.peerUserId
         return chat.directConversations
             // Not the person already on the call, and not a self chat.
-            .filter { $0.peerUserId != nil && $0.peerUserId != live && $0.type != .self }
+            .filter { $0.peerUserId.map { invitable.contains($0) } == true && $0.peerUserId != live && $0.type != .self }
             .filter {
                 search.isEmpty
                     || $0.title.localizedCaseInsensitiveContains(search)
@@ -53,7 +56,11 @@ struct ConferenceInviteSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if candidates.isEmpty {
+                if loading {
+                    ProgressView("Loading people…")
+                } else if let loadError {
+                    Text(loadError)
+                } else if candidates.isEmpty {
                     VStack(spacing: VoiidSpacing.sm) {
                         Image(systemName: "person.2")
                             .font(.system(size: 30))
@@ -108,6 +115,16 @@ struct ConferenceInviteSheet: View {
                     Button("Cancel") { onCancel() }
                 }
             }
+        }
+        .task {
+            defer { loading = false }
+            guard let id = CallService.shared.active?.id else { return }
+            struct User: Decodable { let user_id: String }
+            struct Response: Decodable { let users: [User] }
+            do {
+                let response = try await APIClient().request("GET", "calls/\(id)/invitable", as: Response.self)
+                invitable = Set(response.users.map(\.user_id))
+            } catch { loadError = "Couldn't load people. Close this sheet and try again." }
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)

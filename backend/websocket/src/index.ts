@@ -74,6 +74,28 @@ const pub = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 const OFFER_BUFFER_TTL = Number(process.env.VOIID_CALL_OFFER_TTL_SECONDS) || 60;
 const offersKey = (userId: string) => `call:offers:${userId}`;
 
+// Short-lived opaque conference frames. Each entry has its own deadline, so
+// traffic on another call cannot extend old keys indefinitely.
+const conferenceFramesKey = (userId: string) => `call:conference-frames:${userId}`;
+async function parkConferenceFrame(userId: string, frame: string): Promise<void> {
+  await pub.multi().rpush(conferenceFramesKey(userId), JSON.stringify({ expires: Date.now()+60000, frame }))
+    .ltrim(conferenceFramesKey(userId), -128, -1).expire(conferenceFramesKey(userId), 60).exec();
+}
+async function flushConferenceFrames(userId: string, deviceId: string | undefined, ws: WebSocket): Promise<void> {
+  try {
+    for (const raw of await pub.lrange(conferenceFramesKey(userId), 0, -1)) {
+      const entry = JSON.parse(raw), frame = JSON.parse(entry.frame);
+      if (entry.expires < Date.now() || (frame.device_id && frame.device_id !== deviceId)) continue;
+      if (!await callPairAuthorized(frame.call_id, frame.from_user_id, userId)) continue;
+      if (frame.type === 'call_migrate') {
+        const grant = JSON.parse((await pub.get(ringGrantKey(frame.call_id))) ?? 'null');
+        if (!grant || callGrantNeedsDeviceClaim(grant)) continue;
+      }
+      if (ws.readyState === WebSocket.OPEN) boundedSend(ws, entry.frame);
+    }
+  } catch { console.warn('[ws] conference replay failed'); }
+}
+
 // Trickle ICE needs the same buffer, and losing it fails WORSE than losing the offer.
 // Because the offer is trickle it carries no candidates of its own, so a push-woken callee
 // that receives the buffered offer but none of the caller's candidates is left relying on
@@ -496,6 +518,7 @@ wss.on('connection', async (ws, req) => {
   // And any "already taken on your other device" verdict, so a push-woken sibling cancels
   // its ring / missed-call banner instead of firing a false notification.
   void flushPendingTaken(userId, ws);
+  void flushConferenceFrames(userId, auth.deviceId, ws);
   // Same reasoning for live location: a recipient woken by a message push attaches after
   // the fix was published, and would otherwise show nothing until the sender's next one.
   void flushPendingLocation(userId, ws);
@@ -794,6 +817,7 @@ wss.on('connection', async (ws, req) => {
           msg.type === 'call_invite_accept' ||
           msg.type === 'call_invite_decline' ||
           msg.type === 'call_migrate' ||
+          msg.type === 'call_key_request' ||
           msg.type === 'call_key') &&
         typeof msg.to_user_id === 'string' &&
         typeof msg.call_id === 'string'
@@ -879,13 +903,19 @@ wss.on('connection', async (ws, req) => {
                 return;
               }
             }
+            if (msg.type === 'call_answer') {
+              await pub.set(`call:answered:${msg.call_id}`, new Date().toISOString(), 'EX', 7200, 'NX');
+            }
+            if (msg.type === 'call_migrate' && callGrantNeedsDeviceClaim(grant)) return;
             if (keyCopies && auth.deviceId) {
               for (const frame of callKeyDeliveryFrames(msg.call_id, userId, auth.deviceId, keyCopies)) {
-                pub.publish(`channel:user:${toUserId}`, frame);
+                await parkConferenceFrame(toUserId, frame);
+                await pub.publish(`channel:user:${toUserId}`, frame);
               }
             } else {
               traceCall(msg.type, msg.reason, 'allowed');
-              pub.publish(`channel:user:${toUserId}`, out);
+              if (msg.type === 'call_migrate') await parkConferenceFrame(toUserId, out);
+              await pub.publish(`channel:user:${toUserId}`, out);
             }
 
           // Buffer the offer so a callee whose socket is down (backgrounded/killed,

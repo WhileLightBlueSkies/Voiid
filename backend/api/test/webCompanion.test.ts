@@ -13,3 +13,10 @@ test('linked browsers have only messaging and self-revocation capabilities', () 
   assert.equal(companionAllows('POST', '/linking/socket-ticket', own), true);
   assert.equal(companionAllows('GET', '/users/me/export', own), false);
 });
+
+test('conversation reads require the linked device identity', () => {
+  const path = `/receipts/conversation/${other}/read`;
+  assert.equal(companionAllows('POST', path, own, {device_id:own}), true);
+  assert.equal(companionAllows('POST', path, own, {device_id:other}), false);
+  assert.equal(companionAllows('POST', path, own, {}), false);
+});

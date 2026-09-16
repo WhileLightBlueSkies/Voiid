@@ -135,6 +135,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
             MissedCallNotifier.ensureAuthorization()
+            // Every message banner is stale once the app is in front of the user. Missed
+            // calls are kept — see MessageNotifications.
+            MessageNotifications.clear()
         }
         // Register for remote notifications so the server can send the NSE-triggering
         // message push (and Firebase Auth's silent verification push).
