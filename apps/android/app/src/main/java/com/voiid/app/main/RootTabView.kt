@@ -162,7 +162,7 @@ private const val TAB_LABEL_LIMIT = 5
  * Clips) plus the overlays that cover it (chat detail, clip fullscreen). Port of `RootTabView.swift` + iOS navigation behaviour.
  */
 @Composable
-fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
+fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
     val storyLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(storyLifecycleOwner, stories) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -173,6 +173,17 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     }
 
     var tab by remember { mutableStateOf(Tab.CHAT) }
+    val walkthrough = com.voiid.app.main.walkthrough.rememberAppWalkthroughState(session.userId)
+    LaunchedEffect(walkthrough.currentIndex, walkthrough.presented) {
+        if (!walkthrough.presented) return@LaunchedEffect
+        tab = when (walkthrough.step.destination) {
+            com.voiid.app.main.walkthrough.TourDestination.CHATS -> Tab.CHAT
+            com.voiid.app.main.walkthrough.TourDestination.MOMENTS -> Tab.STORIES
+            com.voiid.app.main.walkthrough.TourDestination.COMMUNITIES -> Tab.COMMUNITIES
+            com.voiid.app.main.walkthrough.TourDestination.GAMES -> Tab.GAMES
+            null -> tab
+        }
+    }
     // Read here rather than at the later `context`: that one is declared further down, and
     // the open-thread effect below runs before it exists.
     val notificationContext = androidx.compose.ui.platform.LocalContext.current
@@ -442,6 +453,8 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                 onSelect = { tab = it },
             )
         }
+
+        com.voiid.app.main.walkthrough.AppWalkthroughOverlay(walkthrough)
 
         // Chat detail — slides in over everything (covers the tab bar), like the iOS push.
         AnimatedVisibility(

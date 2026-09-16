@@ -432,6 +432,10 @@ fun ChatsHomeView(
             "myQrCode" -> MyQrCodeScreen(session = session, onBack = settingsNav::pop)
             "help" -> HelpAndSupportScreen(
                 onBack = settingsNav::pop,
+                onReplayWalkthrough = {
+                    com.voiid.app.main.walkthrough.WalkthroughReplayBus.request()
+                    settingsNav.closeAll()
+                },
                 onLinkedDevices = { settingsNav.push("devices") },
                 onBackupRecovery = { settingsNav.push("backup") },
             )

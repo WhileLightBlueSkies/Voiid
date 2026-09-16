@@ -44,6 +44,29 @@ struct HelpAndSupportView: View {
             VStack(alignment: .leading, spacing: VoiidSpacing.md) {
 
                 VoiidCardSection(
+                    "Learn Voiid",
+                    footer: "A short guide to the features available in this version."
+                ) {
+                    Button {
+                        NotificationCenter.default.post(name: .voiidReplayAppWalkthrough, object: nil)
+                    } label: {
+                        HStack(spacing: VoiidSpacing.md) {
+                            VoiidRowIcon(systemName: "sparkles")
+                            Text("Replay app walkthrough")
+                                .font(.body)
+                                .foregroundStyle(VoiidColor.textPrimary)
+                            Spacer(minLength: 0)
+                            VoiidChevron()
+                        }
+                        .padding(.horizontal, VoiidSpacing.md)
+                        .padding(.vertical, 11)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(RowButtonStyle())
+                    .accessibilityHint("Closes Help and starts the app walkthrough")
+                }
+
+                VoiidCardSection(
                     "Your messages",
                     footer: "Voiid's servers relay ciphertext. They cannot read a message, "
                           + "hear a call, or see a location you share."
