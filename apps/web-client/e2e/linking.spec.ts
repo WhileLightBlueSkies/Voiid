@@ -54,6 +54,11 @@ async function fixture(context: any, page: any) {
       pending = pending.filter(m => !body.message_ids.includes(m.id)); result = { acknowledged: body.message_ids.length };
     } else if (path === '/linking/socket-ticket') { await route.fulfill({ status: 503, json: {} }); return; }
     else if (path === '/receipts/mark') result = { marked: true };
+    // The companion marks the WHOLE conversation read rather than naming ids: the id list
+    // could only ever cover the messages it happened to hold (it took the last 100), so a
+    // longer history left the older ones unread forever. The route is per-conversation, so
+    // it is matched by prefix rather than by equality.
+    else if (/^\/receipts\/conversation\/[^/]+\/read$/.test(path)) result = { marked: 0 };
     else throw new Error(`Unexpected test route: ${path}`);
     await route.fulfill({ json: result });
   });
