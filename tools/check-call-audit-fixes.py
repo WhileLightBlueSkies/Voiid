@@ -97,6 +97,65 @@ History.clearCallHistory(); precondition(changes == 3)
 NotificationCenter.default.removeObserver(observer)
 print("PASS: CallKit session ownership, standalone audio, and committed history notifications")
 '''
+keys = (root / 'apps/ios/Voiid/Voiid/Networking/CallKeyExchange.swift').read_text()
+fixture += """
+struct CallSecret { let secret: String }
+final class Provider {
+    var installs = 0
+    func setSharedKey(_ key: Data, with index: Int) { installs += 1 }
+}
+final class Signal { func send(_ call: String) {} }
+enum Verification { case pending, verified }
+final class KeyHarness {
+    var secrets: [String: CallSecret] = [:], roomSecrets: [String: CallSecret] = [:]
+    var generations: [String: Int] = [:], roomGenerations: [String: Int] = [:]
+    var minters: [String: String] = [:], roomMinters: [String: String] = [:]
+    var localTags: [String: String] = [:], remoteTags: [String: String] = [:]
+    var remoteTagGenerations: [String: Int] = [:], providerGeneration: [String: Int] = [:]
+    var verificationTasks: [String: Task<Void, Never>] = [:]
+    var verification: [String: Verification] = [:]
+    var frameProviders: [String: Provider] = [:]
+    let secretRotated = Signal()
+    func frameMediaKey(_ secret: CallSecret) -> Data? { Data(base64Encoded: secret.secret) }
+"""
+fixture += method(keys, '    private func install(').replace('private func', 'func')
+fixture += """
+}
+let keys = KeyHarness(), provider = Provider()
+keys.frameProviders["call"] = provider
+keys.install(secret: CallSecret(secret: "AQID"), callId: "call", generation: 1, minter: "a")
+keys.localTags["call"] = "verified-p2p-tag"
+keys.verification["call"] = .verified
+keys.install(secret: CallSecret(secret: "BAUG"), callId: "call", generation: 2, minter: "a", scope: "room")
+precondition(keys.secrets["call"]?.secret == "AQID" && provider.installs == 1)
+precondition(keys.localTags["call"] == "verified-p2p-tag" && keys.verification["call"] == .verified)
+precondition(keys.roomSecrets["call"]?.secret == "BAUG")
+keys.install(secret: CallSecret(secret: "BwgJ"), callId: "call", generation: 1, minter: "a", scope: "room")
+precondition(keys.roomSecrets["call"]?.secret == "BAUG", "stale replay must not replace the room key")
+print("PASS: room rotation preserves P2P key, provider and verification; stale replay is ignored")
+"""
+calls = (root / 'apps/ios/Voiid/Voiid/Networking/CallService.swift').read_text()
+fixture += """
+enum CXCallEndedReason { case answeredElsewhere, declinedElsewhere, remoteEnded, unanswered, failed }
+enum Outcomes {
+"""
+fixture += method(calls, '    static func finalCallOutcome(')
+fixture += """
+}
+let ignored = Outcomes.finalCallOutcome(outgoing: false, connected: false, locallyAnswered: false, declined: false, failed: false)
+precondition(ignored.history == "missed" && ignored.callKit == .unanswered)
+let attempted = Outcomes.finalCallOutcome(outgoing: false, connected: false, locallyAnswered: true, declined: false, failed: false)
+precondition(attempted.history == "failed" && attempted.callKit == .failed)
+let taken = Outcomes.finalCallOutcome(outgoing: false, connected: false, locallyAnswered: false, declined: true, failed: false, takenElsewhere: "answer")
+precondition(taken.history == "answered" && taken.callKit == .answeredElsewhere)
+let aborted = Outcomes.finalCallOutcome(outgoing: false, connected: true, locallyAnswered: true, declined: false, failed: false, takenElsewhere: "conference-aborted")
+precondition(aborted.history == "failed" && aborted.callKit == .failed)
+let connected = Outcomes.finalCallOutcome(outgoing: true, connected: true, locallyAnswered: false, declined: false, failed: true)
+precondition(connected.history == "answered" && connected.callKit == .remoteEnded)
+let declined = Outcomes.finalCallOutcome(outgoing: false, connected: false, locallyAnswered: false, declined: true, failed: false)
+precondition(declined.history == "declined" && declined.callKit == .declinedElsewhere)
+print("PASS: common terminal outcomes for ignored, attempted, sibling answer, aborted, connected and declined calls")
+"""
 with tempfile.TemporaryDirectory(prefix='voiid-call-audit-') as directory:
     temp = Path(directory)
     source = temp / 'Check.swift'

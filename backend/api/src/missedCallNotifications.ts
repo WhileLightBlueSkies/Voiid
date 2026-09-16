@@ -27,8 +27,13 @@ export async function sweepMissedCallNotifications(deps: {
           missed_push_lease_until=null where id=$1`, [call.id,answered]);
         continue;
       }
-      await deps.query(`update calls set status=case when status='ringing' then 'missed' else status end,
-        ended_at=coalesce(ended_at,now()) where id=$1 and answered_at is null`, [call.id]);
+      const stillUnanswered = await deps.query<{id:string}>(`update calls set status=case when status='ringing' then 'missed' else status end,
+        ended_at=coalesce(ended_at,now()) where id=$1 and answered_at is null
+          and status in ('ringing','missed','ended')
+          and coalesce(end_reason,'') not in ('declined','busy','failed','cancelled','canceled')
+        returning id`, [call.id]);
+      // A connected/declined status may arrive after the lease was acquired.
+      if (!stillUnanswered.length) continue;
       const devices = await deps.query<{push_token:string}>(
         `select distinct d.push_token from devices d join conversation_members m on m.user_id=d.user_id
           where m.conversation_id=$1 and m.left_at is null and m.request_state='accepted' and m.user_id<>$2

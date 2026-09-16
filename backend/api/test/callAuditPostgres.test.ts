@@ -9,6 +9,7 @@ import { pool } from '../src/db';
 import { redis, publisher } from '../src/redis';
 import { issueToken } from '../src/auth';
 import callsRouter, { sweepExpiredConferenceInvites } from '../src/routes/calls';
+import { sweepUnansweredCalls } from '../src/missedCallNotifications';
 redis.disconnect(); publisher.disconnect();
 const url = process.env.CALL_TEST_DATABASE_URL;
 
@@ -57,6 +58,24 @@ test('conference arbitration, rollback, expiry and missed history against Postgr
       "insert into devices(id,user_id,platform,registration_id,identity_public_key) values($1,$2,'test',$3,$4)",[device,user,i,Buffer.from('fixture')]);
     await db.query("insert into conversations(id,type) values($1,'direct')",[conv]);
     for(const user of [a,b]) await db.query("insert into conversation_members(conversation_id,user_id,request_state) values($1,$2,'accepted')",[conv,user]);
+    await t.test('legacy clients cannot start or join a room-key conference',async()=>{
+      const id=await seed();
+      for(const action of ['escalate','join']) {
+        assert.equal((await request(`/calls/${id}/${action}`,a,ad,{protocol_version:1})).status,409);
+      }
+    });
+    await t.test('unanswered classification works without pushes and respects relay answer evidence',async()=>{
+      const missed=randomUUID(),answered=randomUUID();
+      for(const id of [missed,answered]) await db.query(
+        "insert into calls(id,conversation_id,caller_user_id,call_kind,status,started_at) values($1,$2,$3,'voice','ringing',now()-interval '80 seconds')",[id,conv,a]);
+      grants.set(`call:answered:${answered}`,new Date().toISOString());
+      await sweepUnansweredCalls();
+      const rows=(await db.query('select id,status,answered_at from calls where id=any($1::uuid[])',[[missed,answered]])).rows;
+      assert.equal(rows.find(r=>r.id===missed).status,'missed');
+      assert.equal(rows.find(r=>r.id===answered).status,'connected');
+      assert.ok(rows.find(r=>r.id===answered).answered_at);
+      await db.query('delete from calls where id=any($1::uuid[])',[[missed,answered]]);
+    });
     await t.test('sibling cannot steal a join or remove the answering device',async()=>{
       const id=await seed(); events.length=0;
       assert.equal((await request(`/calls/${id}/join`,c,cd,{})).status,200);

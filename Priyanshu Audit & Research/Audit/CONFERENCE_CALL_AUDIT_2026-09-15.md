@@ -1,5 +1,7 @@
 # Conference calls (adding someone to a 1:1 call): audit
 
+> **Implementation update (16 Sep 2026):** See [validation, fixes, test results and remaining work](CALLS_AND_RECEIPTS_IMPLEMENTATION_2026-09-16.md). The audit below preserves its original baseline.
+
 > **Date:** 15 Sep 2026
 > **Baseline:** `main` at `9fc79f3`
 > **Scope:** adding a third person to a live 1:1 call on iOS and Android: invite, key exchange, move to the LiveKit room (SFU), answering, leaving, failure paths, and the backend and relay behind them.

@@ -1,5 +1,7 @@
 # iOS missed calls not appearing in call logs: audit
 
+> **Implementation update (16 Sep 2026):** See [validation, fixes, test results and remaining work](CALLS_AND_RECEIPTS_IMPLEMENTATION_2026-09-16.md). The audit below preserves its original baseline.
+
 > **Date:** 15 Sep 2026  
 > **Baseline:** `main` at `9fc79f3`  
 > **Scope:** iOS incoming 1:1, conference and call-waiting lifecycle; Voiid’s local Calls screen; Apple Phone Recents through CallKit; notification backstops; persistence; comparison with Android.  

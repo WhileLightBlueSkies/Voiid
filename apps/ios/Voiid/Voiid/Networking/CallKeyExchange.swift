@@ -129,7 +129,7 @@ final class CallKeyExchange: ObservableObject {
 
     /// call_id -> the shared-key provider feeding our frame cryptors. Created lazily on
     /// first request; when a NEW generation installs, `setSharedKey` re-keys every cryptor
-    /// holding this provider — LiveKit's ratchet handles the transition.
+    /// holding this provider. This is the P2P provider; room keys are stored separately.
     private var frameProviders: [String: LKRTCFrameCryptorKeyProvider] = [:]
     /// call_id -> generation the provider was last keyed with, so an out-of-order
     /// install cannot roll the key backwards.

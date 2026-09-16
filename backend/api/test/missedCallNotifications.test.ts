@@ -19,7 +19,7 @@ test('a provider failure preserves the leased call for retry; success settles it
     let step=0;
     const execute = (async () => {
       if (step++ === 0) return [{id:'call',conversation_id:'chat',caller_user_id:'caller',call_kind:'voice'}];
-      if (step===2) return [];
+      if (step===2) return [{id:'call'}];
       if (step===3) return [{push_token:'device'}];
       settled=true; return [];
     }) as typeof query;
@@ -35,7 +35,7 @@ test('large device sets respect FCM multicast limits', async () => {
   let step=0; const batches:number[]=[];
   await sweepMissedCallNotifications({query:(async()=>{
     if(step++===0)return [{id:'call',conversation_id:'chat',caller_user_id:'caller',call_kind:'video'}];
-    if(step===2)return [];
+    if(step===2)return [{id:'call'}];
     if(step===3)return Array.from({length:501},(_,i)=>({push_token:String(i)}));
     return [];
   }) as typeof query,send:async tokens=>{batches.push(tokens.length);}});
@@ -54,4 +54,14 @@ test('relay answer evidence prevents a false missed notification', async () => {
   });
   assert.equal(sql.length, 2);
   assert.match(sql[1], /answered_at=coalesce/);
+});
+
+test('an answer or decline after leasing suppresses the missed notification', async () => {
+  let queries = 0;
+  await sweepMissedCallNotifications({
+    query: (async () => ++queries === 1
+      ? [{id:'call',conversation_id:'chat',caller_user_id:'caller',call_kind:'voice'}] : []) as typeof query,
+    send: async () => { assert.fail('a call settled after leasing must not notify'); },
+  });
+  assert.equal(queries, 2);
 });

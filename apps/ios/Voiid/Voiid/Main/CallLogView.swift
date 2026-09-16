@@ -10,10 +10,9 @@
 //  log answers — had no answer anywhere in the app. The data was there the whole time; the
 //  screen was not.
 //
-//  A NOTE ON WHAT THIS IS NOT. There is no server-side call history: `call_history` is a
-//  LOCAL table, written when this device places or receives a call. A call answered on your
-//  other phone does not appear here, and reinstalling loses the log. That is a real
-//  limitation and the empty state does not pretend otherwise.
+//  The local log preserves device-specific outcomes. Server reconciliation also recovers
+//  unanswered direct calls whose incoming push never reached this device. Answered calls
+//  from another phone and a complete cross-device history are not restored.
 //
 
 import SwiftUI

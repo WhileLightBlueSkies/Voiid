@@ -1644,6 +1644,22 @@ final class CallService: NSObject, ObservableObject {
     /// `takenElsewhere` is the verdict ("answer"/"decline") one of the user's OTHER
     /// devices already gave: we then say nothing to the caller (they were answered)
     /// and post no banner (nothing was missed).
+    /// Shared terminal classification for primary, waiting and conference calls.
+    /// A local answer without media is a failure; another device's answer is still answered.
+    static func finalCallOutcome(outgoing: Bool, connected: Bool, locallyAnswered: Bool,
+                                 declined: Bool, failed: Bool, takenElsewhere: String? = nil)
+        -> (history: String, callKit: CXCallEndedReason) {
+        if let takenElsewhere {
+            if takenElsewhere == "answer" { return ("answered", .answeredElsewhere) }
+            if takenElsewhere == "conference-aborted" { return ("failed", .failed) }
+            return ("declined", .declinedElsewhere)
+        }
+        if connected { return ("answered", .remoteEnded) }
+        if declined { return ("declined", .declinedElsewhere) }
+        if locallyAnswered || failed { return ("failed", .failed) }
+        return (outgoing ? "failed" : "missed", .unanswered)
+    }
+
     private func clearWaitingCall(sendBusy: Bool, decline: Bool = false,
                                   takenElsewhere: String? = nil) {
         guard let waiting = waitingCall else { return }
@@ -1668,6 +1684,9 @@ final class CallService: NSObject, ObservableObject {
             }
             else if sendBusy { socket.sendCallBusy(toUserId: waiting.peerUserId, callId: waiting.id) }
         }
+        let result = Self.finalCallOutcome(outgoing: false, connected: false,
+            locallyAnswered: userAnswered, declined: decline, failed: false,
+            takenElsewhere: takenElsewhere)
         // A second call used to leave NO trace on any exit — five different
         // missed/declined outcomes vanished the moment the call-waiting UI went away.
         LocalStore.recordCall(
@@ -1676,11 +1695,7 @@ final class CallService: NSObject, ObservableObject {
             peerUserId: waiting.peerUserId.isEmpty ? nil : waiting.peerUserId,
             kind: waiting.isVideo ? "video" : "voice",
             direction: "incoming",
-            outcome: {
-                if let takenElsewhere { return takenElsewhere == "answer" ? "answered" : "declined" }
-                if decline { return "declined" }
-                return userAnswered ? "failed" : "missed"
-            }(),
+            outcome: result.history,
             startedAt: waiting.startedAt,
             endedAt: Date()
         )
@@ -1698,17 +1713,7 @@ final class CallService: NSObject, ObservableObject {
         // Same rule as the primary call: an inbound call nobody picked up must file in
         // Recents as `.unanswered`, or it looks like a completed call and the second
         // caller disappears from the phone app entirely.
-        let endReason: CXCallEndedReason
-        if let takenElsewhere {
-            endReason = takenElsewhere == "answer" ? .answeredElsewhere : .declinedElsewhere
-        } else if decline {
-            endReason = .declinedElsewhere
-        } else if userAnswered {
-            endReason = .failed
-        } else {
-            endReason = .unanswered
-        }
-        CallManager.shared.endCall(uuid: waiting.uuid, reason: endReason)
+        CallManager.shared.endCall(uuid: waiting.uuid, reason: result.callKit)
     }
 
     /// One of the user's OTHER devices answered or declined this call.
@@ -1735,20 +1740,9 @@ final class CallService: NSObject, ObservableObject {
         // Nothing was missed and the caller needs no hangup from us: the sibling
         // device is talking to them.
         MissedCallNotifier.cancel(callId: callId)
-        pendingEndReason = .declined   // ⇒ outcome "declined", never "missed"
-        CallManager.shared.endCall(uuid: call.uuid,
-                                   reason: reason == "answer" ? .answeredElsewhere : .declinedElsewhere)
+        pendingEndReason = .declined
         if call.isConferenceInvite { CallConferenceService.shared.forgetTakenInvite(callId: callId) }
-        endActiveCall(notifyPeer: false, fromCallKit: true, reportStatus: false)
-        // recordCall upserts on the call id, so this corrects the row endActiveCall
-        // just wrote — a call answered on your tablet belongs in history as answered.
-        if reason == "answer" {
-            LocalStore.recordCall(id: callId, conversationId: call.conversationId,
-                                  peerUserId: call.peerUserId.isEmpty ? nil : call.peerUserId,
-                                  kind: call.isVideo ? "video" : "voice", direction: "incoming",
-                                  outcome: "answered", startedAt: callStartedAt ?? Date(),
-                                  endedAt: Date())
-        }
+        endActiveCall(notifyPeer: false, fromCallKit: false, reportStatus: false, takenElsewhere: reason)
     }
 
     /// The user chose the waiting call. Ends the first call, then promotes the
@@ -2163,7 +2157,7 @@ final class CallService: NSObject, ObservableObject {
 
     /// Tear down the call. `notifyPeer` sends a hangup; `fromCallKit` avoids
     /// re-entering the CallKit end transaction.
-    func endActiveCall(notifyPeer: Bool, fromCallKit: Bool, reportStatus: Bool = true) {
+    func endActiveCall(notifyPeer: Bool, fromCallKit: Bool, reportStatus: Bool = true, takenElsewhere: String? = nil) {
         guard let call = active, call.state != .ended else { return }
         NSLog("[VOIID] call-end: reason=%@ outgoing=%d connected=%d notifyPeer=%d fromCallKit=%d",
               String(describing: pendingEndReason), call.isOutgoing ? 1 : 0, everConnected ? 1 : 0,
@@ -2216,36 +2210,13 @@ final class CallService: NSObject, ObservableObject {
                             (pendingEndReason == .setupFailed ? "setup-failed" : "hangup")))
             }
         }
-        // Tell CallKit WHY it ended. An inbound call that never connected is a MISSED
-        // call and must be reported as `.unanswered`, or it files in Recents as a
-        // normal completed call and the user never sees they were called.
-        if !fromCallKit {
-            let endReason: CXCallEndedReason
-            if everConnected {
-                endReason = .remoteEnded
-            } else if pendingEndReason == .declined || pendingEndReason == .busy {
-                endReason = .declinedElsewhere
-            } else {
-                // Never connected and not explicitly refused — missed, in both
-                // directions (an outgoing call nobody picked up is "unanswered" too).
-                endReason = .unanswered
-            }
-            CallManager.shared.endCall(uuid: call.uuid, reason: endReason)
-        }
-
-        // Local call history. Previously calls left NO trace on the device once the
-        // CallKit UI went away — a missed call was simply invisible. Recorded before
-        // the network call so it survives being offline.
-        let outcome: String = {
-            if everConnected { return "answered" }
-            switch pendingEndReason {
-            case .declined: return "declined"
-            case .busy: return "declined"
-            case .setupFailed, .iceFailed: return "failed"
-            // Answered but dead before media flowed: a failure, not a missed call.
-            default: return (call.isOutgoing || localAnswerGiven) ? "failed" : "missed"
-            }
-        }()
+        let result = Self.finalCallOutcome(outgoing: call.isOutgoing, connected: everConnected,
+            locallyAnswered: localAnswerGiven,
+            declined: pendingEndReason == .declined || pendingEndReason == .busy,
+            failed: pendingEndReason == .setupFailed || pendingEndReason == .iceFailed,
+            takenElsewhere: takenElsewhere)
+        if !fromCallKit { CallManager.shared.endCall(uuid: call.uuid, reason: result.callKit) }
+        let outcome = result.history
         LocalStore.recordCall(
             id: call.id,
             conversationId: call.conversationId,

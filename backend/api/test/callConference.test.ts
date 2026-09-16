@@ -645,7 +645,7 @@ async function call(
       authorization: `Bearer ${tokenFor(actor.user, actor.device)}`,
       'content-type': 'application/json',
     },
-    body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+    body: method === 'POST' ? JSON.stringify({protocol_version:2,...((body ?? {}) as object)}) : undefined,
   });
   return { status: res.status, body: (await res.json()) as any };
 }

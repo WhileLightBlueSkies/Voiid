@@ -1,5 +1,7 @@
 # Chat read receipts and sticky unread badges: audit
 
+> **Implementation update (16 Sep 2026):** See [validation, fixes, test results and remaining work](CALLS_AND_RECEIPTS_IMPLEMENTATION_2026-09-16.md). The audit below preserves its original baseline.
+
 > **Date:** 15 Sep 2026  
 > **Baseline:** `main` at `9fc79f3`  
 > **Scope:** chat tiles/grid unread badges, opening a conversation, receipt persistence, sender “Seen” state, local caches, iOS, Android, web companion, and API.  
