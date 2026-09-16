@@ -1003,9 +1003,23 @@ private struct CommunityPostCard: View {
                 CommunityAvatar(name: post.displayName, size: 32)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(post.displayName)
-                        .font(VoiidFont.rounded(14, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
+                    HStack(spacing: 4) {
+                        Text(post.displayName)
+                            .font(VoiidFont.rounded(14, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+                        // THE BADGE IS THE SERVER'S CLAIM, NOT THE NAME'S.
+                        //
+                        // Anyone may call themselves "Voiid Moderator", so the display name
+                        // cannot be what a reader trusts. `author_is_official` is set only by
+                        // the server (077) and is not writable through profile updates, so
+                        // this mark says something the account holder cannot say for itself.
+                        if post.author_is_official == true {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(VoiidColor.primary)
+                                .accessibilityLabel("Official Voiid account")
+                        }
+                    }
                     Text(CommunityFeedDate.age(post.created_at))
                         .font(VoiidFont.rounded(11.5))
                         .foregroundColor(VoiidColor.textSecondary)

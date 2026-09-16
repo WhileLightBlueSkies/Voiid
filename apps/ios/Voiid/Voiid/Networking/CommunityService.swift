@@ -652,6 +652,10 @@ final class CommunityService {
         var author_name: String?
         var author_username: String?
         var author_photo_url: String?
+        /// Server-assigned. True only for Voiid-operated accounts (077), so the badge is
+        /// something the server vouches for rather than a display name anyone can copy.
+        /// Optional because older builds of the API did not send it.
+        var author_is_official: Bool?
         /// The only field the server cannot omit — a post with no body cannot exist
         /// (community_posts_body_len). Defaulted anyway; see the note above.
         var body: String?

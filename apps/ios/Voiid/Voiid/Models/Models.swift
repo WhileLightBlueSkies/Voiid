@@ -145,6 +145,10 @@ struct VConversation: Identifiable, Hashable {
     var pinnedAt: Date? = nil
     /// Marked important by this user. Local-only, like `pinnedAt`.
     var isStarred: Bool = false
+    /// Position in a manual arrangement, or nil when this chat has never been dragged.
+    /// Nil sorts BELOW every placed chat and falls back to recency, so the grid is
+    /// unchanged until someone actually rearranges it.
+    var sortIndex: Int? = nil
 }
 
 // VClip / VClipComment removed — the mock shapes for the dummy Clips feed. The real

@@ -22,6 +22,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.voiid.app.store.UserDirectory
 import com.voiid.app.net.CommunityService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidMotion
@@ -537,18 +538,29 @@ private fun MemberRow(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Keyed off the user id, because that is what the roster actually returns. NO online
-        // dot: nothing in the schema records presence for a community member.
-        CommunityAvatar(name = member.user_id, size = 40.dp)
+        // THE NAME, NOT THE ID.
+        //
+        // The roster has carried `full_name` and `username` all along (GET
+        // /communities/:id/members selects both) — this row simply ignored them and printed
+        // eight characters of a UUID, which identifies nobody.
+        //
+        // UserDirectory first, so a contact you have SAVED reads by the name you gave them,
+        // exactly as they do in chats; the server's profile name is the fallback for people
+        // who are not in your address book. Same precedence as MessageRequestsView and
+        // FindByUsernameView, so one person reads the same everywhere in the app.
+        val memberName = UserDirectory.displayName(
+            member.user_id,
+            member.full_name?.takeIf { it.isNotBlank() } ?: member.username,
+        )
+        // NO online dot: nothing in the schema records presence for a community member.
+        CommunityAvatar(name = memberName, size = 40.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // The id, shortened. A display name would need UserDirectory to resolve it;
-                // until it does, showing the id is honest where a fake name is not.
                 Text(
-                    member.user_id.take(8),
+                    memberName,
                     style = VoiidFont.rounded(14.5f, FontWeight.SemiBold),
                     color = VoiidColor.textPrimary,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,

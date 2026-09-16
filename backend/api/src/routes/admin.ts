@@ -1610,6 +1610,147 @@ router.post('/communities/:id/restore', requireAdmin, requireRole('admin'), asyn
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// MODERATOR POSTING — the three official communities only
+//
+// Posts are authored as the Voiid Moderator account (077), a REAL users row, so they travel
+// the ordinary read and authorization paths and both apps render the name, avatar and
+// official badge with no client changes.
+//
+// The official_key restriction lives in SQL rather than in a handler check, so it is a
+// property of the query that a later edit cannot quietly drop.
+// ─────────────────────────────────────────────────────────────────────────────────
+
+/** The Voiid Moderator account. Created by 077_official_moderator.sql. */
+const VOIID_MODERATOR_ID = '00000000-0000-4000-8000-000000000001';
+
+/**
+ * Resolve an official community, or null. The official_key filter IS the authorization: an
+ * id that is not one of the three is indistinguishable from one that does not exist.
+ */
+async function officialCommunity(id: string) {
+  const rows = await query<{ id: string; name: string; official_key: string }>(
+    `select id, name, official_key from communities
+      where id = $1 and official_key in ('jobs', 'feedback', 'updates')
+        and suspended_at is null`,
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+// POST /admin/communities/:id/moderator-post   { body, scheduled_at? }
+router.post('/communities/:id/moderator-post', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const body = String(req.body?.body ?? '').trim();
+  const scheduledAt = req.body?.scheduled_at ? String(req.body.scheduled_at) : null;
+
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'community id must be a uuid' });
+  // 1..5000 mirrors community_posts_body_len (047): the API refuses what the database would
+  // refuse anyway, with a message rather than a constraint violation.
+  if (!body || body.length > 5000) return res.status(400).json({ error: 'body must be 1 to 5000 characters' });
+  if (scheduledAt && !Number.isFinite(Date.parse(scheduledAt))) {
+    return res.status(400).json({ error: 'scheduled_at must be an ISO timestamp' });
+  }
+
+  const community = await officialCommunity(id);
+  if (!community) return res.status(404).json({ error: 'not an official community' });
+
+  const rows = await query<{ id: string; created_at: string; scheduled_at: string | null }>(
+    `insert into community_posts (community_id, author_id, body, scheduled_at)
+     values ($1, $2::uuid, $3, $4::timestamptz)
+     returning id, created_at, scheduled_at`,
+    [id, VOIID_MODERATOR_ID, body, scheduledAt]
+  );
+
+  await audit(a.adminId, 'community.moderator_post', 'community', id,
+              { official_key: community.official_key, post_id: rows[0].id,
+                scheduled_at: scheduledAt, length: body.length });
+  res.json({ ok: true, post: rows[0] });
+}));
+
+// GET /admin/communities/:id/moderator-posts — INCLUDING ones not yet due, which the public
+// feed deliberately hides. The scheduling queue is only reviewable if it is visible here.
+router.get('/communities/:id/moderator-posts', requireAdmin, asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'community id must be a uuid' });
+  if (!(await officialCommunity(id))) return res.status(404).json({ error: 'not an official community' });
+
+  const rows = await query<any>(
+    `select id, body, created_at, scheduled_at, removed_at,
+            (scheduled_at is not null and scheduled_at > now()) as pending
+       from community_posts
+      where community_id = $1 and author_id = $2::uuid
+      order by coalesce(scheduled_at, created_at) desc
+      limit 100`,
+    [id, VOIID_MODERATOR_ID]
+  );
+  res.json({ posts: rows });
+}));
+
+// DELETE /admin/communities/:id/moderator-post/:postId — cancel a scheduled post, or retract
+// a published one. Sets removed_at rather than deleting, so moderation history stays intact
+// exactly as it does for every other removal (047).
+router.delete('/communities/:id/moderator-post/:postId', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const postId = String(req.params.postId);
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !/^[0-9a-f-]{36}$/i.test(postId)) {
+    return res.status(400).json({ error: 'ids must be uuids' });
+  }
+  if (!(await officialCommunity(id))) return res.status(404).json({ error: 'not an official community' });
+
+  const rows = await query<{ id: string }>(
+    `update community_posts set removed_at = now()
+      where id = $1 and community_id = $2 and author_id = $3::uuid and removed_at is null
+      returning id`,
+    [postId, id, VOIID_MODERATOR_ID]
+  );
+  if (!rows[0]) return res.status(409).json({ error: 'not found, or already removed' });
+
+  await audit(a.adminId, 'community.moderator_post_remove', 'community', id, { post_id: postId });
+  res.json({ ok: true });
+}));
+
+// POST /admin/communities/:id/moderators   { user_id, role }
+//
+// `role` is the EXISTING community_members vocabulary, so this wires an established
+// mechanism to a UI rather than inventing a parallel one: the backend already treats
+// owner-or-admin as a manager everywhere it matters.
+router.post('/communities/:id/moderators', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const userId = String(req.body?.user_id ?? '');
+  const role = String(req.body?.role ?? 'admin');
+
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !/^[0-9a-f-]{36}$/i.test(userId)) {
+    return res.status(400).json({ error: 'ids must be uuids' });
+  }
+  // 'owner' is deliberately NOT grantable: ownership is a single-holder property with its
+  // own transfer flow, and handing it out here would leave a community with two owners.
+  if (!['admin', 'member'].includes(role)) {
+    return res.status(400).json({ error: "role must be 'admin' or 'member'" });
+  }
+
+  const community = await officialCommunity(id);
+  if (!community) return res.status(404).json({ error: 'not an official community' });
+
+  // Membership first: a role on someone who is not in the community would be invisible and
+  // would silently start applying if they ever joined.
+  const rows = await query<{ user_id: string; role: string }>(
+    `update community_members set role = $3
+      where community_id = $1 and user_id = $2 and left_at is null and role <> 'owner'
+      returning user_id, role`,
+    [id, userId, role]
+  );
+  if (!rows[0]) return res.status(409).json({ error: 'not an active member, or is the owner' });
+
+  await audit(a.adminId, 'community.moderator_role', 'community', id,
+              { official_key: community.official_key, user_id: userId, role });
+  res.json({ ok: true, member: rows[0] });
+}));
+
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // GET  /admin/communities/:id/entitlements
 // POST /admin/communities/:id/entitlements          { capability, note, expires_at? }
 // POST /admin/communities/:id/entitlements/:cap/revoke  { note }

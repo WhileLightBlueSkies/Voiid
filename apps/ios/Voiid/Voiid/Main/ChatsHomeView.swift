@@ -135,7 +135,8 @@ struct ChatsHomeView: View {
                             onCall: { callTarget = $0 },
                             onDelete: { deleteTarget = $0 },
                             onPin: { chat.setPinned($0.id, $0.pinnedAt == nil) },
-                            onStar: { chat.setStarred($0.id, !$0.isStarred) }
+                            onStar: { chat.setStarred($0.id, !$0.isStarred) },
+                            onReorder: { chat.setSortOrder($0) }
                         )
                     } else {
                         chatListLayout(items)

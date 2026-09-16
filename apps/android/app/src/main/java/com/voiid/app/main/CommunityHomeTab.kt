@@ -5,6 +5,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -774,8 +777,25 @@ private fun CommunityPostCard(
         ) {
             CommunityAvatar(name = post.displayName, size = 32.dp)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                Text(post.displayName, style = VoiidFont.rounded(14, FontWeight.SemiBold),
-                    color = VoiidColor.textPrimary)
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(post.displayName, style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                        color = VoiidColor.textPrimary)
+                    // THE BADGE IS THE SERVER'S CLAIM, NOT THE NAME'S.
+                    //
+                    // Anyone may call themselves "Voiid Moderator", so the display name cannot
+                    // be what a reader trusts. `author_is_official` is set only by the server
+                    // (077) and is not writable through profile updates, so this mark says
+                    // something the account holder cannot say for itself. Mirrors iOS.
+                    if (post.author_is_official == true) {
+                        Icon(
+                            Icons.Default.Verified,
+                            contentDescription = "Official Voiid account",
+                            tint = VoiidColor.primary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                }
                 Text(CommunityFeedDate.age(post.created_at),
                     style = VoiidFont.rounded(11.5f), color = VoiidColor.textSecondary)
             }

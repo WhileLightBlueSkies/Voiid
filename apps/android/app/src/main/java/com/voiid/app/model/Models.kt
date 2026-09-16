@@ -106,6 +106,22 @@ data class VConversation(
     var photoURL: String? = null,
     /** Direct chats: peer's last-seen epoch millis (from presence), null if unknown/online. */
     var lastSeenAt: Long? = null,
+    /**
+     * When this chat was pinned to the top of the grid (epoch millis), or null.
+     *
+     * A TIMESTAMP rather than a Bool because pinning a second chat has to sit
+     * deterministically relative to the first. Local-only: it describes how you arrange
+     * your own home screen, not anything the peer can see. Mirrors iOS.
+     */
+    var pinnedAt: Long? = null,
+    /** Marked important by this user. Local-only, like [pinnedAt]. */
+    var isStarred: Boolean = false,
+    /**
+     * Position in a manual arrangement, or null when this chat has never been dragged.
+     * Null sorts BELOW every placed chat and falls back to recency, so the grid is
+     * unchanged until someone actually rearranges it.
+     */
+    var sortIndex: Int? = null,
 )
 
 // VClip / VClipComment removed — the mock shapes for the dummy Clips feed. The real

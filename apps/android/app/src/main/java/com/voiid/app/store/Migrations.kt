@@ -78,3 +78,25 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
         db.execSQL("ALTER TABLE `call_history` ADD COLUMN `connected_at` INTEGER")
     }
 }
+
+/**
+ * Pin, star and a manual grid arrangement — the chat grid's own state, matching iOS's
+ * `v6_conversation_pin_star` and `v7_conversation_sort_index`.
+ *
+ * All three are LOCAL-ONLY on purpose: they describe how this person arranges their own
+ * home screen, not anything the other participant can observe, so they are deliberately
+ * absent from the sync payload.
+ *
+ * `pinned_at` is a TIMESTAMP rather than a boolean because pinning a second chat has to sit
+ * deterministically relative to the first, and a bool cannot say which came first.
+ *
+ * `sort_index` is NULL for every existing row, which means "no opinion, use recency" — so
+ * the grid is unchanged until someone actually drags something.
+ */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `conversations` ADD COLUMN `pinned_at` INTEGER")
+        db.execSQL("ALTER TABLE `conversations` ADD COLUMN `starred` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `conversations` ADD COLUMN `sort_index` INTEGER")
+    }
+}

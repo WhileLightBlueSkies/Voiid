@@ -920,6 +920,42 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         messagesByConversation.remove(convId)
     }
 
+    /**
+     * Pin or unpin a chat, and re-publish so the grid reorders immediately.
+     *
+     * Clears the manual index first. A dragged arrangement writes a sort_index for every
+     * tile, and that index is only compared among chats sharing a pin state — so a chat
+     * pinned afterwards kept the slot its old index described and appeared not to move.
+     * Pinning is a statement about position, so it discards the position it replaces.
+     * Mirrors iOS ChatStore.setPinned.
+     */
+    fun setPinned(convId: String, pinned: Boolean) {
+        viewModelScope.launch {
+            LocalStore.setSortIndex(appContext, convId, null)
+            LocalStore.setPinned(appContext, convId, pinned)
+            loadLocal()
+        }
+    }
+
+    /** Star or unstar a chat. Does not reorder — see LocalStore.setStarred. */
+    fun setStarred(convId: String, starred: Boolean) {
+        viewModelScope.launch {
+            LocalStore.setStarred(appContext, convId, starred)
+            loadLocal()
+        }
+    }
+
+    /**
+     * Persist a manual arrangement from the grid.
+     *
+     * Deliberately does NOT re-publish afterwards: the grid has already animated the tiles
+     * into place, and rebuilding the list underneath a user who is still dragging would
+     * fight their own gesture. The next natural refresh reads the same order back.
+     */
+    fun setSortOrder(orderedIds: List<String>) {
+        viewModelScope.launch { LocalStore.setSortOrder(appContext, orderedIds) }
+    }
+
     /** Clear all messages in a conversation but keep it in the list. */
     fun clearChat(convId: String) = deleteMessages(messages(convId).map { it.id }.toSet(), convId, false)
 

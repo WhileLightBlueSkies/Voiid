@@ -78,6 +78,9 @@ object LocalStore {
                 unreadCount = if ((r.lastMessageAt ?: Long.MAX_VALUE) <= readPositions(context).getLong(r.id, 0) / 1000) 0 else r.unreadCount,
                 peerUserId = r.peerUserId,
                 photoURL = r.photoUrl ?: r.peerUserId?.let { UserDirectory.photoUrl(it) },
+                pinnedAt = r.pinnedAt?.takeIf { it > 0 }?.let { it * 1000 },
+                isStarred = r.starred == 1,
+                sortIndex = r.sortIndex,
             )
         }
     }
@@ -90,6 +93,43 @@ object LocalStore {
      */
     private fun readPositions(context: Context) = context.getSharedPreferences(
         "voiid_read_positions_${com.voiid.app.net.TokenStore.get(context).userId}", Context.MODE_PRIVATE)
+
+    /**
+     * Pin a chat to the top of the grid, or unpin it.
+     *
+     * The timestamp orders multiple pins against each other; the DAO query reads pinned rows
+     * first, newest pin highest, then everything else. Mirrors iOS LocalStore.setPinned.
+     */
+    suspend fun setPinned(context: Context, id: String, pinned: Boolean) = withContext(Dispatchers.IO) {
+        VoiidDatabase.get(context).conversations()
+            .setPinned(id, if (pinned) System.currentTimeMillis() / 1000 else null)
+    }
+
+    /**
+     * Mark a chat important, or clear it. Does NOT affect ordering — a star is a label, and
+     * moving a chat because it was starred would make the grid unpredictable in exactly the
+     * way pinning is meant to be explicit about.
+     */
+    suspend fun setStarred(context: Context, id: String, starred: Boolean) = withContext(Dispatchers.IO) {
+        VoiidDatabase.get(context).conversations().setStarred(id, if (starred) 1 else 0)
+    }
+
+    /** Set or clear one chat's manual position. Null returns it to recency ordering. */
+    suspend fun setSortIndex(context: Context, id: String, index: Int?) = withContext(Dispatchers.IO) {
+        VoiidDatabase.get(context).conversations().setSortIndex(id, index)
+    }
+
+    /**
+     * Persist a manual arrangement from the grid.
+     *
+     * Writes the WHOLE visible order rather than the moved tile alone: one tile's index only
+     * means something relative to its neighbours, so a partial write would leave the rest
+     * ordered by recency and the arrangement would come apart on the next message.
+     */
+    suspend fun setSortOrder(context: Context, orderedIds: List<String>) = withContext(Dispatchers.IO) {
+        val dao = VoiidDatabase.get(context).conversations()
+        orderedIds.forEachIndexed { index, id -> dao.setSortIndex(id, index) }
+    }
 
     fun rememberReadPosition(context: Context, id: String, through: Long) {
         val prefs = readPositions(context)

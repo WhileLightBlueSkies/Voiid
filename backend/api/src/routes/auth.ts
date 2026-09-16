@@ -13,6 +13,16 @@ const router = Router();
 // POST /auth/firebase  { id_token }  -> verify with Firebase, upsert our user, issue our JWT.
 // `id_token` is the Firebase ID token the app gets after completing Phone Auth.
 // In dev (AUTH_DEV_BYPASS=1) a token "dev:<phone>" is accepted without Firebase.
+/**
+ * Phone numbers that belong to Voiid-operated accounts and must never be signed into.
+ *
+ * Kept as data rather than a regex over `+99`: the point is that each entry is a deliberate,
+ * reviewable decision, not a pattern someone could widen by accident.
+ */
+const RESERVED_PHONE_NUMBERS = new Set<string>([
+  '+990000000001',   // Voiid Moderator (077_official_moderator.sql)
+]);
+
 router.post('/firebase', asyncHandler(async (req, res) => {
   const { id_token } = req.body ?? {};
   if (!id_token) return res.status(400).json({ error: 'id_token required' });
@@ -34,6 +44,21 @@ router.post('/firebase', asyncHandler(async (req, res) => {
       metadata: { reason: 'firebase_verify_failed' },
     });
     return res.status(401).json({ error: 'invalid or expired token' });
+  }
+
+  // RESERVED SYSTEM IDENTITIES CAN NEVER BE SIGNED INTO.
+  //
+  // The Voiid Moderator account (077) is a real `users` row so that its posts travel the
+  // ordinary authorization and rendering paths. That makes its phone number a credential:
+  // the upsert below would otherwise resurrect it and hand back a 30-day token for an
+  // account that can post to every official community.
+  //
+  // +99 is unassigned by the ITU, so no OTP can reach it and Firebase should never mint a
+  // token for one — this refuses it anyway rather than depending on that. Checked BEFORE
+  // the upsert, because the upsert is what would create the session.
+  if (RESERVED_PHONE_NUMBERS.has(phone_number)) {
+    console.warn('[auth] refused sign-in for a reserved system identity');
+    return res.status(403).json({ error: 'forbidden' });
   }
 
   // Upsert OUR user record (identity is ours, on Supabase Postgres).

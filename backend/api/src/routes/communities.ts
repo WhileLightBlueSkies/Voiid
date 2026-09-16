@@ -1873,6 +1873,10 @@ function postShape(r: any) {
     author_name: r.author_name ?? null,
     author_username: r.author_username ?? null,
     author_photo_url: r.author_photo_url ?? null,
+    // ALWAYS present, never conditional — see the note above about Swift's Codable throwing
+    // on an absent key. `=== true` rather than a passthrough so a missing column reads as
+    // false: a badge that appears because of a null is worse than one that never appears.
+    author_is_official: r.author_is_official === true,
     body: r.body,
     media_url: r.media_url ?? null,
     like_count: r.like_count ?? 0,
@@ -1914,13 +1918,20 @@ router.get(
       `select p.id, p.author_id, p.body, p.media_url, p.like_count, p.comment_count,
               p.created_at, p.edited_at,
               u.full_name as author_name, u.username as author_username,
-              u.photo_url as author_photo_url,
+              u.photo_url as author_photo_url, u.is_official as author_is_official,
               (l.user_id is not null) as liked_by_me
          from community_posts p
          ${AUTHOR_JOIN}
          left join community_post_likes l on l.post_id = p.id and l.user_id = $2
         where p.community_id = $1
           and p.removed_at is null
+          -- A SCHEDULED POST IS INVISIBLE UNTIL IT IS DUE, to everyone including its own
+          -- author. Filtering on the clock rather than flipping a published flag means
+          -- there is no second write that can fail and strand a post half-published: the
+          -- post becomes visible because time passed, which cannot error.
+          -- NULL is "publish immediately" — every post written before 077 and every post
+          -- the apps write today — so no backfill is needed.
+          and (p.scheduled_at is null or p.scheduled_at <= now())
           ${cursor ? 'and p.created_at < $4::timestamptz' : ''}
         order by p.created_at desc
         limit $3`,

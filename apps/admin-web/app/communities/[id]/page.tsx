@@ -13,6 +13,7 @@ import { Button } from '../../../components/ui/button';
 import { AreaChart, MultiLineChart } from '../../../components/Chart';
 import { Users2, MessageSquare, ShieldAlert, UserPlus } from 'lucide-react';
 import OfficialControls from './OfficialControls';
+import ModeratorPanel from './ModeratorPanel';
 import FinancePanel from './FinancePanel';
 import PaymentsDemo from './PaymentsDemo';
 
@@ -275,6 +276,9 @@ function Body({ me }: { me: Me }) {
 
           {me.role === 'admin' && <><PaymentsDemo /><FinancePanel id={id} /></>}
           {d.community.official_key && me.role === 'admin' && <OfficialControls id={id} community={d.community} members={d.members} reload={async () => { await load(); await loadPosts(); }} />}
+          {/* Same gate as OfficialControls: the backend restricts these routes to the three
+              official_key communities anyway, so the UI simply does not offer them elsewhere. */}
+          {d.community.official_key && me.role === 'admin' && <ModeratorPanel id={id} members={d.members} reload={async () => { await load(); await loadPosts(); }} />}
           <Card className="mb-5">
             <div className="border-b border-border px-4 py-3">
               <h2 className="text-sm font-semibold">Paid capabilities</h2>

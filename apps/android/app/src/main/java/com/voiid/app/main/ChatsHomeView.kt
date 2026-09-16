@@ -19,7 +19,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -85,6 +87,9 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.material.icons.filled.PushPin
+import com.voiid.app.ui.components.VoiidMenuItem
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
@@ -285,6 +290,9 @@ fun ChatsHomeView(
                     onOpen = { haptics.tap(); onOpenConversation(it) },
                     onCall = { callTarget = it },
                     onDelete = { deleteTarget = it },
+                    onPin = { chat.setPinned(it.id, it.pinnedAt == null) },
+                    onStar = { chat.setStarred(it.id, !it.isStarred) },
+                    onReorder = { chat.setSortOrder(it) },
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
                 else ->
@@ -580,12 +588,18 @@ fun ChatsHomeView(
 
 private enum class DropZone { CALL, DELETE }
 
+/** How long a stationary press takes to open the grid's dropdown. Matches iOS. */
+private const val HOLD_SECONDS = 3f
+
 @Composable
 private fun DraggableChatGrid(
     items: SnapshotStateList<VConversation>,
     onOpen: (VConversation) -> Unit,
     onCall: (VConversation) -> Unit,
     onDelete: (VConversation) -> Unit,
+    onPin: (VConversation) -> Unit = {},
+    onStar: (VConversation) -> Unit = {},
+    onReorder: (List<String>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val haptics = LocalVoiidHaptics.current
@@ -599,9 +613,50 @@ private fun DraggableChatGrid(
     var dragTranslation by remember { mutableStateOf(Offset.Zero) }
     var hoverZone by remember { mutableStateOf<DropZone?>(null) }
     var armedId by remember { mutableStateOf<String?>(null) }
+    // A stationary press in progress, and how far through it is (0..1). At 1 the dropdown
+    // opens. Distinct from a drag: a press that MOVES becomes a drag, one that stays put
+    // becomes the menu. Mirrors iOS.
+    var holdingId by remember { mutableStateOf<String?>(null) }
+    var holdProgress by remember { mutableStateOf(0f) }
+    // The tile whose dropdown is open.
+    var menuItem by remember { mutableStateOf<VConversation?>(null) }
+    // Where the two zone circles actually are, measured from the rendered view. Hit-testing
+    // against these rather than against an edge STRIP is what makes "drop on the icon" mean
+    // what it says — the old `p.x < gutterPx` fired anywhere down the whole margin.
+    val zoneCenters = remember { mutableStateMapOf<DropZone, Offset>() }
 
     val gutterPx = with(density) { 70.dp.toPx() }
-    val reorderPx = with(density) { 60.dp.toPx() }
+    // 34dp, not 60. On a three-column grid 60 is true almost everywhere, so tiles reshuffled
+    // continuously as the finger crossed the board. 34 is roughly the inner third of a tile:
+    // you have to be ON a neighbour to displace it. Mirrors iOS.
+    val reorderPx = with(density) { 34.dp.toPx() }
+    // How close to a zone CIRCLE counts as dropping on it.
+    val zoneHitPx = with(density) { 52.dp.toPx() }
+    // How far the finger may stray before the press stops counting as stationary.
+    val holdSlopPx = with(density) { 12.dp.toPx() }
+
+    // THE HOLD CLOCK. Runs only while a finger is down and stationary, and is cancelled by
+    // the drag above the moment it moves. At full duration the dropdown opens and the tile
+    // is released, so the card is not left scaled up behind an open menu.
+    LaunchedEffect(holdingId) {
+        val id = holdingId ?: return@LaunchedEffect
+        val started = System.currentTimeMillis()
+        while (holdingId == id) {
+            val elapsed = (System.currentTimeMillis() - started) / 1000f
+            holdProgress = (elapsed / HOLD_SECONDS).coerceAtMost(1f)
+            if (elapsed >= HOLD_SECONDS) {
+                haptics.success()
+                menuItem = items.firstOrNull { it.id == id }
+                holdingId = null
+                holdProgress = 0f
+                dragItem = null
+                dragTranslation = Offset.Zero
+                armedId = null
+                break
+            }
+            kotlinx.coroutines.delay(33)
+        }
+    }
     val cardPx = with(density) { 96.dp.toPx() }
 
     Box(
@@ -612,8 +667,39 @@ private fun DraggableChatGrid(
             }
             // Container-level long-press drag: independent of item composables, so live reorder
             // never cancels the gesture (mirrors iOS DraggableChatGrid pick-up + drag).
+            // TOUCH-DOWN, which detectDragGestures below never reports: onDragStart only
+            // fires once Compose has RECOGNISED a drag, i.e. after the finger has already
+            // moved. A press that stays perfectly still therefore never reached it, the
+            // three-second clock never started, and the dropdown could not open at all.
+            //
+            // awaitFirstDown sees the touch itself, so the clock starts the instant a finger
+            // lands. The drag below cancels it on real movement; releasing cancels it too.
             .pointerInput(items.size) {
-                detectDragGesturesAfterLongPress(
+                awaitPointerEventScope {
+                    while (true) {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val picked = centers.entries.minByOrNull {
+                            hypot((it.value.x - down.position.x).toDouble(),
+                                  (it.value.y - down.position.y).toDouble())
+                        }?.key?.let { id -> items.firstOrNull { it.id == id } }
+                        if (picked != null) {
+                            holdingId = picked.id
+                            holdProgress = 0f
+                        }
+                        // Wait for the finger to leave, then stop counting.
+                        do {
+                            val event = awaitPointerEvent()
+                        } while (event.changes.any { it.pressed })
+                        holdingId = null
+                        holdProgress = 0f
+                    }
+                }
+            }
+            .pointerInput(items.size) {
+                // IMMEDIATE, not detectDragGesturesAfterLongPress. iOS picks a tile up as
+                // soon as the finger moves; requiring a long press first made the same grid
+                // feel sluggish on Android for no reason the user can see.
+                detectDragGestures(
                     onDragStart = { offset ->
                         val picked = centers.entries.minByOrNull {
                             hypot((it.value.x - offset.x).toDouble(), (it.value.y - offset.y).toDouble())
@@ -628,17 +714,38 @@ private fun DraggableChatGrid(
                     },
                     onDrag = { change, amount ->
                         change.consume()
-                        val conv = dragItem ?: return@detectDragGesturesAfterLongPress
+                        val conv = dragItem ?: return@detectDragGestures
                         dragTranslation += amount
+                        // Moved too far to be a hold: this is a drag.
+                        if (hypot(dragTranslation.x.toDouble(), dragTranslation.y.toDouble()) > holdSlopPx) {
+                            holdingId = null
+                            holdProgress = 0f
+                        }
                         val p = dragStart + dragTranslation
-                        hoverZone = when {
-                            p.x < gutterPx -> DropZone.CALL
-                            p.x > containerWidthPx - gutterPx -> DropZone.DELETE
-                            else -> null
+                        // DROP ON THE ICON, not merely on that side of the screen. The old
+                        // test was the entire left/right strip top to bottom, so a tile
+                        // dragged anywhere near a margin called or deleted whether or not
+                        // the icon was near the finger.
+                        val zone = zoneCenters.entries.firstOrNull {
+                            hypot((it.value.x - p.x).toDouble(), (it.value.y - p.y).toDouble()) < zoneHitPx
+                        }?.key
+                        if (zone != hoverZone) {
+                            hoverZone = zone
+                            if (zone != null) haptics.tap()   // the edge announces itself
                         }
                         if (hoverZone == null) {
+                            // A tile only swaps with its OWN KIND — pinned with pinned,
+                            // unpinned with unpinned. Move a pinned chat and it rearranges
+                            // among the other pins; move an unpinned one past a pin and the
+                            // pin stays put, because a neighbour's drag is not permission to
+                            // move it. Crossing the boundary is refused because the query
+                            // sorts pinned above unpinned, so the tile would spring back on
+                            // the next read.
+                            val draggedIsPinned = conv.pinnedAt != null
+                            val sameBlock = items.filter { (it.pinnedAt != null) == draggedIsPinned }
+                                .map { it.id }.toSet()
                             val target = centers.entries
-                                .filter { it.key != conv.id }
+                                .filter { it.key != conv.id && sameBlock.contains(it.key) }
                                 .minByOrNull { hypot((it.value.x - p.x).toDouble(), (it.value.y - p.y).toDouble()) }
                             if (target != null &&
                                 hypot((target.value.x - p.x).toDouble(), (target.value.y - p.y).toDouble()) < reorderPx
@@ -657,15 +764,19 @@ private fun DraggableChatGrid(
                     onDragEnd = {
                         val d = dragItem
                         val zone = hoverZone
-                        dragItem = null; dragTranslation = Offset.Zero; hoverZone = null; armedId = null
+                        dragItem = null; dragTranslation = Offset.Zero; hoverZone = null; armedId = null; holdingId = null; holdProgress = 0f
                         if (d != null) when (zone) {
                             DropZone.CALL -> { haptics.success(); onCall(d) }
                             DropZone.DELETE -> { haptics.rigid(); onDelete(d) }
-                            null -> {}
+                            // PERSIST ON DROP. This branch used to be empty, so an
+                            // arrangement lived only in the in-memory list and was discarded
+                            // the moment anything refreshed — the same bug iOS had before
+                            // sort_index existed. One write per arrangement, not per swap.
+                            null -> onReorder(items.map { it.id })
                         }
                     },
                     onDragCancel = {
-                        dragItem = null; dragTranslation = Offset.Zero; hoverZone = null; armedId = null
+                        dragItem = null; dragTranslation = Offset.Zero; hoverZone = null; armedId = null; holdingId = null; holdProgress = 0f
                     },
                 )
             },
@@ -677,10 +788,10 @@ private fun DraggableChatGrid(
                 .fillMaxSize()
                 .then(if (dragItem == null) Modifier.verticalScroll(scroll) else Modifier)
                 .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             items.chunked(3).forEach { row ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                     row.forEach { conv ->
                         Box(
                             Modifier
@@ -699,7 +810,32 @@ private fun DraggableChatGrid(
                                     indication = null,
                                 ) { if (dragItem == null) onOpen(conv) },
                         ) {
-                            GridCard(conv, Modifier.fillMaxWidth())
+                            GridCard(conv, Modifier.fillMaxWidth(),
+                                holdProgress = if (holdingId == conv.id) holdProgress else 0f)
+                            // VoiidMenu, the app's own dropdown — same surface, elevation,
+                            // corner and row metrics as the toolbar overflow and the
+                            // composer's attach menu, so this matches by construction
+                            // instead of by my approximation of it.
+                            com.voiid.app.ui.components.VoiidMenu(
+                                expanded = menuItem?.id == conv.id,
+                                onDismissRequest = { menuItem = null },
+                                alignEnd = false,
+                            ) {
+                                VoiidMenuItem(
+                                    if (conv.pinnedAt == null) "Pin" else "Unpin",
+                                    Icons.Default.PushPin,
+                                ) { menuItem = null; onPin(conv) }
+                                VoiidMenuItem(
+                                    if (conv.isStarred) "Remove Star" else "Star",
+                                    Icons.Default.Star,
+                                ) { menuItem = null; onStar(conv) }
+                                VoiidMenuItem(
+                                    "Call", Icons.Default.Call,
+                                ) { menuItem = null; onCall(conv) }
+                                VoiidMenuItem(
+                                    "Delete Chat", Icons.Default.Delete, destructive = true,
+                                ) { menuItem = null; onDelete(conv) }
+                            }
                         }
                     }
                     // pad incomplete rows so cards keep their column width
@@ -720,9 +856,11 @@ private fun DraggableChatGrid(
                 Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                DropZoneView(DropZone.CALL, Icons.Default.Call, "Call", VoiidColor.primary, hoverZone == DropZone.CALL)
+                DropZoneView(DropZone.CALL, Icons.Default.Call, "Call", VoiidColor.primary,
+                    hoverZone == DropZone.CALL, rootOrigin) { z, c -> zoneCenters[z] = c }
                 Spacer(Modifier.weight(1f))
-                DropZoneView(DropZone.DELETE, Icons.Default.Delete, "Delete", VoiidColor.error, hoverZone == DropZone.DELETE)
+                DropZoneView(DropZone.DELETE, Icons.Default.Delete, "Delete", VoiidColor.error,
+                    hoverZone == DropZone.DELETE, rootOrigin) { z, c -> zoneCenters[z] = c }
             }
         }
 
@@ -751,7 +889,15 @@ private fun DraggableChatGrid(
 private fun mutableStateMapOfCenters() = androidx.compose.runtime.mutableStateMapOf<String, Offset>()
 
 @Composable
-private fun DropZoneView(zone: DropZone, icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, color: Color, active: Boolean) {
+private fun DropZoneView(
+    zone: DropZone,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    color: Color,
+    active: Boolean,
+    rootOrigin: Offset = Offset.Zero,
+    onCentre: (DropZone, Offset) -> Unit = { _, _ -> },
+) {
     val scale by animateFloatAsState(if (active) 1.2f else 1f, label = "zoneScale")
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -759,10 +905,22 @@ private fun DropZoneView(zone: DropZone, icon: androidx.compose.ui.graphics.vect
         modifier = Modifier.scale(scale).alpha(if (active) 1f else 0.85f),
     ) {
         Box(
-            Modifier.size(60.dp).shadow(if (active) 14.dp else 8.dp, CircleShape).clip(CircleShape).background(color),
+            Modifier
+                .size(60.dp)
+                .onGloballyPositioned {
+                    // positionInRoot + half the size, matching how the tiles are measured
+                    // a few hundred lines up — one convention, so the drag point and the
+                    // circles are directly comparable.
+                    val p = it.positionInRoot()
+                    onCentre(zone, Offset(p.x + it.size.width / 2f, p.y + it.size.height / 2f) - rootOrigin)
+                }
+                .shadow(if (active) 14.dp else 8.dp, CircleShape).clip(CircleShape).background(color),
             contentAlignment = Alignment.Center,
         ) { Icon(icon, label, tint = VoiidColor.textOnPrimary, modifier = Modifier.size(24.dp)) }
-        Text(label, style = VoiidFont.rounded(12, FontWeight.SemiBold), color = color)
+        // White, like the glyph above it, rather than the zone's own colour. The circle
+        // already carries the colour; repeating it in the label made the word compete with
+        // the target instead of naming it. Mirrors iOS.
+        Text(label, style = VoiidFont.rounded(12, FontWeight.SemiBold), color = Color.White)
     }
 }
 
@@ -1000,7 +1158,7 @@ private fun Tabs(selected: ChatTab, onSelect: (ChatTab) -> Unit) {
 }
 
 @Composable
-private fun GridCard(conv: VConversation, modifier: Modifier) {
+private fun GridCard(conv: VConversation, modifier: Modifier, holdProgress: Float = 0f) {
     val context = LocalContext.current
     // The peer's real face. Directory first (authoritative + recomposes on a contacts sync),
     // then the members payload carried on the conversation. Groups have no peer, so they keep
@@ -1048,6 +1206,52 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                 } else {
                     // iOS renders the wordmark image at width 56pt (~52% of card), very faint.
                     VoiidWordmark(fontSize = 23, alpha = 0.15f)
+                }
+            }
+            // THE COUNTDOWN RING, inside the SQUARE photo box.
+            //
+            // It used to be a sibling of this whole card, where matchParentSize() spanned the
+            // cell rather than the artwork — so the ring was drawn over a taller box than the
+            // tile and its bottom edge fell outside the visible square. Drawing it here makes
+            // "match the parent" mean the photo, which is what it is tracing.
+            if (holdProgress > 0f) {
+                val ringColor = VoiidColor.primary
+                androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+                    val r = VoiidRadius.lg.toPx()
+                    val stroke = 3.dp.toPx()
+                    val inset = stroke / 2f
+                    val w = size.width - stroke
+                    val h = size.height - stroke
+                    // A dim wash so the fill reads against a bright photo.
+                    drawRoundRect(
+                        color = Color.Black.copy(alpha = 0.28f * holdProgress),
+                        topLeft = Offset(inset, inset),
+                        size = androidx.compose.ui.geometry.Size(w, h),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r),
+                    )
+                    // The track, so the ring reads as FILLING rather than as a line that
+                    // simply appeared.
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = 0.25f),
+                        topLeft = Offset(inset, inset),
+                        size = androidx.compose.ui.geometry.Size(w, h),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(stroke),
+                    )
+                    // The progress arc. Compose has no "trim a rounded rect" primitive, so
+                    // the ring is approximated with a sweep — the same information, and at
+                    // 3dp the difference is not visible on a 96dp tile.
+                    drawArc(
+                        color = ringColor,
+                        startAngle = -90f,
+                        sweepAngle = 360f * holdProgress,
+                        useCenter = false,
+                        topLeft = Offset(inset, inset),
+                        size = androidx.compose.ui.geometry.Size(w, h),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round
+                        ),
+                    )
                 }
             }
             // Badges sit INSIDE the tile. They used to be pushed OUT past its edge (offset
@@ -1112,9 +1316,79 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                     }
                 }
             }
+
+            // ── THE LABEL LIVES ON THE PHOTO ────────────────────────────────────
+            //
+            // Android drew the name BELOW the tile in textPrimary at 13sp regular, one
+            // line, and showed no time at all. iOS renders it over the artwork in white
+            // semibold across up to two lines with the timestamp top-right, so the same
+            // conversation read as two different designs depending on the phone.
+            //
+            // The gradient is what makes white legible: without it the name sits on
+            // whatever the photo happens to be and disappears on a light frame. Bottom
+            // weighted so it darkens the label area without dimming the face above it.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.55f to Color.Black.copy(alpha = 0.15f),
+                            1f to Color.Black.copy(alpha = 0.82f),
+                        )
+                    )
+            )
+            Row(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(horizontal = 9.dp, vertical = 9.dp)
+                    // Clears the unread badge in the opposite corner.
+                    .padding(end = if (conv.unreadCount > 0) 26.dp else 0.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    conv.title,
+                    style = VoiidFont.rounded(13.5f, FontWeight.SemiBold),
+                    color = Color.White,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+            // The SAME formatter the list row uses, so one conversation reads identically
+            // in either layout.
+            conv.lastMessageAt?.let { at ->
+                Text(
+                    VoiidDate.listPreview(at),
+                    style = VoiidFont.rounded(11, FontWeight.Medium),
+                    color = Color.White.copy(alpha = 0.9f),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(9.dp),
+                )
+            }
+            // Pin and star share the one free corner — the time owns top-end and the unread
+            // badge owns bottom-end. Small on purpose: states you set deliberately and then
+            // recognise at a glance, not signals competing with unread for attention.
+            if (conv.pinnedAt != null || conv.isStarred) {
+                Row(
+                    Modifier.align(Alignment.TopStart).padding(9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (conv.pinnedAt != null) {
+                        Icon(
+                            Icons.Default.PushPin, null,
+                            tint = Color.White.copy(alpha = 0.95f),
+                            modifier = Modifier.size(11.dp),
+                        )
+                    }
+                    if (conv.isStarred) {
+                        Icon(
+                            Icons.Default.Star, null,
+                            tint = Color.White.copy(alpha = 0.95f),
+                            modifier = Modifier.size(11.dp),
+                        )
+                    }
+                }
+            }
         }
-        Spacer(Modifier.height(8.dp))
-        Text(conv.title, style = VoiidFont.rounded(13), color = VoiidColor.textPrimary, maxLines = 1)
     }
 }
 

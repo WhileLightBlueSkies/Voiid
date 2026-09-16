@@ -278,6 +278,16 @@ final class VoiidDatabase {
             try db.execute(sql: "ALTER TABLE conversations ADD COLUMN pinned_at INTEGER")
             try db.execute(sql: "ALTER TABLE conversations ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
         }
+
+        // A manual arrangement from the grid's reorder mode.
+        //
+        // NULL means "no opinion, use recency", which is every existing row — so the grid
+        // behaves exactly as before until someone actually drags something. Once any tile
+        // is placed, the whole visible set is written at once, so the arrangement is total
+        // rather than a sparse set of preferences that recency has to interleave with.
+        m.registerMigration("v7_conversation_sort_index") { db in
+            try db.execute(sql: "ALTER TABLE conversations ADD COLUMN sort_index INTEGER")
+        }
         return m
     }
 

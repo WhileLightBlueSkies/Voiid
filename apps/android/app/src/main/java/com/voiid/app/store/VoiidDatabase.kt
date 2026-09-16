@@ -41,7 +41,7 @@ import androidx.room.Transaction
         // AFTER location so two concurrent table-adding features don't both own "1 -> 2".
         StoryRow::class, StoryAudienceRow::class, StoryViewRow::class,
     ],
-    version = 5,
+    version = 6,
     // EXPORTED (A04). Room writes schemas/<db>/<version>.json at build time, and it is the only
     // record of what actually shipped. Without it a migration can only be checked against the
     // current code's idea of the old schema — which is the one thing guaranteed to agree with
@@ -87,7 +87,8 @@ abstract class VoiidDatabase : RoomDatabase() {
                     // every version bump from here on MUST ship an explicit additive Migration
                     // (see MIGRATION_1_2). The fallback stays only as the last-resort guard for
                     // a genuinely corrupt file.
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                        MIGRATION_5_6)
                     // NO DESTRUCTIVE FALLBACK (A04).
                     //
                     // It used to be here, next to a comment that already described exactly why
@@ -157,6 +158,12 @@ data class ConversationRow(
     // without loading/decoding the message store on the launch path. Kept fresh at write
     // time (ChatStore.bumpPreview -> LocalStore.updatePreview).
     @ColumnInfo(name = "last_message_preview") val lastMessagePreview: String? = null,
+    /** When this chat was pinned to the top of the grid, or null. Local-only; see MIGRATION_5_6. */
+    @ColumnInfo(name = "pinned_at") val pinnedAt: Long? = null,
+    /** Marked important by this user. Local-only. */
+    @ColumnInfo(name = "starred") val starred: Int = 0,
+    /** Position in a manual arrangement, or null when this chat has never been dragged. */
+    @ColumnInfo(name = "sort_index") val sortIndex: Int? = null,
 )
 
 /**
@@ -298,8 +305,26 @@ abstract class UserDao {
 @Dao
 abstract class ConversationDao {
 
-    @Query("SELECT * FROM conversations ORDER BY COALESCE(last_message_at, 0) DESC")
+    @Query("""
+        SELECT * FROM conversations
+         ORDER BY CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END,
+                  pinned_at DESC,
+                  CASE WHEN sort_index IS NULL THEN 1 ELSE 0 END,
+                  sort_index ASC,
+                  COALESCE(last_message_at, 0) DESC
+    """)
     abstract fun recent(): List<ConversationRow>
+
+    // The chat grid's own state. `abstract` because this DAO is an abstract CLASS, not an
+    // interface — Room generates the bodies either way, but Kotlin requires the keyword.
+    @Query("UPDATE conversations SET pinned_at = :pinnedAt WHERE id = :id")
+    abstract suspend fun setPinned(id: String, pinnedAt: Long?)
+
+    @Query("UPDATE conversations SET starred = :starred WHERE id = :id")
+    abstract suspend fun setStarred(id: String, starred: Int)
+
+    @Query("UPDATE conversations SET sort_index = :index WHERE id = :id")
+    abstract suspend fun setSortIndex(id: String, index: Int?)
 
     /** Settings -> Storage "Conversations" count — see [com.voiid.app.net.StorageProbe]. */
     @Query("SELECT COUNT(*) FROM conversations")

@@ -1203,11 +1203,29 @@ final class ChatStore: ObservableObject {
     /// the moment anything refreshes — which is precisely the bug that made dragging a
     /// tile look like it worked and then silently snap back.
     func setPinned(_ convId: String, _ pinned: Bool) {
+        // CLEAR THE MANUAL INDEX. A dragged arrangement writes a sort_index for every tile,
+        // and that index is compared only among chats that share a pin state — so a chat
+        // pinned afterwards kept the slot its old index described and appeared not to move.
+        // Pinning is a statement about position, so it discards the position it replaces.
+        LocalStore.setSortIndex(convId, nil)
         LocalStore.setPinned(convId, pinned)
         Haptics.tap()
         withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
             applyLocalConversations()
         }
+    }
+
+    /// Persist a manual arrangement from the grid's reorder mode.
+    ///
+    /// Deliberately does NOT re-publish afterwards. The grid has already animated the tiles
+    /// into place, and rebuilding the list underneath a user who is still dragging would
+    /// fight their own gesture. The next natural refresh reads the same order back.
+    func setSortOrder(_ orderedIds: [String]) {
+        // Every visible chat carries an index, pinned ones included — a pinned chat can be
+        // rearranged among the other pins, so its position has to be storable too. The two
+        // blocks never interleave because the query sorts pinned above unpinned first and
+        // only then by this index, so one sequence describes both orders without ambiguity.
+        LocalStore.setSortOrder(orderedIds)
     }
 
     /// Star or unstar a chat. Does not reorder — see LocalStore.setStarred.
@@ -1331,4 +1349,24 @@ final class ChatStore: ObservableObject {
 /// bannering over a message the user is reading.
 enum ChatPresence {
     nonisolated(unsafe) static var openConversationId: String?
+
+    /// The chat grid's tile rectangles, in WINDOW coordinates, or empty when no grid is on
+    /// screen.
+    ///
+    /// WHY A GEOMETRY TEST AND NOT ONLY A FLAG. `isReorderingGrid` is set when SwiftUI
+    /// delivers the drag's first `onChanged`, and on a FAST flick UIKit has already asked
+    /// its pan recogniser to begin before that arrives — so the flag was correct and still
+    /// too late, and a quick sideways flick turned the page. Where a touch STARTED is known
+    /// at the moment the question is asked, so it cannot lose that race.
+    nonisolated(unsafe) static var gridTileFrames: [CGRect] = []
+
+    /// True while the chat grid is in reorder mode.
+    ///
+    /// Read by TabSwipeNavigation's UIKit pan recogniser, which is why it lives here as a
+    /// plain global rather than as view state: that recogniser is installed on the hosting
+    /// controller and cannot see SwiftUI gestures at all. Without this the pager treats a
+    /// sideways drag of a TILE as a sideways drag of the PAGE, so rearranging a chat into
+    /// the next column changes tab instead — and the drag-to-Call and drag-to-Delete zones,
+    /// which live at the left and right edges, are unreachable by construction.
+    nonisolated(unsafe) static var isReorderingGrid = false
 }

@@ -277,6 +277,25 @@ private struct PanCatcher: UIViewRepresentable {
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
             guard let pan = g as? UIPanGestureRecognizer, let view = pan.view else { return false }
 
+            // Never while the chat grid is being rearranged. A tile dragged sideways — into
+            // the next column, or out to the Call/Delete zones at the edges — is a drag of
+            // the TILE, not of the page. This recogniser cannot see the SwiftUI gesture
+            // doing that work, so the grid announces the mode instead (ChatPresence), and
+            // the pager stands down for as long as it lasts.
+            if ChatPresence.isReorderingGrid { return false }
+
+            // A touch that STARTS on a chat tile belongs to that tile, full stop.
+            //
+            // The flag above is set when SwiftUI delivers the drag's first onChanged, and a
+            // fast flick beats it: UIKit asks this question before that callback arrives,
+            // so the page had already begun sliding. Where the touch began is known right
+            // now, so it cannot be late — this is the same reasoning as the horizontal-rail
+            // check further down, applied to a grid that moves its own cells.
+            let start = pan.location(in: nil)
+            if ChatPresence.gridTileFrames.contains(where: { $0.contains(start) }) {
+                return false
+            }
+
             // Never while a detail screen is pushed. Each tab hosts a NavigationStack and a
             // push reuses the same hosting controller, so without this a horizontal drag on
             // a pushed screen would swap the tab BEHIND it — and it would also fight the

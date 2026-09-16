@@ -325,6 +325,12 @@ class CommunityService(context: Context) {
         val author_name: String? = null,
         val author_username: String? = null,
         val author_photo_url: String? = null,
+        /**
+         * Server-assigned. True only for Voiid-operated accounts (077), so the badge is
+         * something the server vouches for rather than a display name anyone can copy.
+         * Defaulted because older builds of the API did not send it.
+         */
+        val author_is_official: Boolean? = null,
         val body: String? = null,
         val media_url: String? = null,
         val like_count: Int? = null,

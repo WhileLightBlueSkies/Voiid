@@ -36,10 +36,12 @@ enum LocalStore {
             try Row.fetchAll(database, sql: """
                 SELECT id, kind, title, peer_user_id, photo_url,
                        last_message_at, unread_count, last_message_preview,
-                       pinned_at, starred
+                       pinned_at, starred, sort_index
                   FROM conversations
                  ORDER BY CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END,
                           pinned_at DESC,
+                          CASE WHEN sort_index IS NULL THEN 1 ELSE 0 END,
+                          sort_index ASC,
                           COALESCE(last_message_at, 0) DESC
                 """)
         } ?? []
@@ -89,7 +91,8 @@ enum LocalStore {
                 pinnedAt: (row["pinned_at"] as Int64?).flatMap {
                     $0 > 0 ? Date(timeIntervalSince1970: TimeInterval($0)) : nil
                 },
-                isStarred: (row["starred"] as Int64?) == 1
+                isStarred: (row["starred"] as Int64?) == 1,
+                sortIndex: row["sort_index"] as Int?
             )
         }
     }
@@ -123,6 +126,32 @@ enum LocalStore {
             try database.execute(
                 sql: "UPDATE conversations SET pinned_at = ? WHERE id = ?",
                 arguments: [pinned ? Int64(Date().timeIntervalSince1970) : nil, id])
+        }
+    }
+
+    /// Persist a manual arrangement from the grid's reorder mode.
+    ///
+    /// Writes the WHOLE visible order in one transaction rather than the moved tile alone.
+    /// A single tile's index only means something relative to its neighbours, so a partial
+    /// write would leave the rest still ordered by recency and the arrangement would come
+    /// apart on the next message.
+    static func setSortOrder(_ orderedIds: [String]) {
+        guard !orderedIds.isEmpty else { return }
+        db.write { database in
+            for (index, id) in orderedIds.enumerated() {
+                try database.execute(
+                    sql: "UPDATE conversations SET sort_index = ? WHERE id = ?",
+                    arguments: [index, id])
+            }
+        }
+    }
+
+    /// Set or clear one chat's manual position. Nil returns it to recency ordering.
+    static func setSortIndex(_ id: String, _ index: Int?) {
+        db.write { database in
+            try database.execute(
+                sql: "UPDATE conversations SET sort_index = ? WHERE id = ?",
+                arguments: [index, id])
         }
     }
 
