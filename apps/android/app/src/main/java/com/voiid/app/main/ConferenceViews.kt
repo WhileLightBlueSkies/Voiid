@@ -88,7 +88,12 @@ fun ConferenceInviteSheet(
     var invitable by remember { mutableStateOf<Set<String>>(emptySet()) }
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf(false) }
-    val callId = com.voiid.app.net.CallManager.state.value?.callId
+    // collectAsState, not `.value`: reading the value directly does not SUBSCRIBE, so this
+    // composable would never recompose when the call state changed and the LaunchedEffect
+    // key below would go stale — the invitable list would keep describing a call that had
+    // already moved on. Same pattern as ChatDetailView and RootTabView.
+    val callState by com.voiid.app.net.CallManager.state.collectAsState()
+    val callId = callState?.callId
     LaunchedEffect(callId) {
         try {
             if (callId != null) {
