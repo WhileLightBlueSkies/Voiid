@@ -7,6 +7,11 @@ enum TourDestination: String, CaseIterable, Codable {
     case games
 }
 
+enum WalkthroughPresentationMode {
+    case firstIncompleteVersion
+    case everyAppLaunch
+}
+
 struct AppWalkthroughStep: Identifiable, Equatable {
     let id: String
     let eyebrow: String
@@ -18,6 +23,12 @@ struct AppWalkthroughStep: Identifiable, Equatable {
 
 enum AppWalkthroughPlan {
     static let version = 1
+    /// Preview mode for 0.0.3. Change this back after the walkthrough is approved.
+    static let presentationMode: WalkthroughPresentationMode = .everyAppLaunch
+
+    static func shouldPresent(completedVersion: Int) -> Bool {
+        presentationMode == .everyAppLaunch || completedVersion < version
+    }
 
     /// The destination list is deliberately explicit. AI, Map and Clips exist in source but
     /// are not present in both platforms' shipped tab sets, so they do not belong here.

@@ -60,11 +60,12 @@ class AppWalkthroughUiState internal constructor(
     private val progressKey = "$prefix.step"
 
     var currentIndex by mutableIntStateOf(
-        preferences.getInt(progressKey, 0).coerceIn(0, AppWalkthroughPlan.steps.lastIndex),
+        if (AppWalkthroughPlan.presentationMode == WalkthroughPresentationMode.EVERY_APP_LAUNCH) 0
+        else preferences.getInt(progressKey, 0).coerceIn(0, AppWalkthroughPlan.steps.lastIndex),
     )
         private set
     var presented by mutableStateOf(
-        preferences.getInt(completionKey, 0) < AppWalkthroughPlan.VERSION,
+        AppWalkthroughPlan.shouldPresent(preferences.getInt(completionKey, 0)),
     )
         private set
 

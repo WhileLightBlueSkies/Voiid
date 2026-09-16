@@ -11,6 +11,7 @@ final class AppWalkthroughController: ObservableObject {
 
     private let defaults: UserDefaults
     private var accountID = "local"
+    private var evaluatedInitialPresentation = false
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -23,9 +24,15 @@ final class AppWalkthroughController: ObservableObject {
     var isLastStep: Bool { currentIndex == stepCount - 1 }
 
     func presentIfNeeded(accountID: String?) {
+        guard !evaluatedInitialPresentation else { return }
+        evaluatedInitialPresentation = true
         self.accountID = accountID?.isEmpty == false ? accountID! : "local"
-        guard defaults.integer(forKey: completionKey) < AppWalkthroughPlan.version else { return }
-        currentIndex = min(max(defaults.integer(forKey: progressKey), 0), stepCount - 1)
+        guard AppWalkthroughPlan.shouldPresent(completedVersion: defaults.integer(forKey: completionKey)) else { return }
+        if AppWalkthroughPlan.presentationMode == .firstIncompleteVersion {
+            currentIndex = min(max(defaults.integer(forKey: progressKey), 0), stepCount - 1)
+        } else {
+            currentIndex = 0
+        }
         isPresented = true
     }
 

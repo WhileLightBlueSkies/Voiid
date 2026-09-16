@@ -1,6 +1,7 @@
 package com.voiid.app
 
 import com.voiid.app.main.walkthrough.AppWalkthroughPlan
+import com.voiid.app.main.walkthrough.WalkthroughPresentationMode
 import com.voiid.app.main.walkthrough.TourDestination
 import com.voiid.app.main.walkthrough.WalkthroughAdvance
 import com.voiid.app.main.walkthrough.WalkthroughProgress
@@ -17,6 +18,8 @@ class AppWalkthroughPlanTest {
         )
         assertEquals("welcome", AppWalkthroughPlan.steps.first().id)
         assertEquals("complete", AppWalkthroughPlan.steps.last().id)
+        assertEquals(WalkthroughPresentationMode.EVERY_APP_LAUNCH, AppWalkthroughPlan.presentationMode)
+        assertTrue(AppWalkthroughPlan.shouldPresent(AppWalkthroughPlan.VERSION))
     }
 
     @Test

@@ -2,6 +2,8 @@ package com.voiid.app.main.walkthrough
 
 enum class TourDestination { CHATS, MOMENTS, COMMUNITIES, GAMES }
 
+enum class WalkthroughPresentationMode { FIRST_INCOMPLETE_VERSION, EVERY_APP_LAUNCH }
+
 data class AppWalkthroughStep(
     val id: String,
     val eyebrow: String,
@@ -12,6 +14,11 @@ data class AppWalkthroughStep(
 
 object AppWalkthroughPlan {
     const val VERSION = 1
+    /** Preview mode for 0.0.3. Change this back after the walkthrough is approved. */
+    val presentationMode = WalkthroughPresentationMode.EVERY_APP_LAUNCH
+
+    fun shouldPresent(completedVersion: Int): Boolean =
+        presentationMode == WalkthroughPresentationMode.EVERY_APP_LAUNCH || completedVersion < VERSION
 
     /** AI, Map and Clips are intentionally absent until both clients ship them. */
     val steps = listOf(

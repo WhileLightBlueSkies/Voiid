@@ -15,6 +15,10 @@ struct AppWalkthroughCheck {
                "the tour must include only the four features shipped on both platforms")
         expect(steps.first?.id == "welcome", "welcome must be the first step")
         expect(steps.last?.id == "complete", "completion must be the final step")
+        expect(AppWalkthroughPlan.presentationMode == .everyAppLaunch,
+               "preview builds must present the tour to every signed-in user on each app launch")
+        expect(AppWalkthroughPlan.shouldPresent(completedVersion: AppWalkthroughPlan.version),
+               "a previously completed tour must still open in preview mode")
 
         var progress = AppWalkthroughProgress(stepCount: steps.count)
         expect(progress.currentIndex == 0, "new progress starts at the welcome step")
