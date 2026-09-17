@@ -70,6 +70,37 @@ jobs:
                fi
              done'
 
+      # PRINT LOCAL EDITS BEFORE DISCARDING THEM.
+      #
+      # `git reset --hard` two steps down was always going to destroy an edit made directly
+      # on the box, and a deploy that aborts on one — as 2026-09-17 did — leaves production
+      # running code that exists nowhere in git. Either way the change is lost; the only
+      # question is whether anyone ever sees it.
+      #
+      # So it is printed into the build log first. The log is retained, searchable and
+      # attached to the deploy that discarded it, which turns a silent loss into a record
+      # somebody can recover a hot-fix from.
+      - name: Record any changes made directly on the server
+        continue-on-error: true
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.VULTR_MAIN_USER }}@${{ secrets.VULTR_MAIN_HOST }}" \
+            'cd /opt/voiid
+             if ! git diff --quiet; then
+               echo "::warning::Files were edited directly on the server. The diff below is about to be discarded."
+               git --no-pager diff --stat
+               echo "----- full diff -----"
+               git --no-pager diff
+               echo "---------------------"
+             else
+               echo "No local modifications on the server."
+             fi
+             # Discard, so the checkout in the next step cannot abort. The reset is what the
+             # deploy script does anyway; doing it here means a blocked deploy becomes a
+             # recorded one rather than a failed one.
+             git checkout -- . 2>/dev/null || true'
+
       - name: Deploy over SSH
         run: |
           ssh -i ~/.ssh/id_ed25519 \
