@@ -187,28 +187,24 @@ fun CommunitySpacesTab(
             androidx.compose.material3.Surface(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
                     .voiidPullRefresh(feedPull, VoiidColor.primary)) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp)) {
-                        Text(channel.name ?: "Space", modifier = Modifier.weight(1f))
+                    // Title scrolls with the feed like a native large title, rather than
+                    // sitting in a separate bar with a hard edge underneath it.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Spacer(Modifier.weight(1f))
                         androidx.compose.material3.TextButton(onClick = { feed = null }) { Text("Done") }
                     }
-                    Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
-                        Text(channel.name ?: "Space", style = VoiidFont.rounded(24, FontWeight.Bold))
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+                        Text(channel.name ?: "Space", style = VoiidFont.rounded(28, FontWeight.Bold))
                         channel.purpose?.takeIf { it.isNotBlank() }?.let {
                             Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
                         }
-                        Text("Posts shared in this Space", style = VoiidFont.rounded(13, FontWeight.SemiBold),
-                            color = VoiidColor.textSecondary)
                         Spacer(Modifier.height(10.dp))
                         Text("Posts in this Space are visible to community members. They are not end-to-end encrypted.")
-                        androidx.compose.material3.TextButton(onClick = { scope.launch {
-                            val engine = com.voiid.app.net.GroupEngine.get(context)
-                            engine.syncGroupEvents()
-                            if (engine.hasGroup(channel.conversation_id)) { feed = null; onOpen(channel.conversation_id) }
-                            else error = "This chat is preparing encryption. Please try again shortly."
-                        } }) { Text("Open existing encrypted chat") }
                         error?.let { Text(it, color = VoiidColor.error) }
                         CommunityHomeTab(communityId, isAdmin, canPost = channel.can_post,
                             channelId = channel.conversation_id, refreshSignal = feedRefreshSignal)
+                        Spacer(Modifier.height(16.dp))
                     }
                 }
             }

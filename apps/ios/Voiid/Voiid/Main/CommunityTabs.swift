@@ -155,7 +155,6 @@ struct CommunitySpacesTab: View {
                     .contextMenu {
                         if isAdmin, let channel = channels.first(where: { $0.id == space.id }) {
                             Button("Space settings", systemImage: "gearshape") { settingsChannel = channel }
-                            Button("Open existing chat", systemImage: "bubble.left") { open(channel.id) }
                             Button("Rename", systemImage: "pencil") {
                                 renameText = channel.name ?? ""
                                 renaming = channel
@@ -177,24 +176,21 @@ struct CommunitySpacesTab: View {
             NavigationStack {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(channel.name ?? "Space")
-                                .font(VoiidFont.rounded(24, .bold))
-                            if let purpose = channel.purpose, !purpose.isEmpty {
-                                Text(purpose).font(VoiidFont.rounded(14))
-                                    .foregroundStyle(VoiidColor.textSecondary)
-                            }
-                            Text("Posts shared in this Space")
-                                .font(VoiidFont.rounded(13, .semibold))
+                        if let purpose = channel.purpose, !purpose.isEmpty {
+                            Text(purpose).font(VoiidFont.rounded(14))
                                 .foregroundStyle(VoiidColor.textSecondary)
                         }
                         Text("Posts in this Space are visible to community members. They are not end-to-end encrypted.")
                             .font(VoiidFont.rounded(13)).foregroundStyle(VoiidColor.textSecondary)
-                        Button("Open existing encrypted chat") { feedChannel = nil; open(channel.id) }
                         CommunityHomeTab(communityId: communityId, isAdmin: isAdmin, canPost: channel.can_post == true, channelId: channel.id)
-                    }.padding()
+                    }
+                    .padding()
                 }
+                // The system's own large title: it collapses into the compact bar as the feed
+                // scrolls and carries the standard translucent blur for free — no custom bar,
+                // no hard rectangle to draw or keep in sync with scroll offset.
                 .navigationTitle(channel.name ?? "Space")
+                .navigationBarTitleDisplayMode(.large)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { feedChannel = nil } } }
             }
         }
@@ -243,27 +239,6 @@ struct CommunitySpacesTab: View {
     /// was right there and wrong here.
     private var allConversations: [VConversation] {
         chat.directConversations + chat.groupConversations
-    }
-
-    /// Resolve the Space's conversation and push the real chat. It may not be in memory yet,
-    /// so load before failing.
-    private func open(_ conversationId: String) {
-        Task { @MainActor in
-            await GroupEngine.shared.syncGroupEvents()
-            guard GroupEngine.shared.hasGroup(conversationId: conversationId) else {
-                error = "This chat is preparing encryption. Its owner needs to open Voiid to finish adding your device. Please try again shortly."
-                return
-            }
-            error = nil
-            if !allConversations.contains(where: { $0.id == conversationId }) {
-                await chat.loadConversations()
-            }
-            if let conv = allConversations.first(where: { $0.id == conversationId }) {
-                openConversation = conv
-            } else {
-                error = "That Space isn’t available on this device yet."
-            }
-        }
     }
 
     private func load() async {
