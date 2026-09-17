@@ -80,7 +80,91 @@ type AdminRole = 'moderator' | 'admin';
 
 interface AdminAuth { adminId: string; email: string; name: string | null; role: AdminRole }
 
+/**
+ * CLOUDFLARE ACCESS AS THE IDENTITY SOURCE.
+ *
+ * The admin panel sits behind Cloudflare Access, which authenticates the operator before
+ * the request ever reaches this origin and forwards a signed assertion in
+ * `Cf-Access-Jwt-Assertion`. Verifying that here removes the second login: Access proves
+ * WHO you are, `admin_users` decides WHAT you may do.
+ *
+ * ── WHY THIS IS NOT A BACK DOOR ─────────────────────────────────────────────────
+ *
+ * The header is worthless unless three things hold, and all three are checked:
+ *
+ *   1. The signature verifies against the team's PUBLIC KEYS, fetched from Cloudflare.
+ *      A forged header fails here — the key is Cloudflare's, not ours to mint.
+ *   2. `aud` matches OUR application. An assertion minted for a different Access app in
+ *      the same account is refused, so one team member's access to an unrelated tool is
+ *      not access to this one.
+ *   3. The email maps to a row in `admin_users` that is not disabled. Access controls who
+ *      reaches the door; this table still controls who is an operator, and revoking someone
+ *      here takes effect on the next request exactly as it did before.
+ *
+ * If ACCESS_TEAM_DOMAIN or ACCESS_AUD is unset the whole path is OFF — an unconfigured
+ * deployment cannot be talked into trusting a header by sending one.
+ */
+const ACCESS_TEAM_DOMAIN = process.env.CF_ACCESS_TEAM_DOMAIN;
+const ACCESS_AUD = process.env.CF_ACCESS_AUD;
+
+let accessKeysCache: { keys: any[]; fetchedAt: number } | null = null;
+
+async function accessPublicKeys(): Promise<any[]> {
+  // Cached for an hour: Cloudflare rotates these, so they cannot be pinned forever, but
+  // fetching per request would put an outbound call on the hot path of every admin action.
+  const HOUR = 3600_000;
+  if (accessKeysCache && Date.now() - accessKeysCache.fetchedAt < HOUR) return accessKeysCache.keys;
+  const res = await fetch(`https://${ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`);
+  if (!res.ok) throw new Error(`access certs ${res.status}`);
+  const body = await res.json() as { keys?: any[] };
+  accessKeysCache = { keys: body.keys ?? [], fetchedAt: Date.now() };
+  return accessKeysCache.keys;
+}
+
+/** The verified email from a Cloudflare Access assertion, or null. */
+async function accessEmail(req: Request): Promise<string | null> {
+  if (!ACCESS_TEAM_DOMAIN || !ACCESS_AUD) return null;
+  const token = req.headers['cf-access-jwt-assertion'];
+  if (typeof token !== 'string' || !token) return null;
+  try {
+    const { createLocalJWKSet, jwtVerify } = await import('jose');
+    const jwks = createLocalJWKSet({ keys: await accessPublicKeys() });
+    const { payload } = await jwtVerify(token, jwks, {
+      issuer: `https://${ACCESS_TEAM_DOMAIN}`,
+      audience: ACCESS_AUD,
+    });
+    const email = typeof payload.email === 'string' ? payload.email.toLowerCase() : null;
+    return email || null;
+  } catch {
+    // A malformed, expired, wrongly-audienced or unsigned assertion is simply not an
+    // identity. Falling through to the bearer path is correct: it fails closed.
+    return null;
+  }
+}
+
 async function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  // ACCESS FIRST. When the panel is behind Cloudflare Access the operator has already
+  // proven who they are, so asking them to log in again buys nothing — the second login was
+  // a worse experience for the same security.
+  const email = await accessEmail(req);
+  if (email) {
+    const rows = await query<{ id: string; email: string; name: string | null; role: string; disabled_at: string | null }>(
+      `select id, email, name, role, disabled_at from admin_users where lower(email) = $1 limit 1`,
+      [email]
+    );
+    const row = rows[0];
+    // Reaching the door is not the same as being an operator. Someone in the Access policy
+    // who has no admin_users row gets a clear refusal rather than silent privilege.
+    if (!row || row.disabled_at) {
+      return res.status(403).json({ error: 'not an admin account' });
+    }
+    (req as any).admin = {
+      adminId: row.id, email: row.email, name: row.name,
+      role: row.role === 'admin' ? 'admin' : 'moderator',
+    } satisfies AdminAuth;
+    return next();
+  }
+
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'admin auth required' });

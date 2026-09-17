@@ -1,0 +1,11 @@
+# iOS fetches the AASA with a strict content-type expectation and will NOT follow a
+# redirect to get it. Next's static export serves extensionless files as text/plain, which
+# fails silently: the OS simply never associates the app with the domain and every link
+# opens Safari instead — the exact symptom we are fixing.
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+
+# Android is less strict about the type but the explicit header costs nothing and removes
+# one variable from a verification failure that is otherwise invisible.
+/.well-known/assetlinks.json
+  Content-Type: application/json

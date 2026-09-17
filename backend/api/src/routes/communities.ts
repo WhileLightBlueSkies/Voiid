@@ -232,6 +232,50 @@ const COMMUNITY_COLUMNS = `id, owner_id, handle, name, description, avatar_r2_ke
  * handle is renameable, and an authorisation decision should not be keyed on something that
  * can change hands.
  */
+/**
+ * May this person post here?
+ *
+ * ONE function for the Home feed and for a Space, because "who can post here" is one
+ * question asked twice. `channelId` null means the Home feed — the same convention the
+ * allowlist table uses, so there is one rule to learn rather than two to keep in step.
+ *
+ * `selected` grants the allowlist IN ADDITION to managers, never instead of them: an
+ * allowlist that could lock out the owner would let one admin-panel slip make a community
+ * unadministrable with no way back in.
+ *
+ * `none` applies to everyone, owner included. It is a statement about the space rather than
+ * about people, and a host who needs to post there changes the policy first — one
+ * deliberate act, visible in settings, instead of a silent exception nobody can see.
+ */
+async function mayPost(
+  communityId: string,
+  userId: string,
+  isOrganiser: boolean,
+  policy: string,
+  channelId: string | null,
+): Promise<boolean> {
+  switch (policy) {
+    case 'none':     return false;
+    case 'everyone': return true;
+    case 'managers': return isOrganiser;
+    case 'selected': {
+      if (isOrganiser) return true;
+      const rows = await query<{ one: number }>(
+        `select 1 as one from community_post_allowlist
+          where community_id = $1 and user_id = $2
+            and (($3::uuid is null and channel_id is null) or channel_id = $3::uuid)
+          limit 1`,
+        [communityId, userId, channelId],
+      );
+      return rows.length > 0;
+    }
+    // An unknown value is a schema that moved without this switch. Refusing is the safe
+    // direction: a post that should have been allowed is a complaint, one that should not
+    // have been is a moderation incident.
+    default: return false;
+  }
+}
+
 async function findCommunity(idOrHandle: string): Promise<CommunityRow | undefined> {
   if (UUID_RE.test(idOrHandle)) {
     return (
@@ -1399,7 +1443,12 @@ router.patch(
     }
     if (body.discoverable !== undefined) push('discoverable', body.discoverable === true);
     if (body.posting_policy !== undefined) {
-      if (!['members', 'managers'].includes(body.posting_policy)) return res.status(400).json({ error: 'invalid posting policy' });
+      // Four values now (078). 'members' is still accepted and mapped, because an app that
+      // has not been updated yet would otherwise get a 400 for a setting it did not change.
+      if (body.posting_policy === 'members') body.posting_policy = 'everyone';
+      if (!['everyone', 'managers', 'selected', 'none'].includes(body.posting_policy)) {
+        return res.status(400).json({ error: 'invalid posting policy' });
+      }
       push('posting_policy', body.posting_policy);
     }
     let joinPolicy = gate.community.join_policy;
@@ -1888,6 +1937,88 @@ function postShape(r: any) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// POSTING ALLOWLIST — who may post when the policy is 'selected'
+//
+// One set of routes for both levels: `channel_id` null is the Home feed, matching the
+// table's own convention (078). Managers manage it; the allowlist ADDS people to them.
+// ─────────────────────────────────────────────────────────────────────────────────
+
+// GET /communities/:id/posting-allowlist?channel_id=
+router.get('/:id/posting-allowlist', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const communityId = String(req.params.id ?? '');
+  if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+
+  const channelId = typeof req.query.channel_id === 'string' && req.query.channel_id
+    ? String(req.query.channel_id) : null;
+  if (channelId && !UUID_RE.test(channelId)) return res.status(400).json({ error: 'channel id must be a uuid' });
+
+  const access = await communityAccess(communityId, user_id, false);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  // Managers only. The list names people who were singled out, which is not something an
+  // ordinary member should be able to enumerate.
+  if (!access.isOrganiser) return res.status(403).json({ error: 'only community managers can see this' });
+
+  const rows = await query<any>(
+    `select a.user_id, a.granted_at, u.full_name, u.username, u.photo_url
+       from community_post_allowlist a
+       join users u on u.id = a.user_id
+      where a.community_id = $1
+        and (($2::uuid is null and a.channel_id is null) or a.channel_id = $2::uuid)
+      order by a.granted_at desc
+      limit 200`,
+    [communityId, channelId],
+  );
+  res.json({ allowed: rows });
+}));
+
+// POST /communities/:id/posting-allowlist   { user_id, channel_id?, allowed }
+router.post('/:id/posting-allowlist', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const communityId = String(req.params.id ?? '');
+  const target = String(req.body?.user_id ?? '');
+  const channelId = req.body?.channel_id ? String(req.body.channel_id) : null;
+  const allowed = req.body?.allowed !== false;
+
+  if (!UUID_RE.test(communityId) || !UUID_RE.test(target)) {
+    return res.status(400).json({ error: 'ids must be uuids' });
+  }
+  if (channelId && !UUID_RE.test(channelId)) return res.status(400).json({ error: 'channel id must be a uuid' });
+
+  const access = await communityAccess(communityId, user_id, false);
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  if (!access.isOrganiser) return res.status(403).json({ error: 'only community managers can change this' });
+
+  if (!allowed) {
+    await query(
+      `delete from community_post_allowlist
+        where community_id = $1 and user_id = $2
+          and (($3::uuid is null and channel_id is null) or channel_id = $3::uuid)`,
+      [communityId, target, channelId],
+    );
+    return res.json({ ok: true, allowed: false });
+  }
+
+  // MEMBERSHIP FIRST. An allowlist entry for somebody who is not in the community would be
+  // invisible in every UI and would silently start applying if they ever joined.
+  const member = await query<{ one: number }>(
+    `select 1 as one from community_members
+      where community_id = $1 and user_id = $2 and left_at is null and state = 'active' limit 1`,
+    [communityId, target],
+  );
+  if (!member.length) return res.status(409).json({ error: 'not an active member' });
+
+  await query(
+    `insert into community_post_allowlist (community_id, channel_id, user_id, granted_by)
+     values ($1, $2::uuid, $3, $4)
+     on conflict do nothing`,
+    [communityId, channelId, target, user_id],
+  );
+  res.json({ ok: true, allowed: true });
+}));
+
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // GET /communities/:id/posts?cursor=&limit=   — the Home feed.
 //
 // Newest first, keyset-paginated on `created_at` rather than OFFSET: an offset page shifts
@@ -1975,8 +2106,11 @@ router.post(
     if (!access.ok) return res.status(access.status).json({ error: access.error });
 
     const policy = await findCommunity(communityId);
-    if (policy?.posting_policy === 'managers' && !access.isOrganiser) {
-      return res.status(403).json({ error: 'only community managers can publish posts here' });
+    if (!(await mayPost(communityId, user_id, access.isOrganiser,
+                        policy?.posting_policy ?? 'managers', null))) {
+      // The same message for every refusal: telling a member they are not on an allowlist
+      // discloses that one exists and who is on it.
+      return res.status(403).json({ error: 'you cannot publish posts here' });
     }
 
     const body = trimmed(req.body?.body, MAX_POST_BODY);

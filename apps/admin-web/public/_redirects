@@ -1,0 +1,12 @@
+# REAL IDS ONTO THE EMITTED SHELL.
+#
+# The export contains one page per dynamic route (`/communities/index/`), not one per
+# record — see the server wrappers for why baking real ids into a static build would both
+# go stale and publish them. These rewrites send a real path to that shell with a 200, so
+# the id stays in the address bar for the client to read at runtime.
+#
+# Order matters: the more specific analytics rule has to precede the catch-all above it.
+/communities/*/analytics  /communities/index/analytics/  200
+/communities/*            /communities/index/            200
+/users/*                  /users/index/                  200
+/events/*                 /events/index/                 200

@@ -2,7 +2,7 @@
   "name": "voiid",
   "private": true,
   "version": "0.1.0",
-  "description": "VOIID \u2014 privacy-first, E2E-encrypted messaging super-app (monorepo).",
+  "description": "VOIID — privacy-first, E2E-encrypted messaging super-app (monorepo).",
   "workspaces": [
     "backend/*",
     "packages/*",
@@ -27,5 +27,8 @@
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.108.2"
+  },
+  "devDependencies": {
+    "wrangler": "^4.133.0"
   }
 }

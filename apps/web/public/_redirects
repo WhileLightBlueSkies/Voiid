@@ -1,0 +1,12 @@
+# EVERY community invite lands on one page.
+#
+# /c/<handle>?i=<token> is the invite URL, and it is the only path the apps claim in
+# apple-app-site-association. When iOS or Android has verified the domain, the OS opens the
+# app and this rewrite never runs. It runs for everyone else — no app installed, a desktop
+# browser, a link pasted into a work laptop — who previously got a 404 that reads as "this
+# invite is broken" when the invite is fine.
+#
+# A REWRITE (200), not a redirect (301): the URL in the address bar has to keep the handle
+# and the ?i= token, because the reader may install the app and open the same link again.
+# A redirect would drop them at /invite and lose the token.
+/c/*  /invite/  200
