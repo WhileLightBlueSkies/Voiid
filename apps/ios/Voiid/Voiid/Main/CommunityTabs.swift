@@ -77,6 +77,8 @@ struct CommunitySpacesTab: View {
     /// the list has since reloaded away.
     @State private var renaming: CommunityService.Channel?
     @State private var renameText = ""
+    @State private var feedChannel: CommunityService.Channel?
+    @State private var settingsChannel: CommunityService.Channel?
     @State private var confirmingDelete: CommunityService.Channel?
     @State private var busy: Set<String> = []
 
@@ -98,19 +100,18 @@ struct CommunitySpacesTab: View {
     /// that actually knows — a Space IS a conversation, so the same counter the chat list
     /// uses is the right one here.
     private func decorated(_ channel: CommunityService.Channel) -> CommunitySpace {
-        let conversation = allConversations.first { $0.id == channel.id }
         return CommunitySpace(
             id: channel.id,
             name: channel.name ?? "Space",
             // The endpoint has no description column. An announcement channel's purpose is
             // implied by what it IS; a chat channel gets nothing rather than a fiction.
-            purpose: channel.isAnnouncement ? "Official updates from the admin team." : "",
+            purpose: channel.purpose ?? "",
             icon: channel.isAnnouncement ? "megaphone.fill" : "bubble.left.and.bubble.right.fill",
             members: 0,
-            unread: conversation?.unreadCount ?? 0,
-            posting: channel.isAnnouncement ? .adminsOnly : .everyone,
+            unread: 0,
+            posting: .fromServer(channel.posting),
             isJoined: true,
-            isPinned: channel.isAnnouncement,
+            isPinned: channel.pinned_at != nil,
             lastActivity: ""
         )
     }
@@ -118,13 +119,7 @@ struct CommunitySpacesTab: View {
     /// Announcements first, then the server's order. An announcement channel is the one a
     /// member most needs to find, and it is the one they post in least.
     private var spaces: [CommunitySpace] {
-        channels
-            .sorted { a, b in
-                a.isAnnouncement == b.isAnnouncement
-                    ? (a.position ?? 0) < (b.position ?? 0)
-                    : a.isAnnouncement
-            }
-            .map { decorated($0) }
+        channels.map { decorated($0) }
     }
 
     var body: some View {
@@ -151,7 +146,7 @@ struct CommunitySpacesTab: View {
                     // even though the conversation behind each row already existed.
                     Button {
                         Haptics.tap()
-                        open(space.id)
+                        feedChannel = channels.first { $0.id == space.id }
                     } label: {
                         SpaceCard(space: space, isAdmin: false)
                     }
@@ -159,6 +154,8 @@ struct CommunitySpacesTab: View {
                     .disabled(busy.contains(space.id))
                     .contextMenu {
                         if isAdmin, let channel = channels.first(where: { $0.id == space.id }) {
+                            Button("Space settings", systemImage: "gearshape") { settingsChannel = channel }
+                            Button("Open existing chat", systemImage: "bubble.left") { open(channel.id) }
                             Button("Rename", systemImage: "pencil") {
                                 renameText = channel.name ?? ""
                                 renaming = channel
@@ -174,6 +171,36 @@ struct CommunitySpacesTab: View {
                         }
                     }
                 }
+            }
+        }
+        .sheet(item: $feedChannel) { channel in
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(channel.name ?? "Space")
+                                .font(VoiidFont.rounded(24, .bold))
+                            if let purpose = channel.purpose, !purpose.isEmpty {
+                                Text(purpose).font(VoiidFont.rounded(14))
+                                    .foregroundStyle(VoiidColor.textSecondary)
+                            }
+                            Text("Posts shared in this Space")
+                                .font(VoiidFont.rounded(13, .semibold))
+                                .foregroundStyle(VoiidColor.textSecondary)
+                        }
+                        Text("Posts in this Space are visible to community members. They are not end-to-end encrypted.")
+                            .font(VoiidFont.rounded(13)).foregroundStyle(VoiidColor.textSecondary)
+                        Button("Open existing encrypted chat") { feedChannel = nil; open(channel.id) }
+                        CommunityHomeTab(communityId: communityId, isAdmin: isAdmin, canPost: channel.can_post == true, channelId: channel.id)
+                    }.padding()
+                }
+                .navigationTitle(channel.name ?? "Space")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { feedChannel = nil } } }
+            }
+        }
+        .sheet(item: $settingsChannel) { channel in
+            CommunitySpaceSettingsView(communityId: communityId, channel: channel) {
+                settingsChannel = nil; Task { await load() }
             }
         }
         .alert("New Space", isPresented: $showNewSpace) {
@@ -224,7 +251,7 @@ struct CommunitySpacesTab: View {
         Task { @MainActor in
             await GroupEngine.shared.syncGroupEvents()
             guard GroupEngine.shared.hasGroup(conversationId: conversationId) else {
-                error = "This Space is preparing encryption. Its owner needs to open Voiid to finish adding your device. Please try again shortly."
+                error = "This chat is preparing encryption. Its owner needs to open Voiid to finish adding your device. Please try again shortly."
                 return
             }
             error = nil
@@ -372,8 +399,8 @@ private struct SpaceCard: View {
 
                     // Only shown when it RESTRICTS. "Everyone can post" is the assumption, and
                     // labelling the default adds a chip to every row for no information.
-                    if space.posting == .adminsOnly {
-                        Text("Admins only")
+                    if space.posting != .everyone {
+                        Text(space.posting.rawValue)
                             .font(VoiidFont.rounded(9.5, .semibold))
                             .foregroundColor(VoiidColor.textSecondary)
                             .padding(.horizontal, 6)
@@ -421,7 +448,7 @@ private struct SpaceCard: View {
                     // server-readable and the channel contents are not. Users deserve to know
                     // which half of a feature is encrypted, on the screen where they choose to
                     // post in it.
-                    Image(systemName: "lock.fill")
+                    Image(systemName: "text.bubble")
                         .font(.system(size: 10))
                         .foregroundColor(VoiidColor.textSecondary)
 
@@ -1216,7 +1243,7 @@ struct CommunityAboutTab: View {
             Image(systemName: "lock.fill")
                 .font(.system(size: 12))
                 .foregroundColor(VoiidColor.accentInk)
-            Text("Messages inside a Space are end-to-end encrypted. The community itself — its "
+            Text("Home and Space posts are not end-to-end encrypted. Existing chats and messages to the host are encrypted. The community’s "
                  + "name, members and invites — is not, so it can be searched and joined.")
                 .font(VoiidFont.footnote)
                 .foregroundColor(VoiidColor.textSecondary)

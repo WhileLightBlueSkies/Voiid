@@ -405,15 +405,33 @@ async function publishMembershipNotice(
 }
 
 /** The channels of a community, in display order. Small by construction (see the cap). */
-async function channelsOf(communityId: string) {
-  return query<{ conversation_id: string; kind: string; position: number; name: string | null }>(
-    `select ch.conversation_id, ch.kind, ch.position, c.name
+/**
+ * The Spaces of a community, with everything the tab renders.
+ *
+ * `posting`, `purpose` and `pinned_at` were added to the table by 047 for exactly this
+ * screen and then never selected, so the client invented them — which is why no Space has
+ * ever shown its own posting policy. `can_post` is computed per Space for the same reason
+ * it is computed for Home: at `selected` the answer depends on an allowlist the client
+ * cannot see, and a composer that appears and then 403s is worse than no composer.
+ */
+async function channelsOf(communityId: string, userId?: string, isManager = false) {
+  const rows = await query<{
+    conversation_id: string; kind: string; position: number; name: string | null;
+    purpose: string | null; posting: string; pinned_at: string | null;
+  }>(
+    `select ch.conversation_id, ch.kind, ch.position, c.name,
+            ch.purpose, ch.posting, ch.pinned_at
        from community_channels ch
        join conversations c on c.id = ch.conversation_id
       where ch.community_id = $1
-      order by ch.position, ch.created_at`,
+      order by ch.pinned_at desc nulls last, ch.position, ch.created_at`,
     [communityId]
   );
+  if (!userId) return rows.map(r => ({ ...r, can_post: false }));
+  return Promise.all(rows.map(async r => ({
+    ...r,
+    can_post: await mayPost(communityId, userId, isManager, r.posting, r.conversation_id),
+  })));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════
@@ -520,7 +538,8 @@ router.post(
         }
         return res.json({
           community: await publicCard(existing),
-          channels: await channelsOf(id),
+          // The caller is the owner here (checked above), so they are a manager.
+          channels: await channelsOf(id, user_id, true),
           existed: true,
         });
       }
@@ -542,8 +561,8 @@ router.post(
       ).rows[0];
 
       await client.query(
-        `insert into community_channels (conversation_id, community_id, kind, position)
-              values ($1, $3, 'announcement', 0), ($2, $3, 'chat', 1)`,
+        `insert into community_channels (conversation_id, community_id, kind, position, posting)
+              values ($1, $3, 'announcement', 0, 'managers'), ($2, $3, 'chat', 1, 'everyone')`,
         [announcement.id, general.id, id]
       );
 
@@ -609,7 +628,8 @@ router.post(
       )[0];
       return res.status(201).json({
         community: await publicCard(fresh ?? created),
-        channels: await channelsOf(id),
+        // Just created by this caller, so they are the owner and a manager.
+        channels: await channelsOf(id, user_id, true),
         existed: false,
       });
     } catch (e) {
@@ -797,11 +817,27 @@ router.get(
 
     const m = await membershipOf(community.id, user_id);
     const isActive = m?.state === 'active';
+    const isManager = community.owner_id === user_id || (isActive && m?.role === 'admin');
+
+    // THE SERVER ANSWERS "MAY I POST", because the client cannot.
+    //
+    // Both apps used to derive this from the policy string alone. That worked while the
+    // only values were `members` and `managers`, and breaks completely at `selected`: the
+    // answer then depends on an allowlist the client has never seen and should not be given
+    // — the list names people who were singled out.
+    //
+    // Match the write-path policy. A later membership or policy change is still
+    // rechecked by the write endpoint; this response is a snapshot.
+    const canPost = isActive && !community.suspended_at
+      ? await mayPost(community.id, user_id, isManager, community.posting_policy ?? 'managers', null)
+      : false;
+
     res.json({
       community: await publicCard(community),
       membership_state: m?.state ?? null,
       membership_role: m?.role ?? null,
-      channels: isActive ? await channelsOf(community.id) : [],
+      can_post: canPost,
+      channels: isActive && !community.suspended_at ? await channelsOf(community.id, user_id, isManager) : [],
     });
   })
 );
@@ -880,7 +916,11 @@ router.post(
           community_id: communityId,
           state: existing.state,
           existed: true,
-          channels: existing.state === 'active' ? await channelsOf(communityId) : [],
+          // A joiner is an ordinary member unless the row says otherwise — passing the real
+          // role keeps can_post honest rather than optimistic.
+          channels: existing.state === 'active'
+            ? await channelsOf(communityId, user_id, existing.role === 'admin' || existing.role === 'owner')
+            : [],
         });
       }
 
@@ -996,7 +1036,8 @@ router.post(
         community_id: communityId,
         state: landState,
         existed: false,
-        channels: landState === 'active' ? await channelsOf(communityId) : [],
+        // A brand-new joiner is a plain member: never a manager on the join itself.
+        channels: landState === 'active' ? await channelsOf(communityId, user_id, false) : [],
       });
     } catch (e) {
       await client.query('rollback');
@@ -1518,16 +1559,17 @@ router.get(
 
     const me = await membershipOf(communityId, user_id);
     const community = (
-      await query<{ owner_id: string }>(`select owner_id from communities where id = $1`, [communityId])
+      await query<{ owner_id: string; suspended_at: string | null }>(`select owner_id, suspended_at from communities where id = $1`, [communityId])
     )[0];
     if (!community) return res.status(404).json({ error: 'no such community' });
+    if (community.suspended_at) return res.status(403).json({error:'this community is suspended'});
     const isOwner = community.owner_id === user_id;
     if (!isOwner && me?.state !== 'active') {
       return res.status(403).json({ error: 'only members can see this community\u2019s Spaces' });
     }
 
     // channelsOf already exists and is used elsewhere — one query, one place to fix.
-    res.json({ channels: await channelsOf(communityId) });
+    res.json({ channels: await channelsOf(communityId, user_id, isOwner || me?.role === 'admin') });
   })
 );
 
@@ -1576,8 +1618,8 @@ router.post(
         )
       ).rows[0];
       await client.query(
-        `insert into community_channels (conversation_id, community_id, kind, position)
-              values ($1, $2, $3, $4)`,
+        `insert into community_channels (conversation_id, community_id, kind, position, posting)
+              values ($1, $2, $3, $4, case when $3='announcement' then 'managers' else 'everyone' end)`,
         [conv.id, gate.community.id, kind, position]
       );
       // ONE statement for the whole roster. Community owner/admins land as conversation
@@ -1639,6 +1681,12 @@ router.patch(
       return res.status(400).json({ error: 'position must be a number' });
     }
 
+    const body = req.body ?? {};
+    if (body.posting !== undefined && !['everyone','managers','selected','none'].includes(body.posting)) {
+      return res.status(400).json({error:'invalid posting policy'});
+    }
+    if (body.purpose !== undefined && typeof body.purpose !== 'string') return res.status(400).json({error:'invalid purpose'});
+    if (body.pinned !== undefined && typeof body.pinned !== 'boolean') return res.status(400).json({error:'invalid pin value'});
     if (name !== undefined) {
       await query(`update conversations set name = $2 where id = $1`, [conversationId, name]);
     }
@@ -1648,6 +1696,9 @@ router.patch(
         position,
       ]);
     }
+    if (body.posting !== undefined) await query('update community_channels set posting=$2 where conversation_id=$1',[conversationId,body.posting]);
+    if (body.purpose !== undefined) await query('update community_channels set purpose=$2 where conversation_id=$1',[conversationId,body.purpose.trim().slice(0,200)]);
+    if (body.pinned !== undefined) await query('update community_channels set pinned_at=case when $2 then now() else null end where conversation_id=$1',[conversationId,body.pinned]);
     res.json({ updated: true });
   })
 );
@@ -1930,6 +1981,8 @@ function postShape(r: any) {
     media_url: r.media_url ?? null,
     like_count: r.like_count ?? 0,
     comment_count: r.comment_count ?? 0,
+    channel_id: r.channel_id ?? null,
+    view_count: r.view_count ?? 0,
     liked_by_me: r.liked_by_me === true,
     created_at: r.created_at,
     edited_at: r.edited_at ?? null,
@@ -1953,6 +2006,10 @@ router.get('/:id/posting-allowlist', requireAuth, asyncHandler(async (req, res) 
     ? String(req.query.channel_id) : null;
   if (channelId && !UUID_RE.test(channelId)) return res.status(400).json({ error: 'channel id must be a uuid' });
 
+  if (channelId && !(await query('select 1 from community_channels where community_id=$1 and conversation_id=$2',[communityId,channelId])).length) {
+    return res.status(404).json({error:'no such Space'});
+  }
+
   const access = await communityAccess(communityId, user_id, false);
   if (!access.ok) return res.status(access.status).json({ error: access.error });
   // Managers only. The list names people who were singled out, which is not something an
@@ -1965,9 +2022,9 @@ router.get('/:id/posting-allowlist', requireAuth, asyncHandler(async (req, res) 
        join users u on u.id = a.user_id
       where a.community_id = $1
         and (($2::uuid is null and a.channel_id is null) or a.channel_id = $2::uuid)
-      order by a.granted_at desc
-      limit 200`,
-    [communityId, channelId],
+      order by a.granted_at desc, a.user_id desc
+      limit 200 offset $3`,
+    [communityId, channelId, Math.max(0,Math.min(1000000,Math.trunc(Number(req.query.offset)||0)))],
   );
   res.json({ allowed: rows });
 }));
@@ -1984,6 +2041,10 @@ router.post('/:id/posting-allowlist', requireAuth, asyncHandler(async (req, res)
     return res.status(400).json({ error: 'ids must be uuids' });
   }
   if (channelId && !UUID_RE.test(channelId)) return res.status(400).json({ error: 'channel id must be a uuid' });
+
+  if (channelId && !(await query('select 1 from community_channels where community_id=$1 and conversation_id=$2',[communityId,channelId])).length) {
+    return res.status(404).json({error:'no such Space'});
+  }
 
   const access = await communityAccess(communityId, user_id, false);
   if (!access.ok) return res.status(access.status).json({ error: access.error });
@@ -2042,12 +2103,36 @@ router.get(
     const gate = await readGate(String(req.params.id ?? ''), user_id);
     if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
 
+    const channelId = typeof req.query.channel_id === 'string' && req.query.channel_id ? req.query.channel_id : null;
+    let feedPolicy = gate.community.posting_policy;
+    if (channelId) {
+      if (!UUID_RE.test(channelId)) return res.status(400).json({error:'invalid Space id'});
+      const space = (await query<{posting:string}>('select posting from community_channels where community_id=$1 and conversation_id=$2',[gate.community.id,channelId]))[0];
+      if (!gate.isMember || !space) {
+        return res.status(404).json({error:'no such Space'});
+      }
+      feedPolicy = space.posting;
+    }
     const limit = clampInt(req.query.limit, POST_PAGE_DEFAULT, POST_PAGE_MAX);
     const cursor = typeof req.query.cursor === 'string' && req.query.cursor ? req.query.cursor : null;
 
+    let cursorAt: string | null = null, cursorId: string | null = null;
+    if (cursor) {
+      try {
+        const decoded = JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));
+        if (typeof decoded.at !== 'string' || !Number.isFinite(Date.parse(decoded.at)) || !UUID_RE.test(decoded.id)) throw new Error();
+        cursorAt = decoded.at; cursorId = decoded.id;
+      } catch {
+        // Accept timestamps from older clients during rollout.
+        if (!Number.isFinite(Date.parse(cursor))) return res.status(400).json({error:'invalid cursor'});
+        cursorAt = cursor;
+      }
+    }
+
     const rows = await query<any>(
       `select p.id, p.author_id, p.body, p.media_url, p.like_count, p.comment_count,
-              p.created_at, p.edited_at,
+              p.created_at, p.edited_at, p.channel_id, p.view_count,
+              to_char(p.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at,
               u.full_name as author_name, u.username as author_username,
               u.photo_url as author_photo_url, u.is_official as author_is_official,
               (l.user_id is not null) as liked_by_me
@@ -2055,6 +2140,7 @@ router.get(
          ${AUTHOR_JOIN}
          left join community_post_likes l on l.post_id = p.id and l.user_id = $2
         where p.community_id = $1
+          and p.channel_id is not distinct from $4::uuid
           and p.removed_at is null
           -- A SCHEDULED POST IS INVISIBLE UNTIL IT IS DUE, to everyone including its own
           -- author. Filtering on the clock rather than flipping a published flag means
@@ -2063,17 +2149,18 @@ router.get(
           -- NULL is "publish immediately" — every post written before 077 and every post
           -- the apps write today — so no backfill is needed.
           and (p.scheduled_at is null or p.scheduled_at <= now())
-          ${cursor ? 'and p.created_at < $4::timestamptz' : ''}
-        order by p.created_at desc
+          and ($5::timestamptz is null or p.created_at < $5::timestamptz or (p.created_at=$5::timestamptz and p.id<$6::uuid))
+        order by p.created_at desc, p.id desc
         limit $3`,
-      cursor ? [gate.community.id, user_id, limit, cursor] : [gate.community.id, user_id, limit]
+      [gate.community.id, user_id, limit, channelId, cursorAt, cursorId]
     );
 
     res.json({
       posts: rows.map(postShape),
+      can_post: gate.isMember && await mayPost(gate.community.id,user_id,gate.isManager,feedPolicy,channelId),
       // Null rather than absent, and null on a short page rather than a cursor that would
       // return nothing — the client stops on null and would otherwise fetch an empty page.
-      next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
+      next_cursor: rows.length === limit ? Buffer.from(JSON.stringify({at:rows[rows.length - 1].cursor_at,id:rows[rows.length - 1].id})).toString('base64url') : null,
     });
   })
 );
@@ -2105,12 +2192,32 @@ router.post(
     const access = await communityAccess(communityId, user_id, false);
     if (!access.ok) return res.status(access.status).json({ error: access.error });
 
-    const policy = await findCommunity(communityId);
-    if (!(await mayPost(communityId, user_id, access.isOrganiser,
-                        policy?.posting_policy ?? 'managers', null))) {
-      // The same message for every refusal: telling a member they are not on an allowlist
-      // discloses that one exists and who is on it.
-      return res.status(403).json({ error: 'you cannot publish posts here' });
+    const requested = Array.isArray(req.body?.channel_ids)
+      ? req.body.channel_ids
+      : [req.body?.channel_id ?? null];
+    if (!requested.length || requested.length > 25) {
+      return res.status(400).json({error:'choose between 1 and 25 destinations'});
+    }
+    const channelIds: (string | null)[] = [];
+    for (const raw of requested) {
+      if (raw !== null && (typeof raw !== 'string' || !UUID_RE.test(raw))) {
+        return res.status(400).json({error:'invalid Space id'});
+      }
+      if (!channelIds.includes(raw)) channelIds.push(raw);
+    }
+    const community = await findCommunity(communityId);
+    for (const channelId of channelIds) {
+      let posting = community?.posting_policy ?? 'managers';
+      if (channelId) {
+        const channel = (await query<{posting:string}>(
+          'select posting from community_channels where community_id=$1 and conversation_id=$2',
+          [communityId,channelId]))[0];
+        if (!channel) return res.status(404).json({error:'no such Space'});
+        posting = channel.posting;
+      }
+      if (!(await mayPost(communityId,user_id,access.isOrganiser,posting,channelId))) {
+        return res.status(403).json({error:'you cannot publish posts to every selected destination'});
+      }
     }
 
     const body = trimmed(req.body?.body, MAX_POST_BODY);
@@ -2120,25 +2227,45 @@ router.post(
 
     const rows = await query<any>(
       `with inserted as (
-         insert into community_posts (community_id, author_id, body, media_url)
-              values ($1, $2, $3, $4)
+         insert into community_posts (community_id, author_id, body, media_url, channel_id)
+              select $1, $2, $3, $4, destination
+                from unnest($5::uuid[]) as d(destination)
            returning id, author_id, body, media_url, like_count, comment_count,
-                     created_at, edited_at
+                     created_at, edited_at, channel_id, view_count
        )
        select p.*, u.full_name as author_name, u.username as author_username,
-                u.photo_url as author_photo_url
+                u.photo_url as author_photo_url, u.is_official as author_is_official
          from inserted p
          ${AUTHOR_JOIN}`,
-      [communityId, user_id, body, mediaUrl]
+      [communityId, user_id, body, mediaUrl, channelIds]
     );
     // A fresh post is never liked by its author, so `liked_by_me` is false by construction and
     // needs no probe.
     scheduleCommunityNotification({communityId, actorId:user_id, kind:'post', publicBody:body});
-    res.status(201).json({ post: postShape(rows[0]) });
+    const posts = rows.map(postShape);
+    res.status(201).json({ post: posts[0], posts });
   })
 );
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// Count impressions only; no viewer identities or per-person view rows are retained.
+router.post('/:id/posts/:postId/view', requireAuth,
+  rateLimit({max:120,windowSeconds:60,bucket:'community-post-view'}),
+  asyncHandler(async (req,res) => {
+    const {user_id} = (req as any).auth;
+    const gate = await readGate(String(req.params.id),user_id);
+    if (!gate.ok) return res.status(gate.status).json({error:gate.error});
+    const postId = String(req.params.postId);
+    if (!UUID_RE.test(postId)) return res.status(400).json({error:'invalid post id'});
+    const rows = await query<{view_count:number}>(`update community_posts set view_count=least(view_count::bigint+1,2147483647)::int
+      where id=$1 and community_id=$2 and removed_at is null
+        and (scheduled_at is null or scheduled_at<=now())
+        and (channel_id is null or $3::boolean)
+      returning view_count`,[postId,gate.community.id,gate.isMember]);
+    if (!rows.length) return res.status(404).json({error:'no such post'});
+    res.json({view_count:rows[0].view_count});
+  }));
+
 // DELETE /communities/:id/posts/:postId — the author, or a manager.
 //
 // A TIMESTAMP, NOT A DELETE. 047: "A removed post stays in the table so a moderator can see

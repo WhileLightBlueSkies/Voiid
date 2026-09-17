@@ -61,7 +61,7 @@ struct CommunityInboxView: View {
                 VoiidColor.background.ignoresSafeArea()
                 content
             }
-            .navigationTitle("Host inbox")
+            .navigationTitle("Community messages")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -98,7 +98,7 @@ struct CommunityInboxView: View {
                 Text("No messages yet")
                     .font(VoiidFont.rounded(17, .semibold))
                     .foregroundColor(VoiidColor.textPrimary)
-                Text("When a member messages you about a community you host, it lands here.")
+                Text("Messages to communities you moderate appear here. Any authorized moderator can reply.")
                     .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
                     .multilineTextAlignment(.center)
             }
@@ -246,7 +246,7 @@ private struct ThreadRow: View {
                     // NO MESSAGE PREVIEW, and there cannot be one: the messages are E2EE and
                     // the server does not hold plaintext to summarise. The row says who and
                     // when; the content is behind the tap, which is the honest version.
-                    Text("A member messaged you")
+                    Text("Reply as \(thread.community_name ?? "Community") · Moderator")
                         .font(VoiidFont.footnote)
                         .foregroundColor(VoiidColor.textSecondary)
                         .lineLimit(1)

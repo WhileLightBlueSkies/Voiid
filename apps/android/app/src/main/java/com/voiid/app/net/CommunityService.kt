@@ -32,7 +32,8 @@ import kotlinx.serialization.Serializable
  * (`POST /communities/:id/host-thread`, 030_communities.sql), and it is not on this path.
  */
 class CommunityService(context: Context) {
-    private val api = ApiClient(TokenStore.get(context))
+    private val app = context.applicationContext
+    private val api = ApiClient(TokenStore.get(app))
 
     @Serializable data class NotificationPreference(val notification_mode: String)
     suspend fun notificationPreference(communityId: String): String =
@@ -80,7 +81,8 @@ class CommunityService(context: Context) {
          */
         val membership_role: String? = null,
         val official: Boolean = false,
-        val posting_policy: String = "members",
+        val posting_policy: String = "managers",
+        val can_post: Boolean = false,
         val members_can_invite: Boolean = false,
         val membership_state: String? = null,
         /**
@@ -111,9 +113,10 @@ class CommunityService(context: Context) {
         val community: CommunityCard,
         val membership_state: String? = null,
         val membership_role: String? = null,
+        val can_post: Boolean = false,
     ) {
         fun merged(inviteValid: Boolean?): CommunityCard =
-            community.copy(membership_state = membership_state, membership_role = membership_role, invite_valid = inviteValid)
+            community.copy(membership_state = membership_state, membership_role = membership_role, invite_valid = inviteValid, can_post = can_post)
     }
 
     /**
@@ -273,9 +276,34 @@ class CommunityService(context: Context) {
         val kind: String? = null,
         val position: Int? = null,
         val name: String? = null,
+        val posting: String = "managers",
+        val purpose: String? = null,
+        val pinned_at: String? = null,
+        val can_post: Boolean = false,
     ) {
         /** Announcement channels are host-writes-everyone-reads; chat is everyone. */
         val isAnnouncement: Boolean get() = kind == "announcement"
+    }
+
+    @Serializable data class PostingMember(val user_id: String, val full_name: String? = null, val username: String? = null)
+    suspend fun postingMembers(communityId: String, channelId: String? = null): List<PostingMember> {
+        @Serializable data class Envelope(val allowed: List<PostingMember>)
+        val suffix = channelId?.let { "&channel_id=$it" } ?: ""
+        val all = mutableListOf<PostingMember>()
+        while (true) {
+            val page = api.requestAs<Envelope>("GET", "communities/$communityId/posting-allowlist?offset=${all.size}$suffix").allowed
+            all.addAll(page)
+            if (page.size < 200) return all
+        }
+    }
+    suspend fun setPostingMember(communityId: String, userId: String, channelId: String? = null, allowed: Boolean) {
+        val body = org.json.JSONObject().put("user_id",userId).put("allowed",allowed)
+        if (channelId != null) body.put("channel_id",channelId)
+        api.request("POST","communities/$communityId/posting-allowlist",body.toString())
+    }
+    suspend fun updateSpace(communityId: String, channelId: String, posting: String, purpose: String, pinned: Boolean) {
+        val body = org.json.JSONObject().put("posting",posting).put("purpose",purpose).put("pinned",pinned)
+        api.request("PATCH","communities/$communityId/channels/$channelId",body.toString())
     }
 
     suspend fun channels(communityId: String): List<Channel> {
@@ -335,6 +363,7 @@ class CommunityService(context: Context) {
         val media_url: String? = null,
         val like_count: Int? = null,
         val comment_count: Int? = null,
+        val view_count: Int = 0,
         val liked_by_me: Boolean? = null,
         val created_at: String? = null,
         val edited_at: String? = null,
@@ -358,23 +387,42 @@ class CommunityService(context: Context) {
     data class PostPage(
         val posts: List<Post> = emptyList(),
         val next_cursor: String? = null,
+        val can_post: Boolean = false,
     )
 
     /** One page of the feed. `cursor` null loads the first page. */
-    suspend fun posts(communityId: String, cursor: String? = null, limit: Int = 20): PostPage {
+    suspend fun posts(communityId: String, cursor: String? = null, limit: Int = 20, channelId: String? = null): PostPage {
         val q = StringBuilder("communities/$communityId/posts?limit=$limit")
+        if (channelId != null) q.append("&channel_id=").append(channelId)
         if (!cursor.isNullOrEmpty()) q.append("&cursor=").append(cursor)
         return api.requestAs("GET", q.toString())
     }
 
-    @Serializable
-    private data class CreatePostBody(val body: String, val media_url: String?)
+    suspend fun viewPost(communityId: String, postId: String): Int {
+        @Serializable data class Result(val view_count: Int)
+        return api.requestAs<Result>("POST","communities/$communityId/posts/$postId/view").view_count
+    }
 
-    suspend fun createPost(communityId: String, body: String, mediaUrl: String? = null): Post {
+    @Serializable
+    private data class CreatePostBody(val body: String, val media_url: String?, val channel_id: String?)
+
+    suspend fun createPost(communityId: String, body: String, mediaUrl: String? = null, channelId: String? = null): Post {
         val payload = ApiClient.json.encodeToString(
-            CreatePostBody.serializer(), CreatePostBody(body, mediaUrl))
+            CreatePostBody.serializer(), CreatePostBody(body, mediaUrl, channelId))
         @Serializable data class Envelope(val post: Post)
         return api.requestAs<Envelope>("POST", "communities/$communityId/posts", payload).post
+    }
+
+    suspend fun createPosts(communityId: String, body: String, mediaUrl: String? = null,
+                            channelIds: List<String?>): List<Post> {
+        val destinations = org.json.JSONArray().apply { channelIds.forEach { put(it ?: org.json.JSONObject.NULL) } }
+        val payload = org.json.JSONObject()
+            .put("body", body)
+            .put("media_url", mediaUrl ?: org.json.JSONObject.NULL)
+            .put("channel_ids", destinations)
+            .toString()
+        @Serializable data class Envelope(val posts: List<Post> = emptyList())
+        return api.requestAs<Envelope>("POST", "communities/$communityId/posts", payload).posts
     }
 
     suspend fun deletePost(communityId: String, postId: String): Boolean {
@@ -614,8 +662,16 @@ class CommunityService(context: Context) {
 
     /** `role` is "admin" or "member". Only an owner may call this. */
     suspend fun setRole(communityId: String, userId: String, role: String) {
+        val supportThreads = runCatching { CommunityHostThreads(app).all() }.getOrDefault(emptyList())
+            .filter { it.community_id == communityId && it.amHost }
         val payload = ApiClient.json.encodeToString(RoleBody.serializer(), RoleBody(role))
         api.request("POST", "communities/$communityId/members/$userId/role", payload)
+        val groups = GroupEngine.get(app)
+        supportThreads.forEach { thread ->
+            if (thread.conversation_id.isBlank() || !groups.hasGroup(thread.conversation_id)) return@forEach
+            if (role == "admin") groups.addMember(thread.conversation_id, userId)
+            else groups.removeMember(thread.conversation_id, userId)
+        }
     }
 
     suspend fun leave(communityId: String): Boolean {

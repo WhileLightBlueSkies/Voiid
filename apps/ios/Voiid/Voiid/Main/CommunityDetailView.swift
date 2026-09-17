@@ -126,7 +126,7 @@ struct CommunityDetailView: View {
         // Bound to the card rather than a bool: the console needs a community id, and the
         // only proof we have one is the card that produced the menu the host just tapped.
         .sheet(item: $adminCard) { c in
-            CommunityAdminPanel(communityId: c.id, communityName: c.name, isOwner: isOwner(c), communityCard: c, onSettingsSaved: { card = $0 })
+            CommunityAdminPanel(communityId: c.id, communityName: c.name, isOwner: isOwner(c), communityCard: c, onSettingsSaved: { card = $0; Task { await load() } })
         }
         .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
         // A FAILED ACTION HAD NOWHERE TO GO. `error` is rendered only in the no-card branch,
@@ -459,7 +459,7 @@ struct CommunityDetailView: View {
                     // tab the bar above no longer offers a way back from.
                     switch (CommunityTab.visible(isManager: isOwner(c) || c.isManager).contains(tab) ? tab : .home) {
                     case .home:
-                        CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager, canPost: c.posting_policy != "managers" || c.isManager || isOwner(c))
+                        CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager, canPost: c.can_post == true)
                     case .spaces:
                         CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager,
                                            openConversation: $openConversation)
@@ -537,7 +537,7 @@ struct CommunityDetailView: View {
     /// Stated on the screen rather than buried: the container is server-readable and the
     /// channels are not. Users deserve to know which half of a feature is encrypted.
     private var notice: some View {
-        Text("Channel messages inside a community are end-to-end encrypted. The community "
+        Text("Home and Space posts are not end-to-end encrypted. Existing chats are encrypted. The community "
              + "itself \u{2014} its name, members and invites \u{2014} is not, so it can be searched and joined.")
             .font(VoiidFont.footnote)
             .foregroundColor(VoiidColor.textSecondary)

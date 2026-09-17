@@ -76,7 +76,8 @@ fun CommunitySettingsScreen(
     var discoverable by remember { mutableStateOf(current.discoverable) }
     var joinPolicy by remember { mutableStateOf(current.join_policy) }
     var membersCanInvite by remember { mutableStateOf(current.members_can_invite) }
-    var managersPostOnly by remember { mutableStateOf(current.posting_policy == "managers") }
+    var postingPolicy by remember { mutableStateOf(current.posting_policy) }
+    var showPostingMembers by remember { mutableStateOf(false) }
 
     var saving by remember { mutableStateOf(false) }
     var saveFailure by remember { mutableStateOf<String?>(null) }
@@ -108,8 +109,10 @@ fun CommunitySettingsScreen(
         discoverable != current.discoverable ||
         sanitisedPolicy != current.join_policy ||
         (membersCanInvite && sanitisedPolicy != "invite_only") != current.members_can_invite ||
-        managersPostOnly != (current.posting_policy == "managers")
+        postingPolicy != current.posting_policy
     val canSave = dirty && trimmedName.isNotEmpty() && !saving
+
+    if (showPostingMembers) CommunityPostingMembersDialog(current.id, onClose = { showPostingMembers = false })
 
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
@@ -215,10 +218,9 @@ fun CommunitySettingsScreen(
                     Text("Members can invite", modifier = Modifier.weight(1f), color = VoiidColor.textPrimary)
                     VoiidToggle(checked = membersCanInvite && sanitisedPolicy != "invite_only", onCheckedChange = { membersCanInvite = it && sanitisedPolicy != "invite_only" })
                 }
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Only managers can post", modifier = Modifier.weight(1f), color = VoiidColor.textPrimary)
-                    VoiidToggle(checked = managersPostOnly, onCheckedChange = { managersPostOnly = it })
-                }
+                CommunityPostingPolicyPicker(postingPolicy, enabled = !saving, onChange = { postingPolicy = it })
+                if (postingPolicy == "selected") androidx.compose.material3.TextButton(onClick = { showPostingMembers = true }) { Text("Choose members") }
+
             }
 
             // ── Rules ────────────────────────────────────────────────────────────
@@ -351,7 +353,7 @@ fun CommunitySettingsScreen(
                                 svc.update(
                                     communityId = current.id,
                                     membersCanInvite = membersCanInvite && sanitisedPolicy != "invite_only",
-                                    postingPolicy = if (managersPostOnly) "managers" else "members",
+                                    postingPolicy = postingPolicy.takeIf { it != current.posting_policy },
                                     // Only what CHANGED is sent. An unchanged field is null,
                                     // and null means "leave this column alone".
                                     name = trimmedName.takeIf { it != current.name },
@@ -367,7 +369,7 @@ fun CommunitySettingsScreen(
                                 // own trimming shows up rather than the text as typed.
                                 current = updated
                                 membersCanInvite = updated.members_can_invite
-                                managersPostOnly = updated.posting_policy == "managers"
+                                postingPolicy = updated.posting_policy
                                 name = updated.name
                                 about = updated.description ?: ""
                                 discoverable = updated.discoverable

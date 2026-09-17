@@ -236,15 +236,24 @@ private func capped(_ source: Binding<String>, _ limit: Int) -> Binding<String> 
 /// sheet open with the body intact and the photo still attached. The one thing this must never
 /// do is discard what somebody wrote because their network dropped while sending a picture.
 struct CommunityPostComposer: View {
+    struct PublishedPost {
+        let channelId: String?
+        let post: CommunityService.Post
+    }
+
     let communityId: String
+    var channelId: String? = nil
     /// Handed the post the server actually created — never a locally-built one. The server
     /// fills the author columns and the id, and the feed needs both.
-    let onPosted: (CommunityService.Post) -> Void
+    let onPosted: ([PublishedPost]) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var body_ = ""
     @State private var busy = false
     @State private var failure: String?
+    @State private var destinations: [(id: String?, name: String)] = []
+    @State private var selectedDestinations: Set<String> = []
+    @State private var loadingDestinations = true
     @FocusState private var focused: Bool
 
     // ── The photo ────────────────────────────────────────────────────────────────
@@ -271,7 +280,7 @@ struct CommunityPostComposer: View {
             confirm: "Post",
             // A body of only whitespace is a 400 server-side ("a post cannot be empty"), so
             // the button is dark until there is something real to send.
-            canConfirm: !trimmed.isEmpty,
+            canConfirm: !trimmed.isEmpty && !selectedDestinations.isEmpty,
             busy: busy,
             failure: failure,
             onCancel: { dismiss() },
@@ -287,6 +296,40 @@ struct CommunityPostComposer: View {
                     .focused($focused)
             }
 
+            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                Text("Post to")
+                    .font(VoiidFont.rounded(12.5, .semibold))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                if loadingDestinations {
+                    ProgressView("Loading places you can post…").controlSize(.small)
+                } else {
+                    ForEach(destinations, id: \.name) { destination in
+                        let key = destination.id ?? "home"
+                        Button {
+                            if selectedDestinations.contains(key) {
+                                selectedDestinations.remove(key)
+                            } else {
+                                selectedDestinations.insert(key)
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: selectedDestinations.contains(key)
+                                      ? "checkmark.circle.fill" : "circle")
+                                Text(destination.name)
+                                Spacer(minLength: 0)
+                            }
+                            .foregroundStyle(VoiidColor.textPrimary)
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(busy)
+                    }
+                }
+            }
+            .padding(VoiidSpacing.md)
+            .background(VoiidColor.fieldFill)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+
             photoRow
 
             // Said before they post, not after. 047 makes this feed server-readable because a
@@ -297,7 +340,7 @@ struct CommunityPostComposer: View {
                     .font(.system(size: 12))
                     .foregroundStyle(VoiidColor.accentInk)
                 Text("Posts are not end-to-end encrypted. They are a broadcast to the whole "
-                     + "community. Your Spaces and your messages with the host stay encrypted.")
+                     + "community. Existing chats and community messages stay encrypted.")
                     .font(.footnote)
                     .foregroundStyle(VoiidColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -308,10 +351,38 @@ struct CommunityPostComposer: View {
             .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
         }
         // The keyboard is the point of this sheet; opening without it costs a tap every time.
-        .task { focused = true }
+        .task {
+            focused = true
+            await loadDestinations()
+        }
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
             Task { await loadPhoto(item) }
+        }
+    }
+
+    @MainActor
+    private func loadDestinations() async {
+        loadingDestinations = true
+        defer { loadingDestinations = false }
+        do {
+            async let homePage = CommunityService.shared.posts(communityId: communityId, limit: 1)
+            async let spaces = CommunityService.shared.channels(communityId: communityId)
+            let (home, channels) = try await (homePage, spaces)
+            var available: [(id: String?, name: String)] = []
+            if home.can_post == true { available.append((nil, "Home")) }
+            available += channels.filter { $0.can_post == true }.map {
+                ($0.id as String?, $0.name ?? "Space")
+            }
+            destinations = available
+            let initial = channelId ?? "home"
+            if available.contains(where: { ($0.id ?? "home") == initial }) {
+                selectedDestinations = [initial]
+            } else if let first = available.first {
+                selectedDestinations = [first.id ?? "home"]
+            }
+        } catch {
+            failure = "Couldn’t load the places where you can post. Try again."
         }
     }
 
@@ -421,10 +492,15 @@ struct CommunityPostComposer: View {
                 mediaKey = try await MediaService.shared.uploadCommunityImage(photo)
             }
 
-            let post = try await CommunityService.shared.createPost(
-                communityId: communityId, body: trimmed, mediaUrl: mediaKey)
+            let chosen = destinations.filter { selectedDestinations.contains($0.id ?? "home") }
+            let posts = try await CommunityService.shared.createPosts(
+                communityId: communityId, body: trimmed, mediaUrl: mediaKey,
+                channelIds: chosen.map(\.id))
+            let published = zip(chosen, posts).map {
+                PublishedPost(channelId: $0.0.id, post: $0.1)
+            }
             Haptics.success()
-            onPosted(post)
+            onPosted(published)
             dismiss()
         } catch {
             // STAY OPEN. The text is still here, the error says what happened, and the user

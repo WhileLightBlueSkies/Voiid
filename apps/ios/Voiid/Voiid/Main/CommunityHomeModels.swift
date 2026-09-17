@@ -143,7 +143,17 @@ struct CommunitySpace: Identifiable, Hashable {
     /// Who may post here. Read access is governed by the community, not the Space.
     enum Posting: String, Hashable {
         case everyone = "Everyone"
-        case adminsOnly = "Admins only"
+        case adminsOnly = "Managers only"
+        case selected = "Selected members"
+        case none = "Nobody"
+        static func fromServer(_ value: String?) -> Posting {
+            switch value {
+            case "everyone", "members": return .everyone
+            case "selected": return .selected
+            case "none": return .none
+            default: return .adminsOnly
+            }
+        }
     }
 
     let id: String

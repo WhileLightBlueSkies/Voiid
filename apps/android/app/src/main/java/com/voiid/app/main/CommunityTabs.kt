@@ -2,6 +2,7 @@ package com.voiid.app.main
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -27,6 +28,7 @@ import com.voiid.app.net.CommunityService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidMotion
 import com.voiid.app.ui.components.pressableClickable
+import com.voiid.app.ui.components.voiidPullRefresh
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -131,10 +133,13 @@ fun CommunitySpacesTab(
     var editor by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<CommunityService.Channel?>(null) }
     var deleting by remember { mutableStateOf<CommunityService.Channel?>(null) }
+    var feed by remember { mutableStateOf<CommunityService.Channel?>(null) }
+    var settings by remember { mutableStateOf<CommunityService.Channel?>(null) }
     var saving by remember { mutableStateOf(false) }
     var channels by remember { mutableStateOf<List<CommunityService.Channel>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    var feedRefreshSignal by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(communityId) {
         loading = true
@@ -145,12 +150,7 @@ fun CommunitySpacesTab(
     }
 
     // Announcement Spaces first, then by position. Both facts are real columns.
-    val ordered = remember(channels) {
-        channels.sortedWith(
-            compareByDescending<CommunityService.Channel> { it.isAnnouncement }
-                .thenBy { it.position ?: 0 }
-        )
-    }
+    val ordered = channels
 
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md)) {
         error?.takeIf { channels.isNotEmpty() }?.let { Text(it, color = VoiidColor.error, style = VoiidFont.rounded(13)) }
@@ -166,14 +166,52 @@ fun CommunitySpacesTab(
                 else "The host hasn't made any yet.",
             )
             else -> ordered.forEach { channel -> SpaceCard(channel, isAdmin,
-                onOpen = { scope.launch {
-                    val engine = com.voiid.app.net.GroupEngine.get(context)
-                    engine.syncGroupEvents()
-                    if (engine.hasGroup(channel.conversation_id)) onOpen(channel.conversation_id)
-                    else error = "This Space is preparing encryption. Its owner needs to open Voiid to finish adding your device. Please try again shortly."
-                } },
+                onOpen = { feed = channel },
+                onSettings = { settings = channel },
                 onEdit = { editing = channel; editor = channel.name ?: "" },
                 onDelete = { deleting = channel }) }
+        }
+    }
+    settings?.let { channel ->
+        CommunitySpaceSettingsDialog(communityId, channel, onSaved = {
+            settings = null
+            scope.launch { runCatching { svc.channels(communityId) }.onSuccess { channels = it }.onFailure { error = it.message } }
+        }, onClose = { settings = null })
+    }
+    feed?.let { channel ->
+        val feedPull = com.voiid.app.ui.components.rememberVoiidPullRefresh {
+            scope.launch { feedRefreshSignal += 1 }
+        }
+        androidx.compose.ui.window.Dialog(onDismissRequest = { feed = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+            androidx.compose.material3.Surface(Modifier.fillMaxSize()) {
+                Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                    .voiidPullRefresh(feedPull, VoiidColor.primary)) {
+                    Row(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Text(channel.name ?: "Space", modifier = Modifier.weight(1f))
+                        androidx.compose.material3.TextButton(onClick = { feed = null }) { Text("Done") }
+                    }
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+                        Text(channel.name ?: "Space", style = VoiidFont.rounded(24, FontWeight.Bold))
+                        channel.purpose?.takeIf { it.isNotBlank() }?.let {
+                            Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                        }
+                        Text("Posts shared in this Space", style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                            color = VoiidColor.textSecondary)
+                        Spacer(Modifier.height(10.dp))
+                        Text("Posts in this Space are visible to community members. They are not end-to-end encrypted.")
+                        androidx.compose.material3.TextButton(onClick = { scope.launch {
+                            val engine = com.voiid.app.net.GroupEngine.get(context)
+                            engine.syncGroupEvents()
+                            if (engine.hasGroup(channel.conversation_id)) { feed = null; onOpen(channel.conversation_id) }
+                            else error = "This chat is preparing encryption. Please try again shortly."
+                        } }) { Text("Open existing encrypted chat") }
+                        error?.let { Text(it, color = VoiidColor.error) }
+                        CommunityHomeTab(communityId, isAdmin, canPost = channel.can_post,
+                            channelId = channel.conversation_id, refreshSignal = feedRefreshSignal)
+                    }
+                }
+            }
         }
     }
     if (editor != null) androidx.compose.material3.AlertDialog(
@@ -231,7 +269,7 @@ private fun CreateSpaceRow(onClick: () -> Unit) {
 }
 
 @Composable
-private fun SpaceCard(channel: CommunityService.Channel, isAdmin: Boolean, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun SpaceCard(channel: CommunityService.Channel, isAdmin: Boolean, onOpen: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit, onSettings: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -263,12 +301,12 @@ private fun SpaceCard(channel: CommunityService.Channel, isAdmin: Boolean, onOpe
             ) {
                 Text(channel.name ?: "Space", style = VoiidFont.rounded(15, FontWeight.SemiBold),
                     color = VoiidColor.textPrimary)
-                if (channel.isAnnouncement) {
+                if (channel.posting != "everyone") {
                     CommunityGlyph(CommunityIcon.PIN_FILL, size = 9.dp,
                         tint = VoiidColor.textSecondary, rotate = 45f)
                     // Only a RESTRICTED Space is labelled. "Everyone" is the default and
                     // saying so on every other card would be noise.
-                    Text("Admins only", style = VoiidFont.rounded(9.5f, FontWeight.SemiBold),
+                    Text(communityPostingPolicies[channel.posting] ?: "Restricted", style = VoiidFont.rounded(9.5f, FontWeight.SemiBold),
                         color = VoiidColor.textSecondary,
                         modifier = Modifier
                             .clip(RoundedCornerShape(VoiidRadius.pill))
@@ -291,7 +329,8 @@ private fun SpaceCard(channel: CommunityService.Channel, isAdmin: Boolean, onOpe
                                 tint = VoiidColor.textSecondary)
                         }
                         CommunityMenu(menuOpen, { menuOpen = false }) {
-                            CommunityMenuItem("Edit Space", CommunityIcon.PENCIL) {
+                            CommunityMenuItem("Space settings", CommunityIcon.GEAR) { menuOpen = false; onSettings() }
+                            CommunityMenuItem("Rename Space", CommunityIcon.PENCIL) {
                                 menuOpen = false; haptics.tap(); onEdit()
                             }
                             if (!channel.isAnnouncement) CommunityMenuItem("Remove Space", CommunityIcon.ARCHIVE,
@@ -303,8 +342,7 @@ private fun SpaceCard(channel: CommunityService.Channel, isAdmin: Boolean, onOpe
             // NO purpose line, NO member count, NO unread badge, NO "last activity" —
             // the channels route serves none of them. See the file header.
             Text(
-                if (channel.isAnnouncement) "Only admins can post here."
-                else "Everyone in this community can post here.",
+                channel.purpose?.takeIf { it.isNotBlank() } ?: (communityPostingPolicies[channel.posting] ?: "Posting restricted"),
                 style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary,
             )
         }
@@ -768,7 +806,7 @@ fun CommunityAboutTab(
         ) {
             CommunityGlyph(CommunityIcon.LOCK, size = 12.dp, tint = VoiidColor.accentInk)
             Text(
-                "Messages inside a Space are end-to-end encrypted. The community itself — " +
+                "Home and Space posts are not end-to-end encrypted. Existing chats and community messages are encrypted. The community itself — " +
                     "including Home posts, announcements, its name, members and invites — is not, so it can be moderated, searched and joined.",
                 style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
             )

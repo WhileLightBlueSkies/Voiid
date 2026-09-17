@@ -294,6 +294,7 @@ internal fun CommunityDetailView(
     var showAdmin by remember { mutableStateOf(false) }
     var showInvite by remember { mutableStateOf(false) }
     var showReport by remember { mutableStateOf(false) }
+    var feedRefreshSignal by remember { mutableIntStateOf(0) }
     val myUserId = remember { com.voiid.app.net.TokenStore.get(context).userId }
     /** The card carries `owner_id`, so this needs no extra request. */
     val amHost = state.owner_id != null && state.owner_id == myUserId
@@ -304,6 +305,12 @@ internal fun CommunityDetailView(
         runCatching { service.resolve(com.voiid.app.net.CommunityLink(state.handle, null)) }
             .onSuccess { state = it }
             .onFailure { actionError = it.message ?: "Couldn’t refresh this community." }
+    }
+    val detailPull = rememberVoiidPullRefresh {
+        scope.launch {
+            reload()
+            feedRefreshSignal += 1
+        }
     }
 
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
@@ -324,6 +331,7 @@ internal fun CommunityDetailView(
         Modifier
             .fillMaxSize()
             .background(VoiidColor.background)
+            .voiidPullRefresh(detailPull, VoiidColor.primary)
             .verticalScroll(rememberScrollState()),
     ) {
         // ── The hero: a 132dp accent wash the identity mark overlaps ─────────────
@@ -554,7 +562,8 @@ internal fun CommunityDetailView(
                             )
                             Spacer(Modifier.height(VoiidSpacing.md))
                         }
-                        CommunityHomeTab(communityId = state.id, isAdmin = amManager, canPost = state.posting_policy != "managers" || amManager)
+                        CommunityHomeTab(communityId = state.id, isAdmin = amManager,
+                            canPost = state.can_post, refreshSignal = feedRefreshSignal)
                     }
                     CommunityTab.SPACES ->
                         CommunitySpacesTab(communityId = state.id, isAdmin = amManager, onOpen = onOpenConversation)

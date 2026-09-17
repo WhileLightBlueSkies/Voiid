@@ -12,11 +12,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -62,7 +67,9 @@ import kotlinx.coroutines.launch
 fun CommunityHomeTab(
     communityId: String,
     isAdmin: Boolean,
-    canPost: Boolean = true,
+    canPost: Boolean = false,
+    channelId: String? = null,
+    refreshSignal: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -77,6 +84,26 @@ fun CommunityHomeTab(
     var draftTitle by remember { mutableStateOf("") }
     var authoringBusy by remember { mutableStateOf(false) }
     var authoringError by remember { mutableStateOf<String?>(null) }
+    var attachment by remember { mutableStateOf<ByteArray?>(null) }
+    var attachmentKey by remember { mutableStateOf<String?>(null) }
+    var availableDestinations by remember { mutableStateOf<List<Pair<String?, String>>>(emptyList()) }
+    var selectedDestinations by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var preparingPhoto by remember { mutableStateOf(false) }
+    val photoPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch {
+            preparingPhoto = true
+            runCatching { prepareCommunityPostImage(context, uri) }
+                .onSuccess { attachment = it; attachmentKey = null; authoringError = null }
+                .onFailure { authoringError = it.message ?: "Couldn't read that photo." }
+            preparingPhoto = false
+        }
+    }
+    var nextCursor by remember { mutableStateOf<String?>(null) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var serverCanPost by remember { mutableStateOf(canPost) }
+    val viewed = remember { mutableSetOf<String>() }
+    LaunchedEffect(canPost) { serverCanPost = canPost }
     var posts by remember { mutableStateOf<List<CommunityService.Post>>(emptyList()) }
     var pinned by remember { mutableStateOf<CommunityService.Announcement?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -113,16 +140,17 @@ fun CommunityHomeTab(
         loading = true
         coroutineScope {
             val p = async {
-                runCatching { svc.posts(communityId).posts }
-                    .onSuccess { posts = it; postsError = null }
+                runCatching { svc.posts(communityId, channelId = channelId) }
+                    .onSuccess { posts = it.posts; nextCursor = it.next_cursor; serverCanPost = it.can_post; postsError = null }
                     .onFailure { postsError = it.message ?: "Couldn't load posts." }
             }
             val a = async {
+                if (channelId != null) return@async
                 runCatching { svc.announcement(communityId) }
                     .onSuccess { pinned = it; announcementError = null }
                     .onFailure { announcementError = it.message ?: "Couldn't load the announcement." }
             }
-            val admin = if (isAdmin) async {
+            val admin = if (isAdmin && channelId == null) async {
                 adminLoading = true
                 coroutineScope { launch { fetchStats() }; launch { fetchQueue() } }
                 adminLoading = false
@@ -132,7 +160,23 @@ fun CommunityHomeTab(
         loading = false
     }
 
-    LaunchedEffect(communityId) { load() }
+    LaunchedEffect(communityId, channelId, refreshSignal) { load() }
+    LaunchedEffect(composing) {
+        if (!composing) return@LaunchedEffect
+        runCatching {
+            val home = svc.posts(communityId, limit = 1)
+            val spaces = svc.channels(communityId)
+            buildList {
+                if (home.can_post) add(null to "Home")
+                addAll(spaces.filter { it.can_post }.map { it.conversation_id to (it.name ?: "Space") })
+            }
+        }.onSuccess { places ->
+            availableDestinations = places
+            val initial = channelId ?: "home"
+            selectedDestinations = if (places.any { (it.first ?: "home") == initial }) setOf(initial)
+            else places.firstOrNull()?.let { setOf(it.first ?: "home") } ?: emptySet()
+        }.onFailure { authoringError = "Couldn’t load the places where you can post." }
+    }
 
     /** Author or manager, mirroring the route's own rule. */
     fun canDelete(post: CommunityService.Post): Boolean =
@@ -140,7 +184,7 @@ fun CommunityHomeTab(
 
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md)) {
         // An admin opening Home wants to know what needs them; a member wants the feed.
-        if (isAdmin) {
+        if (isAdmin && channelId == null) {
             AdminDashboard(
                 stats = stats, queue = queue, adminLoading = adminLoading,
                 statsError = statsError, queueError = queueError, queueBusy = queueBusy,
@@ -190,7 +234,7 @@ fun CommunityHomeTab(
             )
         }
 
-        AnnouncementSlot(
+        if (channelId == null) AnnouncementSlot(
             pinned = pinned, isAdmin = isAdmin, loading = loading,
             announcementError = announcementError, unpinBusy = unpinBusy, onPin = { pinning = true },
             onUnpin = {
@@ -210,7 +254,7 @@ fun CommunityHomeTab(
             },
         )
 
-        if (canPost) ComposeBar(onClick = { haptics.tap(); composing = true })
+        if (serverCanPost) ComposeBar(onClick = { haptics.tap(); composing = true })
 
 
         writeError?.let { message ->
@@ -221,6 +265,13 @@ fun CommunityHomeTab(
             posts = posts, loading = loading, postsError = postsError, isAdmin = isAdmin,
             deleteBusy = deleteBusy,
             canDelete = ::canDelete,
+            onViewed = { id ->
+                if (viewed.add(id)) scope.launch {
+                    runCatching { svc.viewPost(communityId, id) }
+                        .onSuccess { count -> posts = posts.map { if (it.id == id) it.copy(view_count = count) else it } }
+                        .onFailure { viewed.remove(id) }
+                }
+            },
             onDelete = { pendingDelete = it },
             onLike = { post ->
                 if (likeBusy.contains(post.id)) return@Feed
@@ -246,6 +297,7 @@ fun CommunityHomeTab(
                             ) else it
                         }
                     }.onFailure {
+                        writeError = it.message ?: "Couldn't update the like."
                         posts = posts.map {
                             if (it.id == post.id) it.copy(liked_by_me = wasLiked, like_count = wasCount)
                             else it
@@ -255,6 +307,18 @@ fun CommunityHomeTab(
                 }
             },
         )
+        if (posts.isNotEmpty()) postsError?.let { Text(it, color = VoiidColor.error) }
+        if (nextCursor != null) androidx.compose.material3.TextButton(enabled = !loadingMore, onClick = {
+            val cursor = nextCursor
+            scope.launch {
+                loadingMore = true
+                runCatching { svc.posts(communityId, cursor = cursor, channelId = channelId) }
+                    .onSuccess { page -> posts = (posts + page.posts).distinctBy { it.id }; nextCursor = page.next_cursor; serverCanPost = page.can_post; postsError = null }
+                    .onFailure { postsError = it.message ?: "Couldn't load more posts." }
+                loadingMore = false
+            }
+        }) { Text(if (loadingMore) "Loading…" else "Load more posts") }
+
     }
 
     pendingDelete?.let { post ->
@@ -290,16 +354,55 @@ fun CommunityHomeTab(
         onDismissRequest = { if (!authoringBusy) { composing = false; pinning = false } },
         title = { Text(if (pinning) "Pin announcement" else "New post") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (pinning) androidx.compose.material3.OutlinedTextField(value = draftTitle, onValueChange = { draftTitle = it.take(120) }, label = { Text("Title") })
-            androidx.compose.material3.OutlinedTextField(value = draft, onValueChange = { draft = it.take(if (pinning) 2000 else 4000) }, label = { Text("Write something") }, minLines = 3)
+            if (pinning) androidx.compose.material3.OutlinedTextField(value = draftTitle, onValueChange = { draftTitle = it.take(140) }, label = { Text("Title") })
+            androidx.compose.material3.OutlinedTextField(value = draft, onValueChange = { draft = it.take(if (pinning) 2000 else 5000) }, label = { Text("Write something") }, minLines = 3, enabled = !authoringBusy)
+            if (!pinning) {
+                Text("Post to", style = VoiidFont.rounded(13, FontWeight.SemiBold))
+                availableDestinations.forEach { destination ->
+                    val key = destination.first ?: "home"
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.Checkbox(
+                            checked = selectedDestinations.contains(key),
+                            enabled = !authoringBusy,
+                            onCheckedChange = { checked ->
+                                selectedDestinations = if (checked) selectedDestinations + key
+                                else selectedDestinations - key
+                            },
+                        )
+                        Text(destination.second)
+                    }
+                }
+                attachment?.let { bytes ->
+                    val image = remember(bytes) { android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size) }
+                    if (image != null) androidx.compose.foundation.Image(
+                        bitmap = image.asImageBitmap(), contentDescription = "Attached photo",
+                        modifier = Modifier.fillMaxWidth().height(120.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    androidx.compose.material3.TextButton(enabled = !authoringBusy, onClick = { attachment = null; attachmentKey = null }) { Text("Remove photo") }
+                }
+                androidx.compose.material3.TextButton(enabled = !authoringBusy && !preparingPhoto,
+                    onClick = { photoPicker.launch("image/*") }) { Text(if (preparingPhoto) "Preparing photo…" else "Add photo") }
+            }
             Text("Community posts are visible to the server and the community’s audience.", style = VoiidFont.rounded(12))
             authoringError?.let { Text(it, color = VoiidColor.error) }
         } },
-        confirmButton = { androidx.compose.material3.TextButton(enabled = !authoringBusy && draft.isNotBlank() && (!pinning || draftTitle.isNotBlank()), onClick = { scope.launch {
+        confirmButton = { androidx.compose.material3.TextButton(enabled = !authoringBusy && !preparingPhoto && draft.isNotBlank() && (pinning || selectedDestinations.isNotEmpty()) && (!pinning || draftTitle.isNotBlank()), onClick = { scope.launch {
             authoringBusy = true; authoringError = null
             try {
                 if (pinning) pinned = svc.pinAnnouncement(communityId, draftTitle.trim(), draft.trim())
-                else posts = listOf(svc.createPost(communityId, draft.trim())) + posts
+                else {
+                    if (attachment != null && attachmentKey == null) {
+                        attachmentKey = com.voiid.app.net.MediaService(TokenStore.get(context)).upload(attachment!!, "image/jpeg")
+                    }
+                    val chosen = availableDestinations
+                        .filter { selectedDestinations.contains(it.first ?: "home") }
+                    val created = svc.createPosts(communityId, draft.trim(), mediaUrl = attachmentKey,
+                        channelIds = chosen.map { it.first })
+                    val published = chosen.zip(created).map { it.first.first to it.second }
+                    published.firstOrNull { it.first == channelId }?.second?.let {
+                        posts = listOf(it) + posts
+                    }
+                    attachment = null; attachmentKey = null
+                }
                 composing = false; pinning = false; draft = ""; draftTitle = ""; haptics.success()
             } catch (e: Exception) { authoringError = e.message ?: "Couldn’t publish. Your draft is still here." }
             finally { authoringBusy = false }
@@ -726,7 +829,10 @@ private fun Feed(
     canDelete: (CommunityService.Post) -> Boolean,
     onDelete: (CommunityService.Post) -> Unit,
     onLike: (CommunityService.Post) -> Unit,
+    onViewed: (String) -> Unit,
 ) {
+    val height = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val viewThreshold = with(LocalDensity.current) { 200.dp.toPx() }
     when {
         loading && posts.isEmpty() -> CenteredSpinner(vertical = VoiidSpacing.lg)
         postsError != null && posts.isEmpty() ->
@@ -737,7 +843,12 @@ private fun Feed(
             else "Nothing has been posted here yet.",
         )
         else -> Column(verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md)) {
-            posts.forEach { post ->
+            posts.forEach { post -> key(post.id) {
+                Box(Modifier.onGloballyPositioned { coordinates ->
+                    val rect = coordinates.boundsInWindow()
+                    val visible = minOf(rect.bottom, height) - maxOf(rect.top, 0f)
+                    if (rect.height > 0 && visible >= minOf(coordinates.size.height / 2f, viewThreshold)) onViewed(post.id)
+                }) {
                 CommunityPostCard(
                     post = post,
                     busy = deleteBusy.contains(post.id),
@@ -746,7 +857,8 @@ private fun Feed(
                     onDelete = if (canDelete(post)) ({ onDelete(post) }) else null,
                     onLike = { onLike(post) },
                 )
-            }
+                }
+            } }
         }
     }
 }
@@ -759,6 +871,14 @@ private fun CommunityPostCard(
     onLike: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
+    val context = LocalContext.current
+    var reporting by remember { mutableStateOf(false) }
+    if (reporting) ReportSheet(com.voiid.app.net.ReportTarget.CommunityPost(post.id)) { reporting = false }
+    fun share() {
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND)
+            .setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, post.text)
+        context.startActivity(android.content.Intent.createChooser(intent, "Share post"))
+    }
     var menuOpen by remember { mutableStateOf(false) }
 
     Column(
@@ -811,14 +931,11 @@ private fun CommunityPostCard(
                         tint = VoiidColor.textSecondary)
                 }
                 CommunityMenu(expanded = menuOpen, onDismiss = { menuOpen = false }) {
-                    CommunityMenuItem("Save post", CommunityIcon.BOOKMARK) {
-                        menuOpen = false; haptics.tap()
-                    }
                     CommunityMenuItem("Share", CommunityIcon.SHARE) {
-                        menuOpen = false; haptics.tap()
+                        menuOpen = false; share()
                     }
                     CommunityMenuItem("Report", CommunityIcon.WARNING, destructive = true) {
-                        menuOpen = false; haptics.tap()
+                        menuOpen = false; reporting = true
                     }
                     if (onDelete != null) {
                         CommunityMenuDivider()
@@ -832,24 +949,18 @@ private fun CommunityPostCard(
 
         Text(post.text, style = VoiidFont.rounded(14.5f), color = VoiidColor.textPrimary)
 
-        post.media_url?.takeIf { it.isNotEmpty() }?.let {
-            // The gradient is a PLACEHOLDER THAT STAYS BEHIND the image, so the card never
-            // reflows while it loads. Its two stops hash off different strings, matching iOS.
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(172.dp)
-                    .clip(RoundedCornerShape(VoiidRadius.md))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                AvatarPalette.colorFor(post.id),
-                                AvatarPalette.colorFor(post.displayName).copy(alpha = 0.6f),
-                            ),
-                            start = Offset.Zero, end = Offset.Infinite,
-                        )
-                    )
-            )
+        post.media_url?.takeIf { it.isNotEmpty() }?.let { ref ->
+            var bitmap by remember(ref) { mutableStateOf(com.voiid.app.net.AvatarCache.cached(ref)) }
+            var finished by remember(ref) { mutableStateOf(false) }
+            LaunchedEffect(ref) { bitmap = com.voiid.app.net.AvatarCache.resolve(context, ref); finished = true }
+            Box(Modifier.fillMaxWidth().height(172.dp).clip(RoundedCornerShape(VoiidRadius.md))
+                .background(VoiidColor.surfaceRaised), contentAlignment = Alignment.Center) {
+                val image = bitmap
+                if (image != null) androidx.compose.foundation.Image(image, contentDescription = "Post image",
+                    modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                else if (finished) Text("Image unavailable", color = VoiidColor.textSecondary)
+                else androidx.compose.material3.CircularProgressIndicator()
+            }
         }
 
         Row(
@@ -863,10 +974,9 @@ private fun CommunityPostCard(
                 enabled = !busy,
                 onClick = onLike,
             )
-            PostAction(CommunityIcon.COMMENT, post.comments.toString(),
-                VoiidColor.textSecondary, !busy) { haptics.tap() }
+            Text("${post.view_count} views", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
             PostAction(CommunityIcon.SHARE, "Share",
-                VoiidColor.textSecondary, !busy) { haptics.tap() }
+                VoiidColor.textSecondary, !busy) { share() }
         }
     }
 }
@@ -884,3 +994,28 @@ private fun PostAction(
         Text(label, style = VoiidFont.rounded(12.5f), color = tint)
     }
 }
+
+
+/** Decode a bounded image with the existing orientation-aware decoder; upload contains no EXIF. */
+private suspend fun prepareCommunityPostImage(context: android.content.Context, uri: android.net.Uri): ByteArray =
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val file = java.io.File.createTempFile("community-photo-", ".image", context.cacheDir)
+        try {
+            val input = context.contentResolver.openInputStream(uri) ?: error("Couldn't open that photo.")
+            input.use { stream -> file.outputStream().use { output ->
+                val buffer = ByteArray(8192); var total = 0
+                while (true) {
+                    val count = stream.read(buffer); if (count < 0) break
+                    total += count; require(total <= 20 * 1024 * 1024) { "Choose a photo smaller than 20 MB." }
+                    output.write(buffer,0,count)
+                }
+            } }
+            val bitmap = ChatImageDecoder.decodeFile(file,2048,2048) ?: error("Couldn't decode that photo.")
+            try {
+                java.io.ByteArrayOutputStream().use { output ->
+                    check(bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG,85,output)) { "Couldn't prepare that photo." }
+                    output.toByteArray()
+                }
+            } finally { bitmap.recycle() }
+        } finally { file.delete() }
+    }

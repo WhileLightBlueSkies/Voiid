@@ -115,7 +115,7 @@ fun MessageHostButton(
                 Text(
                     // Two different promises, so they get two different labels: one opens a chat
                     // that already exists, the other starts one.
-                    if (p.conversation_id.isNullOrEmpty()) "Message host" else "Open chat with host",
+                    if (p.conversation_id.isNullOrEmpty()) "Message" else "Open messages",
                     style = VoiidFont.rounded(16, FontWeight.SemiBold),
                     color = VoiidColor.textPrimary,
                 )
@@ -123,7 +123,7 @@ fun MessageHostButton(
         }
 
         Text(
-            "A private chat with the host only. Other members can't message you.",
+            "Message the community team. An available community moderator can reply.",
             style = VoiidFont.rounded(12),
             color = VoiidColor.textSecondary,
             textAlign = TextAlign.Center,
@@ -148,6 +148,11 @@ fun MessageHostButton(
         error = null
         runCatching { service.open(communityId) }
             .onSuccess { thread ->
+                if (!thread.existed && !thread.conversation_id.isNullOrEmpty()) {
+                    val others = thread.moderator_user_ids.filter { it != myUserId }
+                    com.voiid.app.net.GroupEngine.get(context)
+                        .createGroup(thread.conversation_id, others)
+                }
                 haptics.success()
                 // Refresh the probe so a re-entry says "Open chat with host" even if the caller
                 // does not navigate away.
@@ -156,8 +161,8 @@ fun MessageHostButton(
             }
             .onFailure {
                 error = when (it) {
-                    is com.voiid.app.net.ApiError.Http -> it.message ?: "Couldn’t open a chat with the host."
-                    is com.voiid.app.net.ApiError.NotAuthenticated -> "Sign in to message the host."
+                    is com.voiid.app.net.ApiError.Http -> it.message ?: "Couldn’t open community messages."
+                    is com.voiid.app.net.ApiError.NotAuthenticated -> "Sign in to message the community."
                     else -> "Couldn’t reach Voiid. Check your connection and try again."
                 }
             }

@@ -197,6 +197,8 @@ struct CommunitySettingsView: View {
     @State private var joinPolicy: String
     @State private var category: String
     @State private var membersCanInvite: Bool
+    @State private var postingPolicy: String
+    @State private var showPostingMembers = false
 
     // ── The avatar ───────────────────────────────────────────────────────────────
     // Saved on selection rather than on Save; see the header for why this one control differs.
@@ -246,6 +248,7 @@ struct CommunitySettingsView: View {
         _joinPolicy = State(initialValue: card.policy)
         _category = State(initialValue: card.category ?? "")
         _membersCanInvite = State(initialValue: card.membersCanInvite)
+        _postingPolicy = State(initialValue: card.posting_policy ?? "managers")
     }
 
     // ── The invite-only rule, mirrored from the server ───────────────────────────
@@ -278,6 +281,7 @@ struct CommunitySettingsView: View {
             || sanitisedPolicy != card.policy
             || category.trimmingCharacters(in: .whitespacesAndNewlines) != (card.category ?? "")
             || effectiveMembersCanInvite != card.membersCanInvite
+            || postingPolicy != (card.posting_policy ?? "managers")
     }
 
     /// The policy as it would actually be SENT. Identical to `joinPolicy` in every reachable
@@ -307,6 +311,7 @@ struct CommunitySettingsView: View {
                     discoverySection
                     joiningSection
                     invitesSection
+                    postingSection
                     categorySection
                     rulesSection
                 }
@@ -324,6 +329,9 @@ struct CommunitySettingsView: View {
                         // would leave the host believing nothing was saved while it lands.
                         .disabled(saving)
                 }
+            }
+            .sheet(isPresented: $showPostingMembers) {
+                CommunityPostingMembersView(communityId: card.id)
             }
             .sheet(isPresented: $editingProfile) {
                 // Identity behind one door, as the reference has it. The fields are the same
@@ -1060,6 +1068,26 @@ struct CommunitySettingsView: View {
     /// an absent key means "leave this column alone" while an explicit null means "clear it".
     /// Sending the full draft every time would work, but it would also make every save a write
     /// to six columns and lose the distinction the route went to trouble to keep.
+    private var postingSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Who can post on Home").font(VoiidFont.rounded(16, .semibold))
+            Picker("Who can post", selection: $postingPolicy) {
+                ForEach(CommunityPostingPolicy.allCases) { policy in
+                    Text(policy.title).tag(policy.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            Text(CommunityPostingPolicy(rawValue: postingPolicy)?.detail ?? "Choose who can publish posts.")
+                .font(VoiidFont.rounded(13)).foregroundStyle(VoiidColor.textSecondary)
+            if postingPolicy == "selected" {
+                Button("Choose members") { showPostingMembers = true }
+            }
+        }
+        .padding(VoiidSpacing.md)
+        .background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: VoiidRadius.lg))
+        .disabled(saving)
+    }
+
     private func save() async {
         guard canSave else { return }
         saving = true
@@ -1087,7 +1115,8 @@ struct CommunitySettingsView: View {
                 category: newCategory == (card.category ?? "")
                     ? nil : .some(newCategory.isEmpty ? nil : newCategory),
                 membersCanInvite: effectiveMembersCanInvite == card.membersCanInvite
-                    ? nil : effectiveMembersCanInvite)
+                    ? nil : effectiveMembersCanInvite,
+                postingPolicy: postingPolicy == card.posting_policy ? nil : postingPolicy)
             apply(updated)
             Haptics.success()
         } catch {
@@ -1114,6 +1143,7 @@ struct CommunitySettingsView: View {
         joinPolicy = updated.policy
         category = updated.category ?? ""
         membersCanInvite = updated.membersCanInvite
+        postingPolicy = updated.posting_policy ?? "managers"
         savedAt = Date()
         onSaved(updated)
     }
@@ -1379,4 +1409,142 @@ private struct CommunityRuleEditor: View {
 private func capped(_ source: Binding<String>, _ limit: Int) -> Binding<String> {
     Binding(get: { source.wrappedValue },
             set: { source.wrappedValue = String($0.prefix(limit)) })
+}
+
+
+/// Shared labels and values for Home and every Space.
+enum CommunityPostingPolicy: String, CaseIterable, Identifiable {
+    case everyone, managers, selected, none
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .everyone: return "Everyone"
+        case .managers: return "Managers only"
+        case .selected: return "Selected members"
+        case .none: return "Nobody"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .everyone: return "All active members can publish posts."
+        case .managers: return "Only the owner and admins can publish posts."
+        case .selected: return "Chosen members, the owner and admins can publish posts."
+        case .none: return "Posting is paused for everyone, including managers."
+        }
+    }
+}
+
+struct CommunityPostingMembersView: View {
+    let communityId: String
+    var channelId: String? = nil
+    @Environment(\.dismiss) private var dismiss
+    @State private var members: [CommunityService.Member] = []
+    @State private var allowed: Set<String> = []
+    @State private var loading = true
+    @State private var busy: Set<String> = []
+    @State private var error: String?
+    @State private var search = ""
+    @State private var hasMore = true
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("Changes save immediately. Managers can already post when Selected members is active.")
+                        .foregroundStyle(.secondary)
+                }
+                if loading { ProgressView() }
+                if let error { Text(error).foregroundStyle(.red); Button("Try again") { Task { await load() } } }
+                ForEach(members.filter { search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search) }) { member in
+                    Toggle(isOn: Binding(get: { member.isAdmin || allowed.contains(member.id) }, set: { value in
+                        Task { await change(member.id, value) }
+                    })) {
+                        VStack(alignment: .leading) {
+                            Text(member.displayName)
+                            if member.isAdmin { Text("Manager").font(.caption).foregroundStyle(.secondary) }
+                        }
+                    }
+                    .disabled(member.isAdmin || loading || error != nil || busy.contains(member.id))
+                }
+                if hasMore && !loading { Button("Load more members") { Task { await loadMore() } } }
+            }
+            .searchable(text: $search, prompt: "Search loaded members")
+            .navigationTitle("Selected members")
+            .interactiveDismissDisabled(!busy.isEmpty)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(!busy.isEmpty) } }
+            .task { await load() }
+        }
+    }
+    private func load() async {
+        loading = true; defer { loading = false }
+        do {
+            let selected = try await CommunityService.shared.postingMembers(communityId: communityId, channelId: channelId)
+            let page = try await CommunityService.shared.members(communityId: communityId)
+            allowed = Set(selected.map(\.user_id)); members = page; hasMore = page.count == 50; error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+    private func loadMore() async {
+        loading = true; defer { loading = false }
+        do {
+            let page = try await CommunityService.shared.members(communityId: communityId, offset: members.count)
+            members += page; hasMore = page.count == 50; error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+    private func change(_ id: String, _ value: Bool) async {
+        guard !busy.contains(id) else { return }
+        busy.insert(id); defer { busy.remove(id) }
+        do {
+            try await CommunityService.shared.setPostingMember(communityId: communityId, userId: id, channelId: channelId, allowed: value)
+            if value { allowed.insert(id) } else { allowed.remove(id) }
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+struct CommunitySpaceSettingsView: View {
+    let communityId: String
+    let channel: CommunityService.Channel
+    let onSaved: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var posting = "managers"
+    @State private var purpose = ""
+    @State private var pinned = false
+    @State private var choosing = false
+    @State private var saving = false
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Space") {
+                    TextField("Description", text: $purpose)
+                        .onChange(of: purpose) { _, value in if value.count > 200 { purpose = String(value.prefix(200)) } }
+                    Toggle("Pin to top", isOn: $pinned)
+                }
+                Section("Who can post") {
+                    Picker("Who can post", selection: $posting) {
+                        ForEach(CommunityPostingPolicy.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    Text(CommunityPostingPolicy(rawValue: posting)?.detail ?? "")
+                        .foregroundStyle(.secondary)
+                    if posting == "selected" { Button("Choose members") { choosing = true } }
+                }
+                if let error { Text(error).foregroundStyle(.red) }
+            }
+            .disabled(saving)
+            .navigationTitle("Space settings")
+            .interactiveDismissDisabled(saving)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                ToolbarItem(placement: .confirmationAction) { Button(saving ? "Saving…" : "Save") { Task { await save() } }.disabled(saving) }
+            }
+            .onAppear { posting = channel.posting ?? "managers"; purpose = channel.purpose ?? ""; pinned = channel.pinned_at != nil }
+            .sheet(isPresented: $choosing) { CommunityPostingMembersView(communityId: communityId, channelId: channel.id) }
+        }
+    }
+    private func save() async {
+        saving = true; defer { saving = false }
+        do {
+            try await CommunityService.shared.updateSpace(communityId: communityId, channelId: channel.id, posting: posting, purpose: purpose, pinned: pinned)
+            onSaved(); dismiss()
+        } catch { self.error = error.localizedDescription }
+    }
 }

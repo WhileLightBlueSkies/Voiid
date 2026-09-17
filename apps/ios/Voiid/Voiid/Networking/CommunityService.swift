@@ -120,6 +120,7 @@ final class CommunityService {
         var membership_role: String?
         let official: Bool?
         let posting_policy: String?
+        var can_post: Bool?
         var membership_state: String?
         /// Whether the token in the link is currently redeemable. Nil when the link carried no
         /// token.
@@ -172,12 +173,14 @@ final class CommunityService {
         let community: CommunityCard
         let membership_state: String?
         let membership_role: String?
+        let can_post: Bool?
 
         func merged(inviteValid: Bool?) -> CommunityCard {
             var card = community
             card.membership_state = membership_state
             card.membership_role = membership_role
             card.invite_valid = inviteValid
+            card.can_post = can_post
             return card
         }
     }
@@ -251,10 +254,41 @@ final class CommunityService {
         let kind: String?
         let position: Int?
         let name: String?
+        let posting: String?
+        let purpose: String?
+        let pinned_at: String?
+        let can_post: Bool?
 
         var id: String { conversation_id }
         /// Announcement channels are host-writes-everyone-reads; chat is everyone.
         var isAnnouncement: Bool { kind == "announcement" }
+    }
+
+    struct PostingMember: Decodable, Identifiable {
+        let user_id: String
+        let full_name: String?
+        let username: String?
+        var id: String { user_id }
+    }
+    func postingMembers(communityId: String, channelId: String? = nil) async throws -> [PostingMember] {
+        struct Envelope: Decodable { let allowed: [PostingMember] }
+        let scope = channelId.map { "&channel_id=\($0)" } ?? ""
+        var all: [PostingMember] = []
+        while true {
+            let result: Envelope = try await api.request("GET", "communities/\(communityId)/posting-allowlist?offset=\(all.count)\(scope)")
+            all += result.allowed
+            if result.allowed.count < 200 { return all }
+        }
+    }
+    func setPostingMember(communityId: String, userId: String, channelId: String? = nil, allowed: Bool) async throws {
+        struct Body: Encodable { let user_id: String; let channel_id: String?; let allowed: Bool }
+        _ = try await api.request("POST", "communities/\(communityId)/posting-allowlist",
+            body: Body(user_id: userId, channel_id: channelId, allowed: allowed), as: EmptyResponse.self)
+    }
+    func updateSpace(communityId: String, channelId: String, posting: String, purpose: String, pinned: Bool) async throws {
+        struct Body: Encodable { let posting: String; let purpose: String; let pinned: Bool }
+        _ = try await api.request("PATCH", "communities/\(communityId)/channels/\(channelId)",
+            body: Body(posting: posting, purpose: purpose, pinned: pinned), as: EmptyResponse.self)
     }
 
     func channels(communityId: String) async throws -> [Channel] {
@@ -349,10 +383,10 @@ final class CommunityService {
 
     /// `state` filters the roster. Anything but `active` is manager-only — the server refuses
     /// a plain member asking who is banned, which is moderation state they are not entitled to.
-    func members(communityId: String, state: String = "active") async throws -> [Member] {
+    func members(communityId: String, state: String = "active", offset: Int = 0) async throws -> [Member] {
         struct Envelope: Decodable { let members: [Member] }
         let env: Envelope = try await api.request(
-            "GET", "communities/\(communityId)/members?state=\(state)")
+            "GET", "communities/\(communityId)/members?state=\(state)&limit=50&offset=\(offset)")
         return env.members
     }
 
@@ -530,7 +564,8 @@ final class CommunityService {
                 joinPolicy: String? = nil,
                 category: String?? = nil,
                 membersCanInvite: Bool? = nil,
-                avatarKey: String?? = nil) async throws -> CommunityCard {
+                avatarKey: String?? = nil,
+                postingPolicy: String? = nil) async throws -> CommunityCard {
         var body = PatchBody()
         body.set("name", name)
         body.setNullable("avatar_r2_key", avatarKey)
@@ -541,6 +576,7 @@ final class CommunityService {
         body.set("join_policy", joinPolicy)
         body.setNullable("category", category)
         body.set("members_can_invite", membersCanInvite)
+        body.set("posting_policy", postingPolicy)
         // The server answers an empty body with a 400 `nothing to update`. Nothing to send is
         // not an error the user caused, so it never becomes a round trip.
         guard !body.isEmpty else { return try await byId(communityId) }
@@ -548,7 +584,7 @@ final class CommunityService {
         struct Envelope: Decodable { let community: CommunityCard }
         let env: Envelope = try await api.request(
             "PATCH", "communities/\(communityId)", body: body)
-        return env.community
+        return try await byId(env.community.id)
     }
 
     /// The card by uuid. `GET /communities/:idOrHandle` takes either spelling.
@@ -662,6 +698,7 @@ final class CommunityService {
         var media_url: String?
         var like_count: Int?
         var comment_count: Int?
+        var view_count: Int?
         var liked_by_me: Bool?
         var created_at: String?
         var edited_at: String?
@@ -684,14 +721,16 @@ final class CommunityService {
     struct PostPage: Decodable {
         var posts: [Post]?
         var next_cursor: String?
+        var can_post: Bool?
 
         var rows: [Post] { posts ?? [] }
     }
 
     /// The feed, newest first. Keyset-paginated on `created_at`, not OFFSET: an offset page
     /// shifts under the reader every time somebody posts.
-    func posts(communityId: String, cursor: String? = nil, limit: Int = 20) async throws -> PostPage {
+    func posts(communityId: String, cursor: String? = nil, limit: Int = 20, channelId: String? = nil) async throws -> PostPage {
         var path = "communities/\(communityId)/posts?limit=\(limit)"
+        if let channelId { path += "&channel_id=\(channelId)" }
         if let cursor, !cursor.isEmpty {
             let escaped = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? cursor
             path += "&cursor=\(escaped)"
@@ -699,15 +738,31 @@ final class CommunityService {
         return try await api.request("GET", path)
     }
 
+    func viewPost(communityId: String, postId: String) async throws -> Int {
+        struct Result: Decodable { let view_count: Int }
+        let result: Result = try await api.request("POST", "communities/\(communityId)/posts/\(postId)/view")
+        return result.view_count
+    }
+
     /// Write a post. MEMBERS ONLY server-side — a stranger reading a discoverable feed is a
     /// visitor, not a participant — so this can 403 even where `posts(...)` succeeded.
-    func createPost(communityId: String, body: String, mediaUrl: String? = nil) async throws -> Post {
-        struct Body: Encodable { let body: String; let media_url: String? }
+    func createPost(communityId: String, body: String, mediaUrl: String? = nil, channelId: String? = nil) async throws -> Post {
+        struct Body: Encodable { let body: String; let media_url: String?; let channel_id: String? }
         struct Envelope: Decodable { let post: Post }
         let env: Envelope = try await api.request(
             "POST", "communities/\(communityId)/posts",
-            body: Body(body: body, media_url: mediaUrl))
+            body: Body(body: body, media_url: mediaUrl, channel_id: channelId))
         return env.post
+    }
+
+    func createPosts(communityId: String, body: String, mediaUrl: String? = nil,
+                     channelIds: [String?]) async throws -> [Post] {
+        struct Body: Encodable { let body: String; let media_url: String?; let channel_ids: [String?] }
+        struct Envelope: Decodable { let posts: [Post] }
+        let env: Envelope = try await api.request(
+            "POST", "communities/\(communityId)/posts",
+            body: Body(body: body, media_url: mediaUrl, channel_ids: channelIds))
+        return env.posts
     }
 
     /// Remove a post. The server allows the AUTHOR or a community manager and answers a single
@@ -993,10 +1048,28 @@ final class CommunityService {
     /// client's binary owner/member split has been invisible: the middle tier was
     /// unreachable rather than unused.
     func setRole(communityId: String, userId: String, role: String) async throws {
+        let supportThreads = (try? await CommunityHostThreadService.shared.all())?
+            .filter { $0.community_id == communityId && $0.amHost } ?? []
+        let active = (try? await members(communityId: communityId)) ?? []
         struct Body: Encodable { let role: String }
         _ = try await api.request(
             "POST", "communities/\(communityId)/members/\(userId)/role",
             body: Body(role: role), as: EmptyResponse.self)
+        let existingManagers = active.filter(\.isAdmin).map(\.user_id)
+        for thread in supportThreads {
+            guard let conversationId = thread.conversation_id,
+                  GroupEngine.shared.hasGroup(conversationId: conversationId) else { continue }
+            if role == "admin" {
+                let existing = Array(Set(existingManagers + [thread.member_user_id].compactMap { $0 }))
+                try await GroupEngine.shared.addMember(
+                    conversationId: conversationId, userId: userId, existingMemberUserIds: existing)
+            } else {
+                let remaining = Array(Set(existingManagers.filter { $0 != userId }
+                    + [thread.member_user_id].compactMap { $0 }))
+                try await GroupEngine.shared.removeMember(
+                    conversationId: conversationId, userId: userId, remainingMemberUserIds: remaining)
+            }
+        }
     }
 
     func removeMember(communityId: String, userId: String) async throws {

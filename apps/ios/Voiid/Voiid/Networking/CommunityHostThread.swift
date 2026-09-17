@@ -71,6 +71,8 @@ final class CommunityHostThreadService {
         /// false for a thread this call created, true when an existing one was returned.
         var existed: Bool?
         var opened_via: String?
+        var moderator_user_ids: [String]?
+        var community_name: String?
 
         var isCommunityThread: Bool { opened_via == "community" }
     }
@@ -142,13 +144,13 @@ final class CommunityHostThreadService {
     /// "left" and "banned": the server refuses to be an oracle for moderation state, so do not
     /// try to infer one from it.
     @discardableResult
-    func open(communityId: String) async throws -> (conversationId: String, hostUserId: String, existed: Bool) {
+    func open(communityId: String) async throws -> HostThread {
         let res: HostThread = try await api.request("POST", "communities/\(communityId)/host-thread")
         guard let conversationId = res.conversation_id, !conversationId.isEmpty,
               let hostUserId = res.host_user_id, !hostUserId.isEmpty else {
             throw APIError.http(status: 502, message: "The server did not return a host conversation.")
         }
-        return (conversationId, hostUserId, res.existed ?? false)
+        return res
     }
 
     /// Does a line to this host already exist? Lets the info card show "Open chat" instead of
@@ -211,12 +213,16 @@ final class CommunityHostThreadService {
                  quotedPreview: String,
                  quotedSender: String) async throws -> String {
         let thread = try await open(communityId: communityId)
+        guard let conversationId = thread.conversation_id,
+              let hostUserId = thread.host_user_id else {
+            throw APIError.http(status: 502, message: "The server did not return community messages.")
+        }
         _ = try await ChatEngine.shared.sendReply(text: text,
                                                   quotedId: quotedServerId,
                                                   quotedPreview: quotedPreview,
                                                   quotedSender: quotedSender,
-                                                  conversationId: thread.conversationId,
-                                                  peerUserId: thread.hostUserId)
-        return thread.conversationId
+                                                  conversationId: conversationId,
+                                                  peerUserId: hostUserId)
+        return conversationId
     }
 }

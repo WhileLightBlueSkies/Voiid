@@ -54,8 +54,13 @@ struct CommunityHomeTab: View {
     /// Drives the admin dashboard. A member never renders it — the block is gated on the role
     /// rather than hidden behind a flag, so there is no build in which a member sees the queue.
     let isAdmin: Bool
-    var canPost: Bool = true
+    var canPost: Bool = false
+    var channelId: String? = nil
 
+    @State private var nextCursor: String?
+    @State private var loadingMore = false
+    @State private var serverCanPost: Bool?
+    @State private var viewed: Set<String> = []
     @State private var posts: [CommunityService.Post] = []
     @State private var pinned: CommunityService.Announcement?
     @State private var loading = true
@@ -111,13 +116,13 @@ struct CommunityHomeTab: View {
         VStack(spacing: VoiidSpacing.md) {
             // Admins get the numbers and the queue first. A member scrolling Home wants the
             // feed; an admin opening Home wants to know what needs them.
-            if isAdmin { adminDashboard }
+            if isAdmin && channelId == nil { adminDashboard }
 
-            announcement
+            if channelId == nil { announcement }
 
             // Above the feed, below the announcement: the thing you came to say goes in at
             // the top of the list it lands at the top of.
-            if canPost { composeBar }
+            if serverCanPost ?? canPost { composeBar }
 
             // A failed write is stated where the write was started from, and dismissible —
             // it is about one action that is now over, not about the state of the tab.
@@ -150,13 +155,17 @@ struct CommunityHomeTab: View {
 
             feed
         }
+        .refreshable { await load() }
         .task { await load() }
+        .onChange(of: canPost) { _, value in serverCanPost = value }
         .sheet(isPresented: $composing) {
-            CommunityPostComposer(communityId: communityId) { post in
+            CommunityPostComposer(communityId: communityId, channelId: channelId) { published in
                 // The SERVER's row, prepended — not a locally-built one. It carries the id and
                 // the author columns, so the card that appears is the card that will still be
                 // there after the next refresh.
-                posts.insert(post, at: 0)
+                for item in published where item.channelId == channelId {
+                    posts.insert(item.post, at: 0)
+                }
                 writeError = nil
             }
         }
@@ -314,14 +323,14 @@ struct CommunityHomeTab: View {
         defer { loading = false }
 
         async let feedTask = fetchPosts()
-        async let pinnedTask = fetchAnnouncement()
+        async let pinnedTask: Void = channelId == nil ? fetchAnnouncement() : ()
         // The dashboard is fetched CONCURRENTLY with the feed, not after it: a host waiting on
         // twenty posts before their moderation queue appears is a host who stops checking it.
         //
         // The gate is convenience only. Both routes are `requireManager` server-side and would
         // 403 an ordinary member regardless of what this client believes — `isAdmin` here just
         // avoids firing two requests that are certain to be refused.
-        async let adminTask: Void = isAdmin ? fetchAdmin() : ()
+        async let adminTask: Void = isAdmin && channelId == nil ? fetchAdmin() : ()
         _ = await (feedTask, pinnedTask, adminTask)
     }
 
@@ -441,7 +450,8 @@ struct CommunityHomeTab: View {
 
     private func fetchPosts() async {
         do {
-            posts = try await CommunityService.shared.posts(communityId: communityId).rows
+            let page = try await CommunityService.shared.posts(communityId: communityId, channelId: channelId)
+            posts = page.rows; nextCursor = page.next_cursor; serverCanPost = page.can_post ?? false
             postsError = nil
         } catch {
             postsError = (error as? APIError)?.errorDescription ?? "Couldn\u{2019}t load posts."
@@ -489,6 +499,7 @@ struct CommunityHomeTab: View {
             guard let now = posts.firstIndex(where: { $0.id == post.id }) else { return }
             posts[now].liked_by_me = wasLiked
             posts[now].like_count = previousCount
+            writeError = error.localizedDescription
         }
     }
 
@@ -511,6 +522,7 @@ struct CommunityHomeTab: View {
                      detail: isAdmin ? "Post something to get the feed started."
                                      : "Nothing has been posted here yet.")
         } else {
+            LazyVStack(spacing: VoiidSpacing.md) {
             ForEach(posts) { post in
                 CommunityPostCard(
                     post: post,
@@ -524,8 +536,38 @@ struct CommunityHomeTab: View {
                 // duplicate write against a post that is already on its way out.
                 .opacity(deleteBusy.contains(post.id) ? 0.45 : 1)
                 .allowsHitTesting(!deleteBusy.contains(post.id))
+                .background(GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { recordVisible(post.id, frame: geometry.frame(in: .global)) }
+                        .onChange(of: geometry.frame(in: .global)) { _, frame in recordVisible(post.id, frame: frame) }
+                })
+            }
+            if let postsError { Text(postsError).foregroundStyle(VoiidColor.error) }
+            if nextCursor != nil { Button(loadingMore ? "Loading…" : "Load more posts") { Task { await loadMore() } }.disabled(loadingMore) }
             }
         }
+    }
+
+    private func recordVisible(_ id: String, frame: CGRect) {
+        let visible = frame.intersection(UIScreen.main.bounds)
+        guard frame.height > 0, visible.height >= min(frame.height / 2, 200), !viewed.contains(id) else { return }
+        viewed.insert(id)
+        Task {
+            do {
+                let count = try await CommunityService.shared.viewPost(communityId: communityId, postId: id)
+                if let index = posts.firstIndex(where: { $0.id == id }) { posts[index].view_count = count }
+            } catch { viewed.remove(id) }
+        }
+    }
+    private func loadMore() async {
+        guard let cursor = nextCursor, !loadingMore else { return }
+        loadingMore = true; defer { loadingMore = false }
+        do {
+            let page = try await CommunityService.shared.posts(communityId: communityId, cursor: cursor, channelId: channelId)
+            let existing = Set(posts.map(\.id))
+            posts += page.rows.filter { !existing.contains($0.id) }
+            nextCursor = page.next_cursor; serverCanPost = page.can_post ?? false; postsError = nil
+        } catch { postsError = error.localizedDescription }
     }
 
     // MARK: Admin dashboard
@@ -1028,8 +1070,7 @@ private struct CommunityPostCard: View {
                 Spacer(minLength: 0)
 
                 Menu {
-                    Button("Save post", systemImage: "bookmark") {}
-                    Button("Share", systemImage: "square.and.arrow.up") {}
+                    ShareLink(item: post.text) { Label("Share", systemImage: "square.and.arrow.up") }
                     // WIRED. This item was inert — a UGC feed with a Report button that did
                     // nothing is worse than one with no button, because it tells a reader their
                     // complaint was filed when no row was ever written. It now opens the same
@@ -1103,8 +1144,8 @@ private struct CommunityPostCard: View {
                 // Comments have a COUNT but no thread: community_posts carries comment_count
                 // and 047 defines no comments table, so there is nowhere for a tap to go. The
                 // number is real; the button stays inert rather than opening an empty screen.
-                postAction("bubble.left", "\(post.comments)")
-                postAction("square.and.arrow.up", "Share")
+                postAction("eye", "\(post.view_count ?? 0)")
+                ShareLink(item: post.text) { Label("Share", systemImage: "square.and.arrow.up").font(VoiidFont.rounded(12)).foregroundStyle(VoiidColor.textSecondary) }
                 Spacer(minLength: 0)
             }
             .padding(.top, 2)

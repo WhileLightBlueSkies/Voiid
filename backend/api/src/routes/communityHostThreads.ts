@@ -78,7 +78,7 @@ const HOST_THREAD_MAX_PER_DAY = 30;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type HostTarget =
-  | { ok: true; ownerId: string }
+  | { ok: true; ownerId: string; communityName: string; moderatorIds: string[] }
   | { ok: false; status: number; error: string };
 
 /**
@@ -97,8 +97,8 @@ type HostTarget =
  * Returns the owner's user id, never a list, never a body-supplied value.
  */
 async function resolveHostTarget(communityId: string, callerId: string): Promise<HostTarget> {
-  const community = (await query<{ owner_id: string; suspended_at: string | null }>(
-    `select owner_id, suspended_at from communities where id = $1`,
+  const community = (await query<{ owner_id: string; name: string; suspended_at: string | null }>(
+    `select owner_id, name, suspended_at from communities where id = $1`,
     [communityId]
   ))[0];
   if (!community) return { ok: false, status: 404, error: 'no such community' };
@@ -131,7 +131,15 @@ async function resolveHostTarget(communityId: string, callerId: string): Promise
   ))[0];
   if (!owner) return { ok: false, status: 404, error: 'this community has no reachable host' };
 
-  return { ok: true, ownerId: community.owner_id };
+  const admins = await query<{ user_id: string }>(
+    `select m.user_id from community_members m
+      join users u on u.id=m.user_id and u.deleted_at is null
+     where m.community_id=$1 and m.state='active' and m.role in ('owner','admin')
+     order by case when m.user_id=$2 then 0 else 1 end, m.joined_at`,
+    [communityId, community.owner_id]
+  );
+  const moderatorIds = Array.from(new Set([community.owner_id, ...admins.map(a => a.user_id)]));
+  return { ok: true, ownerId: community.owner_id, communityName: community.name, moderatorIds };
 }
 
 /**
@@ -192,31 +200,14 @@ router.post(
         host_user_id: hostId,
         existed: true,
         opened_via: 'community',
+        moderator_user_ids: target.moderatorIds,
+        community_name: target.communityName,
       });
     }
 
-    // ── An ordinary 1:1 between these two may already exist (they are contacts, or one of
-    //    them opened a request). Reuse it, and do NOT record it as a host thread: retro-
-    //    labelling a personal chat would move it into the host's Community inbox and rewrite
-    //    how it says it was opened, which is a lie about provenance for zero benefit.
-    const existingDirect = await findDirectConversation(user_id, hostId);
-    if (existingDirect) {
-      // THE HOST ALREADY SAID NO. `declined` is the only server-visible refusal Voiid has
-      // (blocking is client-side), and a community join must not launder around it. Joining a
-      // space grants the right to ask its host a question; it does not overrule a host who has
-      // explicitly refused this person. Reported as the ordinary membership failure so the
-      // refusal is not confirmed back to the sender — same reasoning as
-      // POST /reachability/:id/decline, which never tells the sender either.
-      if (existingDirect.peer_state === 'declined') {
-        return res.status(403).json({ error: 'only active members can message the host' });
-      }
-      return res.json({
-        conversation_id: existingDirect.id,
-        host_user_id: hostId,
-        existed: true,
-        opened_via: null,
-      });
-    }
+    // Always create a community-scoped conversation. Even when this member and the owner
+    // already have a personal chat, support must remain a separate thread with its own
+    // community identity and shared moderator access.
 
     // ── Creation is throttled per user; reuse above is not.
     const counts = (await query<{ hour: string; day: string }>(
@@ -235,8 +226,8 @@ router.post(
     try {
       await client.query('begin');
       const conv = (await client.query<{ id: string }>(
-        `insert into conversations (type, created_by) values ('direct', $1) returning id`,
-        [user_id]
+        `insert into conversations (type, name, created_by) values ('group', $1, $2) returning id`,
+        [`${target.communityName} · Moderator`, hostId]
       )).rows[0];
 
       // BOTH SIDES 'accepted'. This is the whole substance of the exception: the host does not
@@ -245,10 +236,14 @@ router.post(
       // client can group these into a Community inbox section and the member's client can say
       // where the chat came from.
       await client.query(
-        `insert into conversation_members (conversation_id, user_id, request_state, opened_via)
-         values ($1, $2, 'accepted', 'community'), ($1, $3, 'accepted', 'community')`,
-        [conv.id, user_id, hostId]
-      );
+        `insert into conversation_members (conversation_id, user_id, role, request_state, opened_via)
+         values ($1, $2, 'member', 'accepted', 'community')`, [conv.id, user_id]);
+      for (const moderatorId of target.moderatorIds) {
+        await client.query(
+          `insert into conversation_members (conversation_id, user_id, role, request_state, opened_via)
+           values ($1,$2,$3,'accepted','community')`,
+          [conv.id, moderatorId, moderatorId === hostId ? 'owner' : 'admin']);
+      }
 
       // ON CONFLICT DO NOTHING + RETURNING is the race decider: two devices pressing "Message
       // host" at once both reach here, one inserts, the other returns no row and rolls back —
@@ -278,6 +273,8 @@ router.post(
           host_user_id: hostId,
           existed: true,
           opened_via: 'community',
+          moderator_user_ids: target.moderatorIds,
+          community_name: target.communityName,
         });
       }
 
@@ -287,6 +284,8 @@ router.post(
         host_user_id: hostId,
         existed: false,
         opened_via: 'community',
+        moderator_user_ids: target.moderatorIds,
+        community_name: target.communityName,
       });
     } catch (e) {
       await client.query('rollback');
@@ -323,6 +322,8 @@ router.get('/communities/:id/host-thread', requireAuth, asyncHandler(async (req,
   res.json({
     conversation_id: row?.conversation_id ?? null,
     host_user_id: target.ownerId,
+    moderator_user_ids: target.moderatorIds,
+    community_name: target.communityName,
   });
 }));
 
@@ -355,11 +356,16 @@ router.get('/community-host-threads', requireAuth, asyncHandler(async (req, res)
             c.handle        as community_handle,
             c.name          as community_name,
             c.avatar_r2_key as community_avatar_r2_key,
-            case when c.owner_id = $1 then 'host' else 'member' end as role,
+            case when c.owner_id = $1 or exists (
+              select 1 from community_members cm where cm.community_id=c.id and cm.user_id=$1
+                and cm.state='active' and cm.role in ('owner','admin')
+            ) then 'host' else 'member' end as role,
             t.member_user_id
        from community_host_threads t
        join communities c on c.id = t.community_id
-      where t.member_user_id = $1 or c.owner_id = $1
+      where t.member_user_id = $1 or c.owner_id = $1 or exists (
+        select 1 from community_members cm where cm.community_id=c.id and cm.user_id=$1
+          and cm.state='active' and cm.role in ('owner','admin'))
       order by t.created_at desc
       limit 500`,
     [user_id]
@@ -398,13 +404,16 @@ router.patch(
       return res.status(400).json({ error: 'status must be unread, open or resolved' });
     }
 
-    const community = (await query<{ owner_id: string }>(
-      `select owner_id from communities where id = $1`,
-      [communityId]
+    const community = (await query<{ owner_id: string; manager: boolean }>(
+      `select c.owner_id, (c.owner_id=$2 or exists (
+         select 1 from community_members m where m.community_id=c.id and m.user_id=$2
+          and m.state='active' and m.role in ('owner','admin'))) as manager
+       from communities c where c.id = $1`,
+      [communityId,user_id]
     ))[0];
     // 404 for "not the owner" as well as "no such community": a caller who is not the host
     // must not learn whether a community id exists by watching the status code change.
-    if (!community || community.owner_id !== user_id) {
+    if (!community || !community.manager) {
       return res.status(404).json({ error: 'no such community' });
     }
 

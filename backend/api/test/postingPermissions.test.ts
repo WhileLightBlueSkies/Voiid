@@ -76,13 +76,14 @@ test('posting policy: everyone, managers, selected and none', { skip: !url }, as
 
   const owner = randomUUID(), plain = randomUUID(), picked = randomUUID();
   const community = randomUUID();
+  const space = randomUUID(), otherSpace = randomUUID();
   const handle = 'pp' + randomUUID().replace(/-/g, '').slice(0, 8);
 
-  async function post(as: string) {
+  async function post(as: string, channelId?: string) {
     const res = await fetch(`${base}/communities/${community}/posts`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-test-user': as },
-      body: JSON.stringify({ body: 'hello' }),
+      body: JSON.stringify({ body: 'hello', channel_id:channelId }),
     });
     return res.status;
   }
@@ -107,9 +108,39 @@ test('posting policy: everyone, managers, selected and none', { skip: !url }, as
       );
     }
 
+    for (const id of [space,otherSpace]) {
+      await query("insert into conversations(id,type,name) values($1,'group','Topic')",[id]);
+      await query("insert into community_channels(conversation_id,community_id,kind,posting) values($1,$2,'chat','selected')",[id,community]);
+    }
+    async function request(path: string, as: string, method='GET', body?: object) {
+      const response = await fetch(`${base}/communities/${community}${path}`,{
+        method,headers:{'content-type':'application/json','x-test-user':as},
+        body:body===undefined?undefined:JSON.stringify(body)});
+      return {status:response.status,body:await response.json() as any};
+    }
+    await t.test('channel list returns authoritative policy and permission, including managers',async()=>{
+      const result=await request('/channels',owner);
+      assert.equal(result.status,200);
+      assert.equal(result.body.channels.find((c:any)=>c.conversation_id===space).can_post,true);
+      assert.equal(result.body.channels.find((c:any)=>c.conversation_id===space).posting,'selected');
+      assert.equal((await request('/join',owner,'POST',{})).body.channels.find((c:any)=>c.conversation_id===space).can_post,true);
+      const member=await request('/channels',plain);
+      assert.equal(member.body.channels.find((c:any)=>c.conversation_id===space).can_post,false);
+    });
+    await t.test('Space settings persist policy, purpose and pinning; invalid policy changes nothing',async()=>{
+      assert.equal((await request(`/channels/${space}`,plain,'PATCH',{posting:'everyone'})).status,403);
+      assert.equal((await request(`/channels/${space}`,owner,'PATCH',{posting:'none',purpose:'Space topic',pinned:true})).status,200);
+      assert.equal(await post(owner,space),403);
+      let row=(await query('select posting,purpose,pinned_at from community_channels where conversation_id=$1',[space]))[0];
+      assert.equal(row.posting,'none'); assert.equal(row.purpose,'Space topic'); assert.ok(row.pinned_at);
+      assert.equal((await request(`/channels/${space}`,owner,'PATCH',{name:'must not apply',posting:'invalid'})).status,400);
+      assert.equal((await query('select name from conversations where id=$1',[space]))[0].name,'Topic');
+      await request(`/channels/${space}`,owner,'PATCH',{posting:'selected',pinned:false});
+    });
     await t.test('everyone: any active member may post', async () => {
       await setPolicy('everyone');
       assert.equal(await post(plain), 201);
+      assert.equal((await request('',plain)).body.can_post,true);
     });
 
     await t.test('managers: the owner may, an ordinary member may not', async () => {
@@ -125,6 +156,7 @@ test('posting policy: everyone, managers, selected and none', { skip: !url }, as
       await setPolicy('none');
       assert.equal(await post(owner), 403);
       assert.equal(await post(plain), 403);
+      assert.equal((await request('',owner)).body.can_post,false);
     });
 
     await t.test('selected: the allowlist ADDS to managers, it does not replace them', async () => {
@@ -147,20 +179,106 @@ test('posting policy: everyone, managers, selected and none', { skip: !url }, as
       assert.equal(await post(owner), 201);
     });
 
-    await t.test('a Home-feed grant does not carry into a Space', async () => {
-      // The allowlist is keyed by (community, channel), with null meaning Home. A grant that
-      // leaked across that boundary would silently widen every Space in the community.
-      const rows = await query(
-        `select 1 from community_post_allowlist
-          where community_id = $1 and user_id = $2 and channel_id = $3`,
-        [community, picked, randomUUID()],
-      );
-      assert.equal(rows.length, 0);
+    await t.test('Home and Space grants are independent, and removal takes effect on the next fetch',async()=>{
+      assert.equal(await post(picked,space),403);
+      assert.equal((await request('/posting-allowlist',owner,'POST',{user_id:picked,channel_id:space,allowed:true})).status,200);
+      assert.equal(await post(picked,space),201);
+      assert.equal(await post(picked,otherSpace),403);
+      const permitted=await request(`/posts?channel_id=${space}`,picked);
+      assert.equal(permitted.body.can_post,true);
+      assert.equal((await request('/posting-allowlist',plain)).status,403);
+      assert.equal((await request('/posting-allowlist',owner,'POST',{user_id:picked,channel_id:randomUUID(),allowed:true})).status,404);
+      await request('/posting-allowlist',owner,'POST',{user_id:picked,channel_id:space,allowed:false});
+      assert.equal((await request(`/posts?channel_id=${space}`,picked)).body.can_post,false);
+      assert.equal(await post(picked,space),403);
     });
+    await t.test('one post can target Home and multiple Spaces atomically', async () => {
+      await setPolicy('everyone');
+      await query("update community_channels set posting='everyone' where conversation_id=$1", [space]);
+      await query("update community_channels set posting='selected' where conversation_id=$1", [otherSpace]);
+      const ok = await request('/posts', owner, 'POST', {
+        body: 'everywhere-once', channel_ids: [null, space, otherSpace],
+      });
+      assert.equal(ok.status, 201);
+      assert.equal(ok.body.posts.length, 3);
+      assert.deepEqual(new Set(ok.body.posts.map((p:any) => p.channel_id)), new Set([null, space, otherSpace]));
+
+      const before = Number((await query(
+        "select count(*) from community_posts where community_id=$1 and body='must-not-partially-land'",
+        [community]))[0].count);
+      const denied = await request('/posts', plain, 'POST', {
+        body: 'must-not-partially-land', channel_ids: [null, otherSpace],
+      });
+      assert.equal(denied.status, 403);
+      const after = Number((await query(
+        "select count(*) from community_posts where community_id=$1 and body='must-not-partially-land'",
+        [community]))[0].count);
+      assert.equal(after, before);
+    });
+    await t.test('feeds isolate Home and each Space and preserve every same-timestamp page',async()=>{
+      const ids=Array.from({length:3},()=>randomUUID());
+      for(const id of ids) await query("insert into community_posts(id,community_id,channel_id,author_id,body,created_at) values($1,$2,$3,$4,'page','2090-01-01T00:00:00.123456Z')",[id,community,space,owner]);
+      const home=await request('/posts',owner);
+      assert.ok(home.body.posts.every((p:any)=>p.channel_id===null));
+      let cursor:string|null=null; const seen:string[]=[];
+      do {
+        const page=await request(`/posts?channel_id=${space}&limit=1${cursor?'&cursor='+encodeURIComponent(cursor):''}`,owner);
+        assert.equal(page.status,200);
+        assert.ok(page.body.posts.every((p:any)=>p.channel_id===space));
+        seen.push(...page.body.posts.map((p:any)=>p.id)); cursor=page.body.next_cursor;
+      } while(cursor);
+      for(const id of ids) assert.equal(seen.filter(v=>v===id).length,1);
+      assert.equal((await request('/posts?cursor=garbage',owner)).status,400);
+      // ISOLATION, not emptiness. An earlier subtest posts 'everywhere-once' to
+      // [null, space, otherSpace] deliberately, so asserting this feed is EMPTY makes the two
+      // tests contradict each other and whichever runs second fails. What matters here is
+      // that this Space's feed contains only ITS OWN posts — never the three 'page' rows
+      // written to `space` above.
+      const other = (await request(`/posts?channel_id=${otherSpace}`,owner)).body.posts;
+      assert.ok(other.every((p:any)=>p.channel_id===otherSpace));
+      assert.equal(other.filter((p:any)=>ids.includes(p.id)).length,0);
+      await query('update communities set discoverable=true where id=$1',[community]);
+      assert.equal((await request(`/posts?channel_id=${space}`,randomUUID())).status,404);
+    });
+    await t.test('Space likes are idempotent and cannot be added by a non-member',async()=>{
+      const row=(await query('select id from community_posts where community_id=$1 and channel_id=$2 limit 1',[community,space]))[0];
+      const path=`/posts/${row.id}/like`;
+      assert.equal((await request(path,randomUUID(),'POST',{})).status,403);
+      for(let i=0;i<2;i++) assert.equal((await request(path,plain,'POST',{})).status,200);
+      assert.equal((await query('select like_count from community_posts where id=$1',[row.id]))[0].like_count,1);
+      for(let i=0;i<2;i++) assert.equal((await request(path,plain,'DELETE')).status,200);
+      assert.equal((await query('select like_count from community_posts where id=$1',[row.id]))[0].like_count,0);
+    });
+    await t.test('views increment only readable published posts and return only a count',async()=>{
+      const row=(await query('select id from community_posts where community_id=$1 and channel_id=$2 limit 1',[community,space]))[0];
+      assert.equal((await request(`/posts/${row.id}/view`,randomUUID(),'POST',{})).status,404);
+      const first=await request(`/posts/${row.id}/view`,plain,'POST',{});
+      const second=await request(`/posts/${row.id}/view`,plain,'POST',{});
+      assert.equal(first.status,200); assert.deepEqual(Object.keys(first.body),['view_count']);
+      assert.equal(second.body.view_count,first.body.view_count+1);
+      const concurrent = await Promise.all(Array.from({length:10},()=>request(`/posts/${row.id}/view`,plain,'POST',{})));
+      assert.ok(concurrent.every(r=>r.status===200));
+      assert.equal((await query('select view_count from community_posts where id=$1',[row.id]))[0].view_count,second.body.view_count+10);
+      await query("update community_posts set scheduled_at=now()+interval '1 hour' where id=$1",[row.id]);
+      assert.equal((await request(`/posts/${row.id}/view`,plain,'POST',{})).status,404);
+      await query('update community_posts set scheduled_at=null,removed_at=now() where id=$1',[row.id]);
+      assert.equal((await request(`/posts/${row.id}/view`,plain,'POST',{})).status,404);
+    });
+
+    await t.test('suspension hides channel capabilities and refuses feeds and views',async()=>{
+      await query('update communities set suspended_at=now() where id=$1',[community]);
+      assert.equal((await request('/channels',owner)).status,403);
+      assert.equal((await request('/posts',owner)).status,403);
+      const detail=await request('',owner);
+      assert.equal(detail.body.can_post,false);
+      assert.deepEqual(detail.body.channels,[]);
+    });
+
   } finally {
     await query('delete from community_post_allowlist where community_id = $1', [community]).catch(() => {});
     await query('delete from community_members where community_id = $1', [community]).catch(() => {});
     await query('delete from community_posts where community_id = $1', [community]).catch(() => {});
+    await query('delete from conversations where id=any($1::uuid[])',[[space,otherSpace]]).catch(()=>{});
     await query('delete from communities where id = $1', [community]).catch(() => {});
     await query('delete from users where id = any($1::uuid[])', [[owner, plain, picked]]).catch(() => {});
     await new Promise<void>((r, j) => server.close(e => (e ? j(e) : r())));

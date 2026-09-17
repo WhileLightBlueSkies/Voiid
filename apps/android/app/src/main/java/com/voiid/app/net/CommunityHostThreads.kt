@@ -76,6 +76,8 @@ class CommunityHostThreads(context: Context) {
         /** False for a thread this call created, true when an existing one was handed back. */
         val existed: Boolean = false,
         val opened_via: String? = null,
+        val moderator_user_ids: List<String> = emptyList(),
+        val community_name: String? = null,
     ) {
         val isCommunityThread: Boolean get() = opened_via == "community"
     }

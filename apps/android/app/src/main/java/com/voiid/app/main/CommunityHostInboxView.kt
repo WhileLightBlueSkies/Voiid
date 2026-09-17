@@ -75,9 +75,9 @@ fun CommunityHostInboxView(
                  color = VoiidColor.primary, modifier = Modifier.softClickable(onClick = onClose))
             Spacer(Modifier.weight(1f))
         }
-        Text("Community", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary,
+        Text("Community messages", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary,
              modifier = Modifier.padding(horizontal = 16.dp))
-        Text("Private lines between members and hosts.",
+        Text("Community messages that authorized moderators can answer.",
              style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
              modifier = Modifier.padding(horizontal = 16.dp).padding(top = 2.dp))
         Spacer(Modifier.height(10.dp))
@@ -85,7 +85,7 @@ fun CommunityHostInboxView(
         when {
             error != null -> InboxNote(error!!)
             threads == null -> InboxNote("Loading…")
-            threads!!.isEmpty() -> InboxNote("No community chats yet. Message a host — or have someone message you.")
+            threads!!.isEmpty() -> InboxNote("No community messages yet.")
             else -> LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp)) {
                 items(threads!!, key = { it.conversation_id }) { t ->
                     Row(
@@ -105,12 +105,12 @@ fun CommunityHostInboxView(
                             )
                             val peer = t.member_user_id?.takeIf { it.isNotBlank() }?.let { UserDirectory.displayName(it) }
                             Text(
-                                if (t.amHost) peer?.let { "From $it" } ?: "Member thread" else "With the host",
+                                if (t.amHost) "Reply as ${t.community_name ?: "Community"} · Moderator" else "Community moderator",
                                 style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
                             )
                         }
                         if (t.amHost) {
-                            Text("host", style = VoiidFont.rounded(11, FontWeight.SemiBold),
+                            Text("moderator", style = VoiidFont.rounded(11, FontWeight.SemiBold),
                                  color = VoiidColor.primary,
                                  modifier = Modifier.clip(CircleShape)
                                      .background(VoiidColor.primary.copy(alpha = 0.1f))

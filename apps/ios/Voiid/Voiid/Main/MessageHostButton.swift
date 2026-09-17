@@ -70,7 +70,7 @@ struct MessageHostButton: View {
                             } else {
                                 // Two different promises, so they get two different labels: one
                                 // opens a chat that already exists, the other starts one.
-                                Text(hasThread ? "Open chat with host" : "Message host")
+                                Text(hasThread ? "Open messages" : "Message")
                                     .font(VoiidFont.rounded(16, .semibold))
                                     .foregroundStyle(VoiidColor.textPrimary)
                             }
@@ -81,7 +81,7 @@ struct MessageHostButton: View {
                     }
                     .disabled(opening)
 
-                    Text("A private chat with the host only. Other members can’t message you.")
+                    Text("Message the community team. An available community moderator can reply.")
                         .font(VoiidFont.rounded(12))
                         .foregroundStyle(VoiidColor.textSecondary)
                         .multilineTextAlignment(.center)
@@ -109,6 +109,10 @@ struct MessageHostButton: View {
         error = nil
         do {
             let thread = try await CommunityHostThreadService.shared.open(communityId: communityId)
+            if thread.existed == false, let conversationId = thread.conversation_id {
+                let others = (thread.moderator_user_ids ?? []).filter { $0 != TokenStore.shared.userId }
+                await GroupEngine.shared.createGroup(conversationId: conversationId, memberUserIds: others)
+            }
             Haptics.success()
             // Refresh the probe so a re-entry says "Open chat with host" even if the caller does
             // not navigate away. Only the two fields this view reads are carried over; the
@@ -116,14 +120,18 @@ struct MessageHostButton: View {
             // CREATED a community thread or handed back a pre-existing personal chat is its
             // answer to record, not this view's to restate.
             probe = CommunityHostThreadService.HostThread(
-                conversation_id: thread.conversationId,
-                host_user_id: thread.hostUserId,
+                conversation_id: thread.conversation_id,
+                host_user_id: thread.host_user_id,
                 existed: thread.existed,
-                opened_via: probe?.opened_via
+                opened_via: probe?.opened_via,
+                moderator_user_ids: thread.moderator_user_ids,
+                community_name: thread.community_name
             )
-            onOpenConversation(thread.conversationId)
+            if let conversationId = thread.conversation_id {
+                onOpenConversation(conversationId)
+            }
         } catch let e as APIError {
-            error = e.errorDescription ?? "Couldn’t open a chat with the host."
+            error = e.errorDescription ?? "Couldn’t open community messages."
         } catch {
             self.error = "Couldn’t reach Voiid. Check your connection and try again."
         }
