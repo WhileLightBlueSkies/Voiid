@@ -856,7 +856,8 @@ final class ChatEngine {
         // the extension against itself and deliver nothing.
         if detail?.conversation?.type == "group" {
             return await groupNotificationPreview(messageId: messageId, conversationId: conversationId,
-                                                  members: members, groupName: detail?.conversation?.name)
+                                                  members: members, groupName: detail?.conversation?.name,
+                                                  communityName: detail?.conversation?.community_name)
         }
         let others = members.filter { $0.user_id != myId }
         guard others.count == 1, let peerUserId = others.first?.user_id else { return nil }
@@ -907,16 +908,26 @@ final class ChatEngine {
     /// leaf index is not exposed through the FFI, so a hostile server could mislabel WHO
     /// sent a message it cannot read. The content itself stays end-to-end encrypted.
     private func groupNotificationPreview(messageId: String, conversationId: String,
-                                          members: [ConvMember], groupName: String?) async -> NotificationPreview? {
+                                          members: [ConvMember], groupName: String?,
+                                          communityName: String? = nil) async -> NotificationPreview? {
         guard let msg = await GroupEngine.shared.notificationDecrypt(
                 conversationId: conversationId, messageId: messageId),
               !msg.isMine, !msg.failed else { return nil }
         let sender = senderName(msg.senderId, members: members)
         // Group title: the server's name, else the locally-cached conversation title, else a
         // neutral word — never the conversation UUID.
-        let title = [groupName, SharedDirectory.conversationTitle(conversationId)]
+        let base = [groupName, SharedDirectory.conversationTitle(conversationId)]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? "Group"
+        // A SPACE SAYS WHICH COMMUNITY IT IS IN.
+        //
+        // A Space is a conversation, so this used to render "General" and nothing else —
+        // useless when three communities each have a General. The community leads because it
+        // is the coarser identifier: the reader locates the community first, then the room.
+        let community = communityName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = (community?.isEmpty == false && community != base)
+            ? "\(community!) · \(base)"
+            : base
         let text: String
         if msg.media != nil {
             text = msg.text.isEmpty ? "📎 Media" : "📎 \(msg.text)"
@@ -936,7 +947,15 @@ final class ChatEngine {
 
     private struct ConvMember: Decodable { let user_id: String; let full_name: String? }
     /// `type` is "direct" | "group"; `name` is the group's server-side title (null for direct).
-    private struct ConvSummary: Decodable { let type: String?; let name: String? }
+    /// `type` is "direct" | "group"; `name` is the group's server-side title (null for
+    /// direct). `community_name` is set only when this conversation IS a Space — a Space is a
+    /// conversation, so without it a push could only say "General" and never which community
+    /// that General belongs to.
+    private struct ConvSummary: Decodable {
+        let type: String?
+        let name: String?
+        let community_name: String?
+    }
     private struct ConvDetailResponse: Decodable {
         var conversation: ConvSummary? = nil
         let members: [ConvMember]

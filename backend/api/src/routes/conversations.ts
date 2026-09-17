@@ -270,7 +270,19 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   if (!isMember[0]) return res.status(403).json({ error: 'not a member of this conversation' });
 
   const conv = (await query(
-    `select id, type, name, photo_url, created_by, created_at from conversations where id = $1`,
+    // THE COMMUNITY NAME, for a Space's notification title.
+    //
+    // A Space IS a conversation (community_channels.conversation_id is the primary key), so
+    // the push title resolved to the Space name alone — "General", with no way to tell WHICH
+    // community it belongs to. The notification extension already fetches this row, so the
+    // name rides along rather than costing a second round trip on a push that has to render
+    // fast. LEFT JOIN: an ordinary group chat is not a Space and gets null, as before.
+    `select c.id, c.type, c.name, c.photo_url, c.created_by, c.created_at,
+            comm.name as community_name
+       from conversations c
+       left join community_channels ch on ch.conversation_id = c.id
+       left join communities comm on comm.id = ch.community_id
+      where c.id = $1`,
     [req.params.id]
   ))[0];
   if (!conv) return res.status(404).json({ error: 'conversation not found' });
