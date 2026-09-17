@@ -109,62 +109,71 @@ struct AppWalkthroughView: View {
     }
 
     private var card: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: controller.step.symbol)
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(VoiidColor.accentInk)
-                    .frame(width: 52, height: 52)
-                    .background(VoiidColor.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        VStack(spacing: 0) {
+            // Top: Full width uncropped pastel photo banner
+            if let imageName = controller.step.imageName {
+                Image(imageName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 152)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+            }
 
+            // Bottom: Text, progress indicator, and action buttons
+            VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(controller.step.eyebrow)
                         .font(VoiidFont.rounded(11, .bold))
                         .tracking(1.1)
-                        .foregroundStyle(VoiidColor.accentInk)
+                        .foregroundStyle(VoiidColor.primary)
                     Text(controller.step.title)
-                        .font(VoiidFont.rounded(25, .bold))
+                        .font(VoiidFont.rounded(22, .bold))
                         .foregroundStyle(VoiidColor.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-            }
 
-            Text(controller.step.message)
-                .font(VoiidFont.rounded(16))
-                .foregroundStyle(VoiidColor.textSecondary)
-                .lineSpacing(4)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 6) {
-                ForEach(0..<controller.stepCount, id: \.self) { index in
-                    Capsule()
-                        .fill(index == controller.currentIndex ? VoiidColor.primary : VoiidColor.divider)
-                        .frame(width: index == controller.currentIndex ? 22 : 6, height: 6)
-                }
-                Spacer()
-                Text("\(controller.stepNumber) of \(controller.stepCount)")
-                    .font(VoiidFont.rounded(12, .semibold))
+                Text(controller.step.message)
+                    .font(VoiidFont.rounded(14))
                     .foregroundStyle(VoiidColor.textSecondary)
-            }
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 12) {
-                if !controller.isFirstStep {
-                    Button("Back") { controller.goBack() }
-                        .buttonStyle(WalkthroughSecondaryButtonStyle())
+                HStack(spacing: 5) {
+                    ForEach(0..<controller.stepCount, id: \.self) { index in
+                        Capsule()
+                            .fill(index == controller.currentIndex ? VoiidColor.primary : VoiidColor.divider)
+                            .frame(width: index == controller.currentIndex ? 20 : 6, height: 6)
+                    }
+                    Spacer()
+                    Text("\(controller.stepNumber) of \(controller.stepCount)")
+                        .font(VoiidFont.rounded(12, .semibold))
+                        .foregroundStyle(VoiidColor.textSecondary)
                 }
-                Button(controller.isLastStep ? "Done" : (controller.isFirstStep ? "Start tour" : "Next")) {
-                    controller.advance()
+                .padding(.top, 4)
+
+                HStack(spacing: 10) {
+                    if !controller.isFirstStep {
+                        Button("Back") { controller.goBack() }
+                            .buttonStyle(WalkthroughSecondaryButtonStyle())
+                    }
+                    Button(controller.isLastStep ? "Done" : (controller.isFirstStep ? "Start tour" : "Next")) {
+                        controller.advance()
+                    }
+                    .buttonStyle(WalkthroughPrimaryButtonStyle())
                 }
-                .buttonStyle(WalkthroughPrimaryButtonStyle())
+                .padding(.top, 4)
             }
+            .padding(20)
         }
-        .padding(24)
+        .frame(maxWidth: .infinity)
         .background(reduceTransparency ? VoiidColor.surfaceCard : VoiidColor.surfaceCard.opacity(0.96),
-                    in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous)
-            .stroke(VoiidColor.divider, lineWidth: 1))
-        .shadow(color: .black.opacity(0.22), radius: 30, y: 14)
-        .padding(.horizontal, 20)
+                    in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .stroke(VoiidColor.divider.opacity(0.5), lineWidth: 1))
+        .shadow(color: .black.opacity(0.24), radius: 26, y: 12)
+        .padding(.horizontal, 18)
         .accessibilityLabel("\(controller.step.eyebrow). \(controller.step.title). \(controller.step.message). Step \(controller.stepNumber) of \(controller.stepCount).")
     }
 }
@@ -173,9 +182,9 @@ private struct WalkthroughPrimaryButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(VoiidFont.rounded(16, .bold))
+            .font(VoiidFont.rounded(15, .bold))
             .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 50)
+            .frame(maxWidth: .infinity, minHeight: 48)
             .background(VoiidColor.primary, in: Capsule())
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
             .opacity(configuration.isPressed && reduceMotion ? 0.75 : 1)
@@ -186,9 +195,9 @@ private struct WalkthroughPrimaryButtonStyle: ButtonStyle {
 private struct WalkthroughSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(VoiidFont.rounded(16, .semibold))
+            .font(VoiidFont.rounded(15, .semibold))
             .foregroundStyle(VoiidColor.textPrimary)
-            .frame(minWidth: 88, minHeight: 50)
+            .frame(minWidth: 88, minHeight: 48)
             .background(VoiidColor.surfaceRaised, in: Capsule())
             .opacity(configuration.isPressed ? 0.7 : 1)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)

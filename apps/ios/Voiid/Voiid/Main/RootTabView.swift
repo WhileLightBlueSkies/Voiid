@@ -340,6 +340,7 @@ struct RootTabView: View {
             case .moments:     tab = .stories
             case .communities: tab = .communities
             case .games:       tab = .games
+            case .settings:    tab = .chat
             case nil:          break
             }
         }

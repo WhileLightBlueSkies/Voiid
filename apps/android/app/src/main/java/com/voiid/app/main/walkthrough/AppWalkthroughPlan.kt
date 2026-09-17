@@ -1,6 +1,6 @@
 package com.voiid.app.main.walkthrough
 
-enum class TourDestination { CHATS, MOMENTS, COMMUNITIES, GAMES }
+enum class TourDestination { CHATS, MOMENTS, COMMUNITIES, GAMES, SETTINGS }
 
 enum class WalkthroughPresentationMode { FIRST_INCOMPLETE_VERSION, EVERY_APP_LAUNCH }
 
@@ -10,52 +10,123 @@ data class AppWalkthroughStep(
     val title: String,
     val message: String,
     val destination: TourDestination?,
+    val targetId: String? = null,
+    val shape: SpotlightShapeType = SpotlightShapeType.ROUNDED_RECT,
+    val targetPaddingDp: Float = 8f,
+    val graphicDrawableName: String? = null,
+    val interactive: Boolean = false,
 )
 
 object AppWalkthroughPlan {
-    const val VERSION = 1
+    const val VERSION = 3
     /** Preview mode for 0.0.3. Change this back after the walkthrough is approved. */
     val presentationMode = WalkthroughPresentationMode.EVERY_APP_LAUNCH
 
     fun shouldPresent(completedVersion: Int): Boolean =
         presentationMode == WalkthroughPresentationMode.EVERY_APP_LAUNCH || completedVersion < VERSION
 
-    /** AI, Map and Clips are intentionally absent until both clients ship them. */
     val steps = listOf(
         AppWalkthroughStep(
-            "welcome", "WELCOME TO VOIID", "Everything starts here",
-            "Private conversations, disappearing moments, communities and games — organised into four simple spaces.",
-            null,
+            id = "welcome",
+            eyebrow = "WELCOME TO VOIID",
+            title = "Everything starts here",
+            message = "Private conversations, disappearing moments, communities and instant games — organised into four simple spaces.",
+            destination = null,
+            targetId = null,
+            graphicDrawableName = "walkthrough_welcome_hero",
         ),
         AppWalkthroughStep(
-            "chats", "CHATS", "Your people, one tap away",
-            "Search, start a chat, create a group, scan a profile code or open Settings from your profile. Long-press messages for replies, reactions and more.",
-            TourDestination.CHATS,
+            id = "chats",
+            eyebrow = "ENCRYPTED MESSAGING",
+            title = "Your people, one tap away",
+            message = "Start 1-on-1 chats and group threads secured with quantum-resistant keys. Long-press messages for reactions and quick replies.",
+            destination = TourDestination.CHATS,
+            targetId = "nav_tab_chats",
+            shape = SpotlightShapeType.CIRCLE,
+            targetPaddingDp = 8f,
+            graphicDrawableName = "walkthrough_chats_hub",
+            interactive = true,
         ),
         AppWalkthroughStep(
-            "moments", "MOMENTS", "Share what is happening",
-            "Post a photo or video for your chosen audience. Moments disappear after 24 hours, and replies return to Chats.",
-            TourDestination.MOMENTS,
+            id = "moments",
+            eyebrow = "EPHEMERAL STORIES",
+            title = "Share what is happening",
+            message = "Post photo or video stories that disappear automatically after 24 hours. Control your audience and view replies directly in your chats.",
+            destination = TourDestination.MOMENTS,
+            targetId = "nav_tab_moments",
+            shape = SpotlightShapeType.CIRCLE,
+            targetPaddingDp = 8f,
+            graphicDrawableName = "walkthrough_moments_camera",
+            interactive = true,
         ),
         AppWalkthroughStep(
-            "communities", "COMMUNITIES", "Find your space",
-            "Discover or create communities, then explore posts, spaces, members, events and tournaments. Host tools appear only when you are a host.",
-            TourDestination.COMMUNITIES,
+            id = "communities",
+            eyebrow = "SPACES & CLUBS",
+            title = "Find your space",
+            message = "Discover or create public and private communities. Dive into topic channels, voice lounges, and tournament brackets.",
+            destination = TourDestination.COMMUNITIES,
+            targetId = "nav_tab_communities",
+            shape = SpotlightShapeType.CIRCLE,
+            targetPaddingDp = 8f,
+            graphicDrawableName = "walkthrough_communities_spaces",
+            interactive = true,
         ),
         AppWalkthroughStep(
-            "games", "GAMES", "Play together",
-            "Browse the live catalogue, accept invites, try daily challenges and follow leaderboards. Each game teaches its own controls when you open it.",
-            TourDestination.GAMES,
+            id = "community_search",
+            eyebrow = "COMMUNITY SEARCH",
+            title = "Explore & discover",
+            message = "Search for topic spaces by keyword or @handle, explore trending clubs, or start your own public hub in seconds.",
+            destination = TourDestination.COMMUNITIES,
+            targetId = "comm_search_bar",
+            shape = SpotlightShapeType.ROUNDED_RECT,
+            targetPaddingDp = 6f,
+            graphicDrawableName = "walkthrough_comm_search",
+            interactive = true,
         ),
         AppWalkthroughStep(
-            "privacy", "YOU ARE IN CONTROL", "Privacy stays within reach",
-            "Your profile opens privacy, encrypted backup and recovery, linked devices, storage, notifications, legal information and Help & Support.",
-            null,
+            id = "games",
+            eyebrow = "INSTANT PLAY",
+            title = "Play together anywhere",
+            message = "Jump into lightweight multiplayer games with friends with zero downloads. Complete daily challenges and climb leaderboards.",
+            destination = TourDestination.GAMES,
+            targetId = "nav_tab_games",
+            shape = SpotlightShapeType.CIRCLE,
+            targetPaddingDp = 8f,
+            graphicDrawableName = "walkthrough_games_arena",
+            interactive = true,
         ),
         AppWalkthroughStep(
-            "complete", "YOU ARE READY", "Make Voiid yours",
-            "Explore at your own pace. You can replay this walkthrough anytime from Help & Support.",
-            null,
+            id = "profile",
+            eyebrow = "YOUR IDENTITY",
+            title = "Profile & safety",
+            message = "Tap your avatar anytime to view your Safety Number, share your QR code, or jump into settings with one touch.",
+            destination = TourDestination.CHATS,
+            targetId = "nav_header_profile",
+            shape = SpotlightShapeType.CIRCLE,
+            targetPaddingDp = 6f,
+            graphicDrawableName = "walkthrough_security_shield",
+            interactive = true,
+        ),
+        AppWalkthroughStep(
+            id = "settings_page",
+            eyebrow = "SETTINGS & PRIVACY",
+            title = "You stay in full control",
+            message = "Manage double-ratchet keys, linked desktop devices, disappearing message defaults, and export offline backup phrases.",
+            destination = TourDestination.SETTINGS,
+            targetId = "settings_profile_card",
+            shape = SpotlightShapeType.ROUNDED_RECT,
+            targetPaddingDp = 6f,
+            graphicDrawableName = "walkthrough_security_shield",
+            interactive = true,
+        ),
+        AppWalkthroughStep(
+            id = "complete",
+            eyebrow = "YOU ARE READY",
+            title = "Make Voiid yours",
+            message = "Explore at your own pace. You can replay this interactive spotlight tour anytime from Settings > Help & Support.",
+            destination = null,
+            targetId = null,
+            graphicDrawableName = "walkthrough_completion_celebration",
         ),
     )
 }

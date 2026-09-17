@@ -5,6 +5,7 @@ enum TourDestination: String, CaseIterable, Codable {
     case moments
     case communities
     case games
+    case settings
 }
 
 enum WalkthroughPresentationMode {
@@ -18,11 +19,13 @@ struct AppWalkthroughStep: Identifiable, Equatable {
     let title: String
     let message: String
     let symbol: String
+    let imageName: String?
     let destination: TourDestination?
+    let targetId: String?
 }
 
 enum AppWalkthroughPlan {
-    static let version = 1
+    static let version = 3
     /// Preview mode for 0.0.3. Change this back after the walkthrough is approved.
     static let presentationMode: WalkthroughPresentationMode = .everyAppLaunch
 
@@ -30,43 +33,96 @@ enum AppWalkthroughPlan {
         presentationMode == .everyAppLaunch || completedVersion < version
     }
 
-    /// The destination list is deliberately explicit. AI, Map and Clips exist in source but
-    /// are not present in both platforms' shipped tab sets, so they do not belong here.
     static let steps: [AppWalkthroughStep] = [
         .init(
-            id: "welcome", eyebrow: "WELCOME TO VOIID", title: "Everything starts here",
-            message: "Private conversations, disappearing moments, communities and games — organised into four simple spaces.",
-            symbol: "sparkles", destination: nil
+            id: "welcome",
+            eyebrow: "WELCOME TO VOIID",
+            title: "Everything starts here",
+            message: "Private conversations, disappearing moments, communities and instant games — organised into four simple spaces.",
+            symbol: "sparkles",
+            imageName: "walkthrough_welcome_hero",
+            destination: nil,
+            targetId: nil
         ),
         .init(
-            id: "chats", eyebrow: "CHATS", title: "Your people, one tap away",
-            message: "Search, start a chat, create a group, scan a profile code or open Settings from your profile. Long-press messages for replies, reactions and more.",
-            symbol: "bubble.left.and.bubble.right.fill", destination: .chats
+            id: "chats",
+            eyebrow: "ENCRYPTED MESSAGING",
+            title: "Your people, one tap away",
+            message: "Start 1-on-1 chats and group threads secured with quantum-resistant keys. Long-press messages for reactions and quick replies.",
+            symbol: "bubble.left.and.bubble.right.fill",
+            imageName: "walkthrough_chats_hub",
+            destination: .chats,
+            targetId: "nav_tab_chats"
         ),
         .init(
-            id: "moments", eyebrow: "MOMENTS", title: "Share what is happening",
-            message: "Post a photo or video for your chosen audience. Moments disappear after 24 hours, and replies return to Chats.",
-            symbol: "circle.circle.fill", destination: .moments
+            id: "moments",
+            eyebrow: "EPHEMERAL STORIES",
+            title: "Share what is happening",
+            message: "Post photo or video stories that disappear automatically after 24 hours. Control your audience and view replies directly in your chats.",
+            symbol: "circle.circle.fill",
+            imageName: "walkthrough_moments_camera",
+            destination: .moments,
+            targetId: "nav_tab_moments"
         ),
         .init(
-            id: "communities", eyebrow: "COMMUNITIES", title: "Find your space",
-            message: "Discover or create communities, then explore posts, spaces, members, events and tournaments. Host tools appear only when you are a host.",
-            symbol: "person.3.fill", destination: .communities
+            id: "communities",
+            eyebrow: "SPACES & CLUBS",
+            title: "Find your space",
+            message: "Discover or create public and private communities. Dive into topic channels, voice lounges, and tournament brackets.",
+            symbol: "person.3.fill",
+            imageName: "walkthrough_communities_spaces",
+            destination: .communities,
+            targetId: "nav_tab_communities"
         ),
         .init(
-            id: "games", eyebrow: "GAMES", title: "Play together",
-            message: "Browse the live catalogue, accept invites, try daily challenges and follow leaderboards. Each game teaches its own controls when you open it.",
-            symbol: "gamecontroller.fill", destination: .games
+            id: "community_search",
+            eyebrow: "COMMUNITY SEARCH",
+            title: "Explore & discover",
+            message: "Search for topic spaces by keyword or @handle, explore trending clubs, or start your own public hub in seconds.",
+            symbol: "magnifyingglass",
+            imageName: "walkthrough_comm_search",
+            destination: .communities,
+            targetId: "comm_search_bar"
         ),
         .init(
-            id: "privacy", eyebrow: "YOU ARE IN CONTROL", title: "Privacy stays within reach",
-            message: "Your profile opens privacy, encrypted backup and recovery, linked devices, storage, notifications, legal information and Help & Support.",
-            symbol: "checkmark.shield.fill", destination: nil
+            id: "games",
+            eyebrow: "INSTANT PLAY",
+            title: "Play together anywhere",
+            message: "Jump into lightweight multiplayer games with friends with zero downloads. Complete daily challenges and climb leaderboards.",
+            symbol: "gamecontroller.fill",
+            imageName: "walkthrough_games_arena",
+            destination: .games,
+            targetId: "nav_tab_games"
         ),
         .init(
-            id: "complete", eyebrow: "YOU ARE READY", title: "Make Voiid yours",
-            message: "Explore at your own pace. You can replay this walkthrough anytime from Help & Support.",
-            symbol: "checkmark.circle.fill", destination: nil
+            id: "profile",
+            eyebrow: "YOUR IDENTITY",
+            title: "Profile & safety",
+            message: "Tap your avatar anytime to view your Safety Number, share your QR code, or jump into settings with one touch.",
+            symbol: "person.crop.circle",
+            imageName: "walkthrough_security_shield",
+            destination: .chats,
+            targetId: "nav_header_profile"
+        ),
+        .init(
+            id: "settings_page",
+            eyebrow: "SETTINGS & PRIVACY",
+            title: "You stay in full control",
+            message: "Manage double-ratchet keys, linked desktop devices, disappearing message defaults, and export offline backup phrases.",
+            symbol: "lock.shield.fill",
+            imageName: "walkthrough_security_shield",
+            destination: .settings,
+            targetId: "settings_profile_card"
+        ),
+        .init(
+            id: "complete",
+            eyebrow: "YOU ARE READY",
+            title: "Make Voiid yours",
+            message: "Explore at your own pace. You can replay this interactive spotlight tour anytime from Settings > Help & Support.",
+            symbol: "checkmark.circle.fill",
+            imageName: "walkthrough_completion_celebration",
+            destination: nil,
+            targetId: nil
         ),
     ]
 }

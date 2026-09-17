@@ -42,6 +42,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.border
+import com.voiid.app.main.walkthrough.SpotlightShapeType
+import com.voiid.app.main.walkthrough.spotlightTarget
 
 /**
  * The Communities tab. Replaces the "coming soon" placeholder. Port of iOS
@@ -169,6 +171,7 @@ fun CommunitiesHomeView(
             singleLine = true,
             textStyle = TextStyle(color = VoiidColor.textPrimary),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                .spotlightTarget("comm_search_bar", shape = SpotlightShapeType.ROUNDED_RECT, cornerRadius = VoiidRadius.md, padding = 4.dp)
                 .clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.fieldFill)
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             decorationBox = { inner ->
