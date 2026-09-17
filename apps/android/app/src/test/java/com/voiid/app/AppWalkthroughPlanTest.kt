@@ -5,15 +5,23 @@ import com.voiid.app.main.walkthrough.WalkthroughPresentationMode
 import com.voiid.app.main.walkthrough.TourDestination
 import com.voiid.app.main.walkthrough.WalkthroughAdvance
 import com.voiid.app.main.walkthrough.WalkthroughProgress
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import org.junit.Test
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 
 class AppWalkthroughPlanTest {
     @Test
     fun `manifest contains only features shipped on both platforms`() {
         assertEquals(
-            listOf(TourDestination.CHATS, TourDestination.MOMENTS, TourDestination.COMMUNITIES, TourDestination.GAMES),
+            listOf(
+                TourDestination.CHATS,
+                TourDestination.MOMENTS,
+                TourDestination.COMMUNITIES,
+                TourDestination.COMMUNITIES,
+                TourDestination.GAMES,
+                TourDestination.CHATS,
+                TourDestination.SETTINGS,
+            ),
             AppWalkthroughPlan.steps.mapNotNull { it.destination },
         )
         assertEquals("welcome", AppWalkthroughPlan.steps.first().id)

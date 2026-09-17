@@ -40,6 +40,22 @@ fun HelpAndSupportScreen(
     onLinkedDevices: () -> Unit,
     onBackupRecovery: () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val appVersion = "${com.voiid.app.BuildConfig.VERSION_NAME} (${com.voiid.app.BuildConfig.VERSION_CODE})"
+    val server = runCatching { java.net.URI(com.voiid.app.net.ApiConfig.baseUrl).host }.getOrNull() ?: "—"
+    val apiVersion = com.voiid.app.net.ConfigService.apiVersion
+    val userId = com.voiid.app.net.TokenStore.get(context).userId ?: "—"
+    val deviceId = com.voiid.app.net.E2EManager.get(context).deviceId ?: "—"
+
+    val diagnosticsText = """
+        Voiid diagnostics
+        Version: $appVersion
+        Server: $server
+        API version: $apiVersion
+        User ID: $userId
+        Device ID: $deviceId
+    """.trimIndent()
+
     BackupScaffold(title = "Help & support", onBack = onBack) {
         Spacer(Modifier.height(8.dp))
 
@@ -89,6 +105,21 @@ fun HelpAndSupportScreen(
                 actionMailto = address,
             )
         }
+
+        HelpSection(
+            title = "Diagnostics",
+            body = "Share technical details with support to help troubleshoot issues.",
+            footer = "Includes your app version, server and device identifiers. No message content.",
+            actionLabel = "Share diagnostics",
+            onAction = {
+                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(android.content.Intent.EXTRA_SUBJECT, "Voiid diagnostics")
+                    putExtra(android.content.Intent.EXTRA_TEXT, diagnosticsText)
+                }
+                context.startActivity(android.content.Intent.createChooser(send, "Share diagnostics"))
+            },
+        )
 
         Spacer(Modifier.height(16.dp))
     }

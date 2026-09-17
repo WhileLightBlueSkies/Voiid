@@ -77,6 +77,7 @@ class BackupRulesTest {
         "voiid_bot_scores" to "local scores",
         "voiid_snake_choice" to "local game choice",
         "voiid_snake_records" to "local records",
+        "app_walkthrough" to "local walkthrough completed state",
     )
 
     private fun moduleDir(): File {

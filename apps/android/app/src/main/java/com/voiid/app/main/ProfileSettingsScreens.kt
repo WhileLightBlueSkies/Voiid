@@ -38,14 +38,29 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.CircularProgressIndicator
 import com.voiid.app.model.AppSession
+import com.voiid.app.net.DpdpService
+import com.voiid.app.net.MediaService
 import com.voiid.app.net.ProfileService
+import com.voiid.app.net.TokenStore
 import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.VoiidDialog
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The personal link behind a QR code — `https://voiid.app/u/<username>`, the SAME shape iOS
@@ -90,6 +105,15 @@ internal object ProfileLink {
  * offline shows the new name immediately and reconciles when the network returns — the rule
  * the rest of the app follows.
  */
+/**
+ * Edit profile — name, photo, bio, username, and account deletion. Port of iOS `EditProfileView.swift`.
+ *
+ * Presentation decision (spec §5.1): a pushed screen with an explicit Save, not inline
+ * tap-to-mutate labels. Multi-field inline editing has no cancel-safety.
+ *
+ * Save is LOCAL FIRST: `session.updateProfile` persists and re-renders before the request
+ * is attempted, so editing your name offline shows the new name immediately.
+ */
 @Composable
 fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -98,24 +122,107 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
 
     var name by remember { mutableStateOf(session.profile.fullName) }
     var bio by remember { mutableStateOf(session.profile.bio ?: "") }
+    var username by remember { mutableStateOf(session.profile.username ?: "") }
+    var usernameAvailable by remember { mutableStateOf<Boolean?>(null) }
+    var checkingUsername by remember { mutableStateOf(false) }
+
+    var uploading by remember { mutableStateOf(false) }
+    var showPhotoSource by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf(false) }
 
+    // Account erasure flow state
+    var confirmDelete by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+
+    fun uploadPhotoBytes(bytes: ByteArray?) {
+        scope.launch {
+            uploading = true
+            error = try {
+                if (bytes == null) "Couldn't read that photo." else {
+                    val key = MediaService(TokenStore.get(context)).uploadProfilePhoto(bytes)
+                    MediaCache.putData(context, key, bytes)
+                    session.updateProfile(photoUrl = key)
+                    ProfileService(context).updateProfile(photoUrl = key)
+                    null
+                }
+            } catch (e: Exception) {
+                "Couldn't update your photo. Try again."
+            }
+            uploading = false
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }
+            uploadPhotoBytes(bytes)
+        }
+    }
+
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                java.io.ByteArrayOutputStream().use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                    out.toByteArray()
+                }
+            }
+            uploadPhotoBytes(bytes)
+        }
+    }
+
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) camera.launch(null) else error = "Camera permission needed to take a photo."
+    }
+
+    // Debounced live username availability check (400ms, matching iOS EditProfileView.swift)
+    LaunchedEffect(username) {
+        val u = username.trim().lowercase()
+        val current = (session.profile.username ?: "").lowercase()
+        if (u == current || u.length < 3) {
+            usernameAvailable = null
+            checkingUsername = false
+            return@LaunchedEffect
+        }
+        checkingUsername = true
+        delay(400)
+        usernameAvailable = runCatching { ProfileService(context).checkUsername(u).available }.getOrNull()
+        checkingUsername = false
+    }
+
+    val trimmedUser = username.trim().lowercase()
+    val userChanged = trimmedUser != (session.profile.username ?: "").lowercase()
+    val isDirty = name.trim() != session.profile.fullName ||
+        bio.trim() != (session.profile.bio ?: "") ||
+        (userChanged && usernameAvailable == true)
+
+    val canSave = isDirty && !saving && name.trim().isNotEmpty() && (!userChanged || usernameAvailable == true) && !checkingUsername
+
     fun save() {
+        if (!canSave) return
         scope.launch {
             saving = true
             error = null
-            val trimmed = name.trim()
-            if (trimmed.isEmpty()) {
-                error = "Your name can't be empty."
-                saving = false
-                return@launch
-            }
+            val trimmedName = name.trim()
+            val trimmedBio = bio.trim()
+
             error = runCatching {
-                ProfileService(context).updateProfile(fullName = trimmed, bio = bio.trim())
+                if (userChanged && usernameAvailable == true) {
+                    ProfileService(context).updateProfile(fullName = trimmedName, bio = trimmedBio, username = trimmedUser)
+                    session.updateProfile(fullName = trimmedName, bio = trimmedBio, username = trimmedUser)
+                } else {
+                    ProfileService(context).updateProfile(fullName = trimmedName, bio = trimmedBio)
+                    session.updateProfile(fullName = trimmedName, bio = trimmedBio)
+                }
                 null
             }.getOrElse { it.message ?: "Couldn't save. Try again." }
+
             if (error == null) {
                 saved = true
                 haptics.tap()
@@ -127,30 +234,99 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
     BackupScaffold(title = "Edit profile", onBack = onBack) {
         Spacer(Modifier.height(8.dp))
 
-        FieldCard("Name") {
-            ProfileField(value = name, placeholder = "Your name", onValueChange = { name = it; saved = false })
-        }
-
-        FieldCard(
-            "Bio",
-            footer = "A short line people see on your profile.",
+        // Avatar change section
+        Column(
+            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            ProfileField(value = bio, placeholder = "Add a few words about you",
-                onValueChange = { bio = it; saved = false })
+            Box(contentAlignment = Alignment.BottomEnd) {
+                ProfileAvatar(
+                    photoUrl = session.profile.photoURL,
+                    name = session.profile.fullName,
+                    size = 96.dp,
+                    placeholderFill = VoiidColor.surfaceCard,
+                    modifier = Modifier.softClickable(scale = 0.95f) {
+                        if (!uploading) { haptics.tap(); showPhotoSource = true }
+                    },
+                )
+                Box(
+                    Modifier.size(28.dp).clip(CircleShape).background(VoiidColor.primary),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (uploading) {
+                        CircularProgressIndicator(color = VoiidColor.textOnPrimary, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                    } else {
+                        Icon(Icons.Default.CameraAlt, "Change photo", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(15.dp))
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Change photo",
+                style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                color = VoiidColor.primary,
+                modifier = Modifier.softClickable { if (!uploading) { haptics.tap(); showPhotoSource = true } },
+            )
         }
 
-        // Username is READ-ONLY here. It is the handle other people's links and QR codes
-        // resolve against, so changing it breaks every link already shared — a different
-        // operation from editing a display name, and one that belongs behind its own
-        // deliberate flow rather than beside two free-text fields.
-        session.profile.username?.let { handle ->
-            FieldCard("Username", footer = "This is what your QR code and profile link point to.") {
-                Text(
-                    "@${handle.removePrefix("@")}",
-                    style = VoiidFont.rounded(16),
-                    color = VoiidColor.textSecondary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+        FieldCard("Name", footer = "Your name and photo are shown to everyone you chat with.") {
+            ProfileField(value = name, placeholder = "Your name", onValueChange = { name = it.take(50); saved = false })
+        }
+
+        FieldCard("Username", footer = "This is what your QR code and profile link point to.") {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text("@", style = VoiidFont.rounded(16), color = VoiidColor.textSecondary)
+                BasicTextField(
+                    value = username,
+                    onValueChange = {
+                        username = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' }.take(20)
+                        saved = false
+                    },
+                    singleLine = true,
+                    textStyle = VoiidFont.rounded(16).copy(color = VoiidColor.textPrimary),
+                    cursorBrush = SolidColor(VoiidColor.primary),
+                    modifier = Modifier.weight(1f),
                 )
+                when {
+                    checkingUsername -> Text("Checking…", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                    usernameAvailable == false -> Text("Taken", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.error)
+                    usernameAvailable == true -> Text("Available", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.primary)
+                }
+            }
+        }
+
+        FieldCard("Bio", footer = "A short line people see on your profile (${bio.length}/140).") {
+            ProfileField(value = bio, placeholder = "Add a few words about you", onValueChange = { bio = it.take(140); saved = false })
+        }
+
+        if (session.profile.phoneNumber.isNotBlank()) {
+            FieldCard("Phone number", footer = "Your phone number is tied to your cryptographic identity.") {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Default.Lock, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(16.dp))
+                    Text(session.profile.phoneNumber, style = VoiidFont.rounded(16), color = VoiidColor.textSecondary)
+                }
+            }
+        }
+
+        // Danger zone — exact match to iOS EditProfileView.swift dangerZone
+        FieldCard("Danger zone") {
+            Row(
+                Modifier.fillMaxWidth()
+                    .softClickable { haptics.rigid(); confirmDelete = true }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(Icons.Default.Delete, null, tint = VoiidColor.error, modifier = Modifier.size(18.dp))
+                Text("Delete my account", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.error)
             }
         }
 
@@ -159,21 +335,76 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
         Box(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp)
                 .clip(RoundedCornerShape(VoiidRadius.lg))
-                .background(if (saving) VoiidColor.fieldFill else VoiidColor.primary)
-                .softClickable(enabled = !saving) { save() }
+                .background(if (canSave) VoiidColor.primary else VoiidColor.fieldFill)
+                .softClickable(enabled = canSave) { save() }
                 .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 if (saving) "Saving…" else if (saved) "Saved" else "Save",
                 style = VoiidFont.rounded(16, FontWeight.SemiBold),
-                color = if (saving) VoiidColor.textSecondary else VoiidColor.textOnPrimary,
+                color = if (canSave) VoiidColor.textOnPrimary else VoiidColor.textSecondary,
             )
         }
+        Spacer(Modifier.height(24.dp))
+    }
+
+    if (showPhotoSource) {
+        com.voiid.app.ui.components.VoiidDialogCustom(
+            onDismissRequest = { showPhotoSource = false },
+        ) {
+            Spacer(Modifier.height(20.dp))
+            Text(
+                "Change photo",
+                style = VoiidFont.rounded(17, FontWeight.SemiBold),
+                color = VoiidColor.textPrimary,
+            )
+            Spacer(Modifier.height(6.dp))
+            com.voiid.app.ui.components.VoiidDialogAction("Take photo") {
+                showPhotoSource = false
+                cameraPermission.launch(android.Manifest.permission.CAMERA)
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Choose from gallery") {
+                showPhotoSource = false
+                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Cancel") {
+                showPhotoSource = false
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+
+    if (confirmDelete) {
+        VoiidDialog(
+            onDismissRequest = { if (!deleting) confirmDelete = false },
+            title = "Delete your Voiid account?",
+            body = "This opens an erasure request and signs you out of this phone immediately, " +
+                "wiping its messages and keys. Your account itself is erased once the request " +
+                "is actioned — until then you can still sign in and cancel by contacting support.",
+            confirmLabel = "Delete my account",
+            onConfirm = {
+                deleting = true
+                scope.launch {
+                    try {
+                        DpdpService(context).requestErasure()
+                        haptics.success()
+                        confirmDelete = false
+                        session.signOut()
+                        onBack()
+                    } catch (e: Exception) {
+                        error = e.message ?: "Couldn't open erasure request."
+                        haptics.error()
+                        deleting = false
+                    }
+                }
+            },
+            confirmDestructive = true,
+        )
     }
 }
 

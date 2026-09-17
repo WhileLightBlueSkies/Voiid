@@ -40,6 +40,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.LaunchedEffect
@@ -94,6 +96,7 @@ import com.voiid.app.model.ClipsStore
 import com.voiid.app.model.VClip
 import com.voiid.app.model.VConversation
 import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.voiidGlass
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 
@@ -384,82 +387,109 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
 
         Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
-                // THE BAR ANIMATED AND THE PAGE TELEPORTED.
+                // TAB SWIPE NAVIGATION — port of iOS `TabSwipeNavigation.swift`.
                 //
-                // The indicator stretches in its direction of travel, the glyph crossfades
-                // from outline to filled — and then the thing all of that points AT changed
-                // in a single frame. The one element the user is actually looking at was the
-                // only one that did not move.
+                // The original crossfade was correct about taps: tapping a distant tab jumps
+                // an arbitrary distance and a slide would have to invent a direction. But a
+                // SWIPE moves exactly one step, and the direction IS the gesture — not
+                // invented. Two transitions for two different intentions, each honest about
+                // what it is describing.
                 //
-                // A CROSSFADE, NOT A SLIDE, and that is a real decision rather than the easy
-                // one. These tabs scroll and can be reordered, so there is no stable
-                // left-of/right-of between them: a slide would have to invent a direction,
-                // and it would be wrong the moment the order changed or a deep link jumped
-                // two tabs. A crossfade makes no spatial claim it cannot keep.
+                // The pager syncs bidirectionally with `tab`:
+                //   • A tap on the TabBar sets `tab`, which scrolls the pager (animated).
+                //   • A user swipe settles the pager, which updates `tab`.
                 //
-                // 180ms, deliberately short: this is the most frequent transition in the app
-                // and anything slower turns navigation into waiting. Kept under Reduce Motion
-                // — an opacity fade is not vestibular, and removing it restores the hard cut.
-                androidx.compose.animation.Crossfade(
-                    targetState = tab,
-                    animationSpec = tween(180),
-                    label = "tabContent",
-                    // NOT named `tab`: a callback inside (the map card's "open chat") assigns
-                    // the outer `tab` to navigate, and shadowing it here made that a
-                    // reassignment of the immutable lambda parameter.
-                ) { shownTab ->
-                when (shownTab) {
-                    Tab.COMMUNITIES -> CommunitiesHomeView(
-                        onOpenConversation = { conversationId ->
-                            // Host-inbox taps land in the Chats tab like any other
-                            // conversation — the inbox only ever hands back an id.
-                            gamesScope.launch {
-                                chat.conversationById(conversationId)?.let {
-                                    tab = Tab.CHAT; openConversation = it
-                                }
-                            }
-                        },
-                    )
-                    Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
-                        onPickGame = { setupGame = it },
-                        onLeaderboard = { showLeaderboard = true },
-                        onDaily = { showDaily = true },
-                        onAcceptInvite = { inv ->
-                            // Accepting from a banner is the same act as tapping the invite bubble
-                            // in chat, so it goes through the same seam.
-                            com.voiid.app.net.DeepLinkRouter.openGameMatch(inv.match_id, inv.slug)
-                        },
-                    )
-                    Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
-                    Tab.AI -> AIChatView(ai)
-                    Tab.STORIES -> com.voiid.app.main.stories.StoriesHomeView(
-                        stories,
-                        onOpenContext = { openStoryContext = it },
-                        onCompose = { showStoryComposer = true },
-                    )
-                    Tab.CLIPS -> com.voiid.app.main.clips.ClipsFeedView(
-                        clips,
-                        creators = creators,
-                        onOpenClip = {
-                            openClip = com.voiid.app.main.clips.ClipPagerSource.Explore(it)
-                        },
-                        onOpenFollowingClip = {
-                            openClip = com.voiid.app.main.clips.ClipPagerSource.Following(it)
-                        },
-                        onNewClip = { startCompose() },
-                        onMyClips = { showMyClips = true },
-                        onOpenCreator = { openCreator = it },
-                    )
-                    // "Open chat" on a map contact card jumps straight into that conversation,
-                    // the same push the chat list performs.
-                    Tab.MAP -> MapTabView(
-                        map, chat,
-                        onOpenChatWithUser = { uid ->
-                            chat.directConversations.firstOrNull { it.peerUserId == uid }
-                                ?.let { tab = Tab.CHAT; openConversation = it }
-                        },
-                    )
+                // CONFLICT WITH INNER HORIZONTAL SCROLLS: HorizontalPager's nested scroll
+                // connection correctly defers to inner horizontal ScrollViews (community
+                // rails, highlight rails, filter rails) by default in Compose — the inner
+                // scroll consumes horizontal delta first, and only overflow reaches the pager.
+                // This is the Compose equivalent of iOS's UIPanGestureRecognizer delegate
+                // that fails when the touch begins inside a scrollable.
+                val pagerState = rememberPagerState(
+                    initialPage = Tab.visible.indexOf(tab).coerceAtLeast(0),
+                    pageCount = { Tab.visible.size },
+                )
+
+                // TAB → PAGER: a programmatic tab change (tap, deep link, walkthrough)
+                // scrolls the pager to the new page.
+                LaunchedEffect(tab) {
+                    val targetPage = Tab.visible.indexOf(tab).coerceAtLeast(0)
+                    if (pagerState.currentPage != targetPage) {
+                        pagerState.animateScrollToPage(targetPage)
+                    }
                 }
+
+                // PAGER → TAB: when the user swipes and the pager settles on a new page,
+                // update the tab state. `settledPage` only changes when the pager is at
+                // rest, so intermediate drag positions do not fire tab changes.
+                LaunchedEffect(pagerState.settledPage) {
+                    val settled = Tab.visible.getOrNull(pagerState.settledPage)
+                    if (settled != null && settled != tab) {
+                        tab = settled
+                    }
+                }
+
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize(),
+                    // beyondViewportPageCount keeps one neighbour alive so the swipe reveals
+                    // content immediately rather than composing it mid-drag.
+                    beyondViewportPageCount = 1,
+                    key = { Tab.visible[it] },
+                ) { page ->
+                    val shownTab = Tab.visible[page]
+                    when (shownTab) {
+                        Tab.COMMUNITIES -> CommunitiesHomeView(
+                            onOpenConversation = { conversationId ->
+                                // Host-inbox taps land in the Chats tab like any other
+                                // conversation — the inbox only ever hands back an id.
+                                gamesScope.launch {
+                                    chat.conversationById(conversationId)?.let {
+                                        tab = Tab.CHAT; openConversation = it
+                                    }
+                                }
+                            },
+                        )
+                        Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
+                            onPickGame = { setupGame = it },
+                            onLeaderboard = { showLeaderboard = true },
+                            onDaily = { showDaily = true },
+                            onAcceptInvite = { inv ->
+                                // Accepting from a banner is the same act as tapping the invite bubble
+                                // in chat, so it goes through the same seam.
+                                com.voiid.app.net.DeepLinkRouter.openGameMatch(inv.match_id, inv.slug)
+                            },
+                        )
+                        Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
+                        Tab.AI -> AIChatView(ai)
+                        Tab.STORIES -> com.voiid.app.main.stories.StoriesHomeView(
+                            stories,
+                            onOpenContext = { openStoryContext = it },
+                            onCompose = { showStoryComposer = true },
+                        )
+                        Tab.CLIPS -> com.voiid.app.main.clips.ClipsFeedView(
+                            clips,
+                            creators = creators,
+                            onOpenClip = {
+                                openClip = com.voiid.app.main.clips.ClipPagerSource.Explore(it)
+                            },
+                            onOpenFollowingClip = {
+                                openClip = com.voiid.app.main.clips.ClipPagerSource.Following(it)
+                            },
+                            onNewClip = { startCompose() },
+                            onMyClips = { showMyClips = true },
+                            onOpenCreator = { openCreator = it },
+                        )
+                        // "Open chat" on a map contact card jumps straight into that conversation,
+                        // the same push the chat list performs.
+                        Tab.MAP -> MapTabView(
+                            map, chat,
+                            onOpenChatWithUser = { uid ->
+                                chat.directConversations.firstOrNull { it.peerUserId == uid }
+                                    ?.let { tab = Tab.CHAT; openConversation = it }
+                            },
+                        )
+                    }
                 }
             }
             TabBar(
@@ -1063,12 +1093,13 @@ private fun TabBar(
     Column(
         Modifier
             .fillMaxWidth()
-            // TRANSLUCENT custom surface — the iOS bar is a `.bar` material blur, which
-            // specifies no number to copy and has no direct Compose equivalent without a
-            // window-level backdrop effect. A translucent scrim of the ground colour is the
-            // honest fallback; NAV_SURFACE_ALPHA is centralised so it can be tuned once
-            // against device captures.
-            .background(VoiidColor.background.copy(alpha = TAB_SURFACE_ALPHA))
+            // iOS native `.bar` material glass blur feel with specular rim highlight
+            .voiidGlass(
+                shape = RoundedCornerShape(0.dp),
+                tint = VoiidColor.background.copy(alpha = 0.82f),
+                specularBorderWidth = 0.5.dp,
+                blurRadius = 24f,
+            )
             .navigationBarsPadding(),
     ) {
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(VoiidColor.divider.copy(alpha = 0.6f)))
@@ -1078,17 +1109,6 @@ private fun TabBar(
             val slotW = maxWidth / VISIBLE_TABS
 
             // SCROLL ONLY WHEN THE TAB IS ACTUALLY OFF-SCREEN, and only far enough.
-            //
-            // THE BUG: this re-CENTRED the selection on every change, so tapping a tab that
-            // was already plainly visible yanked the whole bar sideways — the item you just
-            // hit slid out from under your thumb, and its four neighbours moved too. With
-            // seven tabs in a five-wide window that fired on most taps, and it made the bar
-            // feel like it was fighting you.
-            //
-            // "Keep the selected tab on screen" (the original comment, and the right goal)
-            // does not require centring. A tab already fully visible needs NO scroll at all;
-            // one that is off the edge needs to travel exactly far enough to come into view,
-            // which is what a scroll should do — reveal, not rearrange.
             LaunchedEffect(selected) {
                 val slotPx = with(density) { slotW.toPx() }
                 val leading = slotPx * selected.slot
@@ -1097,18 +1117,11 @@ private fun TabBar(
                 val visibleStart = scroll.value.toFloat()
                 val visibleEnd = visibleStart + viewportPx
 
-                // A small tolerance: a tab flush against the edge is technically visible and
-                // practically not — half of it sits under the neighbouring slot's padding —
-                // and leaving it there reads as "the bar refused to move".
                 val tolerance = with(density) { 8.dp.toPx() }
                 val offScreen = leading < visibleStart + tolerance ||
                     trailing > visibleEnd - tolerance
 
                 if (offScreen) {
-                    // CENTRE it, rather than nudging it flush to the edge it came from. The
-                    // user has not seen this tab yet, and the middle is the gentlest place to
-                    // put something arriving — an item pinned hard against the frame reads as
-                    // clipped even when it is fully drawn.
                     val centred = leading - (viewportPx - slotPx) / 2f
                     scroll.animateScrollTo(centred.toInt().coerceAtLeast(0))
                 }
@@ -1116,24 +1129,20 @@ private fun TabBar(
 
             Box(Modifier.horizontalScroll(scroll)) {
                 Box(Modifier.width(slotW * Tab.visible.size)) {
-                    // ELASTIC indicator — an underline, not a filled pill (the pill covered
-                    // the glyph it was meant to highlight). The stretch is preserved: the
-                    // LEADING edge springs faster than the trailing one, so the bar elongates
-                    // in the direction of travel and snaps back. Damping is 0.82, up from the
-                    // original 0.55 that overshot and wobbled on every tap.
-                    //
-                    // It lives INSIDE the scrolling content, so it tracks the row rather than
-                    // detaching from its tab when the bar is scrolled.
+                    // ELASTIC indicator — stretch scales with distance travelled, matching iOS slideStretch formula
                     val barW = 22.dp
-                    val leftTarget = slotW * selected.slot + (slotW - barW) / 2
-                    val rightTarget = leftTarget + barW
-
                     var prevIndex by remember { mutableStateOf(selected.slot) }
+                    val distance = kotlin.math.abs(selected.slot - prevIndex).coerceAtLeast(1)
                     val movingRight = selected.slot >= prevIndex
                     SideEffect { prevIndex = selected.slot }
 
-                    val fast = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
-                    val slow = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessLow)
+                    val stretchFactor = (1f + (distance - 1) * 0.32f).coerceAtMost(2.2f)
+                    val targetW = barW * stretchFactor
+                    val leftTarget = slotW * selected.slot + (slotW - barW) / 2
+                    val rightTarget = leftTarget + targetW
+
+                    val fast = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.85f, stiffness = Spring.StiffnessMedium)
+                    val slow = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.85f, stiffness = Spring.StiffnessLow)
                     val leftX by animateDpAsState(leftTarget, if (movingRight) slow else fast, label = "tabIndicatorL")
                     val rightX by animateDpAsState(rightTarget, if (movingRight) fast else slow, label = "tabIndicatorR")
 

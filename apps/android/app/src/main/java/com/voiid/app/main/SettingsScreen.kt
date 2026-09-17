@@ -122,184 +122,10 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var editingName by remember { mutableStateOf(false) }
-    var draftName by remember { mutableStateOf(session.profile.fullName) }
-    var uploading by remember { mutableStateOf(false) }
-    var errorText by remember { mutableStateOf<String?>(null) }
-
-    // Account erasure flow state.
-    var confirmDeleteAccount by remember { mutableStateOf(false) }
-    var deletingAccount by remember { mutableStateOf(false) }
-    var erasureOutcome by remember { mutableStateOf<String?>(null) }
-    var erasureError by remember { mutableStateOf<String?>(null) }
-
     // Logout confirmation state. backupExists: true = a server backup exists (restorable with
     // the recovery phrase), false = definitively none, null = couldn't tell.
     var confirmLogout by remember { mutableStateOf(false) }
     var backupExists by remember { mutableStateOf<Boolean?>(null) }
-    if (confirmLogout) {
-        com.voiid.app.ui.components.VoiidDialog(
-            onDismissRequest = { confirmLogout = false },
-            title = "Log out of Voiid?",
-            // Two real variants plus an honest unknown. Telling someone their keys are
-            // recoverable when no backup exists is exactly the lie this confirmation
-            // exists to prevent.
-            body = when (backupExists) {
-                true -> "Your messages and encryption keys will be removed from this phone. You can restore them with your recovery phrase."
-                false -> "Your messages and encryption keys will be removed from this phone. You haven't backed them up, so they can't be recovered."
-                null -> "Your messages and encryption keys will be removed from this phone. They can only be restored if you have a backup and your recovery phrase."
-            },
-            confirmLabel = "Log out",
-            onConfirm = {
-                confirmLogout = false
-                session.signOut()
-                onClose()
-            },
-            confirmDestructive = true,
-        )
-    }
-
-    /** Camera or gallery — asked before either opens, so the user picks the SOURCE rather
-     *  than being dropped into whichever one we guessed. Mirrors iOS. */
-    var showPhotoSource by remember { mutableStateOf(false) }
-
-    /** The ONE upload path, shared by camera and gallery. */
-    fun uploadPhotoBytes(bytes: ByteArray?) {
-        scope.launch {
-            uploading = true
-            errorText = try {
-                if (bytes == null) "Couldn't read that photo." else {
-                    val key = MediaService(TokenStore.get(context)).uploadProfilePhoto(bytes)
-                    // Local-first: cache the bytes we just uploaded under the key so the avatar
-                    // shows INSTANTLY everywhere — no presigned re-download (the 15–20s wait).
-                    MediaCache.putData(context, key, bytes)
-                    session.updateProfile(photoUrl = key)   // local first
-                    ProfileService(context).updateProfile(photoUrl = key)
-                    null
-                }
-            } catch (e: Exception) {
-                "Couldn't update your photo. Try again."
-            }
-            uploading = false
-        }
-    }
-
-    // Photos picker (system UI — no READ_MEDIA_IMAGES permission needed).
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val bytes = withContext(Dispatchers.IO) {
-                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            }
-            uploadPhotoBytes(bytes)
-        }
-    }
-
-    // Camera. TakePicturePreview returns a downscaled thumbnail Bitmap rather than a
-    // full-resolution file — which is exactly right here: this is displayed at 104dp, and
-    // the full-file variant would need a FileProvider, a temp file and a cleanup path for
-    // detail no screen in the app can show.
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-        if (bitmap == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val bytes = withContext(Dispatchers.IO) {
-                java.io.ByteArrayOutputStream().use { out ->
-                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
-                    out.toByteArray()
-                }
-            }
-            uploadPhotoBytes(bytes)
-        }
-    }
-
-    // CAMERA permission is declared in the manifest, so it must be REQUESTED at runtime on
-    // API 23+. Launching the camera without it fails silently, which would look like a dead
-    // button.
-    val cameraPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) camera.launch(null)
-        else errorText = "Camera permission is needed to take a photo."
-    }
-
-    if (showPhotoSource) {
-        // TWO SOURCES, asked explicitly. Tapping the avatar opened the gallery directly, so
-        // taking a NEW photo meant leaving the app, using the camera, coming back and
-        // picking it — for what is overwhelmingly a selfie.
-        com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest = { showPhotoSource = false }) {
-            Spacer(Modifier.height(20.dp))
-            Text("Profile photo", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-            Text(
-                "Take a new photo, or choose one you already have.",
-                style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Spacer(Modifier.height(6.dp))
-            com.voiid.app.ui.components.VoiidDialogAction("Take Photo") {
-                showPhotoSource = false
-                haptics.tap()
-                // Ask for permission first — launching without it fails silently.
-                cameraPermission.launch(android.Manifest.permission.CAMERA)
-            }
-            com.voiid.app.ui.components.VoiidDialogAction("Choose from Gallery") {
-                showPhotoSource = false
-                haptics.tap()
-                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }
-            com.voiid.app.ui.components.VoiidDialogAction("Cancel") { showPhotoSource = false }
-            Spacer(Modifier.height(8.dp))
-        }
-    }
-
-    fun saveName() {
-        val name = draftName.trim()
-        if (name.isEmpty()) { editingName = false; return }
-        // Local first: the new name is on screen (and durable) before the request is even
-        // attempted, so this works offline and survives a restart.
-        session.updateProfile(fullName = name)
-        editingName = false
-        scope.launch {
-            errorText = runCatching { ProfileService(context).updateProfile(fullName = name) }
-                .fold({ null }, { "Saved on this device — will sync when you're back online." })
-        }
-    }
-
-    // --- About / bio ---
-    var editingBio by remember { mutableStateOf(false) }
-    var draftBio by remember { mutableStateOf(session.profile.bio ?: "") }
-    fun saveBio() {
-        val b = draftBio.trim().take(140)
-        session.updateProfile(bio = b)            // local first
-        editingBio = false
-        scope.launch { runCatching { ProfileService(context).updateProfile(bio = b) } }
-    }
-
-    // --- Username (@handle) with live availability ---
-    var editingUsername by remember { mutableStateOf(false) }
-    var draftUsername by remember { mutableStateOf(session.profile.username ?: "") }
-    var usernameAvailable by remember { mutableStateOf<Boolean?>(null) }
-    var checkingUsername by remember { mutableStateOf(false) }
-    // Debounced availability check.
-    LaunchedEffect(draftUsername, editingUsername) {
-        usernameAvailable = null
-        val u = draftUsername.trim().lowercase()
-        if (!editingUsername || u == (session.profile.username ?: "") || u.length < 3) { checkingUsername = false; return@LaunchedEffect }
-        checkingUsername = true
-        delay(500)
-        usernameAvailable = runCatching { ProfileService(context).checkUsername(u).available }.getOrNull()
-        checkingUsername = false
-    }
-    fun saveUsername() {
-        val u = draftUsername.trim().lowercase().filter { it.isLetterOrDigit() || it == '_' }.take(20)
-        if (u == (session.profile.username ?: "")) { editingUsername = false; return }
-        if (usernameAvailable == false) return
-        session.updateProfile(username = u)       // local first
-        editingUsername = false
-        scope.launch {
-            errorText = runCatching { ProfileService(context).updateProfile(username = u) }
-                .fold({ null }, { "That username was just taken. Pick another." })
-        }
-    }
 
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
@@ -316,195 +142,58 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             // ---- profile card
-            Column(
+            Row(
                 Modifier.fillMaxWidth()
                     .spotlightTarget("settings_profile_card", shape = SpotlightShapeType.ROUNDED_RECT, cornerRadius = 24.dp, padding = 4.dp)
                     .clip(RoundedCornerShape(VoiidRadius.lg))
                     .background(VoiidColor.surfaceCard)
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                    .softClickable {
+                        haptics.tap()
+                        onEditProfile()
+                    }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Box(contentAlignment = Alignment.BottomEnd) {
-                    ProfileAvatar(
-                        photoUrl = session.profile.photoURL,
-                        name = session.profile.fullName,
-                        size = 96.dp,
-                        // ONE TONE, NOT TWO — this sits on a surfaceCard header.
-                        placeholderFill = VoiidColor.surfaceCard,
-                        modifier = Modifier.softClickable(scale = 0.95f) {
-                            if (!uploading) { haptics.tap(); showPhotoSource = true }
-                        },
+                ProfileAvatar(
+                    photoUrl = session.profile.photoURL,
+                    name = session.profile.fullName,
+                    size = 64.dp,
+                    placeholderFill = VoiidColor.surfaceCard,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = session.profile.fullName.ifBlank { "Add your name" },
+                        style = VoiidFont.rounded(18, FontWeight.Bold),
+                        color = if (session.profile.fullName.isBlank()) VoiidColor.placeholder else VoiidColor.textPrimary,
+                        maxLines = 1,
                     )
-                    // Affordance: without this it isn't obvious the avatar is tappable.
-                    Box(
-                        Modifier.size(28.dp).clip(CircleShape).background(VoiidColor.primary),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (uploading) {
-                            CircularProgressIndicator(
-                                color = VoiidColor.textOnPrimary,
-                                strokeWidth = 2.dp,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        } else {
-                            Icon(
-                                Icons.Default.CameraAlt, "Change photo",
-                                tint = VoiidColor.textOnPrimary, modifier = Modifier.size(15.dp),
-                            )
-                        }
-                    }
-                }
-
-                if (editingName) {
-                    val shape = RoundedCornerShape(VoiidRadius.md)
-                    BasicTextField(
-                        value = draftName,
-                        onValueChange = { draftName = it },
-                        singleLine = true,
-                        textStyle = VoiidFont.rounded(18, FontWeight.SemiBold)
-                            .merge(TextStyle(color = VoiidColor.textPrimary, textAlign = TextAlign.Center)),
-                        cursorBrush = SolidColor(VoiidColor.primary),
-                        modifier = Modifier.fillMaxWidth().height(48.dp).clip(shape)
-                            .background(VoiidColor.fieldFill)
-                            .border(1.dp, VoiidColor.fieldBorder, shape)
-                            .padding(horizontal = 12.dp),
-                        decorationBox = { inner ->
-                            Box(contentAlignment = Alignment.Center) {
-                                if (draftName.isEmpty()) {
-                                    Text("Your name", style = VoiidFont.body, color = VoiidColor.placeholder)
-                                }
-                                inner()
-                            }
-                        },
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    if (!session.profile.username.isNullOrBlank()) {
                         Text(
-                            "Cancel", style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                            text = "@${session.profile.username}",
+                            style = VoiidFont.rounded(14),
                             color = VoiidColor.textSecondary,
-                            modifier = Modifier.softClickable { editingName = false },
+                            maxLines = 1,
                         )
+                    }
+                    if (session.profile.phoneNumber.isNotBlank()) {
                         Text(
-                            "Save", style = VoiidFont.rounded(15, FontWeight.SemiBold),
-                            color = VoiidColor.primary,
-                            modifier = Modifier.softClickable { haptics.tap(); saveName() },
-                        )
-                    }
-                } else {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.softClickable {
-                            haptics.tap(); draftName = session.profile.fullName; editingName = true
-                        },
-                    ) {
-                        Text(
-                            session.profile.fullName,
-                            style = VoiidFont.rounded(20, FontWeight.Bold), color = VoiidColor.textPrimary,
-                        )
-                        Icon(
-                            Icons.Default.Edit, "Edit name",
-                            tint = VoiidColor.textSecondary, modifier = Modifier.size(15.dp),
+                            text = session.profile.phoneNumber,
+                            style = VoiidFont.rounded(13),
+                            color = VoiidColor.textSecondary,
+                            maxLines = 1,
                         )
                     }
                 }
-
-                // HANDLE AND NUMBER ON ONE LINE, dot-separated — the same identity treatment
-                // the contact profile and iOS settings use, rather than two stacked lines at
-                // equal weight where neither reads as the way to identify you. Only when the
-                // handle is not being edited; editing needs the full row to itself.
-                if (!editingUsername && !session.profile.username.isNullOrBlank()
-                    && session.profile.phoneNumber.isNotBlank()) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            "@${session.profile.username}",
-                            style = VoiidFont.rounded(14, FontWeight.Medium),
-                            color = VoiidColor.primary,
-                            modifier = Modifier.softClickable {
-                                haptics.tap()
-                                draftUsername = session.profile.username ?: ""
-                                editingUsername = true
-                            },
-                        )
-                        Box(Modifier.size(3.dp).clip(CircleShape).background(VoiidColor.textSecondary.copy(alpha = 0.4f)))
-                        Text(
-                            session.profile.phoneNumber,
-                            style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-                        )
-                    }
-                } else if (session.profile.phoneNumber.isNotBlank()) {
-                    Text(
-                        session.profile.phoneNumber,
-                        style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-                    )
-                }
-
-                // Username (@handle) — tap to edit, with live availability. Shown on its own
-                // line only when it is NOT already on the combined identity row above.
-                if (editingUsername) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("@", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
-                        BasicTextField(
-                            value = draftUsername,
-                            onValueChange = { draftUsername = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' }.take(20) },
-                            singleLine = true,
-                            textStyle = VoiidFont.rounded(15).copy(color = VoiidColor.textPrimary),
-                            cursorBrush = androidx.compose.ui.graphics.SolidColor(VoiidColor.primary),
-                        )
-                        when {
-                            checkingUsername -> Text("…", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
-                            usernameAvailable == false -> Text("taken", style = VoiidFont.rounded(12), color = VoiidColor.error)
-                            usernameAvailable == true -> Text("✓", style = VoiidFont.rounded(13), color = VoiidColor.primary)
-                        }
-                        Text("Save", style = VoiidFont.rounded(13, FontWeight.SemiBold),
-                            color = VoiidColor.primary,
-                            modifier = Modifier.softClickable { haptics.tap(); saveUsername() })
-                    }
-                } else if (session.profile.username.isNullOrBlank() || session.profile.phoneNumber.isBlank()) {
-                    Text(
-                        if (session.profile.username.isNullOrBlank()) "Add a username" else "@${session.profile.username}",
-                        style = VoiidFont.rounded(14),
-                        color = if (session.profile.username.isNullOrBlank()) VoiidColor.primary else VoiidColor.textSecondary,
-                        modifier = Modifier.softClickable {
-                            haptics.tap(); draftUsername = session.profile.username ?: ""; editingUsername = true
-                        },
-                    )
-                }
-
-                // About / bio — tap to edit.
-                if (editingBio) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        BasicTextField(
-                            value = draftBio,
-                            onValueChange = { draftBio = it.take(140) },
-                            textStyle = VoiidFont.rounded(14).copy(color = VoiidColor.textPrimary, textAlign = TextAlign.Center),
-                            cursorBrush = androidx.compose.ui.graphics.SolidColor(VoiidColor.primary),
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                        )
-                        Text("Save", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.primary,
-                            modifier = Modifier.padding(top = 4.dp).softClickable { haptics.tap(); saveBio() })
-                    }
-                } else {
-                    Text(
-                        session.profile.bio?.takeIf { it.isNotBlank() } ?: "Add a few words about you",
-                        style = VoiidFont.rounded(13),
-                        color = if (session.profile.bio.isNullOrBlank()) VoiidColor.primary else VoiidColor.textSecondary,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.softClickable {
-                            haptics.tap(); draftBio = session.profile.bio ?: ""; editingBio = true
-                        },
-                    )
-                }
-
-                errorText?.let {
-                    Text(
-                        it, style = VoiidFont.rounded(13), color = VoiidColor.error,
-                        textAlign = TextAlign.Center,
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = "Edit profile",
+                    tint = VoiidColor.placeholder,
+                    modifier = Modifier.size(20.dp),
+                )
             }
 
             // ---- quick actions + encryption banner (iOS parity)
@@ -606,23 +295,6 @@ fun SettingsScreen(
                     backupExists = null          // re-probe each time the dialog opens
                     confirmLogout = true
                 }
-                SettingsDivider()
-                // Account erasure — the route the legal copy promises. Filing opens a REQUEST
-                // (server SLA); it does not delete anything by itself. The request is filed
-                // FIRST and the local teardown only after it succeeds: wipeLocalAccountState
-                // clears the JWT, and an unauthenticated client cannot open a request.
-                SettingsRow(
-                    Icons.Default.Delete, "Delete my account",
-                    tint = VoiidColor.error,
-                    enabled = !deletingAccount,
-                    trailing = {
-                        if (deletingAccount) {
-                            androidx.compose.material3.CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp), strokeWidth = 2.dp,
-                                color = VoiidColor.textSecondary)
-                        }
-                    },
-                ) { haptics.rigid(); confirmDeleteAccount = true }
             }
         }
     }
@@ -646,56 +318,6 @@ fun SettingsScreen(
                 onClose()
             },
             confirmDestructive = true,
-        )
-    }
-
-    if (confirmDeleteAccount) {
-        com.voiid.app.ui.components.VoiidDialog(
-            onDismissRequest = { if (!deletingAccount) confirmDeleteAccount = false },
-            title = "Delete your Voiid account?",
-            body = "This opens an erasure request and signs you out of this phone immediately, " +
-                "wiping its messages and keys. Your account itself is erased once the request " +
-                "is actioned — until then you can still sign in and cancel by contacting support.",
-            confirmLabel = "Delete my account",
-            onConfirm = {
-                deletingAccount = true; erasureError = null
-                scope.launch {
-                    try {
-                        val outcome = com.voiid.app.net.DpdpService(context).requestErasure()
-                        haptics.success()
-                        confirmDeleteAccount = false
-                        erasureOutcome = outcome.note ?: "Your erasure request has been recorded."
-                    } catch (e: Exception) {
-                        erasureError = e.message ?: "Couldn't open the request."
-                        haptics.error()
-                    }
-                    deletingAccount = false
-                }
-            },
-            confirmDestructive = true,
-            busy = deletingAccount,
-        )
-    }
-
-    erasureOutcome?.let { note ->
-        com.voiid.app.ui.components.VoiidDialog(
-            onDismissRequest = { erasureOutcome = null; session.signOut(); onClose() },
-            title = "Erasure request recorded",
-            body = note,
-            confirmLabel = "Sign out of this phone",
-            onConfirm = { erasureOutcome = null; session.signOut(); onClose() },
-            cancelLabel = null,
-        )
-    }
-
-    erasureError?.let {
-        com.voiid.app.ui.components.VoiidDialog(
-            onDismissRequest = { erasureError = null },
-            title = "Couldn't open the request",
-            body = it,
-            confirmLabel = "OK",
-            onConfirm = { erasureError = null },
-            cancelLabel = null,
         )
     }
 }

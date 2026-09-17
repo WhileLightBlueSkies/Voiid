@@ -33,8 +33,8 @@ object VoiidColor {
 
     // ---- Spine -------------------------------------------------------------------------
 
-    /** Peacock teal — every primary action, and the brand colour. */
-    val primary: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.PrimaryLight, VoiidPalette.PrimaryDark)
+    /** Voiid Tide #13828C — every primary action, and the brand colour. Fixed in both themes (iOS Theme.swift §6.1). */
+    val primary: Color @Composable @ReadOnlyComposable get() = VoiidPalette.PrimaryLight
 
     /**
      * The app ground. Warm off-white in light; near-black with a violet cast in dark, which is

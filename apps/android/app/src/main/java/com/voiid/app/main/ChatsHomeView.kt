@@ -296,9 +296,12 @@ fun ChatsHomeView(
                 }
                 realItems.isEmpty() -> ChatsEmptyState(
                     isGroups = tab == ChatTab.GROUPS,
-                    onNewChat = { haptics.tap(); showNewChat = true },
+                    onNewChat = { haptics.tap(); forceGroup = false; showNewChat = true },
+                    onNewGroup = { haptics.tap(); forceGroup = true; showNewChat = true },
                     onFindByUsername = { haptics.tap(); showFindByUsername = true },
                     onScanCode = { haptics.tap(); showScanner = true },
+                    noteToSelf = if (tab == ChatTab.CHATS) chat.directConversations.firstOrNull { it.type == ConversationType.SELF } else null,
+                    onOpenNoteToSelf = { note -> haptics.tap(); onOpenConversation(note) },
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
                 ChatLayoutPreference.layout == ChatLayout.GRID -> DraggableChatGrid(
@@ -1538,8 +1541,11 @@ private fun ChatsLoadingState(modifier: Modifier = Modifier) {
 private fun ChatsEmptyState(
     isGroups: Boolean,
     onNewChat: () -> Unit,
+    onNewGroup: () -> Unit = {},
     onFindByUsername: () -> Unit,
     onScanCode: () -> Unit,
+    noteToSelf: VConversation? = null,
+    onOpenNoteToSelf: (VConversation) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -1570,8 +1576,18 @@ private fun ChatsEmptyState(
             color = VoiidColor.textSecondary,
             textAlign = TextAlign.Center,
         )
-        if (!isGroups) {
-            Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(20.dp))
+        if (isGroups) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(VoiidColor.primary)
+                    .clickable(onClick = onNewGroup)
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+            ) {
+                Text("New group", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textOnPrimary)
+            }
+        } else {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(
                     Modifier
@@ -1590,6 +1606,30 @@ private fun ChatsEmptyState(
                         .padding(horizontal = 18.dp, vertical = 12.dp),
                 ) {
                     Text("Find by @username", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.primary)
+                }
+            }
+
+            if (noteToSelf != null) {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable { onOpenNoteToSelf(noteToSelf) }
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Bookmark,
+                        contentDescription = null,
+                        tint = VoiidColor.textSecondary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        "Open Note to Self",
+                        style = VoiidFont.rounded(14, FontWeight.Medium),
+                        color = VoiidColor.textSecondary,
+                    )
                 }
             }
         }
