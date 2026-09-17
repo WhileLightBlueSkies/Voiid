@@ -24,6 +24,8 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import com.voiid.app.main.walkthrough.SpotlightShapeType
+import com.voiid.app.main.walkthrough.spotlightTarget
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -180,6 +182,20 @@ fun ChatsHomeView(
     // Settings + its children live in ONE modal stack, so Back from Backup/Privacy/Storage/
     // Devices/About/Legal returns to the screen underneath — never straight to this list.
     val settingsNav = com.voiid.app.ui.components.rememberVoiidModalNavigator()
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        com.voiid.app.main.walkthrough.WalkthroughNavigationBus.openSettingsEvents.collect { shouldOpen ->
+            if (shouldOpen) {
+                if (settingsNav.current == null) {
+                    settingsNav.push("settings")
+                }
+            } else {
+                if (settingsNav.current != null) {
+                    settingsNav.closeAll()
+                }
+            }
+        }
+    }
     var allContacts by remember { mutableStateOf<List<VContact>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
@@ -440,6 +456,10 @@ fun ChatsHomeView(
             "myQrCode" -> MyQrCodeScreen(session = session, onBack = settingsNav::pop)
             "help" -> HelpAndSupportScreen(
                 onBack = settingsNav::pop,
+                onReplayWalkthrough = {
+                    com.voiid.app.main.walkthrough.WalkthroughReplayBus.request()
+                    settingsNav.closeAll()
+                },
                 onLinkedDevices = { settingsNav.push("devices") },
                 onBackupRecovery = { settingsNav.push("backup") },
             )
@@ -1008,7 +1028,13 @@ private fun Header(
             name = myName,
             // 40, matching the glyph buttons opposite it.
             size = 40.dp,
-            modifier = Modifier.softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() },
+            modifier = Modifier
+                .spotlightTarget(
+                    id = "nav_header_profile",
+                    shape = SpotlightShapeType.CIRCLE,
+                    padding = 6.dp,
+                )
+                .softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() },
         )
 
         Row(

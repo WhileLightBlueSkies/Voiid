@@ -64,6 +64,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import com.voiid.app.main.walkthrough.LocalSpotlightRegistry
+import com.voiid.app.main.walkthrough.SpotlightRegistry
+import com.voiid.app.main.walkthrough.SpotlightShapeType
+import com.voiid.app.main.walkthrough.spotlightTarget
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -162,7 +167,7 @@ private const val TAB_LABEL_LIMIT = 5
  * Clips) plus the overlays that cover it (chat detail, clip fullscreen). Port of `RootTabView.swift` + iOS navigation behaviour.
  */
 @Composable
-fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
+fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
     val storyLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(storyLifecycleOwner, stories) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -173,6 +178,28 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     }
 
     var tab by remember { mutableStateOf(Tab.CHAT) }
+    val spotlightRegistry = remember { SpotlightRegistry() }
+    val walkthrough = com.voiid.app.main.walkthrough.rememberAppWalkthroughState(session.userId)
+    LaunchedEffect(walkthrough.currentIndex, walkthrough.presented) {
+        if (!walkthrough.presented) {
+            com.voiid.app.main.walkthrough.WalkthroughNavigationBus.setSettingsOpen(false)
+            return@LaunchedEffect
+        }
+        val dest = walkthrough.step.destination
+        if (dest == com.voiid.app.main.walkthrough.TourDestination.SETTINGS) {
+            tab = Tab.CHAT
+            com.voiid.app.main.walkthrough.WalkthroughNavigationBus.setSettingsOpen(true)
+        } else {
+            com.voiid.app.main.walkthrough.WalkthroughNavigationBus.setSettingsOpen(false)
+            tab = when (dest) {
+                com.voiid.app.main.walkthrough.TourDestination.CHATS -> Tab.CHAT
+                com.voiid.app.main.walkthrough.TourDestination.MOMENTS -> Tab.STORIES
+                com.voiid.app.main.walkthrough.TourDestination.COMMUNITIES -> Tab.COMMUNITIES
+                com.voiid.app.main.walkthrough.TourDestination.GAMES -> Tab.GAMES
+                else -> tab
+            }
+        }
+    }
     // Read here rather than at the later `context`: that one is declared further down, and
     // the open-thread effect below runs before it exists.
     val notificationContext = androidx.compose.ui.platform.LocalContext.current
@@ -349,7 +376,11 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         com.voiid.app.net.InAppMessageNotifications.dismiss(banner)
     }
 
-    Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
+    CompositionLocalProvider(
+        LocalSpotlightRegistry provides spotlightRegistry,
+        com.voiid.app.main.walkthrough.LocalWalkthroughState provides walkthrough,
+    ) {
+        Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
 
         Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -441,6 +472,10 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                 onLongPressMap = { map.killSwitch() },
                 onSelect = { tab = it },
             )
+        }
+
+        if (walkthrough.presented && walkthrough.step.destination != com.voiid.app.main.walkthrough.TourDestination.SETTINGS) {
+            com.voiid.app.main.walkthrough.AppWalkthroughOverlay(walkthrough)
         }
 
         // Chat detail — slides in over everything (covers the tab bar), like the iOS push.
@@ -997,6 +1032,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     if (showStoryComposer) {
         com.voiid.app.main.stories.StoryComposerSheet(stories = stories, onDismiss = { showStoryComposer = false })
     }
+    }
 }
 
 /**
@@ -1111,6 +1147,25 @@ private fun TabBar(
 
                     Row {
                         Tab.visible.forEach { t ->
+                            val spotlightId = when (t) {
+                                Tab.CHAT -> "nav_tab_chats"
+                                Tab.STORIES -> "nav_tab_moments"
+                                Tab.COMMUNITIES -> "nav_tab_communities"
+                                Tab.GAMES -> "nav_tab_games"
+                                else -> null
+                            }
+                            val tabModifier = if (spotlightId != null) {
+                                Modifier
+                                    .width(slotW)
+                                    .spotlightTarget(
+                                        id = spotlightId,
+                                        shape = SpotlightShapeType.CIRCLE,
+                                        padding = 8.dp,
+                                        interactive = true,
+                                    )
+                            } else {
+                                Modifier.width(slotW)
+                            }
                             TabItem(
                                 t,
                                 active = selected == t,
@@ -1122,7 +1177,7 @@ private fun TabBar(
                                     (t == Tab.STORIES && storiesUnread),
                                 badgeHollow = t == Tab.MAP && mapGhosted,
                                 onLongPress = if (t == Tab.MAP) onLongPressMap else null,
-                                modifier = Modifier.width(slotW),
+                                modifier = tabModifier,
                             ) { haptics.selection(); onSelect(t) }
                         }
                     }

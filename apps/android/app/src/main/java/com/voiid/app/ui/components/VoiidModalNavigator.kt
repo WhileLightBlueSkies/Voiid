@@ -65,6 +65,8 @@ fun VoiidModalHost(
     content: @Composable (route: String) -> Unit,
 ) {
     val route = navigator.current ?: return
+    val registry = com.voiid.app.main.walkthrough.LocalSpotlightRegistry.current
+    val walkthrough = com.voiid.app.main.walkthrough.LocalWalkthroughState.current
 
     Dialog(
         onDismissRequest = {},
@@ -78,8 +80,17 @@ fun VoiidModalHost(
         androidx.activity.compose.BackHandler(enabled = true) {
             if (navigator.stack.size > 1) navigator.pop() else navigator.closeAll()
         }
-        Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
-            content(route)
+        androidx.compose.runtime.CompositionLocalProvider(
+            com.voiid.app.main.walkthrough.LocalSpotlightRegistry provides registry,
+            com.voiid.app.main.walkthrough.LocalWalkthroughState provides walkthrough,
+        ) {
+            Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
+                content(route)
+                if (walkthrough != null && walkthrough.presented &&
+                    walkthrough.step.destination == com.voiid.app.main.walkthrough.TourDestination.SETTINGS) {
+                    com.voiid.app.main.walkthrough.AppWalkthroughOverlay(walkthrough)
+                }
+            }
         }
     }
 }

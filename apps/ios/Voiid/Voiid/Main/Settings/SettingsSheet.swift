@@ -411,6 +411,9 @@ struct SettingsSheet: View {
                 backupExists = nil
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .voiidReplayAppWalkthrough)) { _ in
+            dismiss()
+        }
     }
 
     /// Same three states as the log-out warning: a key without a backup is not "On".

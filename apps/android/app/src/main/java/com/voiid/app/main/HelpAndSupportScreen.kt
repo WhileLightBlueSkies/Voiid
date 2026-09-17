@@ -36,11 +36,20 @@ private val SUPPORT_EMAIL: String? = null
 @Composable
 fun HelpAndSupportScreen(
     onBack: () -> Unit,
+    onReplayWalkthrough: () -> Unit,
     onLinkedDevices: () -> Unit,
     onBackupRecovery: () -> Unit,
 ) {
     BackupScaffold(title = "Help & support", onBack = onBack) {
         Spacer(Modifier.height(8.dp))
+
+        HelpSection(
+            title = "Learn Voiid",
+            body = "Take a short guided tour of the features available in this version.",
+            footer = "You can replay the walkthrough whenever you need it.",
+            actionLabel = "Replay app walkthrough",
+            onAction = onReplayWalkthrough,
+        )
 
         HelpSection(
             title = "Your messages",

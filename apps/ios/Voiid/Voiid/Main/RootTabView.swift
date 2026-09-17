@@ -47,6 +47,7 @@ struct RootTabView: View {
     // one truth — there is no story tray above the chat grid (§8.1).
     @ObservedObject private var storyEngine = StoryEngine.shared
     @ObservedObject private var notificationRouter = NotificationMessageRouter.shared
+    @StateObject private var walkthrough = AppWalkthroughController()
     @State private var tab: Tab = .chat
     /// True while a swipe is driving the tab change, so the crossfade stands down and the
     /// swipe's own slide is the only motion on screen.
@@ -328,6 +329,28 @@ struct RootTabView: View {
             if CallService.shared.active == nil { Task { _ = await storyEngine.refresh() } }
         }
         .onAppear { _ = MapPresenceEngine.shared }
+        .onAppear { walkthrough.presentIfNeeded(accountID: session.userId) }
+        .onReceive(NotificationCenter.default.publisher(for: .voiidReplayAppWalkthrough)) { _ in
+            walkthrough.replay(accountID: session.userId)
+        }
+        .onChange(of: walkthrough.currentIndex) { _, _ in
+            guard walkthrough.isPresented else { return }
+            switch walkthrough.step.destination {
+            case .chats:       tab = .chat
+            case .moments:     tab = .stories
+            case .communities: tab = .communities
+            case .games:       tab = .games
+            case .settings:    tab = .chat
+            case nil:          break
+            }
+        }
+        .overlay {
+            if walkthrough.isPresented {
+                AppWalkthroughView(controller: walkthrough)
+                    .transition(.opacity)
+                    .zIndex(100)
+            }
+        }
     }
 
     /// The bar renders `Tab.visible`, so ADDING A TAB IS ONE LINE — a new case in the enum

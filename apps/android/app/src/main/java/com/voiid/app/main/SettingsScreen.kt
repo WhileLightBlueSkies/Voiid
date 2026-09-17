@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import com.voiid.app.main.walkthrough.SpotlightShapeType
+import com.voiid.app.main.walkthrough.spotlightTarget
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -316,6 +318,7 @@ fun SettingsScreen(
             // ---- profile card
             Column(
                 Modifier.fillMaxWidth()
+                    .spotlightTarget("settings_profile_card", shape = SpotlightShapeType.ROUNDED_RECT, cornerRadius = 24.dp, padding = 4.dp)
                     .clip(RoundedCornerShape(VoiidRadius.lg))
                     .background(VoiidColor.surfaceCard)
                     .padding(24.dp),

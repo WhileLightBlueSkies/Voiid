@@ -316,7 +316,7 @@ private fun VoiidRoot() {
     Crossfade(targetState = session.route, animationSpec = tween(350), label = "rootRoute") { route ->
         when (route) {
             AppRoute.ONBOARDING -> OnboardingFlow(session)
-            AppRoute.MAIN -> MainScreen(chat, ai, clips, stories)
+            AppRoute.MAIN -> MainScreen(session, chat, ai, clips, stories)
         }
     }
 
