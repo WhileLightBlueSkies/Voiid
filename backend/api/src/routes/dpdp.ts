@@ -112,7 +112,7 @@ const FORBIDDEN_TABLES = [
   // Records that are as much about someone else as about the requester.
   'conversations', 'conversation_members',
   'calls', 'call_participants',
-  'contact_sync', 'creator_follows',
+  'contact_sync', 'social_follows',
   'community_members', 'community_host_threads',
   // The admin plane. A principal's own data does not include who reviewed them.
   'admin_users', 'admin_sessions', 'admin_audit_log',

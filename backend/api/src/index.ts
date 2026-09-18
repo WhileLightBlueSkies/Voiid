@@ -233,7 +233,7 @@ api.use('/clips', clipsRoutes);
 api.use(communityHostThreadRoutes);
 api.use('/communities', communityRoutes);
 // Creator profiles + the follow graph — the public identity behind Clips, same scoped
-// non-E2EE exception (029_creator_profiles.sql). A FOLLOW GRANTS NO MESSAGING RIGHT: the
+// non-E2EE exception (029_social_profiles.sql). A FOLLOW GRANTS NO MESSAGING RIGHT: the
 // three reachability paths in 020 are untouched, and nothing here may ever be used to
 // authorise opening a conversation.
 api.use('/creators', creatorRoutes);

@@ -191,7 +191,7 @@ async function eraseUser(client: import('pg').PoolClient, userId: string, phone:
       select distinct key from (
         select r2_key as key from stories where author_id = $1
         union all select unnest(array[r2_key, thumb_r2_key, r2_key_sd, r2_key_hd, r2_key_fhd]) from clips where author_id = $1
-        union all select avatar_r2_key from creator_profiles where user_id = $1
+        union all select avatar_r2_key from social_profiles where user_id = $1
         union all select unnest(array[photo_url, encrypted_photo_url]) from users where id = $1
       ) k where key is not null and key like 'media/%'
       on conflict (r2_key) do nothing`, [userId]);

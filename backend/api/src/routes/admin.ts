@@ -332,7 +332,7 @@ router.get('/stats', requireAdmin, asyncHandler(async (_req, res) => {
       -- messages, and calls counts sessions, not audio. Both are E2EE and the server holds
       -- no key, so the encryption stays a fact rather than a claim.
       (select count(*) from stories)::int                                    as stories,
-      (select count(*) from creator_profiles)::int                           as creators,
+      (select count(*) from social_profiles)::int                           as creators,
       (select count(*) from creator_highlights)::int                         as highlights,
       (select count(*) from game_lobbies)::int                               as game_lobbies,
       (select count(*) from game_lobbies

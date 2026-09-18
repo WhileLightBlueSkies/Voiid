@@ -69,6 +69,32 @@ final class CreatorService {
         var can_follow: Bool?
         var can_comment: Bool?
 
+        // ── Owner-only, and the reason this profile survives a reinstall ───────
+        // The server sends these to the owner alone (`isSelf` in publicProfile), so a birth
+        // date is never readable by another viewer. They are decoded here because a restored
+        // account has to be able to answer "is this person a minor" WITHOUT re-running
+        // onboarding — the answer lives on the server, keyed to user_id, not in local state.
+        var birth_date: String?
+        var interests: [String]?
+
+        /// `yyyy-MM-dd` -> whole years. Nil when the server sent no birth date, which is
+        /// every profile created before this field was collected.
+        var age: Int? {
+            guard let birth_date else { return nil }
+            let f = DateFormatter()
+            f.calendar = Calendar(identifier: .gregorian)
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = "yyyy-MM-dd"
+            guard let date = f.date(from: birth_date) else { return nil }
+            return Calendar.current.dateComponents([.year], from: date, to: Date()).year
+        }
+
+        /// DPDP treats everyone under 18 as a child: no behavioural personalisation and no
+        /// targeted advertising. Nil age is treated as NOT a minor, because an unknown age on
+        /// a legacy profile must not silently restrict an adult — that gap closes by asking,
+        /// not by guessing.
+        var isMinor: Bool { (age ?? 99) < 18 }
+
         /// The handle is unique server-side, so it is a stable identity for SwiftUI.
         var id: String { handle }
     }
@@ -138,18 +164,28 @@ final class CreatorService {
 
     /// THE GATE. Creates the profile required before a first clip can be posted.
     /// Throws `APIError.http(409)` when the handle is taken, `400` when malformed.
+    /// `birthDate` is `yyyy-MM-dd` and `interests` are topic ids.
+    ///
+    /// Both columns have existed on `creator_profiles` since 029 and the route has always
+    /// accepted them — this client simply never sent them, so every profile was created with
+    /// a null birth date. That is the field DPDP's under-18 handling depends on, so it is not
+    /// optional in practice even though the column is nullable.
     func create(handle: String, displayName: String?, bio: String?,
-                linkURL: String?) async throws -> Profile {
+                linkURL: String?, birthDate: String? = nil,
+                interests: [String] = []) async throws -> Profile {
         struct Body: Encodable {
             let handle: String
             let display_name: String?
             let bio: String?
             let link_url: String?
+            let birth_date: String?
+            let interests: [String]
         }
         let resp: ProfileResp = try await api.request(
             "POST", "creators",
             body: Body(handle: handle, display_name: displayName,
-                       bio: bio, link_url: linkURL))
+                       bio: bio, link_url: linkURL,
+                       birth_date: birthDate, interests: interests))
         return resp.profile
     }
 

@@ -54,9 +54,11 @@ final class CreatorEngine: ObservableObject {
     }
 
     func createProfile(handle: String, displayName: String?, bio: String?,
-                       linkURL: String?) async throws -> CreatorService.Profile {
+                       linkURL: String?, birthDate: String? = nil,
+                       interests: [String] = []) async throws -> CreatorService.Profile {
         let p = try await svc.create(handle: handle, displayName: displayName,
-                                     bio: bio, linkURL: linkURL)
+                                     bio: bio, linkURL: linkURL,
+                                     birthDate: birthDate, interests: interests)
         me = p
         hasLoadedMe = true
         cache[p.handle.lowercased()] = p

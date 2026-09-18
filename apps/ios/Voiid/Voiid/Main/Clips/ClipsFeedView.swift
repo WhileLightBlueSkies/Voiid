@@ -96,7 +96,7 @@ struct ClipsFeedView: View {
                     .environmentObject(creators)
             }
             .sheet(isPresented: $showHandleSheet) {
-                CreatorHandleSheet { _ in
+                CreatorSetupSheet { _ in
                     // Whatever raised the gate can now proceed: either finish an upload
                     // parked at the commit step, or open the composer that was blocked.
                     Task {

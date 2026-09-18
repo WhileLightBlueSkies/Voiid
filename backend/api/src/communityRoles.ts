@@ -28,7 +28,7 @@
 // It does not authorise a MESSAGE. Membership is a social graph; a social graph quietly
 // becoming a messaging graph is the exact failure 020_reachability.sql and
 // communityHostThreads.ts exist to prevent. If you find this function being consulted to
-// decide whether A may message B, that is the bug 029_creator_profiles.sql forbids for follows,
+// decide whether A may message B, that is the bug 029_social_profiles.sql forbids for follows,
 // wearing a new hat.
 import { query } from './db';
 

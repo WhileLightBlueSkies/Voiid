@@ -129,7 +129,7 @@ private enum class Tab(
 
     companion object {
         // Keep declaration before visible: companion properties initialize in order.
-        private val SHIPPED = setOf(CHAT, STORIES, COMMUNITIES, GAMES)
+        private val SHIPPED = setOf(CHAT, STORIES, COMMUNITIES, GAMES, CLIPS)
 
         /**
          * The tabs the bar actually shows, and the order it steps through.
@@ -784,9 +784,9 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                             // — so a busier arena IS the difficulty: less open space, more
                             // bodies to cut across.
                             val bots = when (level) {
-                                com.voiid.app.main.games.BotDifficulty.EASY -> 3
-                                com.voiid.app.main.games.BotDifficulty.MODERATE -> 5
-                                com.voiid.app.main.games.BotDifficulty.HARD -> 8
+                                com.voiid.app.main.games.BotDifficulty.EASY -> 4
+                                com.voiid.app.main.games.BotDifficulty.MODERATE -> 8
+                                com.voiid.app.main.games.BotDifficulty.HARD -> 14
                             }
                             val engine = com.voiid.app.net.GamesEngine.get(context)
                             val matchId = engine.createSolo(game.slug, mapOf("bots" to bots))
@@ -842,19 +842,13 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                         level = level, skill = skill, onClose = { botGame = null })
                     "tictactoe" -> com.voiid.app.main.games.TicTacToeBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
-                    "ludo" -> com.voiid.app.main.games.LudoServerBotSetup(
-                        onStart = { players ->
-                            val difficulty = when (level) {
-                                com.voiid.app.main.games.BotDifficulty.EASY -> "relaxed"
-                                com.voiid.app.main.games.BotDifficulty.MODERATE -> "balanced"
-                                com.voiid.app.main.games.BotDifficulty.HARD -> "sharp"
-                            }
-                            gamesScope.launch {
-                                val id = com.voiid.app.net.GamesEngine.get(context)
-                                    .createLudoBot(difficulty, players)
-                                botGame = null
-                                id?.let { openGameMatch = it to "ludo" }
-                            }
+                    // Offline, local rules — no server round trip for a game played against
+                    // bots on this device. Online Ludo returns after a stable release.
+                    "ludo" -> com.voiid.app.main.games.ludobot.LudoBotScreen(
+                        difficulty = when (level) {
+                            com.voiid.app.main.games.BotDifficulty.EASY -> "easy"
+                            com.voiid.app.main.games.BotDifficulty.MODERATE -> "moderate"
+                            com.voiid.app.main.games.BotDifficulty.HARD -> "hard"
                         },
                         onClose = { botGame = null },
                     )

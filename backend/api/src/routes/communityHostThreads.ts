@@ -30,7 +30,7 @@
 //     an audit can answer "how did this stranger reach me?" honestly rather than by guessing.
 //
 // IF YOU EVER FIND CODE THAT READS COMMUNITY MEMBERSHIP TO AUTHORISE A MESSAGE BETWEEN TWO
-// ORDINARY MEMBERS, THAT IS A BUG — the same rule 029_creator_profiles.sql states for
+// ORDINARY MEMBERS, THAT IS A BUG — the same rule 029_social_profiles.sql states for
 // follows. Membership is a social graph. A social graph quietly becoming a messaging graph
 // is the exact failure mode these gates exist to prevent. Fix the caller; do not widen this.
 //

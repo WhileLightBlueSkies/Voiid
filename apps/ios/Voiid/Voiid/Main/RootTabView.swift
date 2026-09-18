@@ -97,7 +97,7 @@ struct RootTabView: View {
         static var visible: [Tab] { allCases.filter { shipped.contains($0) } }
 
         /// Main surfaces enabled for the current test round.
-        private static let shipped: Set<Tab> = [.chat, .stories, .communities, .games]
+        private static let shipped: Set<Tab> = [.chat, .stories, .communities, .games, .clips]
 
         /// SF Symbols, OUTLINE weight — the inactive state.
         ///

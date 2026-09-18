@@ -16,8 +16,8 @@
 //   node scripts/wipe-clips.mjs --confirm                   # deletes clips + media
 //   node scripts/wipe-clips.mjs --confirm --reset-profiles  # ALSO wipes creator identity
 //
-// --reset-profiles additionally clears creator_profiles, creator_follows and
-// creator_handle_history. Without it, a wipe leaves every user still holding their old
+// --reset-profiles additionally clears social_profiles, social_follows and
+// social_handle_history. Without it, a wipe leaves every user still holding their old
 // handle — so the "create a profile before you post" gate never fires for them, and the
 // first-post flow cannot actually be tested on a supposedly fresh database. WITH it, every
 // handle returns to the pool and every user goes through the picker again.
@@ -88,10 +88,10 @@ const { rows } = await pool.query(`
    order by created_at
 `);
 
-// creator_profiles may not exist on a database that has not run 029 yet — to_regclass
+// social_profiles may not exist on a database that has not run 029 yet — to_regclass
 // returns null instead of throwing, so this script still works mid-migration.
 const hasProfiles = (await pool.query(
-  `select to_regclass('public.creator_profiles') is not null as ok`)).rows[0].ok;
+  `select to_regclass('public.social_profiles') is not null as ok`)).rows[0].ok;
 
 const counts = await pool.query(`
   select
@@ -99,8 +99,8 @@ const counts = await pool.query(`
     (select count(*) from clip_likes)     ::int as likes,
     (select count(*) from clip_views)     ::int as views,
     (select count(*) from clip_comments)  ::int as comments,
-    ${hasProfiles ? "(select count(*) from creator_profiles)::int" : '0'} as profiles,
-    ${hasProfiles ? "(select count(*) from creator_follows)::int" : '0'}  as follows
+    ${hasProfiles ? "(select count(*) from social_profiles)::int" : '0'} as profiles,
+    ${hasProfiles ? "(select count(*) from social_follows)::int" : '0'}  as follows
 `);
 const c = counts.rows[0];
 
@@ -163,9 +163,9 @@ try {
     // Order matters: follows reference profiles' users, and handle history references the
     // user too. Deleting profiles first would work by cascade, but doing it explicitly keeps
     // the intent readable and does not depend on a foreign key someone may later alter.
-    await client.query('delete from creator_follows');
-    await client.query('delete from creator_handle_history');
-    await client.query('delete from creator_profiles');
+    await client.query('delete from social_follows');
+    await client.query('delete from social_handle_history');
+    await client.query('delete from social_profiles');
   }
   await client.query('commit');
   console.log(`  DB: all clip rows deleted`);

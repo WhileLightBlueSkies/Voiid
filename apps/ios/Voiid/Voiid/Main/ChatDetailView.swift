@@ -1939,17 +1939,17 @@ struct LudoInviteMiniBoard: View {
     var body: some View {
         Canvas { ctx, size in
             let u = min(size.width, size.height) / 15
-            let colors = LudoColors.resolve(.light)
-            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(colors.boardSurface))
-            for node in LudoBoardGeometry.cells {
-                let rect = CGRect(x: CGFloat(node.x) * u, y: CGFloat(node.y) * u, width: u, height: u)
-                let fill: Color = node.role == .yard ? colors.yard(node.seat ?? 0)
-                    : node.role == .homeLane ? colors.homeLane(node.seat ?? 0) : colors.trackCellFill
-                ctx.fill(Path(rect), with: .color(fill))
-                if node.role == .sharedTrack || node.role == .homeLane {
-                    ctx.stroke(Path(rect), with: .color(colors.trackCellBorder), lineWidth: max(0.25, u * 0.06))
-                }
-            }
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(ludoHex: 0x1A1510)))
+            let r0 = CGRect(x: 0, y: 0, width: 6 * u, height: 6 * u)
+            let r1 = CGRect(x: 9 * u, y: 0, width: 6 * u, height: 6 * u)
+            let r2 = CGRect(x: 9 * u, y: 9 * u, width: 6 * u, height: 6 * u)
+            let r3 = CGRect(x: 0, y: 9 * u, width: 6 * u, height: 6 * u)
+            ctx.fill(Path(r0), with: .color(Theme.seat(0)))
+            ctx.fill(Path(r1), with: .color(Theme.seat(1)))
+            ctx.fill(Path(r2), with: .color(Theme.seat(2)))
+            ctx.fill(Path(r3), with: .color(Theme.seat(3)))
+            let centerRect = CGRect(x: 6 * u, y: 6 * u, width: 3 * u, height: 3 * u)
+            ctx.fill(Path(centerRect), with: .color(Theme.brass))
         }
         .accessibilityHidden(true)
     }

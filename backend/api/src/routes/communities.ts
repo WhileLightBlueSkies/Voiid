@@ -82,7 +82,7 @@ export function dispatchOfficialCommunityAction(req: Request, res: Response, nex
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Same grammar as users.username (010), creator_profiles.handle (029) and the
+// Same grammar as users.username (010), social_profiles.handle (029) and the
 // communities_handle_format check in 030 — the three share one namespace, so a validator
 // that disagreed with any of them would only move the failure from a 400 to a 500.
 const HANDLE_RE = /^[a-z][a-z0-9_]{2,19}$/;

@@ -2,7 +2,7 @@ import { rateLimit } from '../security';
 // Creator profiles + the follow graph — the public identity behind Clips.
 //
 // ============================ NOT END-TO-END ENCRYPTED ============================
-// Read the header of 029_creator_profiles.sql before touching this file. A creator profile
+// Read the header of 029_social_profiles.sql before touching this file. A creator profile
 // is broadcast identity: shown to strangers, server-counted, discoverable by search. None of
 // that is expressible under E2EE. Messages, calls, locations and moments are unaffected.
 // =================================================================================
@@ -44,7 +44,7 @@ function isTaken(e: unknown): boolean {
 /** Public shape. Deliberately omits user_id: see the note in GET /:handle. */
 async function publicProfile(row: any, viewerId: string) {
   const [{ following }] = await query<{ following: boolean }>(
-    `select exists (select 1 from creator_follows
+    `select exists (select 1 from social_follows
                      where follower_id = $1 and followee_id = $2) as following`,
     [viewerId, row.user_id]
   );
@@ -85,6 +85,8 @@ async function publicProfile(row: any, viewerId: string) {
     discoverable: isSelf ? row.discoverable : undefined,
     allow_follows: isSelf ? row.allow_follows : undefined,
     allow_comments: isSelf ? row.allow_comments : undefined,
+    birth_date: isSelf && row.birth_date ? (row.birth_date instanceof Date ? row.birth_date.toISOString().slice(0, 10) : String(row.birth_date).slice(0, 10)) : undefined,
+    interests: isSelf ? (row.interests ?? []) : undefined,
 
     // Derived, for every viewer: what this profile will let them do. The client should not
     // re-derive these — the server is the authority, and duplicating the rule is how the
@@ -105,7 +107,7 @@ async function publicProfile(row: any, viewerId: string) {
 router.get('/me', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query<any>(
-    `select * from creator_profiles where user_id = $1`, [user_id]);
+    `select * from social_profiles where user_id = $1`, [user_id]);
   if (!rows[0]) return res.json({ profile: null });
   return res.json({ profile: await publicProfile(rows[0], user_id) });
 }));
@@ -132,7 +134,7 @@ router.get('/handle-available', requireAuth, rateLimit({ max: 180, windowSeconds
         union all
         select 1 from users where lower(username) = $1 and id <> $2
         union all
-        select 1 from creator_profiles where lower(handle) = $1 and user_id <> $2
+        select 1 from social_profiles where lower(handle) = $1 and user_id <> $2
      ) as taken`,
     [handle, user_id]
   );
@@ -162,12 +164,20 @@ router.post('/', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: '
   const link_url = req.body?.link_url
     ? String(req.body.link_url).trim().slice(0, MAX_LINK) : null;
 
+  const birth_date = req.body?.birth_date ? String(req.body.birth_date).trim() : null;
+  if (birth_date && (!/^\d{4}-\d{2}-\d{2}$/.test(birth_date) || isNaN(Date.parse(birth_date)))) {
+    return res.status(400).json({ error: 'birth_date must be in YYYY-MM-DD format' });
+  }
+  const interests = Array.isArray(req.body?.interests)
+    ? req.body.interests.map((s: any) => String(s).trim().toLowerCase()).filter(Boolean).slice(0, 20)
+    : [];
+
   try {
     const rows = await query<any>(
-      `insert into creator_profiles (user_id, handle, display_name, bio, link_url)
-            values ($1, $2, $3, $4, $5)
+      `insert into social_profiles (user_id, handle, display_name, bio, link_url, birth_date, interests)
+            values ($1, $2, $3, $4, $5, $6, $7)
        returning *`,
-      [user_id, handle, display_name, bio, link_url]
+      [user_id, handle, display_name, bio, link_url, birth_date, interests]
     );
     return res.status(201).json({ profile: await publicProfile(rows[0], user_id) });
   } catch (e) {
@@ -187,7 +197,7 @@ router.post('/', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: '
 router.patch('/me', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const existing = await query<any>(
-    `select * from creator_profiles where user_id = $1`, [user_id]);
+    `select * from social_profiles where user_id = $1`, [user_id]);
   if (!existing[0]) return res.status(404).json({ error: 'no creator profile' });
 
   const sets: string[] = [];
@@ -199,7 +209,7 @@ router.patch('/me', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket
     if (handle !== existing[0].handle) {
       const changed = await query<{ recent: boolean }>(
         `select coalesce(max(created_at) > now() - interval '30 days', false) as recent
-           from creator_handle_history where user_id = $1`, [user_id]);
+           from social_handle_history where user_id = $1`, [user_id]);
       if (changed[0]?.recent) {
         return res.status(429).json({ error: 'handle can only be changed once every 30 days' });
       }
@@ -217,6 +227,21 @@ router.patch('/me', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket
       vals.push(v);
       sets.push(`${field} = $${vals.length}`);
     }
+  }
+
+  if (req.body?.birth_date !== undefined) {
+    const bd = req.body.birth_date ? String(req.body.birth_date).trim() : null;
+    if (bd && (!/^\d{4}-\d{2}-\d{2}$/.test(bd) || isNaN(Date.parse(bd)))) {
+      return res.status(400).json({ error: 'birth_date must be in YYYY-MM-DD format' });
+    }
+    vals.push(bd);
+    sets.push(`birth_date = $${vals.length}`);
+  }
+
+  if (req.body?.interests !== undefined && Array.isArray(req.body.interests)) {
+    const list = req.body.interests.map((s: any) => String(s).trim().toLowerCase()).filter(Boolean).slice(0, 20);
+    vals.push(list);
+    sets.push(`interests = $${vals.length}`);
   }
 
   // Privacy settings. Booleans are coerced strictly — `Boolean("false")` is true, which
@@ -243,13 +268,13 @@ router.patch('/me', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket
 
   try {
     const rows = await query<any>(
-      `update creator_profiles set ${sets.join(', ')}, updated_at = now()
+      `update social_profiles set ${sets.join(', ')}, updated_at = now()
         where user_id = $1 returning *`, vals);
     // Recorded AFTER the update succeeds, so a rejected handle does not burn the 30-day
     // window. The old handle is kept so an audience following a stale link can be redirected.
     if (rows[0].handle !== existing[0].handle) {
       await query(
-        `insert into creator_handle_history (user_id, old_handle, new_handle)
+        `insert into social_handle_history (user_id, old_handle, new_handle)
               values ($1, $2, $3)`,
         [user_id, existing[0].handle, rows[0].handle]
       );
@@ -283,7 +308,7 @@ router.post('/me/avatar', requireAuth, rateLimit({ max: 180, windowSeconds: 60, 
     return res.status(400).json({ error: 'avatar key does not belong to this user' });
   }
   const rows = await query<any>(
-    `update creator_profiles set avatar_r2_key = $2, updated_at = now()
+    `update social_profiles set avatar_r2_key = $2, updated_at = now()
       where user_id = $1 returning *`, [user_id, key]);
   if (!rows[0]) return res.status(404).json({ error: 'no creator profile' });
   return res.json({ profile: await publicProfile(rows[0], user_id) });
@@ -304,13 +329,13 @@ router.get('/:handle', requireAuth, rateLimit({ max: 180, windowSeconds: 60, buc
   const { user_id } = (req as any).auth;
   const handle = String(req.params.handle).toLowerCase();
   const rows = await query<any>(
-    `select * from creator_profiles where lower(handle) = $1 and suspended_at is null`,
+    `select * from social_profiles where lower(handle) = $1 and suspended_at is null`,
     [handle]
   );
   if (!rows[0]) {
     // Fall back to the rename history so shared links survive a handle change.
     const moved = await query<{ new_handle: string }>(
-      `select new_handle from creator_handle_history
+      `select new_handle from social_handle_history
         where lower(old_handle) = $1 order by created_at desc limit 1`, [handle]);
     if (moved[0]) return res.status(301).json({ moved_to: moved[0].new_handle });
     return res.status(404).json({ error: 'not found' });
@@ -328,7 +353,7 @@ router.get('/:handle/clips', requireAuth, rateLimit({ max: 180, windowSeconds: 6
   // while this endpoint still served it would be a privacy setting that protects nothing —
   // the grid is one direct call away.
   const owner = await query<any>(
-    `select user_id, grid_visibility from creator_profiles
+    `select user_id, grid_visibility from social_profiles
       where lower(handle) = $1 and suspended_at is null`,
     [String(req.params.handle).toLowerCase()]);
   if (!owner[0]) return res.status(404).json({ error: 'not found' });
@@ -337,7 +362,7 @@ router.get('/:handle/clips', requireAuth, rateLimit({ max: 180, windowSeconds: 6
     let allowed = false;
     if (owner[0].grid_visibility === 'followers') {
       const [{ following }] = await query<{ following: boolean }>(
-        `select exists (select 1 from creator_follows
+        `select exists (select 1 from social_follows
                          where follower_id = $1 and followee_id = $2) as following`,
         [user_id, owner[0].user_id]);
       allowed = following;
@@ -351,7 +376,7 @@ router.get('/:handle/clips', requireAuth, rateLimit({ max: 180, windowSeconds: 6
     `select c.id, c.thumb_r2_key, c.caption, c.duration_ms, c.width, c.height,
             c.view_count, c.like_count, c.comment_count, c.created_at
        from clips c
-       join creator_profiles p on p.user_id = c.author_id
+       join social_profiles p on p.user_id = c.author_id
       where lower(p.handle) = $1
         and p.suspended_at is null
         and c.deleted_at is null and c.removed_at is null and c.status = 'ready'
@@ -385,7 +410,7 @@ router.get('/:handle/clips', requireAuth, rateLimit({ max: 180, windowSeconds: 6
 router.post('/:handle/follow', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const target = await query<{ user_id: string; allow_follows: boolean }>(
-    `select user_id, allow_follows from creator_profiles
+    `select user_id, allow_follows from social_profiles
       where lower(handle) = $1 and suspended_at is null`,
     [String(req.params.handle).toLowerCase()]
   );
@@ -403,28 +428,28 @@ router.post('/:handle/follow', requireAuth, rateLimit({ max: 180, windowSeconds:
   // on conflict do nothing makes the call idempotent: a double-tap, or a retry after a
   // dropped response, must not error and must not double-count.
   await query(
-    `insert into creator_follows (follower_id, followee_id) values ($1, $2)
+    `insert into social_follows (follower_id, followee_id) values ($1, $2)
      on conflict do nothing`,
     [user_id, target[0].user_id]
   );
   const [c] = await query<{ follower_count: number }>(
-    `select follower_count from creator_profiles where user_id = $1`, [target[0].user_id]);
+    `select follower_count from social_profiles where user_id = $1`, [target[0].user_id]);
   return res.json({ following: true, follower_count: c?.follower_count ?? 0 });
 }));
 
 router.delete('/:handle/follow', requireAuth, rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const target = await query<{ user_id: string }>(
-    `select user_id from creator_profiles where lower(handle) = $1`,
+    `select user_id from social_profiles where lower(handle) = $1`,
     [String(req.params.handle).toLowerCase()]
   );
   if (!target[0]) return res.status(404).json({ error: 'not found' });
   await query(
-    `delete from creator_follows where follower_id = $1 and followee_id = $2`,
+    `delete from social_follows where follower_id = $1 and followee_id = $2`,
     [user_id, target[0].user_id]
   );
   const [c] = await query<{ follower_count: number }>(
-    `select follower_count from creator_profiles where user_id = $1`, [target[0].user_id]);
+    `select follower_count from social_profiles where user_id = $1`, [target[0].user_id]);
   return res.json({ following: false, follower_count: c?.follower_count ?? 0 });
 }));
 
@@ -445,8 +470,8 @@ router.get('/feed/following', requireAuth, rateLimit({ max: 180, windowSeconds: 
             p.handle as author_handle, p.display_name as author_display_name,
             p.is_verified as author_verified
        from clips c
-       join creator_follows f on f.followee_id = c.author_id and f.follower_id = $1
-       join creator_profiles p on p.user_id = c.author_id
+       join social_follows f on f.followee_id = c.author_id and f.follower_id = $1
+       join social_profiles p on p.user_id = c.author_id
       where c.deleted_at is null and c.removed_at is null and c.status = 'ready'
         and p.suspended_at is null
         ${cursor ? 'and c.created_at < $3::timestamptz' : ''}

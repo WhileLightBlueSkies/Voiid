@@ -249,14 +249,15 @@ object LudoDie {
             val layout = PIPS[value] ?: return@translate
             val inset = .26f * sidePx
             val step = (sidePx - 2 * inset) / 2f
-            val radius = .093f * sidePx
+            val radius = if (value == 1) .13f * sidePx else .093f * sidePx
+            val facePipColor = if (value == 1) Color(0xFFDE2B24) else Color(0xFF16161A)
             for ((col, row) in layout) {
                 val cx = inset + col * step
                 val cy = inset + row * step
-                drawCircle(Color.Black.copy(alpha = .18f), radius,
+                drawCircle(Color.Black.copy(alpha = .24f), radius,
                     Offset(cx, cy + .016f * sidePx))
-                drawCircle(pipColor, radius, Offset(cx, cy))
-                drawCircle(Color.White.copy(alpha = .14f), radius * .30f,
+                drawCircle(facePipColor, radius, Offset(cx, cy))
+                drawCircle(Color.White.copy(alpha = .75f), radius * .28f,
                     Offset(cx - radius * .30f, cy - radius * .30f))
             }
         }
@@ -352,16 +353,17 @@ object LudoDie {
                 val layout = PIPS[face.value] ?: return@clipPath
                 val inset = 0.23f * s
                 val step = (s - 2 * inset) / 2f
-                val diameter = 0.18f * s
+                val diameter = if (face.value == 1) 0.24f * s else 0.18f * s
+                val facePipColor = if (face.value == 1) Color(0xFFDE2B24) else Color(0xFF16161A)
                 for ((col, row) in layout) {
                     val u = (inset + col * step) / s
                     val v = (inset + row * step) / s
                     val c = bilinear(pts, u, v)
                     // Inset-depth treatment: dark shadow slightly low + top-left highlight.
-                    drawCircle(Color.Black.copy(alpha = 0.18f), diameter / 2f,
+                    drawCircle(Color.Black.copy(alpha = 0.24f), diameter / 2f,
                         Offset(c.first, c.second + 0.018f * s))
-                    drawCircle(pipColor, diameter / 2f, Offset(c.first, c.second))
-                    drawCircle(Color.White.copy(alpha = 0.12f), diameter * 0.28f,
+                    drawCircle(facePipColor, diameter / 2f, Offset(c.first, c.second))
+                    drawCircle(Color.White.copy(alpha = 0.70f), diameter * 0.28f,
                         Offset(c.first - diameter * 0.16f, c.second - diameter * 0.16f))
                 }
             }

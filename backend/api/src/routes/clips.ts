@@ -138,7 +138,7 @@ const CLIP_COLUMNS = `
 // cannot drift — a column referencing `cp` with no join is a runtime 500, not a type error.
 const CLIP_JOINS = `
        join users u on u.id = c.author_id
-       left join creator_profiles cp on cp.user_id = c.author_id
+       left join social_profiles cp on cp.user_id = c.author_id
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -221,7 +221,7 @@ router.post('/', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: '
   // 428 rather than 403 — the request is not forbidden, it is PRECONDITION REQUIRED, and the
   // client turns this specific code into "choose your handle" rather than an error toast.
   const profile = await query<{ suspended_at: Date | null }>(
-    `select suspended_at from creator_profiles where user_id = $1`, [user_id]);
+    `select suspended_at from social_profiles where user_id = $1`, [user_id]);
   if (!profile[0]) {
     return res.status(428).json({ error: 'creator profile required', code: 'profile_required' });
   }
@@ -578,7 +578,7 @@ router.get('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 60
        from clip_comments cc
        join users u on u.id = cc.author_id
        join clips c on c.id = cc.clip_id and c.removed_at is null
-       left join creator_profiles cp on cp.user_id = c.author_id
+       left join social_profiles cp on cp.user_id = c.author_id
       where cc.clip_id = $1 and cc.deleted_at is null
         and coalesce(cp.allow_comments, true)
         ${cursor ? 'and (cc.created_at, cc.id) > ($2::timestamptz, $3::uuid)' : ''}
@@ -614,7 +614,7 @@ router.post('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 6
   // conversation instead of having destroyed it.
   const openToComments = await query<{ allowed: boolean }>(
     `select coalesce(cp.allow_comments, true) as allowed
-       from clips c left join creator_profiles cp on cp.user_id = c.author_id
+       from clips c left join social_profiles cp on cp.user_id = c.author_id
       where c.id = $1`, [clipId]);
   if (openToComments[0] && openToComments[0].allowed === false) {
     return res.status(403).json({ error: 'comments are turned off for this creator' });

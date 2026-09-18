@@ -2,257 +2,270 @@
 //  GameSetupSheet.swift
 //  Voiid
 //
-//  "Who are you playing?" — the one entry point into any game (docs/GAMES.md §3).
-//
-//  ONE SHEET, TWO PATHS. Previously "play a friend" and "practice" were separate rows on
-//  the home grid, which put an implementation detail (one is online, one is local) in front
-//  of the user as if it were a choice about two different things. It isn't: it is the same
-//  game, against a different opponent. So the game is picked first, then the opponent.
-//
-//  Difficulty only appears once Bot is chosen, and it EXPANDS in place rather than pushing
-//  a new screen — the choice is small enough that a navigation step would cost more than it
-//  explains. It stays locked once the match starts.
-//
-//  Mirrors Android `GameSetupSheet.kt`.
+//  The one step between tapping a game and playing it.
 //
 
 import SwiftUI
 
 struct GameSetupSheet: View {
-    let gameName: String
-    /// The catalog slug, which is how the rules are looked up. Defaulted so a caller that has
-    /// no slug still compiles — it simply shows no rules rather than another game's.
-    var slug: String = ""
-    let onPlayFriend: () -> Void
-    /// Offline practice. NIL HIDES THE ROW, exactly as `onCustomise` does — a game with no
-    /// local bot must not offer one.
-    ///
-    /// Sea Battle and Ludo have engines and renderers but no client-side bot yet (their docs'
-    /// phase 2), and the bot destination falls through to Tic Tac Toe by default. So offering
-    /// the row for them was not a dead button, which would merely be untidy — it opened a
-    /// DIFFERENT GAME, which is worse than not offering it at all.
-    var onPlayBot: ((BotDifficulty, Double) -> Void)? = nil
-    /// Snake only: open the appearance picker. Nil hides the row, so no other game shows an
-    /// option it does not have.
-    var onCustomise: (() -> Void)? = nil
+
+    let game: Game
+    var onStart: (GameMode) -> Void = { _ in }
 
     @Environment(\.dismiss) private var dismiss
-    @State private var botExpanded = false
-    @State private var level: BotDifficulty = .moderate
-    @State private var skill: Double = BotDifficulty.moderate.skill
+
+    @State private var selected: GameMode?
+    /// The thumb's own position, which is continuous — `selected` is the discrete mode it
+    /// resolves to. Keeping them apart is what lets the thumb sit between two stops.
+    @State private var sliderValue: Double = 0
+    @State private var selectedDetent: PresentationDetent = .medium
+
+    private var modes: [GameMode] { GameMode.modes(for: game.id) }
 
     var body: some View {
-        // SCROLLABLE, because the rules can push this past a small screen. Without it the
-        // bottom option is simply unreachable on an SE — a sheet whose primary action cannot be
-        // tapped is worse than one with no rules in it.
-        ScrollView {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            Text(gameName)
-                .font(VoiidFont.rounded(22, .bold))
-                .foregroundStyle(VoiidColor.textPrimary)
-            if let tagline = GameRules.tagline(for: slug) {
-                Text(tagline)
-                    .font(VoiidFont.rounded(14, .regular))
-                    .foregroundStyle(VoiidColor.textSecondary)
-            }
+        ZStack {
+            VoiidColor.background.ignoresSafeArea()
 
-            rules
+            VStack(spacing: 0) {
+                banner
 
-            Text("Who are you playing?")
-                .font(VoiidFont.rounded(14, .semibold))
-                .foregroundStyle(VoiidColor.textSecondary)
-                .padding(.top, VoiidSpacing.xs)
-                .padding(.bottom, VoiidSpacing.xs)
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
+                        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                            Text("How do you want to play?")
+                                .font(VoiidFont.rounded(17, .bold))
+                                .foregroundColor(VoiidColor.textPrimary)
 
-            if let onCustomise {
-                option(icon: "paintpalette", title: "Your snake",
-                       subtitle: "Pick a skin or a colour") {
-                    dismiss()
-                    onCustomise()
-                }
-            }
-
-            option(icon: "person", title: "A friend",
-                   subtitle: "Online — counts on the leaderboard") {
-                dismiss()
-                onPlayFriend()
-            }
-
-            if onPlayBot != nil {
-                option(icon: "cpu", title: "The bot",
-                       subtitle: "Offline practice — doesn't count") {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                        botExpanded.toggle()
-                    }
-                }
-            }
-
-            if botExpanded, let onPlayBot {
-                VStack(spacing: VoiidSpacing.sm) {
-                    HStack(spacing: VoiidSpacing.sm) {
-                        ForEach(BotDifficulty.allCases) { l in
-                            let selected = BotDifficulty.matching(skill) == l
-                            Button {
-                                Haptics.selection()
-                                level = l
-                                skill = l.skill
-                            } label: {
-                                Text(l.label)
-                                    .font(VoiidFont.rounded(14, .semibold))
-                                    .foregroundStyle(selected ? VoiidColor.textOnPrimary : VoiidColor.textPrimary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, VoiidSpacing.sm)
-                                    .background(Capsule().fill(selected ? VoiidColor.primary : VoiidColor.fieldFill))
-                                    .scaleEffect(selected ? 1.06 : 1)
-                            }
-                            .buttonStyle(.plain)
+                            difficultySlider
                         }
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.45), value: skill)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Slider(value: $skill, in: 0...1)
-                        .tint(VoiidColor.primary)
-                        .accessibilityLabel("Bot difficulty")
-                        .accessibilityValue("\(Int(skill * 100)) percent")
-
-                    HStack {
-                        Text("Fine-tune")
-                            .font(VoiidFont.rounded(12, .regular))
-                            .foregroundStyle(VoiidColor.textSecondary)
-                        Spacer()
-                        Text("\(Int(skill * 100))%")
-                            .font(VoiidFont.rounded(12, .semibold))
-                            .foregroundStyle(VoiidColor.textSecondary)
+                        rulesSection
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-
-                    Button {
-                        Haptics.tap()
-                        dismiss()
-                        onPlayBot(level, skill)
-                    } label: {
-                        Text("Start match")
-                            .font(VoiidFont.rounded(16, .bold))
-                            .foregroundStyle(VoiidColor.textOnPrimary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, VoiidSpacing.md)
-                            .background(Capsule().fill(VoiidColor.primary))
-                    }
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.top, VoiidSpacing.md)
+                    .padding(.bottom, VoiidSpacing.md)
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+
+                footer
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .presentationDetents([.medium, .large], selection: $selectedDetent)
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(28)
+        .onAppear {
+            if selected == nil { selected = modes.first }
+            sliderValue = Double(modes.firstIndex { $0.id == selected?.id } ?? 0)
+        }
+    }
+
+    private var banner: some View {
+        ZStack(alignment: .bottomLeading) {
+            LinearGradient(colors: [game.tintA, game.tintB.opacity(0.75)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+
+            Image(systemName: game.symbol)
+                .font(.system(size: 92, weight: .medium))
+                .foregroundColor(.white.opacity(0.16))
+                .offset(x: 170, y: 20)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(game.title)
+                    .font(VoiidFont.rounded(22, .bold))
+                    .foregroundColor(.white)
+                    .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
+
+                if let tagline = GameRules.tagline(for: game.id) {
+                    Text(tagline)
+                        .font(VoiidFont.rounded(12, .medium))
+                        .foregroundColor(.white.opacity(0.88))
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 10) {
+                    if let players = game.players { chip("person.2.fill", players) }
+                    if let minutes = game.minutes { chip("clock", minutes) }
+                }
+            }
+            .padding(VoiidSpacing.md)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 112)
+        .clipped()
+        // Runs to the sheet's own edges and rounds to match its 28pt corners, so the
+        // artwork meets the sheet instead of sitting in it as a square inset panel.
+        .clipShape(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 28, bottomLeadingRadius: 0,
+                bottomTrailingRadius: 0, topTrailingRadius: 28,
+                style: .continuous
+            )
+        )
+    }
+
+    @ViewBuilder
+    private var rulesSection: some View {
+        let rules = GameRules.lines(for: game.id)
+        if !rules.isEmpty {
+            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                Text("Rules & Objectives")
+                    .font(VoiidFont.rounded(16.5, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
+
+                VStack(spacing: 12) {
+                    ForEach(rules) { rule in
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: rule.icon)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(VoiidColor.accent)
+                                .frame(width: 26, height: 26)
+                                .background(Circle().fill(VoiidColor.accentSoft))
+
+                            Text(rule.text)
+                                .font(VoiidFont.rounded(13))
+                                .foregroundColor(VoiidColor.textPrimary.opacity(0.92))
+                                .lineSpacing(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(VoiidSpacing.md)
+                .background(VoiidColor.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                        .stroke(VoiidColor.divider, lineWidth: 1)
+                )
+            }
+        }
+    }
+
+    private func chip(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9.5))
+            Text(text)
+                .font(VoiidFont.rounded(11.5, .medium))
+        }
+        .foregroundColor(.white.opacity(0.92))
+    }
+
+    /// Difficulty as one track rather than a stack of radio rows.
+    ///
+    /// The modes are ordered and mutually exclusive — easy, moderate, hard — which is a
+    /// magnitude, not a set of unrelated options. A slider says that in one control and one
+    /// line of text, where three cards said it in three boxes competing for the same glance.
+    private var difficultySlider: some View {
+        let index = modes.firstIndex { $0.id == selected?.id } ?? 0
+        let mode = modes[min(index, modes.count - 1)]
+
+        return VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+            HStack(spacing: 10) {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(VoiidColor.accent)
+                    .frame(width: 22)
+                    .contentTransition(.symbolEffect(.replace))
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(mode.title)
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                    Text(mode.detail)
+                        .font(VoiidFont.rounded(12.5))
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+                Spacer(minLength: 0)
+            }
+            // Reserved so the card does not resize as the two lines change length.
+            .frame(height: 40, alignment: .leading)
+            .animation(.easeOut(duration: 0.18), value: mode.id)
+
+            // CONTINUOUS WHILE DRAGGING, SETTLING ON RELEASE.
+            //
+            // `step: 1` made the thumb teleport between the three stops: it cannot rest
+            // between them, so the control stopped tracking the thumb and the motion read as
+            // broken rather than as snapping. Here the thumb follows the finger exactly, the
+            // selection updates as it crosses each stop, and only on release does it glide to
+            // the chosen one — which is what makes the travel feel smooth and still land on a
+            // real value.
+            Slider(
+                value: $sliderValue,
+                in: 0...Double(max(modes.count - 1, 1)),
+                onEditingChanged: { editing in
+                    guard !editing else { return }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
+                        sliderValue = Double(index)
+                    }
+                }
+            )
+            .tint(VoiidColor.accent)
+            .accessibilityLabel("Difficulty")
+            .accessibilityValue(mode.title)
+            // Crossing a stop mid-drag picks it, so the description and icon above update
+            // under the thumb rather than only once the finger lifts.
+            .onChange(of: sliderValue) { _, new in
+                let step = min(max(Int(new.rounded()), 0), modes.count - 1)
+                guard step != index else { return }
+                Haptics.selection()
+                selected = modes[step]
             }
 
-            Spacer(minLength: 0)
+            HStack {
+                ForEach(Array(modes.enumerated()), id: \.element.id) { offset, m in
+                    Text(m.shortLabel)
+                        .font(VoiidFont.rounded(11.5, offset == index ? .bold : .medium))
+                        .foregroundColor(offset == index ? VoiidColor.accent
+                                                         : VoiidColor.textSecondary)
+                    if offset < modes.count - 1 { Spacer(minLength: 0) }
+                }
+            }
+        }
+        .padding(VoiidSpacing.md)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+            .stroke(VoiidColor.divider, lineWidth: 1))
+    }
+
+    private var footer: some View {
+        VStack(spacing: VoiidSpacing.sm) {
+            Button {
+                guard let selected else { return }
+                Haptics.success()
+                onStart(selected)
+                dismiss()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("Start game")
+                        .font(VoiidFont.rounded(16.5, .semibold))
+                }
+                .foregroundColor(VoiidColor.textOnAccent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(RoundedRectangle(cornerRadius: VoiidRadius.lg,
+                                             style: .continuous)
+                    .fill(VoiidColor.accent))
+            }
+            .buttonStyle(PressableButtonStyle())
+            .disabled(selected == nil)
+            .opacity(selected == nil ? 0.45 : 1)
+
+            Button("Not now") { dismiss() }
+                .font(VoiidFont.rounded(14.5, .semibold))
+                .foregroundColor(VoiidColor.textSecondary)
         }
         .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, VoiidSpacing.lg)
+        .padding(.top, VoiidSpacing.sm)
         .padding(.bottom, VoiidSpacing.lg)
-        .frame(maxWidth: .infinity, alignment: .top)
-        }
-        .background(VoiidColor.background.ignoresSafeArea())
-        // TALL ENOUGH FOR THE RULES. These were fixed at 300/520 and the rules pushed the sheet
-        // well past both: the game's own name scrolled off the top and "The bot" sat below the
-        // fold, hiding the thing you tapped AND one of the two choices the sheet exists to
-        // offer. The heights scale with the rules actually present, and the ScrollView above
-        // means a small screen or large type can still reach the bottom option.
-        // TWO DETENTS, OPENING ON THE LARGER. The single computed height was a guess at how
-        // tall the content would be, and a guess that was too small — 46pt per rule line
-        // assumed every line fits on one row, and Snake's are long enough to wrap. Being 20pt
-        // short is invisible; being 100pt short hides an option.
-        //
-        // Offering `.large` as a second detent means the estimate no longer has to be right:
-        // the player can drag the sheet up if their type size or their language needs more
-        // room, and the drag indicator already tells them they can.
-        .presentationDetents([.height(sheetHeight), .large])
-        .presentationDragIndicator(.visible)
-        .scrollBounceBehavior(.basedOnSize)
-    }
-
-    /// Roughly how tall the sheet needs to be, in points.
-    ///
-    /// Estimated from the content rather than measured: a GeometryReader feeding a detent is a
-    /// layout loop waiting to happen, and an estimate is safe here because the content scrolls
-    /// AND `.large` is available as a second detent.
-    ///
-    /// DELIBERATELY GENEROUS. Every constant below assumes the worst case — a rule line that
-    /// wraps to two rows, a tagline that wraps — because the failure modes are not symmetric.
-    /// Too tall costs a little empty space at the bottom; too short hides "The bot", which is
-    /// one of the two choices this sheet exists to offer.
-    private var sheetHeight: CGFloat {
-        // Title, "Who are you playing?", both opponent rows, padding, drag indicator.
-        let chrome: CGFloat = 330
-        // 13pt text wrapping to two rows, plus the row spacing.
-        let perRule: CGFloat = 62
-        let rules = CGFloat(GameRules.lines(for: slug).count) * perRule
-        // The rules card's own padding, top and bottom.
-        let rulesPadding: CGFloat = GameRules.lines(for: slug).isEmpty ? 0 : 32
-        let tagline: CGFloat = GameRules.tagline(for: slug) == nil ? 0 : 44
-        let difficulty: CGFloat = botExpanded ? 220 : 0
-        return min(chrome + rules + rulesPadding + tagline + difficulty, 860)
-    }
-
-    /// The rules, as a short scannable list.
-    ///
-    /// COLLAPSED BY DEFAULT AFTER THE FIRST LOOK would be the obvious refinement, and is
-    /// deliberately not done yet: a player who needs the rules needs them on the sheet, and
-    /// remembering "has this person played before" is state that does not exist here. Five short
-    /// lines cost less than a wrong first match.
-    @ViewBuilder
-    private var rules: some View {
-        let lines = GameRules.lines(for: slug)
-        if !lines.isEmpty {
-            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-                ForEach(lines) { line in
-                    HStack(alignment: .top, spacing: VoiidSpacing.sm) {
-                        Image(systemName: line.icon)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(VoiidColor.primary)
-                            // Fixed width so the text edges line up into a column; ragged icons
-                            // make a list read as clutter rather than as structure.
-                            .frame(width: 18, alignment: .center)
-                        Text(line.text)
-                            .font(VoiidFont.rounded(13, .regular))
-                            .foregroundStyle(VoiidColor.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            .padding(VoiidSpacing.md)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: VoiidRadius.lg)
-                .fill(VoiidColor.fieldFill.opacity(0.5)))
-            .padding(.top, VoiidSpacing.xs)
-        }
-    }
-
-    private func option(icon: String, title: String, subtitle: String,
-                        action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: VoiidSpacing.md) {
-                ZStack {
-                    Circle()
-                        .fill(VoiidColor.primary.opacity(0.12))
-                        .frame(width: 40, height: 40)
-                    Image(systemName: icon)
-                        .font(.system(size: 17, weight: .regular))
-                        .foregroundStyle(VoiidColor.primary)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(VoiidFont.rounded(16, .semibold))
-                        .foregroundStyle(VoiidColor.textPrimary)
-                    Text(subtitle)
-                        .font(VoiidFont.rounded(12, .regular))
-                        .foregroundStyle(VoiidColor.textSecondary)
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(VoiidColor.textSecondary)
-            }
-            .padding(VoiidSpacing.md)
-            .background(RoundedRectangle(cornerRadius: VoiidRadius.lg).fill(VoiidColor.surfaceCard))
-        }
-        .buttonStyle(.plain)
+        .background(.bar)
     }
 }

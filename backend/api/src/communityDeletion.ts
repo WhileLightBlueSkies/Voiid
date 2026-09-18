@@ -19,7 +19,7 @@ export async function purgeCommunityData(client: PoolClient, ids: string[]) {
       and not exists (select 1 from users u where u.photo_url = key or u.encrypted_photo_url = key)
       and not exists (select 1 from stories s where s.r2_key = key)
       and not exists (select 1 from clips c where key = any(array[c.r2_key,c.thumb_r2_key,c.r2_key_sd,c.r2_key_hd,c.r2_key_fhd]))
-      and not exists (select 1 from creator_profiles p where p.avatar_r2_key = key)
+      and not exists (select 1 from social_profiles p where p.avatar_r2_key = key)
     on conflict (r2_key) do nothing`, [ids, convs]);
   await client.query(`delete from content_reports where
     (target_type = 'community' and target_id = any($1::uuid[])) or

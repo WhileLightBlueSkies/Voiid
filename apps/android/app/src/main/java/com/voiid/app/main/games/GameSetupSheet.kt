@@ -1,289 +1,304 @@
 package com.voiid.app.main.games
 
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.width
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Spa
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import com.voiid.app.ui.theme.VoiidColor
+import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
 
 /**
- * "Who are you playing?" — the one entry point into any game (docs/GAMES.md §3).
- *
- * ONE SHEET, TWO PATHS. Previously "play a friend" and "practice" were separate rows on the
- * home grid, which put an implementation detail (one is online, one is local) in front of
- * the user as if it were a choice about two different things. It isn't: it is the same
- * game, against a different opponent. So the game is picked first, then the opponent.
- *
- * Difficulty only appears once Bot is chosen, and it EXPANDS in place rather than pushing a
- * new screen — the choice is small enough that a navigation step would cost more than it
- * explains. It stays locked once the match starts (see TicTacToeBotScreen).
- *
- * Mirrors iOS `GameSetupSheet.swift`.
+ * Game setup sheet: Offline bot & practice mode with clear difficulty selection.
+ * Full parity twin of iOS GameSetupSheet.swift.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GameSetupSheet(
     gameName: String,
-    /**
-     * The catalog slug, which is how the rules are looked up. Defaulted so a caller that has no
-     * slug still compiles — it simply shows no rules rather than another game's.
-     */
     slug: String = "",
-    onPlayFriend: () -> Unit,
-    /**
-     * Offline practice. NULL HIDES THE ROW, exactly as `onCustomise` does — a game with no local
-     * bot must not offer one.
-     *
-     * Sea Battle and Ludo have engines and renderers but no client-side bot yet (their docs'
-     * phase 2), and the bot destination falls through to Tic Tac Toe by default. So offering the
-     * row for them was not a dead button, which would merely be untidy — it opened a DIFFERENT
-     * GAME, which is worse than not offering it at all.
-     */
+    onPlayFriend: () -> Unit = {},
     onPlayBot: ((BotDifficulty, Float) -> Unit)? = null,
-    /**
-     * Snake only: open the appearance picker. Null hides the row, so no other game shows an
-     * option it does not have.
-     */
     onCustomise: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
-    var botExpanded by remember { mutableStateOf(false) }
-    var level by remember { mutableStateOf(BotDifficulty.MODERATE) }
-    var skill by remember { mutableStateOf(BotDifficulty.MODERATE.skill) }
+    var selectedDifficulty by remember { mutableStateOf(BotDifficulty.EASY) }
+    // The thumb's own position, which is continuous — `selectedDifficulty` is the discrete
+    // mode it resolves to. Keeping them apart lets the thumb sit between two stops.
+    var sliderValue by remember { mutableFloatStateOf(0f) }
+    var dragging by remember { mutableStateOf(false) }
 
-    // Computed-height first stop, draggable to large — the iOS [.custom, .large] pair.
     com.voiid.app.ui.components.VoiidSheet(
         visible = true,
         onDismiss = onDismiss,
-        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Content, com.voiid.app.ui.components.VoiidDetent.Large),
+        detents = listOf(
+            com.voiid.app.ui.components.VoiidDetent.Medium,
+            com.voiid.app.ui.components.VoiidDetent.Large,
+        ),
+        initialDetentIndex = 0,
         showHandle = true,
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                // SCROLLABLE, because the rules can push this past a small screen. Without it
-                // the bottom option is simply unreachable — a sheet whose primary action cannot
-                // be tapped is worse than one with no rules in it.
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = VoiidSpacing.md)
                 .padding(bottom = VoiidSpacing.xl),
-            verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
         ) {
-            Text(
-                gameName,
-                color = VoiidColor.textPrimary,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            GameRules.tagline(slug)?.let { tagline ->
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    tagline,
-                    color = VoiidColor.textSecondary,
-                    fontSize = 14.sp,
+                    gameName,
+                    color = VoiidColor.textPrimary,
+                    style = VoiidFont.rounded(22, FontWeight.Bold),
                 )
+                GameRules.tagline(slug)?.let { tagline ->
+                    Text(
+                        tagline,
+                        color = VoiidColor.textSecondary,
+                        style = VoiidFont.rounded(13, FontWeight.Normal),
+                    )
+                }
             }
 
-            // The rules, as a short scannable list.
-            //
-            // COLLAPSED AFTER THE FIRST LOOK would be the obvious refinement, and is deliberately
-            // not done: a player who needs the rules needs them on the sheet, and remembering
-            // "has this person played before" is state that does not exist here. Five short
-            // lines cost less than a wrong first match.
+            // Rules card
             val rules = GameRules.lines(slug)
             if (rules.isNotEmpty()) {
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(VoiidRadius.lg))
-                        .background(VoiidColor.fieldFill.copy(alpha = 0.5f))
-                        .padding(VoiidSpacing.md),
-                    verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                        .clip(RoundedCornerShape(VoiidRadius.md))
+                        .background(VoiidColor.surfaceCard)
+                        .padding(VoiidSpacing.sm + 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     rules.forEach { line ->
-                        Row(verticalAlignment = Alignment.Top) {
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             Icon(
                                 line.icon,
                                 contentDescription = null,
                                 tint = VoiidColor.primary,
-                                // Fixed width so the text edges line up into a column; ragged
-                                // icons make a list read as clutter rather than as structure.
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier.size(15.dp),
                             )
-                            Spacer(Modifier.width(VoiidSpacing.sm))
                             Text(
                                 line.text,
                                 color = VoiidColor.textSecondary,
-                                fontSize = 13.sp,
-                                lineHeight = 18.sp,
+                                style = VoiidFont.rounded(13, FontWeight.Normal),
                             )
                         }
                     }
                 }
             }
 
-            Text(
-                "Who are you playing?",
-                color = VoiidColor.textSecondary,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(top = VoiidSpacing.xs, bottom = VoiidSpacing.xs),
-            )
-
             if (onCustomise != null) {
-                OpponentOption(
-                    icon = Icons.Outlined.Palette,
-                    title = "Your snake",
-                    subtitle = "Pick a skin or a colour",
-                    selected = false,
-                    onClick = onCustomise,
-                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(VoiidRadius.md))
+                        .background(VoiidColor.surfaceCard)
+                        .clickable { onCustomise() }
+                        .padding(horizontal = VoiidSpacing.md, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+                ) {
+                    Icon(
+                        Icons.Outlined.Palette,
+                        contentDescription = null,
+                        tint = VoiidColor.primary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Your snake",
+                            color = VoiidColor.textPrimary,
+                            style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                        )
+                        Text(
+                            "Pick a skin or a colour",
+                            color = VoiidColor.textSecondary,
+                            style = VoiidFont.rounded(12, FontWeight.Normal),
+                        )
+                    }
+                }
             }
 
-            // Neither row is pre-selected: this is a fork, not a default. Marking "A friend"
-            // as selected whenever the bot panel was closed implied a choice the user hadn't
-            // made yet, and made the sheet look like it was already committed to online play.
-            OpponentOption(
-                icon = Icons.Outlined.Person,
-                title = "A friend",
-                subtitle = "Online — counts on the leaderboard",
-                selected = false,
-                onClick = onPlayFriend,
+            Text(
+                "How do you want to play?",
+                color = VoiidColor.textPrimary,
+                style = VoiidFont.rounded(16, FontWeight.Bold),
             )
 
-            if (onPlayBot != null) OpponentOption(
-                icon = Icons.Outlined.Memory,
-                title = "The bot",
-                subtitle = "Offline practice — doesn't count",
-                selected = botExpanded,
-                onClick = { botExpanded = !botExpanded },
+            // Difficulty as one track rather than three radio rows: the modes are ordered
+            // and mutually exclusive, which is a magnitude, not a set of unrelated options.
+            // Mirrors iOS GameSetupSheet.swift.
+            val steps = listOf(
+                Triple(BotDifficulty.EASY, Icons.Outlined.Spa, "Easy"),
+                Triple(BotDifficulty.MODERATE, Icons.Outlined.Memory, "Moderate"),
+                Triple(BotDifficulty.HARD, Icons.Outlined.Bolt, "Hard"),
             )
+            val index = steps.indexOfFirst { it.first == selectedDifficulty }.coerceAtLeast(0)
+            val (_, stepIcon, _) = steps[index]
+            val title = when (selectedDifficulty) {
+                BotDifficulty.EASY -> if (slug == "snake") "Easy Mode (Practice)" else "Easy Mode (vs Bots)"
+                BotDifficulty.MODERATE -> if (slug == "snake") "Standard Arena" else "Moderate Mode (vs Bots)"
+                BotDifficulty.HARD -> if (slug == "snake") "Hardcore Arena" else "Hard Mode (vs Bots)"
+            }
+            val detail = when (selectedDifficulty) {
+                BotDifficulty.EASY -> if (slug == "snake") "Calm arena with fewer bots, relaxed growth" else "Relaxed bots, gentle moves, easy practice"
+                BotDifficulty.MODERATE -> if (slug == "snake") "Competitive 8 bots, balanced speed" else "Standard balanced match against 3 bots"
+                BotDifficulty.HARD -> if (slug == "snake") "Fast paced, aggressive hunting bots" else "Aggressive bots that cut and race"
+            }
 
-            AnimatedVisibility(
-                visible = botExpanded,
-                enter = fadeIn() + expandVertically(spring(dampingRatio = 0.7f)),
-                exit = fadeOut() + shrinkVertically(),
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(VoiidRadius.md))
+                    .background(VoiidColor.surfaceCard)
+                    .padding(VoiidSpacing.md),
+                verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                        BotDifficulty.entries.forEach { l ->
-                            val selected = BotDifficulty.matching(skill) == l
-                            val chipScale by animateFloatAsState(
-                                targetValue = if (selected) 1.06f else 1f,
-                                animationSpec = spring(
-                                    dampingRatio = 0.45f,
-                                    stiffness = Spring.StiffnessMedium,
-                                ),
-                                label = "chip",
-                            )
-                            Box(
-                                Modifier
-                                    .weight(1f)
-                                    .scale(chipScale)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (selected) VoiidColor.primary else VoiidColor.fieldFill
-                                    )
-                                    .clickable { level = l; skill = l.skill }
-                                    .padding(vertical = VoiidSpacing.sm),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    l.label,
-                                    color = if (selected) VoiidColor.textOnPrimary
-                                            else VoiidColor.textPrimary,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                        }
-                    }
-
-                    Slider(
-                        value = skill,
-                        onValueChange = { skill = it },
-                        valueRange = 0f..1f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = VoiidColor.primary,
-                            activeTrackColor = VoiidColor.primary,
-                        ),
-                        modifier = Modifier.semantics {
-                            contentDescription = "Bot difficulty ${(skill * 100).toInt()} percent"
-                        },
+                Row(
+                    // Reserved so the card does not resize as the two lines change length.
+                    Modifier.fillMaxWidth().height(44.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        stepIcon,
+                        contentDescription = null,
+                        tint = VoiidColor.primary,
+                        modifier = Modifier.size(20.dp),
                     )
-                    Row(Modifier.fillMaxWidth()) {
-                        Text("Fine-tune", color = VoiidColor.textSecondary, fontSize = 12.sp)
+                    Column(Modifier.weight(1f)) {
                         Text(
-                            "${(skill * 100).toInt()}%",
+                            title,
+                            color = VoiidColor.textPrimary,
+                            style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                        )
+                        Text(
+                            detail,
                             color = VoiidColor.textSecondary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f),
-                            textAlign = TextAlign.End,
+                            style = VoiidFont.rounded(12, FontWeight.Normal),
                         )
                     }
+                }
 
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(CircleShape)
-                            .background(VoiidColor.primary)
-                            .clickable { onPlayBot?.invoke(level, skill) }
-                            .padding(vertical = VoiidSpacing.md),
-                        contentAlignment = Alignment.Center,
-                    ) {
+                // CONTINUOUS WHILE DRAGGING, SETTLING ON RELEASE.
+                //
+                // `steps` made the thumb teleport between the three stops: it cannot rest
+                // between them, so the control stopped tracking the finger and the motion
+                // read as broken rather than as snapping. Here the thumb follows exactly,
+                // the selection updates as it crosses each stop, and on release it animates
+                // to the chosen one. Mirrors iOS GameSetupSheet.swift.
+                val settled by androidx.compose.animation.core.animateFloatAsState(
+                    targetValue = index.toFloat(),
+                    animationSpec = androidx.compose.animation.core.spring(
+                        dampingRatio = 0.78f,
+                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
+                    ),
+                    label = "difficultySettle",
+                )
+                androidx.compose.material3.Slider(
+                    value = if (dragging) sliderValue else settled,
+                    onValueChange = { raw ->
+                        dragging = true
+                        sliderValue = raw
+                        val step = raw.roundToInt().coerceIn(0, steps.lastIndex)
+                        if (steps[step].first != selectedDifficulty) {
+                            selectedDifficulty = steps[step].first
+                        }
+                    },
+                    onValueChangeFinished = { dragging = false },
+                    valueRange = 0f..steps.lastIndex.toFloat(),
+                    colors = androidx.compose.material3.SliderDefaults.colors(
+                        thumbColor = VoiidColor.primary,
+                        activeTrackColor = VoiidColor.primary,
+                    ),
+                )
+
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    steps.forEachIndexed { offset, (_, _, label) ->
                         Text(
-                            "Start match",
-                            color = VoiidColor.textOnPrimary,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
+                            label,
+                            color = if (offset == index) VoiidColor.primary else VoiidColor.textSecondary,
+                            style = VoiidFont.rounded(
+                                11.5f,
+                                if (offset == index) FontWeight.Bold else FontWeight.Medium,
+                            ),
                         )
                     }
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            // Start Game Button
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(VoiidRadius.lg))
+                    .background(VoiidColor.primary)
+                    .clickable {
+                        onPlayBot?.invoke(selectedDifficulty, selectedDifficulty.skill)
+                    }
+                    .padding(vertical = 15.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = VoiidColor.textOnPrimary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        "Start game",
+                        color = VoiidColor.textOnPrimary,
+                        style = VoiidFont.rounded(16, FontWeight.SemiBold),
+                    )
                 }
             }
         }
@@ -291,42 +306,67 @@ fun GameSetupSheet(
 }
 
 @Composable
-private fun OpponentOption(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+private fun DifficultyOptionRow(
     title: String,
-    subtitle: String,
-    selected: Boolean,
+    detail: String,
+    icon: ImageVector,
+    isSelected: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(VoiidRadius.lg))
-            .background(VoiidColor.surfaceCard)
+            .clip(RoundedCornerShape(VoiidRadius.md))
+            .background(if (isSelected) VoiidColor.primary.copy(alpha = 0.14f) else VoiidColor.surfaceCard)
+            .border(
+                width = if (isSelected) 1.5.dp else 1.dp,
+                color = if (isSelected) VoiidColor.primary else VoiidColor.divider,
+                shape = RoundedCornerShape(VoiidRadius.md),
+            )
             .clickable { onClick() }
-            .padding(VoiidSpacing.md),
+            .padding(horizontal = VoiidSpacing.md, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
     ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (isSelected) VoiidColor.primary else VoiidColor.textSecondary,
+            modifier = Modifier.size(22.dp),
+        )
+
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                title,
+                color = VoiidColor.textPrimary,
+                style = VoiidFont.rounded(14, FontWeight.SemiBold),
+            )
+            Text(
+                detail,
+                color = VoiidColor.textSecondary,
+                style = VoiidFont.rounded(12, FontWeight.Normal),
+            )
+        }
+
+        // Selection indicator
         Box(
             Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .background(VoiidColor.primary.copy(alpha = 0.12f)),
+                .size(20.dp)
+                .border(
+                    width = if (isSelected) 2.dp else 1.5.dp,
+                    color = if (isSelected) VoiidColor.primary else VoiidColor.textSecondary,
+                    shape = CircleShape,
+                ),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = VoiidColor.primary,
-                modifier = Modifier.size(20.dp))
+            if (isSelected) {
+                Box(
+                    Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(VoiidColor.primary)
+                )
+            }
         }
-        Column(Modifier.weight(1f)) {
-            Text(title, color = VoiidColor.textPrimary, fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold)
-            Text(subtitle, color = VoiidColor.textSecondary, fontSize = 12.sp)
-        }
-        Icon(
-            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = VoiidColor.textSecondary,
-        )
     }
 }

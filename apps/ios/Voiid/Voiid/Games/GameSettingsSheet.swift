@@ -19,28 +19,23 @@
 //
 //  Mirrors Android `GameSettingsSheet.kt`.
 //
-//  ── SUPERSEDED ON THE SHIPPING TAB. DO NOT ADD SETTINGS HERE. ───────────────────
-//  This sheet's whole premise — one surface holding both global and per-game settings — is
-//  the thing that got split. `RootTabView` renders `GamesScreen`, and that screen's header
-//  settings button is gone; the two scopes now live where their scope actually is:
+//  ── THIS IS THE SETTINGS SURFACE AGAIN. ─────────────────────────────────────────
+//  It was briefly split into a per-tab screen and a per-game card. Both of those files are
+//  gone, and `GamesScreen`, `LudoGameView` and `SnakeGameView` all present this sheet, so it
+//  is once more the single place a player changes any of this.
 //
-//    global (sound, haptics)   → the Games tab header, `Games/GameSettingsView.swift`
-//    per-game (Snake steering) → that game's detail screen, `Games/Reference/GameSettingsCard.swift`
-//
-//  The file survives only because `GamesHomeView` — the older, non-rendered games home kept
-//  as the reference implementation for the match plumbing — still presents it, and deleting
-//  it would break that file's build. A new setting added here would be invisible to every
-//  shipping user. Add it in one of the two files above instead.
-//
-//  Persistence is shared with those two screens, not duplicated: all three read and write
-//  the same `GameAudio.isMuted`, `GameHaptics.isDisabled` and `SnakeChoiceStore.controlScheme`
-//  statics over the same UserDefaults keys, so nothing can disagree about a player's choice.
+//  A setting added here must be READ by the game it claims to affect. Steering shipped
+//  written-but-never-read once already: the value reached UserDefaults and the running match
+//  ignored it, which reads to a player as a broken switch rather than a missing feature.
 //
 
 import SwiftUI
 
 struct GameSettingsSheet: View {
     var onClose: () -> Void
+    /// Snake's steering is shown only where it applies. Offering it inside a Ludo match is a
+    /// control that visibly does nothing, which is what makes a settings screen feel broken.
+    var showsSnakeControls = true
 
     // Seeded from the persisted values on appear rather than bound directly to them: the
     // stores are plain UserDefaults-backed statics, not observable, so a @State mirror is what
@@ -51,89 +46,94 @@ struct GameSettingsSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    row(icon: "speaker.wave.2.fill",
-                        title: "Sound",
-                        subtitle: "Crowd, chalk, and everything else in a match",
-                        isOn: $soundOn)
-                        .onChange(of: soundOn) { _, on in
-                            GameAudio.isMuted = !on
-                            // Silence anything already ringing out — a crowd bed that keeps
-                            // playing after the switch flips reads as the setting not working.
-                            if !on { GameAudio.shared.stopAll() }
-                            // The confirming tap fires only when turning sound ON. Turning it
-                            // off and being answered by the device is a small joke at the
-                            // player's expense.
-                            if on { Haptics.tap() }
-                        }
+            ScrollView {
+                VStack(spacing: VoiidSpacing.lg) {
+                    VoiidCardSection(
+                        footer: "Games play at your media volume, even on silent. They never play over a call."
+                    ) {
+                        row(icon: "speaker.wave.2.fill",
+                            title: "Sound",
+                            subtitle: "Crowd, chalk, and everything else in a match",
+                            isOn: $soundOn)
+                            .onChange(of: soundOn) { _, on in
+                                GameAudio.isMuted = !on
+                                // Silence anything already ringing out — a crowd bed that keeps
+                                // playing after the switch flips reads as the setting not working.
+                                if !on { GameAudio.shared.stopAll() }
+                                // The confirming tap fires only when turning sound ON. Turning it
+                                // off and being answered by the device is a small joke at the
+                                // player's expense.
+                                if on { Haptics.tap() }
+                            }
 
-                    row(icon: "iphone.radiowaves.left.and.right",
-                        title: "Haptics",
-                        subtitle: "Buzz on eats, kills and wickets",
-                        isOn: $hapticsOn)
-                        .onChange(of: hapticsOn) { _, on in
-                            GameHaptics.isDisabled = !on
-                            // Fired AFTER the write, so switching haptics on demonstrates
-                            // itself and switching them off is silent — the setting proving it
-                            // took effect.
-                            if on { Haptics.tap() }
-                        }
-                } footer: {
-                    // SAYS WHAT IS ACTUALLY TRUE. This used to promise the silent switch was
-                    // respected, which stopped being the case when the session moved to
-                    // `.playback` — a game is media and rides the media slider, like every
-                    // other game on the store. The call rule is unchanged and still absolute.
-                    Text("Games play at your media volume, even on silent. They never play over a call.")
-                        .font(VoiidFont.rounded(12, .regular))
-                        .foregroundStyle(VoiidColor.textSecondary)
-                }
-                .listRowBackground(VoiidColor.surfaceCard)
+                        VoiidRowDivider(inset: 52)
 
-                // SNAKE ONLY, and labelled as such. Sound and haptics above apply to every
-                // game; a control scheme applies to exactly one, and burying that distinction
-                // would have players hunting for why the setting did nothing in cricket.
-                Section {
-                    Picker("Steering", selection: $control) {
-                        ForEach(SnakeChoiceStore.ControlScheme.allCases) { s in
-                            Text(s.label).tag(s)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: control) { _, new in
-                        SnakeChoiceStore.controlScheme = new
-                        Haptics.tap()
+                        row(icon: "iphone.radiowaves.left.and.right",
+                            title: "Haptics",
+                            subtitle: "Buzz on eats, kills and wickets",
+                            isOn: $hapticsOn)
+                            .onChange(of: hapticsOn) { _, on in
+                                GameHaptics.isDisabled = !on
+                                // Fired AFTER the write, so switching haptics on demonstrates
+                                // itself and switching them off is silent — the setting proving it
+                                // took effect.
+                                if on { Haptics.tap() }
+                            }
                     }
 
-                    Text(control.detail)
-                        .font(VoiidFont.rounded(12, .regular))
-                        .foregroundStyle(VoiidColor.textSecondary)
-                } header: {
-                    Text("Snake")
-                        .font(VoiidFont.rounded(12, .semibold))
-                        .foregroundStyle(VoiidColor.textSecondary)
-                } footer: {
-                    // Says WHEN it takes effect, because it does not take effect now. The
-                    // arena reads the scheme once on open so the controls cannot move out from
-                    // under a thumb mid-match, and a setting that appears to do nothing is
-                    // worse than one that explains its own timing.
-                    Text("Applies to your next match.")
-                        .font(VoiidFont.rounded(12, .regular))
-                        .foregroundStyle(VoiidColor.textSecondary)
+                    // SNAKE ONLY, and labelled as such. Sound and haptics above apply to every
+                    // game; a control scheme applies to exactly one, and burying that distinction
+                    // would have players hunting for why the setting did nothing in cricket.
+                    if showsSnakeControls {
+                    VoiidCardSection(
+                        "Snake",
+                        footer: "Applies right away."
+                    ) {
+                        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                            Text("Steering")
+                                .font(VoiidFont.rounded(16, .semibold))
+                                .foregroundStyle(VoiidColor.textPrimary)
+
+                            Picker("Steering", selection: $control) {
+                                ForEach(SnakeChoiceStore.ControlScheme.allCases) { s in
+                                    Text(s.label).tag(s)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .onChange(of: control) { _, new in
+                                SnakeChoiceStore.controlScheme = new
+                                Haptics.tap()
+                            }
+
+                            Text(control.detail)
+                                .font(VoiidFont.rounded(12, .regular))
+                                .foregroundStyle(VoiidColor.textSecondary)
+                        }
+                        .padding(VoiidSpacing.md)
+                    }
+                    }
                 }
-                .listRowBackground(VoiidColor.surfaceCard)
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.top, VoiidSpacing.sm)
+                .padding(.bottom, VoiidSpacing.xl)
             }
-            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
+            .softScrollEdge([.top, .bottom])
+            .softTopEdgeEffect()
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Game settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { onClose() }
+                        .fontWeight(.semibold)
                         .foregroundStyle(VoiidColor.primary)
                 }
             }
         }
+        .softTopEdgeEffect()
+        .softScrollEdge([.top, .bottom])
+        .tint(VoiidColor.primary)
     }
 
     private func row(icon: String, title: String, subtitle: String,
@@ -155,5 +155,7 @@ struct GameSettingsSheet: View {
             }
         }
         .tint(VoiidColor.primary)
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 12)
     }
 }

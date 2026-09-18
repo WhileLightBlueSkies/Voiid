@@ -4,7 +4,7 @@ import { rateLimit } from '../security';
 // ============================ NOT END-TO-END ENCRYPTED ============================
 // Read the header of 048_creator_highlights.sql before touching this file. A highlight is a
 // curated shelf on a PUBLIC page; its whole purpose is to be seen by strangers who follow
-// nobody and hold no key. That is the same broadcast-identity argument 029_creator_profiles.sql
+// nobody and hold no key. That is the same broadcast-identity argument 029_social_profiles.sql
 // makes for the avatar beside it, and it is a scoped exception, not a precedent.
 //
 // STILL END-TO-END ENCRYPTED and untouched by this file: messages, calls, locations, moments
@@ -185,7 +185,7 @@ router.get(
 
     const profile = (
       await query<{ user_id: string }>(
-        `select user_id from creator_profiles
+        `select user_id from social_profiles
           where lower(handle) = $1 and suspended_at is null`,
         [handle]
       )
@@ -230,7 +230,7 @@ router.post(
     const { user_id } = (req as any).auth;
 
     const profile = (
-      await query<{ user_id: string }>(`select user_id from creator_profiles where user_id = $1`, [
+      await query<{ user_id: string }>(`select user_id from social_profiles where user_id = $1`, [
         user_id,
       ])
     )[0];

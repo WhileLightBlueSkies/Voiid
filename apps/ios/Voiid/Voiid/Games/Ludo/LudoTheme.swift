@@ -2,244 +2,84 @@
 //  LudoTheme.swift
 //  Voiid
 //
-//  Resolved per-theme palette handed to Canvas draw code (§2). Mirrors
-//  packages/design-tokens/tokens.json → color.game.ludo value for value; Android's
-//  LudoThemeColors is the parity twin. Draw functions receive this ONCE — they never read
-//  trait collections mid-draw, so a theme flip re-renders instead of tearing.
+//  Design tokens for the luxury wood and brass Ludo board.
 //
 
 import SwiftUI
 
-struct LudoColors {
-    let isDark: Bool
+typealias LudoTheme = Theme
 
-    let screenBackground: Color
-    let boardSurface: Color
-    let trackCellFill: Color
-    let trackCellBorder: Color
-    let trackCellPressed: Color
-    let unusedCellFill: Color
-    let safeCellFill: Color
-    let safeCellStar: Color
+enum Theme {
 
-    // Player hues — pawn, lane, border, pips. Fixed per seat, never derived at runtime.
-    let playerHues: [Color]
-    let yards: [Color]
-    let homeLanes: [Color]
+    // MARK: Surfaces
+    static let ink      = Color(ludoHex: 0x0E1620)
+    static let ink2     = Color(ludoHex: 0x16212E)
+    static let ink3     = Color(ludoHex: 0x1E2C3C)
+    static let hairline = Color(ludoHex: 0x263547)
 
-    let yardPocket: Color
-    let yardPocketBorder: Color
-    let inactiveYard: Color
-    let boardOuterNeutral: Color
-    /// Token border ring: white in light, a light grey-white in dark.
-    let pawnBorder: Color
-    /// Thin outline OUTSIDE the border, for contrast against a same-toned cell.
-    let pawnOutline: Color
+    static let board   = Color(ludoHex: 0xF3E9D6)
+    static let board2  = Color(ludoHex: 0xE8DAC0)
+    static let line    = Color(ludoHex: 0xB9A484)
+    static let brass   = Color(ludoHex: 0xC9A227)
+    static let brassLo = Color(ludoHex: 0x8A6E15)
+    static let cream   = Color(ludoHex: 0xFFF8EA)
+    static let muted   = Color(ludoHex: 0x9DAFC2)
+    static let faint   = Color(ludoHex: 0x5C6E80)
 
-    // THE DIE HAS ONE NEUTRAL BODY in every state; only pips take the active hue (§1).
-    let dieBody: Color
-    let dieEdge: Color
-    let dieNeutralPip: Color
+    // MARK: Seats
+    static let seatColours: [Color] = [
+        Color(ludoHex: 0xE0503F),   // Red
+        Color(ludoHex: 0x2FA36B),   // Green
+        Color(ludoHex: 0xE8A72E),   // Amber
+        Color(ludoHex: 0x3B7DD8)    // Blue
+    ]
 
-    let textPrimary: Color
-    let textSecondary: Color
-    let podSurface: Color
-    let podBorder: Color
-    let timerTrack: Color
-    let timerActive: Color
-    let timerWarning: Color
-    let timerCritical: Color
-    let focusRing: Color
-    let scrim: Color
-    let shadow: Color
+    static func seat(_ i: Int) -> Color { seatColours[i % 4] }
 
-    func hue(_ seat: Int) -> Color { playerHues[seat % 4] }
-    func yard(_ seat: Int) -> Color { yards[seat % 4] }
-    func homeLane(_ seat: Int) -> Color { homeLanes[seat % 4] }
-    func centerTriangle(_ seat: Int) -> Color { yard(seat) }
-
-    static let light = LudoColors(
-        isDark: false,
-        screenBackground: Color(hex: 0xF2F2F3),
-        boardSurface: .white,
-        trackCellFill: .white,
-        trackCellBorder: Color(hex: 0x202020),
-        trackCellPressed: Color(hex: 0xE7EAEE),
-        unusedCellFill: .white,
-        safeCellFill: .white,
-        safeCellStar: Color(hex: 0x383838),
-        playerHues: [Color(hex: 0xCF514F), Color(hex: 0x5F9F5E), Color(hex: 0xE9BD2E), Color(hex: 0x4B78E5)],
-        yards: [Color(hex: 0xF30104), Color(hex: 0x03A822), Color(hex: 0xFDD805), Color(hex: 0x0F7DEE)],
-        homeLanes: [Color(hex: 0xF30104), Color(hex: 0x03A822), Color(hex: 0xFDD805), Color(hex: 0x0F7DEE)],
-        yardPocket: .white,
-        yardPocketBorder: Color(hex: 0x202020),
-        inactiveYard: .white,
-        boardOuterNeutral: Color(hex: 0x202020),
-        pawnBorder: Color(hex: 0xFFFFFF),
-        pawnOutline: Color(hex: 0x1B2A4A),
-        dieBody: Color(hex: 0xFEFEFE),
-        dieEdge: Color(hex: 0xC7C9CF),
-        dieNeutralPip: Color(hex: 0x69717D),
-        textPrimary: Color(hex: 0x111015),
-        textSecondary: Color(hex: 0x5D696C),
-        podSurface: .white,
-        podBorder: Color(hex: 0xC7C9CF),
-        timerTrack: Color(hex: 0xD9DDE3),
-        timerActive: Color(hex: 0x69717D),
-        timerWarning: Color(hex: 0xB07818),
-        timerCritical: Color(hex: 0xC0392F),
-        focusRing: Color(hex: 0x13828C),
-        scrim: Color.black.opacity(0.32),
-        shadow: Color.black.opacity(0.14))
-
-    static let dark = LudoColors(
-        isDark: true,
-        screenBackground: Color(hex: 0x111015),
-        boardSurface: Color(hex: 0x1F2326),
-        trackCellFill: Color(hex: 0x1F2326),
-        trackCellBorder: Color(hex: 0x101316),
-        trackCellPressed: Color(hex: 0x2A2D35),
-        unusedCellFill: Color(hex: 0x1F2326),
-        safeCellFill: Color(hex: 0x1F2326),
-        safeCellStar: Color(hex: 0xF4F6FA),
-        playerHues: [Color(hex: 0xFD605B), Color(hex: 0x3AD784), Color(hex: 0xFED632), Color(hex: 0x337AE5)],
-        yards: [Color(hex: 0xB70407), Color(hex: 0x028327), Color(hex: 0xD4A70E), Color(hex: 0x024F9F)],
-        homeLanes: [Color(hex: 0xB70407), Color(hex: 0x028327), Color(hex: 0xD4A70E), Color(hex: 0x024F9F)],
-        yardPocket: Color(hex: 0x1F2326),
-        yardPocketBorder: Color(hex: 0x101316),
-        inactiveYard: Color(hex: 0x1F2326),
-        boardOuterNeutral: Color(hex: 0x101316),
-        pawnBorder: Color(hex: 0xE8EAF0),
-        pawnOutline: Color(hex: 0x0B1424),
-        dieBody: Color(hex: 0x181920),
-        dieEdge: Color(hex: 0x464952),
-        dieNeutralPip: Color(hex: 0xB2B8C3),
-        textPrimary: Color(hex: 0xF7F7F7),
-        textSecondary: Color(hex: 0xA6B0B2),
-        podSurface: Color(hex: 0x181920),
-        podBorder: Color(hex: 0x464952),
-        timerTrack: Color(hex: 0x3A3E47),
-        timerActive: Color(hex: 0xB2B8C3),
-        timerWarning: Color(hex: 0xE0A83C),
-        timerCritical: Color(hex: 0xEF7A6B),
-        focusRing: Color(hex: 0x68B8BD),
-        scrim: Color.black.opacity(0.44),
-        shadow: Color.black.opacity(0.40))
-
-    static func resolve(_ scheme: ColorScheme) -> LudoColors {
-        scheme == .dark ? .dark : .light
+    // MARK: Background
+    static var backdrop: some View {
+        RadialGradient(
+            colors: [Color(ludoHex: 0x1B2836), ink, Color(ludoHex: 0x080D13)],
+            center: .top, startRadius: 0, endRadius: 900
+        )
+        .ignoresSafeArea()
     }
 
-    /// The board is flat in both themes.
-    func boardShadow() -> (offset: CGSize, radius: CGFloat) {
-        (.zero, 0)
+    // MARK: Type
+    static func display(_ size: CGFloat) -> Font {
+        .system(size: size, weight: .heavy, design: .serif)
     }
-}
-
-enum LudoDimens {
-    /// Board corner radius as a FRACTION of the board side, so the softening holds at every
-    /// size the board is asked to draw at — phone, tablet, and the walkthrough's small demo.
-    /// An absolute point value would read as a heavy chamfer on the demo board and as a barely
-    /// visible nick on a tablet. Mirrored by Android `LudoDimens.boardCornerRadiusFactor`.
-    static let boardCornerRadiusFactor: CGFloat = 0.035
-
-    /// Resolve the fraction against a concrete board side.
-    static func boardCornerRadius(side: CGFloat) -> CGFloat { side * boardCornerRadiusFactor }
-    static func perimeterStroke(dark: Bool) -> CGFloat { dark ? 3.5 : 3 }
-    static let boardContentInset: CGFloat = 0
-    static func cellBorder(dark: Bool) -> CGFloat { 0.75 }
-    /// Softens the printed grid without losing the board's read as ruled squares. Clamped to
-    /// 2pt at the call site, so this only bites on large cells.
-    static let cellCornerRadiusFactor: CGFloat = 0.08
-    static let yardPocketInsetFactor: CGFloat = 0.80
-    /// Resting-circle radius for a yard slot, as a fraction of one cell.
-    static let yardSlotRadiusFactor: CGFloat = 0.46
-    static let yardPocketRadiusFactor: CGFloat = 0.72
-    static let safeStarOuterRadiusFactor: CGFloat = 0.34
-    static let safeStarInnerRadiusFactor: CGFloat = 0.15
-
-    // Pods carry only a chip and a username, so they stay small and let the board dominate —
-    // the name is a label beside the board, never a headline.
-    static let podSizeStandard = CGSize(width: 120, height: 36)
-    static let podSizeCompact = CGSize(width: 108, height: 32)
-    static let podCornerRadius: CGFloat = 10
-    static let chipStandard: CGFloat = 16
-    static let chipCompact: CGFloat = 14
-    static let ringStandard: CGFloat = 24
-    static let ringCompact: CGFloat = 21
-    static let ringStroke: CGFloat = 2
-
-    static let dieSizeStandard: CGFloat = 64
-    static let dieSizeCompact: CGFloat = 44
-    static let dieSizeTablet: CGFloat = 72
-    static let dieHitTarget: CGFloat = 72
-}
-
-enum LudoMotion {
-    static let borderSweepMs: Double = 360
-    static let dieRelocateMs: Double = 120
-    /// How far the airborne die shrinks so a turning cube stays inside its tray.
-    static let dieAirborneScale: Double = 0.62
-    /// Multiplies the throw's height. The surface has headroom for it (canvasFactor), so the
-    /// die can actually leave the ground instead of clipping at the top of its box.
-    static let dieLiftScale: Double = 1.45
-    /// Hold after a roll settles before a forced (single-legal-token) move plays itself, so the
-    /// number stays readable before the board moves under it.
-    static let forcedMoveHoldMs: Double = 420
-    static let pipCrossFadeMs: Double = 120
-    static let hopMs: Double = 120
-    static let hopStaggerMs: Double = 92
-    /// Peak height of a single hop's arc, as a fraction of one cell. A pure position lerp makes
-    /// a token SLIDE between squares; lifting it off the board is what reads as a hop, and it is
-    /// what tells you a piece is being MOVED rather than teleported.
-    static let hopArcFactor: CGFloat = 0.32
-    /// Overshoot on the LAST leg only, as a fraction of one cell, so a token lands with weight
-    /// instead of stopping dead on its mark. Applied to the final leg alone: an overshoot on
-    /// every intermediate square would read as wobble, not as arrival.
-    static let hopLandOvershootFactor: CGFloat = 0.10
-    static let fastForwardMs: Double = 90
-    static let haloBreatheMs: Double = 520
-    static let captureScaleMs: Double = 150
-    /// Whole capture retrace, split across however many cells the pawn has to walk back.
-    static let captureReturnTotalMs: Double = 520
-    static let captureLegMinMs: Double = 26
-    static let captureReturnMs: Double = 260
-    static let finishShrinkMs: Double = 240
-    static let resultRippleMs: Double = 420
-}
-
-/// Clips a board-sized view to the board's corner radius.
-///
-/// The radius is a fraction of the board side (`LudoDimens.boardCornerRadiusFactor`), and a
-/// `clipShape` modifier does not know that side — only the layout does. Reading it back with a
-/// `GeometryReader` in an overlay keeps the clip correct at every board size without forcing
-/// every caller to thread a width through. The overlay carries no hit testing, so it cannot
-/// steal taps from the board underneath.
-struct LudoBoardClip: ViewModifier {
-    func body(content: Content) -> some View {
-        content.overlay {
-            GeometryReader { geo in
-                Color.clear.preference(key: LudoBoardSideKey.self, value: geo.size.width)
-            }
-            .allowsHitTesting(false)
-        }
-        .modifier(LudoBoardClipApply())
+    static func ui(_ size: CGFloat, _ weight: Font.Weight = .medium) -> Font {
+        .system(size: size, weight: weight, design: .rounded)
     }
+    static func label(_ size: CGFloat) -> Font {
+        .system(size: size, weight: .semibold, design: .rounded)
+    }
+
+    // MARK: Motion
+    enum Timing {
+        /// One square of travel. Deliberately slow enough to read as a hop.
+        static let hop: Duration = .milliseconds(150)
+        /// How long the die tumbles before it settles.
+        static let diceTumble: Double = 0.52
+        static let capturePause: Duration = .milliseconds(520)
+        static let botThink: Duration = .milliseconds(700)
+    }
+
+    /// The overshoot that makes a token land rather than slide.
+    static let land = Animation.spring(response: 0.26, dampingFraction: 0.55)
 }
 
-private struct LudoBoardSideKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
+// MARK: - Hex helper
 
-private struct LudoBoardClipApply: ViewModifier {
-    @State private var side: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content
-            .onPreferenceChange(LudoBoardSideKey.self) { side = $0 }
-            .clipShape(RoundedRectangle(
-                cornerRadius: LudoDimens.boardCornerRadius(side: side),
-                style: .continuous))
+extension Color {
+    init(ludoHex: UInt32) {
+        self.init(
+            .sRGB,
+            red:   Double((ludoHex >> 16) & 0xFF) / 255,
+            green: Double((ludoHex >> 8)  & 0xFF) / 255,
+            blue:  Double( ludoHex        & 0xFF) / 255,
+            opacity: 1
+        )
     }
 }

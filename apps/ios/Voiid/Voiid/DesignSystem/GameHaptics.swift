@@ -27,8 +27,19 @@ enum GameHaptics {
     /// Stored as "enabled" and read inverted, exactly as GameAudio does, so that a missing key
     /// (a fresh install, where `bool(forKey:)` returns false) means ENABLED rather than
     /// silently shipping every new user a dead Taptic Engine.
+    /// WAS INVERTED. The getter read `!stored ? false : true`, which is just `stored` — so
+    /// `isDisabled` returned the ENABLED flag and the switch did the opposite of its label:
+    /// turning haptics off left them playing, turning them on silenced them. A fresh install
+    /// hid it, because with no key stored both the bug and the correct answer produce
+    /// haptics-on.
+    ///
+    /// Stored as "enabled" and read inverted, so a missing key (`bool(forKey:)` returning
+    /// false on a fresh install) means ENABLED rather than shipping a dead Taptic Engine.
     static var isDisabled: Bool {
-        get { !UserDefaults.standard.bool(forKey: enabledKey) ? false : true }
+        get {
+            guard UserDefaults.standard.object(forKey: enabledKey) != nil else { return false }
+            return !UserDefaults.standard.bool(forKey: enabledKey)
+        }
         set { UserDefaults.standard.set(!newValue, forKey: enabledKey) }
     }
     private static let enabledKey = "voiid.gameHapticsEnabled_v1_default_on"

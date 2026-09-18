@@ -24,7 +24,7 @@ import { admitTicket } from '../payments/admission';
 // Buying entry to one evening writes no row in community_members, and therefore does not open
 // the member->host exception in 020_reachability.sql. A follow, a join and a ticket all grant
 // nothing on the message pipe. If you find code reading event_tickets to decide whether A may
-// message B, that is the bug 029_creator_profiles.sql forbids for follows.
+// message B, that is the bug 029_social_profiles.sql forbids for follows.
 //
 // ── FREE FIRST, ON PURPOSE ───────────────────────────────────────────────────────
 //
