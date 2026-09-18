@@ -98,18 +98,58 @@ async function attachThumbUrls<T extends { thumb_r2_key?: string | null }>(rows:
   if (!r2Configured()) return rows;
   await Promise.all(
     rows.map(async (row) => {
-      if (!row.thumb_r2_key) return;
-      try {
-        (row as any).thumb_url = await presignGet(row.thumb_r2_key);
-      } catch (e) {
-        // A tile with no thumb URL renders its placeholder — far better than
-        // failing the whole page because one object is missing.
-        console.warn('[clips] thumb presign failed:', (e as Error).message);
+      if (row.thumb_r2_key) {
+        try {
+          (row as any).thumb_url = await presignGet(row.thumb_r2_key);
+        } catch (e) {
+          // A tile with no thumb URL renders its placeholder — far better than
+          // failing the whole page because one object is missing.
+          console.warn('[clips] thumb presign failed:', (e as Error).message);
+        }
       }
+
+      await signAvatar(row);
     })
   );
   return rows;
 }
+
+/// The author's avatar arrives as an R2 KEY (the column) and the client needs a URL.
+///
+/// A missing or unsignable avatar becomes null rather than failing the request: the client
+/// renders initials, which is a complete row. One page of clips or comments costs one round
+/// of presigns because callers batch through `signAuthorAvatars`.
+async function signAvatar(row: any): Promise<void> {
+  const key = row?.author_photo_url as string | null | undefined;
+  if (!key || !r2Configured()) return;
+  try {
+    row.author_photo_url = await presignGet(key);
+  } catch (e) {
+    row.author_photo_url = null;
+    console.warn('[clips] avatar presign failed:', (e as Error).message);
+  }
+}
+
+async function signAuthorAvatars<T>(rows: T[]): Promise<T[]> {
+  await Promise.all(rows.map((row) => signAvatar(row)));
+  return rows;
+}
+
+// THE PUBLIC AVATAR, NOT THE ACCOUNT ONE.
+//
+// `author_photo_url` used to select `u.photo_url`: the account photo, governed by
+// `photo_privacy` (019 — everyone / contacts / nobody). `users.ts` honours that setting and
+// this query never did, so someone who restricted their photo to contacts still had it
+// rendered on every clip they posted, to strangers.
+//
+// Not a decryption failure: `photo_url` is the plaintext legacy column and
+// `encrypted_photo_url` is the E2EE one. It is a privacy setting silently bypassed on the
+// most public surface in the product.
+//
+// `social_profiles.avatar_r2_key` is the avatar a user chose to publish, on a profile that is
+// public by definition, with no privacy flag to contradict. Null when they have no social
+// profile, and the client renders initials. The wire name is unchanged because both clients
+// already decode it, so this is a source change rather than a breaking API change.
 
 // Columns every clip-returning endpoint selects, so the client decodes one shape
 // everywhere. `liked_by_me` is per-caller, hence the parameterised user id.
@@ -125,8 +165,8 @@ const CLIP_COLUMNS = `
   (c.r2_key_fhd is not null) as has_fhd,
   c.byte_size_sd, c.byte_size_hd, c.byte_size_fhd,
   u.full_name  as author_name,
-  u.photo_url  as author_photo_url,
-  -- The creator identity, LEFT joined: a clip's author may have no creator profile (the
+  cp.avatar_r2_key as author_photo_url,
+  -- The social identity, LEFT joined: a clip's author may have no social profile (the
   -- gate is enforced at POST, but rows predate it and a profile can be removed). The grid
   -- tile falls back to the display name when this is null rather than showing a blank row.
   cp.handle      as author_handle,
@@ -573,10 +613,14 @@ router.get('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 60
   // Comments are WITHHELD, never deleted, when the author turns them off — so switching
   // back on restores the conversation. The join carries the flag so this is one query.
   const rows = await query<any>(
+    // `scp` is the COMMENTER's social profile. `cp` below is the CLIP AUTHOR's, joined for
+    // their allow_comments flag — two different people, so two joins. Selecting the avatar
+    // from `cp` would have shown the clip author's face on every commenter's row.
     `select cc.id, cc.clip_id, cc.author_id, cc.text, cc.created_at,
-            u.full_name as author_name, u.photo_url as author_photo_url
+            u.full_name as author_name, scp.avatar_r2_key as author_photo_url
        from clip_comments cc
        join users u on u.id = cc.author_id
+       left join social_profiles scp on scp.user_id = cc.author_id
        join clips c on c.id = cc.clip_id and c.removed_at is null
        left join social_profiles cp on cp.user_id = c.author_id
       where cc.clip_id = $1 and cc.deleted_at is null
@@ -590,7 +634,7 @@ router.get('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 60
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
   return res.json({
-    comments: page,
+    comments: await signAuthorAvatars(page),
     next_cursor: hasMore && page.length ? makeCursor(page[page.length - 1]) : null,
   });
 }));
@@ -636,7 +680,12 @@ router.post('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 6
   await query(`update clips set comment_count = comment_count + 1 where id = $1`, [clipId]);
 
   const me = await query<{ full_name: string | null; photo_url: string | null }>(
-    `select full_name, photo_url from users where id = $1`,
+    // The commenter's own row echoed back so the client can render it immediately. Avatar
+    // comes from the social profile for the same reason as the list query above.
+    `select u.full_name, sp.avatar_r2_key as photo_url
+       from users u
+       left join social_profiles sp on sp.user_id = u.id
+      where u.id = $1`,
     [user_id]
   );
 

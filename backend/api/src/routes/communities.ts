@@ -1162,15 +1162,16 @@ router.get(
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const rows = await query(
       `select m.user_id, m.role, m.state, m.joined_at,
-              u.full_name, u.username, u.photo_url
+              u.full_name, u.username, sp.avatar_r2_key as photo_url
          from community_members m
          join users u on u.id = m.user_id
+         left join social_profiles sp on sp.user_id = m.user_id
         where m.community_id = $1 and m.state = $2 and u.deleted_at is null
         order by m.joined_at desc
         limit $3 offset $4`,
       [communityId, state, limit, offset]
     );
-    res.json({ members: rows, limit, offset });
+    res.json({ members: await signMemberAvatars(rows), limit, offset });
   })
 );
 
@@ -1956,7 +1957,16 @@ async function readGate(idOrHandle: string, userId: string): Promise<ReadGate> {
  * account". An inner join here would make those posts silently vanish from the feed, which is
  * the failure the schema's ON DELETE SET NULL exists to avoid.
  */
-const AUTHOR_JOIN = `left join users u on u.id = p.author_id`;
+// Both identities, because a post needs both: `u` for the account-level name and official
+// flag, `sp` for the PUBLIC avatar.
+//
+// The avatar used to come from `u.photo_url`, the account photo governed by `photo_privacy`
+// (019 — everyone / contacts / nobody). users.ts honours that setting; this router never
+// did, so someone who limited their photo to contacts still had it shown to every member of
+// every community they posted in. `social_profiles.avatar_r2_key` is the avatar they chose
+// to publish, on a profile that is public by definition.
+const AUTHOR_JOIN = `left join users u on u.id = p.author_id
+       left join social_profiles sp on sp.user_id = p.author_id`;
 
 /**
  * Shape a post for the wire.
@@ -1966,6 +1976,50 @@ const AUTHOR_JOIN = `left join users u on u.id = p.author_id`;
  * response that drops `media_url` for the posts that have no media breaks the client for
  * exactly the common case.
  */
+/**
+ * Turn `author_photo_url` from an R2 KEY into a signed URL, in place, for a page of rows.
+ *
+ * The column holds a key; the client needs a URL. Batched so one page costs one round of
+ * presigns rather than one per row, and a failure nulls that row's avatar instead of failing
+ * the page — the client renders initials, which is a complete row.
+ */
+async function signAuthorAvatars<T extends { author_photo_url?: string | null }>(
+  rows: T[]
+): Promise<T[]> {
+  if (!r2Configured()) return rows;
+  await Promise.all(
+    rows.map(async (row) => {
+      const key = row.author_photo_url;
+      if (!key) return;
+      try {
+        (row as any).author_photo_url = await presignGet(key);
+      } catch {
+        (row as any).author_photo_url = null;
+      }
+    })
+  );
+  return rows;
+}
+
+/** The same, for roster rows whose avatar column is plain `photo_url`. */
+async function signMemberAvatars<T extends { photo_url?: string | null }>(
+  rows: T[]
+): Promise<T[]> {
+  if (!r2Configured()) return rows;
+  await Promise.all(
+    rows.map(async (row) => {
+      const key = row.photo_url;
+      if (!key) return;
+      try {
+        (row as any).photo_url = await presignGet(key);
+      } catch {
+        (row as any).photo_url = null;
+      }
+    })
+  );
+  return rows;
+}
+
 function postShape(r: any) {
   return {
     id: r.id,
@@ -2017,16 +2071,18 @@ router.get('/:id/posting-allowlist', requireAuth, asyncHandler(async (req, res) 
   if (!access.isOrganiser) return res.status(403).json({ error: 'only community managers can see this' });
 
   const rows = await query<any>(
-    `select a.user_id, a.granted_at, u.full_name, u.username, u.photo_url
+    `select a.user_id, a.granted_at, u.full_name, u.username,
+            sp.avatar_r2_key as photo_url
        from community_post_allowlist a
        join users u on u.id = a.user_id
+       left join social_profiles sp on sp.user_id = a.user_id
       where a.community_id = $1
         and (($2::uuid is null and a.channel_id is null) or a.channel_id = $2::uuid)
       order by a.granted_at desc, a.user_id desc
       limit 200 offset $3`,
     [communityId, channelId, Math.max(0,Math.min(1000000,Math.trunc(Number(req.query.offset)||0)))],
   );
-  res.json({ allowed: rows });
+  res.json({ allowed: await signMemberAvatars(rows) });
 }));
 
 // POST /communities/:id/posting-allowlist   { user_id, channel_id?, allowed }
@@ -2134,7 +2190,7 @@ router.get(
               p.created_at, p.edited_at, p.channel_id, p.view_count,
               to_char(p.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at,
               u.full_name as author_name, u.username as author_username,
-              u.photo_url as author_photo_url, u.is_official as author_is_official,
+              sp.avatar_r2_key as author_photo_url, u.is_official as author_is_official,
               (l.user_id is not null) as liked_by_me
          from community_posts p
          ${AUTHOR_JOIN}
@@ -2156,7 +2212,7 @@ router.get(
     );
 
     res.json({
-      posts: rows.map(postShape),
+      posts: await signAuthorAvatars(rows.map(postShape)),
       can_post: gate.isMember && await mayPost(gate.community.id,user_id,gate.isManager,feedPolicy,channelId),
       // Null rather than absent, and null on a short page rather than a cursor that would
       // return nothing — the client stops on null and would otherwise fetch an empty page.
@@ -2234,7 +2290,7 @@ router.post(
                      created_at, edited_at, channel_id, view_count
        )
        select p.*, u.full_name as author_name, u.username as author_username,
-                u.photo_url as author_photo_url, u.is_official as author_is_official
+                sp.avatar_r2_key as author_photo_url, u.is_official as author_is_official
          from inserted p
          ${AUTHOR_JOIN}`,
       [communityId, user_id, body, mediaUrl, channelIds]
@@ -2242,7 +2298,7 @@ router.post(
     // A fresh post is never liked by its author, so `liked_by_me` is false by construction and
     // needs no probe.
     scheduleCommunityNotification({communityId, actorId:user_id, kind:'post', publicBody:body});
-    const posts = rows.map(postShape);
+    const posts = await signAuthorAvatars(rows.map(postShape));
     res.status(201).json({ post: posts[0], posts });
   })
 );
@@ -2504,7 +2560,7 @@ router.get(
     const rows = await query<any>(
       `select p.id, p.author_id, p.title, p.body, p.pinned_at, p.created_at, p.unpinned_at,
               u.full_name as author_name, u.username as author_username,
-              u.photo_url as author_photo_url
+              sp.avatar_r2_key as author_photo_url
          from community_announcements p
          ${AUTHOR_JOIN}
         where p.community_id = $1
@@ -2517,8 +2573,9 @@ router.get(
     res.json({
       // Both keys always present. The client reads `announcement` for the card and `history`
       // for the archive sheet; neither may be absent, or Codable throws.
-      announcement: wantsHistory ? null : rows[0] ? announcementShape(rows[0]) : null,
-      history: wantsHistory ? rows.map(announcementShape) : [],
+      announcement: wantsHistory ? null
+        : rows[0] ? (await signAuthorAvatars([announcementShape(rows[0])]))[0] : null,
+      history: wantsHistory ? await signAuthorAvatars(rows.map(announcementShape)) : [],
     });
   })
 );
@@ -2574,7 +2631,7 @@ router.post(
              returning id, author_id, title, body, pinned_at, created_at
          )
          select p.*, u.full_name as author_name, u.username as author_username,
-                  u.photo_url as author_photo_url
+                  sp.avatar_r2_key as author_photo_url
            from inserted p
            ${AUTHOR_JOIN}`,
         [gate.community.id, user_id, title, body]
