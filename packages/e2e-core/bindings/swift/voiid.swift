@@ -844,7 +844,7 @@ public protocol GroupSessionProtocol: AnyObject, Sendable {
      * Authenticated device identities, read from the current MLS epoch.
      */
     func memberIdentities()  -> [Data]
-
+    
     /**
      * Remove the member with stable identifier `identity`. Returns the commit
      * to broadcast to remaining members; rekeys so the removed member can't
@@ -1019,7 +1019,7 @@ open func memberCount() -> UInt32  {
     )
 })
 }
-
+    
     /**
      * Authenticated device identities, read from the current MLS epoch.
      */

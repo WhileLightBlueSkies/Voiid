@@ -27,15 +27,6 @@ object AppWalkthroughPlan {
 
     val steps = listOf(
         AppWalkthroughStep(
-            id = "welcome",
-            eyebrow = "WELCOME TO VOIID",
-            title = "Everything starts here",
-            message = "Private conversations, disappearing moments, communities and instant games — organised into four simple spaces.",
-            destination = null,
-            targetId = null,
-            graphicDrawableName = "walkthrough_welcome_hero",
-        ),
-        AppWalkthroughStep(
             id = "chats",
             eyebrow = "ENCRYPTED MESSAGING",
             title = "Your people, one tap away",
@@ -118,15 +109,6 @@ object AppWalkthroughPlan {
             targetPaddingDp = 6f,
             graphicDrawableName = "walkthrough_security_shield",
             interactive = true,
-        ),
-        AppWalkthroughStep(
-            id = "complete",
-            eyebrow = "YOU ARE READY",
-            title = "Make Voiid yours",
-            message = "Explore at your own pace. You can replay this interactive spotlight tour anytime from Settings > Help & Support.",
-            destination = null,
-            targetId = null,
-            graphicDrawableName = "walkthrough_completion_celebration",
         ),
     )
 }

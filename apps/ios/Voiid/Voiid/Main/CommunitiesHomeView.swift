@@ -171,6 +171,7 @@ struct CommunitiesHomeView: View {
             .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
                 .stroke(VoiidColor.divider, lineWidth: 1))
         }
+        .walkthroughTarget("comm_search_bar", shape: .rounded(VoiidRadius.lg), padding: 4)
         .buttonStyle(PressableButtonStyle())
         .accessibilityIdentifier("communities.discover")
     }

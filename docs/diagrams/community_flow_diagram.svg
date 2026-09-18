@@ -1,0 +1,540 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1280" width="100%" height="100%" style="background:#0F1417; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0E1316"/>
+      <stop offset="100%" stop-color="#141B1F"/>
+    </linearGradient>
+    
+    <linearGradient id="tealGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#19A0AC"/>
+      <stop offset="100%" stop-color="#13828C"/>
+    </linearGradient>
+
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F39C12"/>
+      <stop offset="100%" stop-color="#D68910"/>
+    </linearGradient>
+
+    <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9B59B6"/>
+      <stop offset="100%" stop-color="#8E44AD"/>
+    </linearGradient>
+
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3498DB"/>
+      <stop offset="100%" stop-color="#2980B9"/>
+    </linearGradient>
+
+    <linearGradient id="coralGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E74C3C"/>
+      <stop offset="100%" stop-color="#C0392B"/>
+    </linearGradient>
+
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1C242A"/>
+      <stop offset="100%" stop-color="#161D22"/>
+    </linearGradient>
+
+    <!-- Filters -->
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="glowTeal" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#19A0AC" flood-opacity="0.6"/>
+    </filter>
+
+    <!-- Markers -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#19A0AC" />
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#F39C12" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#9B59B6" />
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#3498DB" />
+    </marker>
+  </defs>
+
+  <rect width="100%" height="100%" fill="url(#bgGrad)"/>
+  
+  <!-- Subtle Grid Pattern Background -->
+  <g opacity="0.04">
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#FFFFFF" stroke-width="1"/>
+    </pattern>
+    <rect width="100%" height="100%" fill="url(#grid)" />
+  </g>
+
+  <!-- ==================== HEADER ==================== -->
+  <g transform="translate(80, 45)">
+    <rect width="44" height="44" rx="12" fill="url(#tealGrad)"/>
+    <circle cx="22" cy="22" r="12" fill="none" stroke="#FFFFFF" stroke-width="2.5"/>
+    <circle cx="22" cy="22" r="5" fill="#FFFFFF"/>
+    
+    <text x="60" y="26" fill="#FFFFFF" font-size="24" font-weight="700" letter-spacing="-0.5">VOIID • Complete Community Architecture Flow</text>
+    <text x="60" y="44" fill="#8E9AA0" font-size="13" font-weight="400">Discovery, Policy Access Gating, 5 Core Hub Tabs, MLS E2EE Channels, Events &amp; Host Management</text>
+
+    <!-- Legend Pill Badges -->
+    <g transform="translate(1320, 10)">
+      <rect width="100" height="26" rx="13" fill="#19A0AC" fill-opacity="0.15" stroke="#19A0AC" stroke-width="1"/>
+      <text x="50" y="17" fill="#2ED1DF" font-size="11" font-weight="600" text-anchor="middle">MLS E2EE</text>
+      
+      <g transform="translate(112, 0)">
+        <rect width="110" height="26" rx="13" fill="#F39C12" fill-opacity="0.15" stroke="#F39C12" stroke-width="1"/>
+        <text x="55" y="17" fill="#F5B041" font-size="11" font-weight="600" text-anchor="middle">PUBLIC / REST</text>
+      </g>
+
+      <g transform="translate(234, 0)">
+        <rect width="110" height="26" rx="13" fill="#9B59B6" fill-opacity="0.15" stroke="#9B59B6" stroke-width="1"/>
+        <text x="55" y="17" fill="#BB8FCE" font-size="11" font-weight="600" text-anchor="middle">WEBSOCKET</text>
+      </g>
+
+      <g transform="translate(356, 0)">
+        <rect width="90" height="26" rx="13" fill="#E74C3C" fill-opacity="0.15" stroke="#E74C3C" stroke-width="1"/>
+        <text x="45" y="17" fill="#F1948A" font-size="11" font-weight="600" text-anchor="middle">HOST ONLY</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ==================== SECTION 1: INBOUND & DISCOVERY ==================== -->
+  <g transform="translate(80, 120)">
+    <!-- Container -->
+    <rect width="320" height="1080" rx="20" fill="#13191D" stroke="#253138" stroke-width="1.5" filter="url(#cardShadow)"/>
+    <rect width="320" height="48" rx="20" fill="#182126"/>
+    <rect y="28" width="320" height="20" fill="#182126"/>
+    <circle cx="28" cy="24" r="7" fill="#F39C12"/>
+    <text x="44" y="29" fill="#FFFFFF" font-size="15" font-weight="700">1. INBOUND &amp; DISCOVERY</text>
+    
+    <!-- Node 1.1: Universal Link / App Links -->
+    <g transform="translate(20, 68)">
+      <rect width="280" height="110" rx="14" fill="url(#cardGrad)" stroke="#2B373E" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#F39C12" fill-opacity="0.2"/>
+      <path d="M 23 28 L 29 22 M 28 28 L 33 23 A 3.5 3.5 0 0 0 28 18 L 25 21" stroke="#F39C12" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <text x="50" y="28" fill="#FFFFFF" font-size="13" font-weight="600">Universal Link (App Link)</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">https://voiid.app/c/&lt;handle&gt;</text>
+      <text x="14" y="70" fill="#B0BEC5" font-size="11">• autoVerify = true (assetlinks.json)</text>
+      <text x="14" y="86" fill="#B0BEC5" font-size="11">• Optional signed invite token ?i=&lt;token&gt;</text>
+      <text x="14" y="100" fill="#78909C" font-size="10">DeepLinkRouter handles in app</text>
+    </g>
+
+    <!-- Node 1.2: In-App Discovery Sheet -->
+    <g transform="translate(20, 196)">
+      <rect width="280" height="110" rx="14" fill="url(#cardGrad)" stroke="#2B373E" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#19A0AC" fill-opacity="0.2"/>
+      <circle cx="28" cy="28" r="6" fill="none" stroke="#19A0AC" stroke-width="2"/>
+      <path d="M 33 33 L 37 37" stroke="#19A0AC" stroke-width="2" stroke-linecap="round"/>
+      <text x="50" y="28" fill="#FFFFFF" font-size="13" font-weight="600">Discovery &amp; Search Hub</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">GET /communities/discover</text>
+      <text x="14" y="70" fill="#B0BEC5" font-size="11">• Trending public tags &amp; clubs</text>
+      <text x="14" y="86" fill="#B0BEC5" font-size="11">• Fast query (prefix match &gt;= 2 chars)</text>
+      <text x="14" y="100" fill="#78909C" font-size="10">Results by member count &amp; activity</text>
+    </g>
+
+    <!-- Node 1.3: Create Community Flow -->
+    <g transform="translate(20, 324)">
+      <rect width="280" height="130" rx="14" fill="url(#cardGrad)" stroke="#2B373E" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#2ECC71" fill-opacity="0.2"/>
+      <path d="M 28 21 L 28 35 M 21 28 L 35 28" stroke="#2ECC71" stroke-width="2" stroke-linecap="round"/>
+      <text x="50" y="28" fill="#FFFFFF" font-size="13" font-weight="600">Community Creator Flow</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">POST /communities</text>
+      <text x="14" y="70" fill="#B0BEC5" font-size="11">• Unique @handle validation</text>
+      <text x="14" y="86" fill="#B0BEC5" font-size="11">• Avatar upload + Name + Bio</text>
+      <text x="14" y="102" fill="#B0BEC5" font-size="11">• Policy: Open / Approval / Invite</text>
+      <text x="14" y="118" fill="#2ECC71" font-size="10">Creator instantly granted OWNER role</text>
+    </g>
+
+    <!-- Node 1.4: Direct Reachability Principle Box -->
+    <g transform="translate(20, 474)">
+      <rect width="280" height="160" rx="14" fill="#182329" stroke="#19A0AC" stroke-width="1.2" stroke-dasharray="4 4"/>
+      <text x="14" y="24" fill="#2ED1DF" font-size="12" font-weight="700">VOIID SECURITY PRINCIPLE</text>
+      <text x="14" y="44" fill="#ECEFF1" font-size="12" font-weight="600">Joining is NOT a Messaging Right</text>
+      <text x="14" y="66" fill="#90A4AE" font-size="11" width="250">
+        <tspan x="14" dy="0">Being in a community grants access</tspan>
+        <tspan x="14" dy="16">to its shared Spaces, and creates</tspan>
+        <tspan x="14" dy="16">exactly ONE private direct line:</tspan>
+        <tspan x="14" dy="18" fill="#2ED1DF" font-weight="600">User ⇄ Owner (Host Thread)</tspan>
+        <tspan x="14" dy="20">Members CANNOT direct-message</tspan>
+        <tspan x="14" dy="16">each other without existing reachability.</tspan>
+      </text>
+    </g>
+
+    <!-- Node 1.5: Local SQLite / Offline Cache -->
+    <g transform="translate(20, 654)">
+      <rect width="280" height="120" rx="14" fill="url(#cardGrad)" stroke="#2B373E" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#3498DB" fill-opacity="0.2"/>
+      <ellipse cx="28" cy="24" rx="8" ry="3" fill="none" stroke="#3498DB" stroke-width="1.5"/>
+      <path d="M 20 24 L 20 32 A 8 3 0 0 0 36 32 L 36 24" fill="none" stroke="#3498DB" stroke-width="1.5"/>
+      <text x="50" y="28" fill="#FFFFFF" font-size="13" font-weight="600">Local Persistence Layer</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">iOS (GRDB) / Android (Room)</text>
+      <text x="14" y="70" fill="#B0BEC5" font-size="11">• Stored Community Cards (mine)</text>
+      <text x="14" y="86" fill="#B0BEC5" font-size="11">• Channel lists &amp; conversation sync</text>
+      <text x="14" y="104" fill="#78909C" font-size="10">Instant app launch with zero latency</text>
+    </g>
+  </g>
+
+  <!-- Flow Connector 1 to 2 -->
+  <path d="M 400 370 L 440 370" stroke="#F39C12" stroke-width="2.5" marker-end="url(#arrowAmber)" fill="none"/>
+
+  <!-- ==================== SECTION 2: ACCESS & JOIN POLICIES ==================== -->
+  <g transform="translate(450, 120)">
+    <rect width="320" height="1080" rx="20" fill="#13191D" stroke="#253138" stroke-width="1.5" filter="url(#cardShadow)"/>
+    <rect width="320" height="48" rx="20" fill="#182126"/>
+    <rect y="28" width="320" height="20" fill="#182126"/>
+    <circle cx="28" cy="24" r="7" fill="#19A0AC"/>
+    <text x="44" y="29" fill="#FFFFFF" font-size="15" font-weight="700">2. ACCESS &amp; JOIN POLICIES</text>
+
+    <!-- Policy 1: Open / Public -->
+    <g transform="translate(20, 68)">
+      <rect width="280" height="140" rx="14" fill="url(#cardGrad)" stroke="#19A0AC" stroke-width="1.2"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#19A0AC" fill-opacity="0.2"/>
+      <circle cx="28" cy="28" r="8" fill="none" stroke="#19A0AC" stroke-width="2"/>
+      <text x="50" y="28" fill="#2ED1DF" font-size="14" font-weight="700">Open (Public)</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">policy = 'open'</text>
+      <text x="14" y="74" fill="#ECEFF1" font-size="12" font-weight="600">Instant 1-Tap Join</text>
+      <text x="14" y="92" fill="#B0BEC5" font-size="11">• Calls POST /communities/:id/join</text>
+      <text x="14" y="108" fill="#B0BEC5" font-size="11">• Status immediately 'active'</text>
+      <text x="14" y="126" fill="#2ED1DF" font-size="11">→ Immediate access to all Spaces</text>
+    </g>
+
+    <!-- Policy 2: Approval Required -->
+    <g transform="translate(20, 226)">
+      <rect width="280" height="175" rx="14" fill="url(#cardGrad)" stroke="#F39C12" stroke-width="1.2"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#F39C12" fill-opacity="0.2"/>
+      <path d="M 23 28 L 27 32 L 34 23" stroke="#F39C12" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <text x="50" y="28" fill="#F5B041" font-size="14" font-weight="700">Approval Required</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">policy = 'approval'</text>
+      <text x="14" y="74" fill="#ECEFF1" font-size="12" font-weight="600">Host Review Pipeline</text>
+      <text x="14" y="92" fill="#B0BEC5" font-size="11">• Status set to 'pending'</text>
+      <text x="14" y="108" fill="#B0BEC5" font-size="11">• Row routed to Community Host Inbox</text>
+      <text x="14" y="124" fill="#B0BEC5" font-size="11">• Host approves or rejects request</text>
+      <text x="14" y="142" fill="#B0BEC5" font-size="11">• On approval: WebSocket push emitted</text>
+      <text x="14" y="160" fill="#F5B041" font-size="11">→ In-app banner &amp; admission push</text>
+    </g>
+
+    <!-- Policy 3: Invite Only / Secret -->
+    <g transform="translate(20, 420)">
+      <rect width="280" height="150" rx="14" fill="url(#cardGrad)" stroke="#9B59B6" stroke-width="1.2"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#9B59B6" fill-opacity="0.2"/>
+      <rect x="23" y="25" width="10" height="9" rx="2" fill="none" stroke="#9B59B6" stroke-width="2"/>
+      <path d="M 25 25 L 25 21 A 3 3 0 0 1 31 21 L 31 25" fill="none" stroke="#9B59B6" stroke-width="2"/>
+      <text x="50" y="28" fill="#BB8FCE" font-size="14" font-weight="700">Invite Only</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">policy = 'invite'</text>
+      <text x="14" y="74" fill="#ECEFF1" font-size="12" font-weight="600">Cryptographic Token Gate</text>
+      <text x="14" y="92" fill="#B0BEC5" font-size="11">• Hidden from discovery &amp; search</text>
+      <text x="14" y="108" fill="#B0BEC5" font-size="11">• Requires active invite token (?i=...)</text>
+      <text x="14" y="124" fill="#B0BEC5" font-size="11">• Max uses limit &amp; timestamp expiry</text>
+      <text x="14" y="140" fill="#BB8FCE" font-size="11">→ Host can revoke token at any time</text>
+    </g>
+
+    <!-- Policy 4: Paid Memberships (Coming Soon / Event Precedent) -->
+    <g transform="translate(20, 590)">
+      <rect width="280" height="110" rx="14" fill="url(#cardGrad)" stroke="#455A64" stroke-width="1" opacity="0.85"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#78909C" fill-opacity="0.2"/>
+      <text x="28" y="32" fill="#B0BEC5" font-size="13" font-weight="700" text-anchor="middle">$</text>
+      <text x="50" y="28" fill="#CFD8DC" font-size="13" font-weight="600">Paid Communities</text>
+      <rect x="180" y="16" width="85" height="18" rx="9" fill="#37474F"/>
+      <text x="222" y="29" fill="#90A4AE" font-size="9.5" font-weight="700" text-anchor="middle">COMING SOON</text>
+      <text x="14" y="68" fill="#90A4AE" font-size="11">• Greyed-out in settings UI (fail-safe)</text>
+      <text x="14" y="84" fill="#90A4AE" font-size="11">• Paid Events infrastructure ready</text>
+      <text x="14" y="100" fill="#78909C" font-size="10">(Razorpay tickets &amp; commission active)</text>
+    </g>
+
+    <!-- Node 2.5: Member State Machine -->
+    <g transform="translate(20, 720)">
+      <rect width="280" height="180" rx="14" fill="#182329" stroke="#253138" stroke-width="1"/>
+      <text x="14" y="24" fill="#FFFFFF" font-size="13" font-weight="700">Member Status Lifecycle</text>
+      
+      <rect x="14" y="40" width="70" height="24" rx="6" fill="#37474F"/>
+      <text x="49" y="56" fill="#CFD8DC" font-size="10" font-weight="600" text-anchor="middle">NON-MEMBER</text>
+
+      <path d="M 88 52 L 108 52" stroke="#19A0AC" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <rect x="115" y="40" width="65" height="24" rx="6" fill="#F39C12" fill-opacity="0.3" stroke="#F39C12" stroke-width="1"/>
+      <text x="147" y="56" fill="#F5B041" font-size="10" font-weight="600" text-anchor="middle">PENDING</text>
+
+      <path d="M 184 52 L 204 52" stroke="#19A0AC" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <rect x="210" y="40" width="55" height="24" rx="6" fill="#19A0AC" fill-opacity="0.3" stroke="#19A0AC" stroke-width="1"/>
+      <text x="237" y="56" fill="#2ED1DF" font-size="10" font-weight="600" text-anchor="middle">ACTIVE</text>
+
+      <path d="M 237 68 L 237 98" stroke="#E74C3C" stroke-width="1.5" stroke-dasharray="2 2"/>
+      
+      <rect x="195" y="104" width="75" height="24" rx="6" fill="#C0392B" fill-opacity="0.3" stroke="#E74C3C" stroke-width="1"/>
+      <text x="232" y="120" fill="#F1948A" font-size="10" font-weight="600" text-anchor="middle">BANNED</text>
+
+      <rect x="14" y="104" width="70" height="24" rx="6" fill="#455A64" fill-opacity="0.3"/>
+      <text x="49" y="120" fill="#90A4AE" font-size="10" font-weight="600" text-anchor="middle">LEFT / EXITED</text>
+
+      <text x="14" y="152" fill="#8E9AA0" font-size="10.5">• Banned user cannot rejoin via link</text>
+      <text x="14" y="168" fill="#8E9AA0" font-size="10.5">• Left user can rejoin public space anytime</text>
+    </g>
+  </g>
+
+  <!-- Flow Connector 2 to 3 -->
+  <path d="M 770 370 L 810 370" stroke="#19A0AC" stroke-width="2.5" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- ==================== SECTION 3: COMMUNITY HUB & 5 TABS ==================== -->
+  <g transform="translate(820, 120)">
+    <rect width="660" height="1080" rx="20" fill="#13191D" stroke="#253138" stroke-width="1.5" filter="url(#cardShadow)"/>
+    <rect width="660" height="48" rx="20" fill="#182126"/>
+    <rect y="28" width="660" height="20" fill="#182126"/>
+    <circle cx="28" cy="24" r="7" fill="#2ED1DF"/>
+    <text x="44" y="29" fill="#FFFFFF" font-size="15" font-weight="700">3. COMMUNITY INTERIOR (5 CORE TABS)</text>
+
+    <!-- Top Identity Card Bar -->
+    <g transform="translate(20, 68)">
+      <rect width="620" height="85" rx="14" fill="url(#cardGrad)" stroke="#19A0AC" stroke-width="1"/>
+      <circle cx="48" cy="42" r="26" fill="url(#tealGrad)"/>
+      <text x="48" y="49" fill="#FFFFFF" font-size="18" font-weight="700" text-anchor="middle">V</text>
+      <text x="86" y="36" fill="#FFFFFF" font-size="16" font-weight="700">Designers Lounge</text>
+      <rect x="235" y="24" width="55" height="18" rx="9" fill="#19A0AC" fill-opacity="0.2"/>
+      <text x="262" y="36" fill="#2ED1DF" font-size="9" font-weight="700" text-anchor="middle">OFFICIAL</text>
+      <text x="86" y="55" fill="#8E9AA0" font-size="12">@designers • 1,248 members • Open Policy</text>
+      <text x="86" y="70" fill="#B0BEC5" font-size="11">Global collective of UI/UX engineers and product designers.</text>
+    </g>
+
+    <!-- TAB 1: HOME TAB -->
+    <g transform="translate(20, 168)">
+      <rect width="300" height="260" rx="14" fill="url(#cardGrad)" stroke="#2B373E" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#19A0AC" fill-opacity="0.2"/>
+      <path d="M 28 20 L 36 27 L 34 35 L 22 35 L 20 27 z" fill="none" stroke="#19A0AC" stroke-width="1.8"/>
+      <text x="50" y="28" fill="#FFFFFF" font-size="14" font-weight="700">Tab 1: Home</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">GET /communities/:id/posts</text>
+      
+      <text x="14" y="74" fill="#ECEFF1" font-size="11.5" font-weight="600">• Pinned Announcements Carousel</text>
+      <text x="14" y="90" fill="#8E9AA0" font-size="10.5">Host broadcasts with rich media attachments</text>
+      
+      <text x="14" y="112" fill="#ECEFF1" font-size="11.5" font-weight="600">• Community Post Feed</text>
+      <text x="14" y="128" fill="#8E9AA0" font-size="10.5">Likes counter (POST /posts/:id/like)</text>
+      <text x="14" y="144" fill="#8E9AA0" font-size="10.5">View counter (POST /posts/:id/view)</text>
+      <text x="14" y="160" fill="#8E9AA0" font-size="10.5">Author role badges (HOST, MOD, MEMBER)</text>
+      <text x="14" y="176" fill="#8E9AA0" font-size="10.5">Post report action sheet (Safety Engine)</text>
+      
+      <text x="14" y="200" fill="#F5B041" font-size="11" font-weight="600">• Admin Stats Header (Host/Mod)</text>
+      <text x="14" y="216" fill="#8E9AA0" font-size="10">Active member metrics, open report counts</text>
+      <text x="14" y="230" fill="#8E9AA0" font-size="10">Quick shortcut to Host Moderation Queue</text>
+    </g>
+
+    <!-- TAB 2: SPACES (CHANNELS) TAB -->
+    <g transform="translate(335, 168)">
+      <rect width="305" height="260" rx="14" fill="url(#cardGrad)" stroke="#19A0AC" stroke-width="1.2"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#19A0AC" fill-opacity="0.2"/>
+      <text x="28" y="33" fill="#19A0AC" font-size="16" font-weight="700" text-anchor="middle">#</text>
+      <text x="50" y="28" fill="#2ED1DF" font-size="14" font-weight="700">Tab 2: Spaces (Channels)</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">MLS End-to-End Encrypted</text>
+      
+      <text x="14" y="74" fill="#ECEFF1" font-size="11.5" font-weight="600">• Text Channels (#general, #showcase)</text>
+      <text x="14" y="90" fill="#8E9AA0" font-size="10.5">Group messaging powered by MLS protocol</text>
+      <text x="14" y="106" fill="#8E9AA0" font-size="10.5">Quantum-resistant Double-Ratchet keys</text>
+      
+      <text x="14" y="130" fill="#ECEFF1" font-size="11.5" font-weight="600">• Announcements-Only Channel</text>
+      <text x="14" y="146" fill="#8E9AA0" font-size="10.5">Posting restricted to Host &amp; Allowlist</text>
+      
+      <text x="14" y="170" fill="#ECEFF1" font-size="11.5" font-weight="600">• Voice Lounges (LiveKit Audio)</text>
+      <text x="14" y="186" fill="#8E9AA0" font-size="10.5">Instant drop-in voice rooms with WebRTC</text>
+      <text x="14" y="202" fill="#8E9AA0" font-size="10.5">Speaker stages &amp; active listener tiles</text>
+      
+      <text x="14" y="226" fill="#2ED1DF" font-size="10.5" font-weight="600">Reuses unified ChatStore for badges &amp; sync</text>
+    </g>
+
+    <!-- TAB 3: EVENTS & TOURNAMENTS -->
+    <g transform="translate(20, 442)">
+      <rect width="300" height="250" rx="14" fill="url(#cardGrad)" stroke="#3498DB" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#3498DB" fill-opacity="0.2"/>
+      <rect x="22" y="22" width="12" height="12" rx="2" fill="none" stroke="#3498DB" stroke-width="1.8"/>
+      <text x="50" y="28" fill="#5DADE2" font-size="14" font-weight="700">Tab 3: Events &amp; Tourneys</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">Community Activations</text>
+      
+      <text x="14" y="74" fill="#ECEFF1" font-size="11.5" font-weight="600">• Community Events &amp; Meetups</text>
+      <text x="14" y="90" fill="#8E9AA0" font-size="10.5">Calendar dates, location / digital link</text>
+      <text x="14" y="106" fill="#8E9AA0" font-size="10.5">RSVP attendance tracking</text>
+      
+      <text x="14" y="128" fill="#ECEFF1" font-size="11.5" font-weight="600">• Paid Event Ticketing &amp; Checkout</text>
+      <text x="14" y="144" fill="#8E9AA0" font-size="10.5">Razorpay integrated checkout flow</text>
+      <text x="14" y="160" fill="#8E9AA0" font-size="10.5">QR code ticket pass generation</text>
+      <text x="14" y="176" fill="#8E9AA0" font-size="10.5">Automatic platform commission split</text>
+      
+      <text x="14" y="200" fill="#ECEFF1" font-size="11.5" font-weight="600">• Tournament Brackets (Games)</text>
+      <text x="14" y="216" fill="#8E9AA0" font-size="10.5">Hand Cricket, Ludo, RPS, Snake</text>
+      <text x="14" y="232" fill="#5DADE2" font-size="10.5">Live leaderboards &amp; bracket stages</text>
+    </g>
+
+    <!-- TAB 4: MEMBERS (MANAGEMENT ONLY) -->
+    <g transform="translate(335, 442)">
+      <rect width="305" height="250" rx="14" fill="url(#cardGrad)" stroke="#E74C3C" stroke-width="1.2"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#E74C3C" fill-opacity="0.2"/>
+      <circle cx="28" cy="24" r="5" fill="none" stroke="#E74C3C" stroke-width="1.8"/>
+      <path d="M 20 34 A 8 6 0 0 1 36 34" fill="none" stroke="#E74C3C" stroke-width="1.8"/>
+      <text x="50" y="28" fill="#F1948A" font-size="14" font-weight="700">Tab 4: Members (Managers)</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">Visible to Host &amp; Mods Only</text>
+      
+      <text x="14" y="74" fill="#ECEFF1" font-size="11.5" font-weight="600">• Role Hierarchy &amp; Permissions</text>
+      <text x="14" y="90" fill="#8E9AA0" font-size="10.5">Host (Owner) ➔ Moderator ➔ Member</text>
+      
+      <text x="14" y="112" fill="#ECEFF1" font-size="11.5" font-weight="600">• Host Actions</text>
+      <text x="14" y="128" fill="#8E9AA0" font-size="10.5">Promote / Demote Moderators</text>
+      <text x="14" y="144" fill="#8E9AA0" font-size="10.5">Remove member from community</text>
+      <text x="14" y="160" fill="#8E9AA0" font-size="10.5">Ban user (blocks re-entry via links)</text>
+      <text x="14" y="176" fill="#8E9AA0" font-size="10.5">Approve / Reject pending applicants</text>
+      
+      <text x="14" y="200" fill="#F1948A" font-size="11" font-weight="600">• Honest Privacy Safeguard</text>
+      <text x="14" y="216" fill="#8E9AA0" font-size="10.5">No member-to-member tap targets.</text>
+      <text x="14" y="232" fill="#8E9AA0" font-size="10.5">Contact books never scraped or leaked.</text>
+    </g>
+
+    <!-- TAB 5: ABOUT TAB -->
+    <g transform="translate(20, 706)">
+      <rect width="620" height="130" rx="14" fill="url(#cardGrad)" stroke="#2B373E" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#9B59B6" fill-opacity="0.2"/>
+      <circle cx="28" cy="28" r="8" fill="none" stroke="#9B59B6" stroke-width="1.8"/>
+      <text x="28" y="32" fill="#9B59B6" font-size="12" font-weight="700" text-anchor="middle">i</text>
+      <text x="50" y="28" fill="#FFFFFF" font-size="14" font-weight="700">Tab 5: About &amp; Guidelines</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">GET /communities/:id/links &amp; Rules</text>
+      
+      <g transform="translate(14, 60)">
+        <text x="0" y="14" fill="#ECEFF1" font-size="11.5" font-weight="600">• Community Description &amp; House Rules</text>
+        <text x="0" y="30" fill="#8E9AA0" font-size="10.5">Clear guidelines set by Host; code of conduct</text>
+        <text x="0" y="50" fill="#ECEFF1" font-size="11.5" font-weight="600">• Official External Social Links</text>
+        <text x="0" y="66" fill="#8E9AA0" font-size="10.5">Twitter/X, GitHub, Discord, Website links</text>
+      </g>
+
+      <g transform="translate(320, 60)">
+        <text x="0" y="14" fill="#ECEFF1" font-size="11.5" font-weight="600">• Report Community to Voiid Trust Team</text>
+        <text x="0" y="30" fill="#8E9AA0" font-size="10.5">Abuse, spam, illegal content escalation</text>
+        <text x="0" y="50" fill="#ECEFF1" font-size="11.5" font-weight="600">• Notification Settings (Mute / Mentions / All)</text>
+        <text x="0" y="66" fill="#8E9AA0" font-size="10.5">PATCH /communities/:id/notifications</text>
+      </g>
+    </g>
+
+    <!-- FLOATING HOST BAR (BOTTOM ANCHOR) -->
+    <g transform="translate(20, 850)">
+      <rect width="620" height="80" rx="16" fill="#142127" stroke="#19A0AC" stroke-width="1.5" filter="url(#glowTeal)"/>
+      <circle cx="45" cy="40" r="18" fill="url(#tealGrad)"/>
+      <path d="M 39 36 L 51 36 L 51 44 L 42 44 L 39 47 z" fill="#FFFFFF"/>
+      <text x="75" y="35" fill="#FFFFFF" font-size="14" font-weight="700">Message Host Bar (Persistent Floating Action)</text>
+      <text x="75" y="52" fill="#8E9AA0" font-size="11.5">Direct 1-on-1 End-to-End Encrypted Consultation Line with Host</text>
+      
+      <rect x="495" y="24" width="110" height="32" rx="16" fill="url(#tealGrad)"/>
+      <text x="550" y="44" fill="#FFFFFF" font-size="11.5" font-weight="700" text-anchor="middle">Chat with Host</text>
+    </g>
+
+    <!-- Host Bar Explanation -->
+    <g transform="translate(20, 940)">
+      <rect width="620" height="110" rx="12" fill="#182126" stroke="#253138" stroke-width="1"/>
+      <text x="14" y="24" fill="#2ED1DF" font-size="12" font-weight="700">HOW HOST MESSAGING WORKS (030_communities.sql)</text>
+      <text x="14" y="44" fill="#B0BEC5" font-size="11">• Clicking "Message Host" opens or creates a dedicated row in `community_host_threads`</text>
+      <text x="14" y="60" fill="#B0BEC5" font-size="11">• Maps to a direct Double-Ratchet conversation in the user's primary chat list</text>
+      <text x="14" y="76" fill="#B0BEC5" font-size="11">• The Host receives user inquiries in their dedicated "Community Host Inbox"</text>
+      <text x="14" y="92" fill="#B0BEC5" font-size="11">• Zero phone number disclosure, zero contact exposure, complete privacy preserved</text>
+    </g>
+  </g>
+
+  <!-- Flow Connector 3 to 4 -->
+  <path d="M 1480 370 L 1520 370" stroke="#19A0AC" stroke-width="2.5" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- ==================== SECTION 4: BACKEND & REALTIME ARCHITECTURE ==================== -->
+  <g transform="translate(1530, 120)">
+    <rect width="310" height="1080" rx="20" fill="#13191D" stroke="#253138" stroke-width="1.5" filter="url(#cardShadow)"/>
+    <rect width="310" height="48" rx="20" fill="#182126"/>
+    <rect y="28" width="310" height="20" fill="#182126"/>
+    <circle cx="28" cy="24" r="7" fill="#9B59B6"/>
+    <text x="44" y="29" fill="#FFFFFF" font-size="15" font-weight="700">4. REALTIME &amp; BACKEND</text>
+
+    <!-- Node 4.1: PostgreSQL Schema & Relational Tables -->
+    <g transform="translate(15, 68)">
+      <rect width="280" height="175" rx="14" fill="url(#cardGrad)" stroke="#2B373E" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#3498DB" fill-opacity="0.2"/>
+      <ellipse cx="28" cy="24" rx="8" ry="3" fill="none" stroke="#3498DB" stroke-width="1.5"/>
+      <path d="M 20 24 L 20 32 A 8 3 0 0 0 36 32 L 36 24" fill="none" stroke="#3498DB" stroke-width="1.5"/>
+      <text x="50" y="28" fill="#5DADE2" font-size="13" font-weight="700">PostgreSQL Schema</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">Core Database Relational Engine</text>
+      
+      <text x="14" y="70" fill="#CFD8DC" font-size="11" font-family="monospace">• communities (handle, policy)</text>
+      <text x="14" y="86" fill="#CFD8DC" font-size="11" font-family="monospace">• community_members (roles)</text>
+      <text x="14" y="102" fill="#CFD8DC" font-size="11" font-family="monospace">• community_channels (spaces)</text>
+      <text x="14" y="118" fill="#CFD8DC" font-size="11" font-family="monospace">• community_posts (feed)</text>
+      <text x="14" y="134" fill="#CFD8DC" font-size="11" font-family="monospace">• community_invites (tokens)</text>
+      <text x="14" y="150" fill="#CFD8DC" font-size="11" font-family="monospace">• community_host_threads (1:1)</text>
+      <text x="14" y="166" fill="#CFD8DC" font-size="11" font-family="monospace">• community_reports (safety)</text>
+    </g>
+
+    <!-- Node 4.2: WebSocket Sync Engine -->
+    <g transform="translate(15, 255)">
+      <rect width="280" height="150" rx="14" fill="url(#cardGrad)" stroke="#9B59B6" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#9B59B6" fill-opacity="0.2"/>
+      <path d="M 21 28 A 7 7 0 0 1 35 28 M 24 31 A 4 4 0 0 1 32 31" fill="none" stroke="#9B59B6" stroke-width="2"/>
+      <text x="50" y="28" fill="#BB8FCE" font-size="13" font-weight="700">WebSocket Sync &amp; Events</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">wss://api.voiid.app/ws</text>
+      
+      <text x="14" y="72" fill="#ECEFF1" font-size="11.5" font-weight="600">• POST /channel-sync</text>
+      <text x="14" y="88" fill="#8E9AA0" font-size="10.5">Fetch diff of new channel messages</text>
+      
+      <text x="14" y="108" fill="#ECEFF1" font-size="11.5" font-weight="600">• POST /channel-events</text>
+      <text x="14" y="124" fill="#8E9AA0" font-size="10.5">Membership admissions, role changes,</text>
+      <text x="14" y="138" fill="#8E9AA0" font-size="10.5">channel renames, and deletion events</text>
+    </g>
+
+    <!-- Node 4.3: Push Notifications (APNs & FCM) -->
+    <g transform="translate(15, 417)">
+      <rect width="280" height="140" rx="14" fill="url(#cardGrad)" stroke="#2B373E" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#F39C12" fill-opacity="0.2"/>
+      <path d="M 28 20 A 4 4 0 0 0 24 24 L 24 30 L 21 33 L 35 33 L 32 30 L 32 24 A 4 4 0 0 0 28 20 z" fill="none" stroke="#F39C12" stroke-width="1.8"/>
+      <text x="50" y="28" fill="#F5B041" font-size="13" font-weight="700">Push Notification Pipeline</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">Apple APNs &amp; Google FCM</text>
+      
+      <text x="14" y="72" fill="#B0BEC5" font-size="11">• Join request approval alert</text>
+      <text x="14" y="88" fill="#B0BEC5" font-size="11">• Host inquiry notification (badge 1)</text>
+      <text x="14" y="104" fill="#B0BEC5" font-size="11">• New pinned announcement broadcast</text>
+      <text x="14" y="120" fill="#B0BEC5" font-size="11">• Event reminder &amp; tournament start</text>
+      <text x="14" y="134" fill="#78909C" font-size="10">Decrypted locally via VoiidNSE on iOS</text>
+    </g>
+
+    <!-- Node 4.4: LiveKit WebRTC Voice Lounges -->
+    <g transform="translate(15, 569)">
+      <rect width="280" height="140" rx="14" fill="url(#cardGrad)" stroke="#19A0AC" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#19A0AC" fill-opacity="0.2"/>
+      <rect x="25" y="21" width="6" height="10" rx="3" fill="none" stroke="#19A0AC" stroke-width="1.8"/>
+      <path d="M 21 28 A 7 7 0 0 0 35 28 M 28 35 L 28 38" fill="none" stroke="#19A0AC" stroke-width="1.8"/>
+      <text x="50" y="28" fill="#2ED1DF" font-size="13" font-weight="700">LiveKit WebRTC Audio Mesh</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">Sub-100ms Voice Latency</text>
+      
+      <text x="14" y="72" fill="#B0BEC5" font-size="11">• Ephemeral token issuance from backend</text>
+      <text x="14" y="88" fill="#B0BEC5" font-size="11">• Dynamic active speaker detection</text>
+      <text x="14" y="104" fill="#B0BEC5" font-size="11">• Low-battery Opus voice encoding</text>
+      <text x="14" y="120" fill="#B0BEC5" font-size="11">• Background call foreground service</text>
+    </g>
+
+    <!-- Node 4.5: Razorpay Checkout & Payouts -->
+    <g transform="translate(15, 721)">
+      <rect width="280" height="140" rx="14" fill="url(#cardGrad)" stroke="#3498DB" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#3498DB" fill-opacity="0.2"/>
+      <path d="M 21 24 L 35 24 M 21 32 L 35 32 M 28 21 L 28 35" stroke="#3498DB" stroke-width="1.8"/>
+      <text x="50" y="28" fill="#5DADE2" font-size="13" font-weight="700">Event Checkout Engine</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">Razorpay SDK + Webhooks</text>
+      
+      <text x="14" y="72" fill="#B0BEC5" font-size="11">• Secure payment order creation</text>
+      <text x="14" y="88" fill="#B0BEC5" font-size="11">• Automatic signature verification</text>
+      <text x="14" y="104" fill="#B0BEC5" font-size="11">• Platform fee deduction (split logic)</text>
+      <text x="14" y="120" fill="#B0BEC5" font-size="11">• Direct organizer wallet payout</text>
+    </g>
+
+    <!-- Node 4.6: Trust & Moderation System -->
+    <g transform="translate(15, 873)">
+      <rect width="280" height="175" rx="14" fill="url(#cardGrad)" stroke="#E74C3C" stroke-width="1"/>
+      <rect x="14" y="14" width="28" height="28" rx="8" fill="#E74C3C" fill-opacity="0.2"/>
+      <path d="M 28 20 L 34 23 L 34 29 C 34 33 28 36 28 36 C 28 36 22 33 22 29 L 22 23 z" fill="none" stroke="#E74C3C" stroke-width="1.8"/>
+      <text x="50" y="28" fill="#F1948A" font-size="13" font-weight="700">Moderation Queue</text>
+      <text x="50" y="44" fill="#8E9AA0" font-size="11">Trust &amp; Safety Compliance</text>
+      
+      <text x="14" y="70" fill="#B0BEC5" font-size="11">• Member reports feed queue</text>
+      <text x="14" y="86" fill="#B0BEC5" font-size="11">• Host actions: Keep post / Delete</text>
+      <text x="14" y="102" fill="#B0BEC5" font-size="11">• Member ban &amp; token revoke</text>
+      <text x="14" y="118" fill="#B0BEC5" font-size="11">• Escalation to Voiid safety staff</text>
+      <text x="14" y="136" fill="#F1948A" font-size="10.5" font-weight="600">Complete audit trail logged</text>
+    </g>
+  </g>
+</svg>

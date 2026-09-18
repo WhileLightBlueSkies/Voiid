@@ -270,6 +270,12 @@ struct ChatsHomeView: View {
                 SettingsSheet()
                     .preferredColorScheme(theme.mode.colorScheme)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .voiidOpenSettings)) { _ in
+                showSettings = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .voiidDismissSettings)) { _ in
+                showSettings = false
+            }
             .fullScreenCover(isPresented: $showScanner) {
                 ScanQRCodeView(onOpenConversation: openUsernameConversation)
                     .preferredColorScheme(theme.mode.colorScheme)
@@ -424,6 +430,7 @@ struct ChatsHomeView: View {
                             .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
                     }
             }
+            .walkthroughTarget("nav_header_profile", shape: .circle, padding: 6)
             .buttonStyle(.plain)
             .accessibilityLabel("Your profile")
 

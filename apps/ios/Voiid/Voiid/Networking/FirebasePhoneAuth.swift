@@ -94,6 +94,10 @@ enum FirebasePhoneAuth {
     /// Start verification: Firebase sends the SMS and returns a verification ID.
     static func sendCode(to e164: String) async throws -> String {
         print("[VOIID][FirebaseAuth] sendCode → \(e164)")
+        #if targetEnvironment(simulator) || DEBUG
+        Auth.auth().settings?.isAppVerificationDisabledForTesting = true
+        #endif
+        _ = try? Auth.auth().useUserAccessGroup(nil)
         return try await withCheckedThrowingContinuation { cont in
             PhoneAuthProvider.provider().verifyPhoneNumber(e164, uiDelegate: nil) { verificationID, error in
                 if let error {
@@ -113,6 +117,7 @@ enum FirebasePhoneAuth {
 
     /// Verify the entered code and return the Firebase ID token for our backend.
     static func verify(verificationID: String, code: String) async throws -> String {
+        _ = try? Auth.auth().useUserAccessGroup(nil)
         let credential = PhoneAuthProvider.provider()
             .credential(withVerificationID: verificationID, verificationCode: code)
         do {

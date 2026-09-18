@@ -24,8 +24,8 @@ class AppWalkthroughPlanTest {
             ),
             AppWalkthroughPlan.steps.mapNotNull { it.destination },
         )
-        assertEquals("welcome", AppWalkthroughPlan.steps.first().id)
-        assertEquals("complete", AppWalkthroughPlan.steps.last().id)
+        assertEquals("chats", AppWalkthroughPlan.steps.first().id)
+        assertEquals("settings_page", AppWalkthroughPlan.steps.last().id)
         assertEquals(WalkthroughPresentationMode.EVERY_APP_LAUNCH, AppWalkthroughPlan.presentationMode)
         assertTrue(AppWalkthroughPlan.shouldPresent(AppWalkthroughPlan.VERSION))
     }

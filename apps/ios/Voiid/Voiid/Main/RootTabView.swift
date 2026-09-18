@@ -47,7 +47,8 @@ struct RootTabView: View {
     // one truth — there is no story tray above the chat grid (§8.1).
     @ObservedObject private var storyEngine = StoryEngine.shared
     @ObservedObject private var notificationRouter = NotificationMessageRouter.shared
-    @StateObject private var walkthrough = AppWalkthroughController()
+    @ObservedObject private var walkthrough = AppWalkthroughController.shared
+    @State private var spotlightTargets: [String: SpotlightTargetInfo] = [:]
     @State private var tab: Tab = .chat
     /// True while a swipe is driving the tab change, so the crossfade stands down and the
     /// swipe's own slide is the only motion on screen.
@@ -333,22 +334,41 @@ struct RootTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: .voiidReplayAppWalkthrough)) { _ in
             walkthrough.replay(accountID: session.userId)
         }
+        .coordinateSpace(name: "root_walkthrough")
+        .onPreferenceChange(WalkthroughSpotlightPreferenceKey.self) { targets in
+            spotlightTargets.merge(targets) { _, new in new }
+        }
         .onChange(of: walkthrough.currentIndex) { _, _ in
             guard walkthrough.isPresented else { return }
             switch walkthrough.step.destination {
-            case .chats:       tab = .chat
-            case .moments:     tab = .stories
-            case .communities: tab = .communities
-            case .games:       tab = .games
-            case .settings:    tab = .chat
-            case nil:          break
+            case .chats:
+                tab = .chat
+                NotificationCenter.default.post(name: .voiidDismissSettings, object: nil)
+            case .moments:
+                tab = .stories
+                NotificationCenter.default.post(name: .voiidDismissSettings, object: nil)
+            case .communities:
+                tab = .communities
+                NotificationCenter.default.post(name: .voiidDismissSettings, object: nil)
+            case .games:
+                tab = .games
+                NotificationCenter.default.post(name: .voiidDismissSettings, object: nil)
+            case .settings:
+                tab = .chat
+                NotificationCenter.default.post(name: .voiidOpenSettings, object: nil)
+            case nil:
+                break
             }
         }
         .overlay {
-            if walkthrough.isPresented {
-                AppWalkthroughView(controller: walkthrough)
-                    .transition(.opacity)
-                    .zIndex(100)
+            if walkthrough.isPresented && walkthrough.step.destination != .settings {
+                AppWalkthroughView(
+                    controller: walkthrough,
+                    targets: spotlightTargets,
+                    coordinateSpace: "root_walkthrough"
+                )
+                .transition(.opacity)
+                .zIndex(100)
             }
         }
     }
@@ -615,6 +635,17 @@ struct RootTabView: View {
         .buttonStyle(TabPressStyle())
         .accessibilityLabel(t.label)
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
+        .modifier(TabSpotlightTargetModifier(targetId: tabTargetId(t)))
+    }
+
+    private func tabTargetId(_ t: Tab) -> String? {
+        switch t {
+        case .chat:        return "nav_tab_chats"
+        case .stories:     return "nav_tab_moments"
+        case .communities: return "nav_tab_communities"
+        case .games:       return "nav_tab_games"
+        default:           return nil
+        }
     }
 
     /// Filled accent dot while visible; a hollow ghost glyph while ghosted (§8).
@@ -655,3 +686,16 @@ private struct TabPressStyle: ButtonStyle {
                        value: configuration.isPressed)
     }
 }
+
+private struct TabSpotlightTargetModifier: ViewModifier {
+    let targetId: String?
+
+    func body(content: Content) -> some View {
+        if let targetId = targetId {
+            content.walkthroughTarget(targetId, shape: .circle, padding: 8)
+        } else {
+            content
+        }
+    }
+}
+

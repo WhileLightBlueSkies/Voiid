@@ -254,6 +254,8 @@ struct SettingsSheet: View {
     @State private var confirmLogOut = false
     @State private var loggingOut = false
     @State private var path: [SettingsRoute] = []
+    @ObservedObject private var walkthrough = AppWalkthroughController.shared
+    @State private var settingsSpotlightTargets: [String: SpotlightTargetInfo] = [:]
 
     /// Whether a backup blob actually EXISTS on the server.
     ///
@@ -268,8 +270,11 @@ struct SettingsSheet: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(spacing: VoiidSpacing.md) {
-                    identity
-                    quickActions
+                    VStack(spacing: VoiidSpacing.md) {
+                        identity
+                        quickActions
+                    }
+                    .walkthroughTarget("settings_profile_card", shape: .rounded(24), padding: 8)
                     encryptionBanner
 
                     group("Account", rows: [
@@ -411,8 +416,31 @@ struct SettingsSheet: View {
                 backupExists = nil
             }
         }
+        .coordinateSpace(name: "settings_walkthrough")
+        .onPreferenceChange(WalkthroughSpotlightPreferenceKey.self) { targets in
+            settingsSpotlightTargets.merge(targets) { _, new in new }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .voiidDismissSettings)) { _ in
+            dismiss()
+        }
+        .onChange(of: walkthrough.currentIndex) { _, _ in
+            if walkthrough.isPresented && walkthrough.step.destination != .settings {
+                dismiss()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .voiidReplayAppWalkthrough)) { _ in
             dismiss()
+        }
+        .overlay {
+            if walkthrough.isPresented && walkthrough.step.destination == .settings {
+                AppWalkthroughView(
+                    controller: walkthrough,
+                    targets: settingsSpotlightTargets,
+                    coordinateSpace: "settings_walkthrough"
+                )
+                .transition(.opacity)
+                .zIndex(100)
+            }
         }
     }
 

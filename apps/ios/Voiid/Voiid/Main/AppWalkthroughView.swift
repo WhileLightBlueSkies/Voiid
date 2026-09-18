@@ -3,10 +3,14 @@ import Combine
 
 extension Notification.Name {
     static let voiidReplayAppWalkthrough = Notification.Name("voiidReplayAppWalkthrough")
+    static let voiidOpenSettings = Notification.Name("voiidOpenSettings")
+    static let voiidDismissSettings = Notification.Name("voiidDismissSettings")
 }
 
 @MainActor
 final class AppWalkthroughController: ObservableObject {
+    static let shared = AppWalkthroughController()
+
     @Published private(set) var isPresented = false
     @Published private(set) var currentIndex = 0
 
@@ -58,12 +62,14 @@ final class AppWalkthroughController: ObservableObject {
         defaults.set(AppWalkthroughPlan.version, forKey: completionKey)
         defaults.removeObject(forKey: progressKey)
         isPresented = false
+        NotificationCenter.default.post(name: .voiidDismissSettings, object: nil)
     }
 
     func complete() {
         defaults.set(AppWalkthroughPlan.version, forKey: completionKey)
         defaults.removeObject(forKey: progressKey)
         isPresented = false
+        NotificationCenter.default.post(name: .voiidDismissSettings, object: nil)
     }
 
     private var keyPrefix: String { "voiid.walkthrough.\(accountID).v\(AppWalkthroughPlan.version)" }
@@ -73,35 +79,65 @@ final class AppWalkthroughController: ObservableObject {
 
 struct AppWalkthroughView: View {
     @ObservedObject var controller: AppWalkthroughController
+    var targets: [String: SpotlightTargetInfo] = [:]
+    var coordinateSpace: String = "root_walkthrough"
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    private var rawTargetInfo: SpotlightTargetInfo? {
+        guard let id = controller.step.targetId else { return nil }
+        return targets[id]
+    }
+
     var body: some View {
-        ZStack {
-            Color.black.opacity(reduceTransparency ? 0.72 : 0.58)
-                .ignoresSafeArea()
-                .accessibilityHidden(true)
+        GeometryReader { geo in
+            let screenWidth = geo.size.width
+            let screenHeight = geo.size.height
+            let myOrigin = geo.frame(in: .global).origin
+            let targetInfo = rawTargetInfo?.offsetBy(dx: -myOrigin.x, dy: -myOrigin.y)
 
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button("Skip") { controller.skip() }
-                        .font(VoiidFont.rounded(15, .semibold))
-                        .foregroundStyle(.white)
-                        .frame(minWidth: 44, minHeight: 44)
+            ZStack {
+                // 1. Scrim with cutout punched hole
+                SpotlightCutoutShape(target: targetInfo)
+                    .fill(Color.black.opacity(reduceTransparency ? 0.76 : 0.68), style: FillStyle(eoFill: true))
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        Haptics.tap()
+                        controller.advance()
+                    }
+                    .accessibilityHidden(true)
+
+                // 2. Animated Pulsing Halo Ring & Inner Border
+                if let target = targetInfo {
+                    WalkthroughPulseRing(target: target)
+                        .id("pulse_\(target.id)")
                 }
-                .padding(.horizontal, 22)
-                .padding(.top, 8)
 
-                Spacer(minLength: 24)
+                // 3. Skip Button (Top trailing)
+                VStack {
+                    HStack {
+                        Spacer()
+                        Button("Skip") {
+                            Haptics.tap()
+                            controller.skip()
+                        }
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundStyle(Color.white.opacity(0.85))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.top, max(geo.safeAreaInsets.top, 20))
+                        .padding(.trailing, 18)
+                    }
+                    Spacer()
+                }
 
-                card
-                    .id(controller.step.id)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97)))
-
-                Spacer(minLength: 34)
+                // 4. Directional Speech Bubble Tooltip Card
+                cardView(target: targetInfo, screenWidth: screenWidth, screenHeight: screenHeight)
             }
+            .frame(width: screenWidth, height: screenHeight)
         }
+        .ignoresSafeArea()
         .animation(reduceMotion ? .easeOut(duration: 0.18)
                                 : .spring(response: 0.28, dampingFraction: 0.9),
                    value: controller.currentIndex)
@@ -109,9 +145,67 @@ struct AppWalkthroughView: View {
         .accessibilityAddTraits(.isModal)
     }
 
-    private var card: some View {
+    @ViewBuilder
+    private func cardView(target: SpotlightTargetInfo?, screenWidth: CGFloat, screenHeight: CGFloat) -> some View {
+        let hasArrow = target != nil
+        let targetCenterX = target?.bounds.midX ?? (screenWidth / 2)
+        let pointingUp = target != nil ? (target!.bounds.midY < screenHeight * 0.48) : false
+
+        let minArrowOffset: CGFloat = 20
+        let maxArrowOffset: CGFloat = max(minArrowOffset, screenWidth - 36 - 20 - 18)
+        let arrowOffset = min(max(targetCenterX - 18 - 9, minArrowOffset), maxArrowOffset)
+
         VStack(spacing: 0) {
-            // Top: Full width uncropped pastel photo banner
+            if hasArrow && pointingUp {
+                HStack {
+                    SpeechBubbleArrow(pointingUp: true)
+                        .fill(VoiidColor.surfaceCard)
+                        .frame(width: 18, height: 9)
+                        .offset(x: arrowOffset)
+                    Spacer()
+                }
+            }
+
+            speechBubbleCardBody
+
+            if hasArrow && !pointingUp {
+                HStack {
+                    SpeechBubbleArrow(pointingUp: false)
+                        .fill(VoiidColor.surfaceCard)
+                        .frame(width: 18, height: 9)
+                        .offset(x: arrowOffset)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .id(controller.step.id)
+        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: cardAlignment(pointingUp: pointingUp, hasTarget: hasArrow))
+        .padding(.top, topCardPadding(target: target, pointingUp: pointingUp, screenHeight: screenHeight))
+        .padding(.bottom, bottomCardPadding(target: target, pointingUp: pointingUp, screenHeight: screenHeight))
+    }
+
+    private func cardAlignment(pointingUp: Bool, hasTarget: Bool) -> Alignment {
+        guard hasTarget else { return .center }
+        return pointingUp ? .top : .bottom
+    }
+
+    private func topCardPadding(target: SpotlightTargetInfo?, pointingUp: Bool, screenHeight: CGFloat) -> CGFloat {
+        guard let target = target, pointingUp else { return 0 }
+        let targetBottom = target.bounds.maxY + target.padding
+        return max(targetBottom + 12, 54)
+    }
+
+    private func bottomCardPadding(target: SpotlightTargetInfo?, pointingUp: Bool, screenHeight: CGFloat) -> CGFloat {
+        guard let target = target, !pointingUp else { return 0 }
+        let targetTop = target.bounds.minY - target.padding
+        return max(screenHeight - targetTop + 12, 34)
+    }
+
+    private var speechBubbleCardBody: some View {
+        VStack(spacing: 0) {
+            // Top: Full width pastel photo banner
             if let imageName = controller.step.imageName {
                 Image(imageName)
                     .resizable()
@@ -129,7 +223,7 @@ struct AppWalkthroughView: View {
                         .tracking(1.1)
                         .foregroundStyle(VoiidColor.primary)
                     Text(controller.step.title)
-                        .font(VoiidFont.rounded(22, .bold))
+                        .font(VoiidFont.rounded(20, .bold))
                         .foregroundStyle(VoiidColor.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -140,6 +234,7 @@ struct AppWalkthroughView: View {
                     .lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
 
+                // Step progress track
                 HStack(spacing: 5) {
                     ForEach(0..<controller.stepCount, id: \.self) { index in
                         Capsule()
@@ -153,12 +248,17 @@ struct AppWalkthroughView: View {
                 }
                 .padding(.top, 4)
 
+                // Action buttons
                 HStack(spacing: 10) {
                     if !controller.isFirstStep {
-                        Button("Back") { controller.goBack() }
-                            .buttonStyle(WalkthroughSecondaryButtonStyle())
+                        Button("Back") {
+                            Haptics.tap()
+                            controller.goBack()
+                        }
+                        .buttonStyle(WalkthroughSecondaryButtonStyle())
                     }
-                    Button(controller.isLastStep ? "Done" : (controller.isFirstStep ? "Start tour" : "Next")) {
+                    Button(controller.isLastStep ? "Done" : "Next") {
+                        Haptics.tap()
                         controller.advance()
                     }
                     .buttonStyle(WalkthroughPrimaryButtonStyle())
@@ -168,14 +268,69 @@ struct AppWalkthroughView: View {
             .padding(20)
         }
         .frame(maxWidth: .infinity)
-        .background(reduceTransparency ? VoiidColor.surfaceCard : VoiidColor.surfaceCard.opacity(0.96),
+        .background(reduceTransparency ? VoiidColor.surfaceCard : VoiidColor.surfaceCard.opacity(0.98),
                     in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
             .stroke(VoiidColor.divider.opacity(0.5), lineWidth: 1))
         .shadow(color: .black.opacity(0.24), radius: 26, y: 12)
-        .padding(.horizontal, 18)
         .accessibilityLabel("\(controller.step.eyebrow). \(controller.step.title). \(controller.step.message). Step \(controller.stepNumber) of \(controller.stepCount).")
+    }
+}
+
+struct WalkthroughPulseRing: View {
+    let target: SpotlightTargetInfo
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var pulseAlpha: Double = 0.85
+
+    var body: some View {
+        let pad = target.padding
+        let bounds = target.bounds.insetBy(dx: -pad, dy: -pad)
+
+        ZStack {
+            switch target.shape {
+            case .circle:
+                let diameter = max(bounds.width, bounds.height)
+                // Radiant pulse ring
+                Circle()
+                    .stroke(VoiidColor.primary.opacity(reduceMotion ? 0.0 : pulseAlpha), lineWidth: 2.5)
+                    .frame(width: diameter, height: diameter)
+                    .scaleEffect(reduceMotion ? 1.0 : pulseScale)
+                // Sharp inner border ring
+                Circle()
+                    .stroke(VoiidColor.primary.opacity(0.6), lineWidth: 1.5)
+                    .frame(width: diameter, height: diameter)
+
+            case .rounded(let radius):
+                // Radiant pulse ring
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .stroke(VoiidColor.primary.opacity(reduceMotion ? 0.0 : pulseAlpha), lineWidth: 2.5)
+                    .frame(width: bounds.width, height: bounds.height)
+                    .scaleEffect(reduceMotion ? 1.0 : pulseScale)
+                // Sharp inner border ring
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .stroke(VoiidColor.primary.opacity(0.6), lineWidth: 1.5)
+                    .frame(width: bounds.width, height: bounds.height)
+
+            case .capsule:
+                Capsule()
+                    .stroke(VoiidColor.primary.opacity(reduceMotion ? 0.0 : pulseAlpha), lineWidth: 2.5)
+                    .frame(width: bounds.width, height: bounds.height)
+                    .scaleEffect(reduceMotion ? 1.0 : pulseScale)
+                Capsule()
+                    .stroke(VoiidColor.primary.opacity(0.6), lineWidth: 1.5)
+                    .frame(width: bounds.width, height: bounds.height)
+            }
+        }
+        .position(x: bounds.midX, y: bounds.midY)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: false)) {
+                pulseScale = 1.25
+                pulseAlpha = 0.0
+            }
+        }
     }
 }
 

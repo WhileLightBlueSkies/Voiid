@@ -35,16 +35,6 @@ enum AppWalkthroughPlan {
 
     static let steps: [AppWalkthroughStep] = [
         .init(
-            id: "welcome",
-            eyebrow: "WELCOME TO VOIID",
-            title: "Everything starts here",
-            message: "Private conversations, disappearing moments, communities and instant games — organised into four simple spaces.",
-            symbol: "sparkles",
-            imageName: "walkthrough_welcome_hero",
-            destination: nil,
-            targetId: nil
-        ),
-        .init(
             id: "chats",
             eyebrow: "ENCRYPTED MESSAGING",
             title: "Your people, one tap away",
@@ -113,16 +103,6 @@ enum AppWalkthroughPlan {
             imageName: "walkthrough_security_shield",
             destination: .settings,
             targetId: "settings_profile_card"
-        ),
-        .init(
-            id: "complete",
-            eyebrow: "YOU ARE READY",
-            title: "Make Voiid yours",
-            message: "Explore at your own pace. You can replay this interactive spotlight tour anytime from Settings > Help & Support.",
-            symbol: "checkmark.circle.fill",
-            imageName: "walkthrough_completion_celebration",
-            destination: nil,
-            targetId: nil
         ),
     ]
 }

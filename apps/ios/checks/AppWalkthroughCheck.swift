@@ -11,17 +11,17 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
 struct AppWalkthroughCheck {
     static func main() {
         let steps = AppWalkthroughPlan.steps
-        expect(steps.map(\.destination).compactMap { $0 } == [.chats, .moments, .communities, .games],
-               "the tour must include only the four features shipped on both platforms")
-        expect(steps.first?.id == "welcome", "welcome must be the first step")
-        expect(steps.last?.id == "complete", "completion must be the final step")
+        expect(steps.map(\.destination).compactMap { $0 } == [.chats, .moments, .communities, .communities, .games, .chats, .settings],
+               "the tour must include only the features shipped on both platforms")
+        expect(steps.first?.id == "chats", "chats must be the first step")
+        expect(steps.last?.id == "settings_page", "settings must be the final step")
         expect(AppWalkthroughPlan.presentationMode == .everyAppLaunch,
                "preview builds must present the tour to every signed-in user on each app launch")
         expect(AppWalkthroughPlan.shouldPresent(completedVersion: AppWalkthroughPlan.version),
                "a previously completed tour must still open in preview mode")
 
         var progress = AppWalkthroughProgress(stepCount: steps.count)
-        expect(progress.currentIndex == 0, "new progress starts at the welcome step")
+        expect(progress.currentIndex == 0, "new progress starts at the first step")
         expect(progress.advance() == .showStep(1), "advance opens the next step")
         expect(progress.goBack() == .showStep(0), "back returns to the previous step")
         expect(progress.goBack() == .showStep(0), "back cannot move before the first step")

@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VOIID • Community Flow Diagram & FigJam Exporter</title>
+  <style>
+    :root {
+      --bg: #0B0E11;
+      --card-bg: #141A1F;
+      --border: #232E35;
+      --text-main: #FFFFFF;
+      --text-sub: #8E9AA0;
+      --teal: #19A0AC;
+      --teal-hover: #13828C;
+      --amber: #F39C12;
+      --purple: #9B59B6;
+      --blue: #3498DB;
+      --red: #E74C3C;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Control Bar */
+    header {
+      height: 64px;
+      background: rgba(20, 26, 31, 0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 100;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-badge {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #19A0AC, #13828C);
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 17px;
+      color: #fff;
+    }
+
+    .title-group h1 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+
+    .title-group p {
+      font-size: 11px;
+      color: var(--text-sub);
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 14px;
+      border-radius: 9px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border: 1px solid transparent;
+      outline: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #19A0AC, #13828C);
+      color: #FFFFFF;
+      box-shadow: 0 2px 10px rgba(19, 130, 140, 0.3);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #20B3C0, #17939E);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: #1B2329;
+      color: #ECEFF1;
+      border-color: #2F3C44;
+    }
+    .btn-secondary:hover {
+      background: #232D35;
+      border-color: #3F505A;
+      color: #FFFFFF;
+      transform: translateY(-1px);
+    }
+
+    .btn-accent {
+      background: rgba(243, 156, 18, 0.12);
+      color: #F5B041;
+      border-color: rgba(243, 156, 18, 0.35);
+    }
+    .btn-accent:hover {
+      background: rgba(243, 156, 18, 0.22);
+      color: #F8C471;
+      transform: translateY(-1px);
+    }
+
+    /* Canvas Viewport */
+    #viewport {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      cursor: grab;
+      background: radial-gradient(circle at center, #131A1F 0%, #0B0E11 100%);
+    }
+
+    #viewport.dragging {
+      cursor: grabbing;
+    }
+
+    #svg-container {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform-origin: 0 0;
+      will-change: transform;
+      filter: drop-shadow(0 20px 50px rgba(0,0,0,0.5));
+    }
+
+    /* Floating Navigation Controls */
+    .nav-controls {
+      position: absolute;
+      bottom: 24px;
+      right: 24px;
+      display: flex;
+      gap: 6px;
+      background: rgba(20, 26, 31, 0.85);
+      backdrop-filter: blur(12px);
+      padding: 6px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      z-index: 50;
+    }
+
+    .icon-btn {
+      width: 34px;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #171E24;
+      border: 1px solid #27343C;
+      border-radius: 8px;
+      color: #ECEFF1;
+      cursor: pointer;
+      font-size: 15px;
+      transition: all 0.12s ease;
+    }
+    .icon-btn:hover {
+      background: #222D35;
+      color: #FFFFFF;
+      border-color: var(--teal);
+    }
+
+    /* Toast Notification */
+    #toast {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: #19A0AC;
+      color: #FFFFFF;
+      padding: 10px 20px;
+      border-radius: 30px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      z-index: 999;
+      pointer-events: none;
+    }
+    #toast.show {
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="logo-badge">V</div>
+      <div class="title-group">
+        <h1>VOIID • Community Architecture & Flow Diagram</h1>
+        <p>Direct vector export &amp; FigJam importer</p>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-accent" onclick="copyMermaidCode()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        Copy Mermaid for FigJam
+      </button>
+
+      <button class="btn btn-secondary" onclick="downloadPNG()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+        Download PNG (4K)
+      </button>
+
+      <button class="btn btn-primary" onclick="downloadSVG()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        Download Vector SVG (FigJam)
+      </button>
+    </div>
+  </header>
+
+  <div id="viewport">
+    <div id="svg-container">
+      <!-- Embedded SVG Image -->
+      <object id="svgObject" data="community_flow_diagram.svg" type="image/svg+xml" style="width:1920px; height:1280px; pointer-events:none;"></object>
+    </div>
+
+    <div class="nav-controls">
+      <button class="icon-btn" onclick="zoomIn()" title="Zoom In">+</button>
+      <button class="icon-btn" onclick="zoomOut()" title="Zoom Out">−</button>
+      <button class="icon-btn" onclick="fitScreen()" title="Fit to View">⊡</button>
+      <button class="icon-btn" onclick="resetZoom()" title="100% Zoom">1:1</button>
+    </div>
+  </div>
+
+  <div id="toast">Copied Mermaid code to clipboard!</div>
+
+  <!-- Mermaid Source Data For FigJam Copy -->
+  <script type="text/plain" id="mermaidSource">
+flowchart TB
+    %% ==========================================
+    %% VOIID COMMUNITY ARCHITECTURE & FLOW DIAGRAM
+    %% Paste directly into FigJam's Mermaid widget!
+    %% ==========================================
+
+    subgraph Inbound["1. INBOUND & DISCOVERY"]
+        U_Link["Universal / App Link<br/>https://voiid.app/c/:handle?i=:token"]
+        U_Disc["Discovery Sheet<br/>Trending Tags & Clubs (Search &gt;= 2 chars)"]
+        U_Create["Create Community Flow<br/>@handle, Avatar, Name, Policy"]
+        U_Principle[/"Security Principle: Joining is NOT a messaging right. Only grants Host line."/]
+    end
+
+    subgraph Policies["2. ACCESS & JOIN POLICIES"]
+        P_Open["Open (Public)<br/>Instant 1-Tap Join (status: active)"]
+        P_Appr["Approval Required (Private)<br/>Host Review (status: pending)"]
+        P_Inv["Invite Only (Secret)<br/>Cryptographic Token Gate (?i=token)"]
+        P_Paid["Paid Community<br/>Coming Soon (Events Active)"]
+        
+        P_Lifecycle{"Member Status Lifecycle"}
+        NonMember["Non-Member"] --> P_Lifecycle
+        P_Lifecycle -->|"Open"| Active["Active Member"]
+        P_Lifecycle -->|"Approval"| Pending["Pending Review"]
+        Pending -->|"Host Approves"| Active
+        Pending -->|"Host Rejects"| NonMember
+        Active -->|"Leave"| NonMember
+        Active -->|"Host Bans"| Banned["Banned (Permanent)"]
+    end
+
+    subgraph Hub["3. COMMUNITY INTERIOR (5 CORE TABS)"]
+        subgraph Tab1["Tab 1: Home"]
+            H_Announce["Pinned Announcements Carousel"]
+            H_Feed["Post Feed (Likes, Views, Badges)"]
+            H_Stats["Admin Stats & Moderation Queue"]
+        end
+
+        subgraph Tab2["Tab 2: Spaces (Channels)"]
+            S_MLS["MLS E2EE Group Messaging"]
+            S_Text["Text Channels (#general, #topics)"]
+            S_Admin["Announcement Channel (Host only)"]
+            S_Voice["Voice Lounges (LiveKit Audio Mesh)"]
+        end
+
+        subgraph Tab3["Tab 3: Events & Tournaments"]
+            E_Events["Meetups, RSVP Attendance"]
+            E_Tickets["Paid Tickets & Razorpay Checkout"]
+            E_Tourneys["Instant Game Tournaments (Hand Cricket, Ludo, RPS)"]
+        end
+
+        subgraph Tab4["Tab 4: Members (Managers Only)"]
+            M_Roles["Role Hierarchy: Host ➔ Moderator ➔ Member"]
+            M_Actions["Approve Requests, Promote, Remove, Ban"]
+            M_Safe["Zero Contact Scraping / No Member-to-Member DM"]
+        end
+
+        subgraph Tab5["Tab 5: About"]
+            A_Rules["House Rules & Code of Conduct"]
+            A_Links["Social Links (Twitter/X, GitHub, Discord)"]
+            A_Report["Report Community to Voiid Trust"]
+            A_Mute["Notification Settings (Mute / Mentions / All)"]
+        end
+
+        HostBar(["Floating Host Bar: Message Host (Direct 1:1 E2EE Host Consultation)"])
+    end
+
+    subgraph Backend["4. BACKEND & REALTIME"]
+        DB[(PostgreSQL Schema:<br/>communities, members, channels, posts, host_threads)]
+        WS["WebSocket Bus (/ws)<br/>channel-sync & channel-events"]
+        Push["Push Notifications<br/>APNs & FCM (Decrypted via VoiidNSE)"]
+        LiveKit["LiveKit WebRTC Server<br/>Low Latency Audio Mesh"]
+        PayGateway["Razorpay Payments & Split Payouts"]
+    end
+
+    %% Connections
+    U_Link --> Policies
+    U_Disc --> Policies
+    U_Create --> Hub
+
+    P_Open --> Hub
+    Active --> Hub
+
+    Tab2 --> S_MLS
+    S_MLS --> WS
+    S_Voice --> LiveKit
+
+    E_Tickets --> PayGateway
+
+    HostBar --> DB
+    Hub --> DB
+    WS --> Hub
+    Push --> Hub
+  </script>
+
+  <script>
+    // Pan & Zoom Implementation
+    const viewport = document.getElementById('viewport');
+    const container = document.getElementById('svg-container');
+    let scale = 0.5;
+    let translateX = 0;
+    let translateY = 0;
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+
+    function updateTransform() {
+      container.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+    }
+
+    function fitScreen() {
+      const vw = viewport.clientWidth;
+      const vh = viewport.clientHeight;
+      const svgW = 1920;
+      const svgH = 1280;
+      
+      scale = Math.min((vw - 80) / svgW, (vh - 80) / svgH);
+      translateX = (vw - svgW * scale) / 2 - vw / 2;
+      translateY = (vh - svgH * scale) / 2 - vh / 2;
+      updateTransform();
+    }
+
+    function resetZoom() {
+      scale = 1;
+      const vw = viewport.clientWidth;
+      const vh = viewport.clientHeight;
+      translateX = (vw - 1920) / 2 - vw / 2;
+      translateY = (vh - 1280) / 2 - vh / 2;
+      updateTransform();
+    }
+
+    function zoomIn() {
+      scale = Math.min(scale * 1.25, 2.5);
+      updateTransform();
+    }
+
+    function zoomOut() {
+      scale = Math.max(scale * 0.8, 0.2);
+      updateTransform();
+    }
+
+    viewport.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+      scale = Math.min(Math.max(scale * zoomFactor, 0.15), 3.0);
+      updateTransform();
+    }, { passive: false });
+
+    viewport.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      isDragging = true;
+      startX = e.clientX - translateX;
+      startY = e.clientY - translateY;
+      viewport.classList.add('dragging');
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      translateX = e.clientX - startX;
+      translateY = e.clientY - startY;
+      updateTransform();
+    });
+
+    window.addEventListener('mouseup', () => {
+      isDragging = false;
+      viewport.classList.remove('dragging');
+    });
+
+    window.addEventListener('resize', fitScreen);
+    window.addEventListener('load', () => setTimeout(fitScreen, 100));
+
+    // Toast Helper
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.innerText = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2600);
+    }
+
+    // Download SVG Function
+    function downloadSVG() {
+      fetch('community_flow_diagram.svg')
+        .then(res => res.blob())
+        .then(blob => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'voiid_community_flow_figjam.svg';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showToast('Downloaded SVG! Drag & drop into FigJam.');
+        })
+        .catch(err => alert('Failed to download SVG: ' + err));
+    }
+
+    // Download PNG (High-Res 4K)
+    function downloadPNG() {
+      showToast('Rendering 4K PNG...');
+      fetch('community_flow_diagram.svg')
+        .then(res => res.text())
+        .then(svgText => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 3840;  // 4K UHD Width
+          canvas.height = 2560; // 4K UHD Height
+          const ctx = canvas.getContext('2d');
+          
+          const img = new Image();
+          const svgBlob = new Blob([svgText], {type: 'image/svg+xml;charset=utf-8'});
+          const url = URL.createObjectURL(svgBlob);
+          
+          img.onload = function() {
+            ctx.fillStyle = '#0F1417';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+            
+            canvas.toBlob(blob => {
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = 'voiid_community_flow_4k.png';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              showToast('Downloaded 4K PNG! Ready for FigJam.');
+            }, 'image/png');
+          };
+          img.src = url;
+        });
+    }
+
+    // Copy Mermaid Code for FigJam
+    function copyMermaidCode() {
+      const code = document.getElementById('mermaidSource').textContent.trim();
+      navigator.clipboard.writeText(code).then(() => {
+        showToast('Copied Mermaid code! Paste into FigJam.');
+      }).catch(() => {
+        showToast('Clipboard error. Please copy from text block.');
+      });
+    }
+  </script>
+</body>
+</html>

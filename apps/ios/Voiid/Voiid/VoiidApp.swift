@@ -107,7 +107,26 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        FirebaseApp.configure()
+        if FirebaseApp.app() == nil {
+            if Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil {
+                FirebaseApp.configure()
+            } else {
+                let options = FirebaseOptions(
+                    googleAppID: "1:104136277519:ios:0b4fe6f8547f936c6b6d7a",
+                    gcmSenderID: "104136277519"
+                )
+                options.apiKey = "AIzaSyCKH7pE8yt7Uah66rmxxEh7JQhuqRE8mp8"
+                options.projectID = "voiid-native"
+                options.storageBucket = "voiid-native.firebasestorage.app"
+                options.bundleID = "in.voiid.app"
+                FirebaseApp.configure(options: options)
+            }
+        }
+        do {
+            try Auth.auth().useUserAccessGroup(nil)
+        } catch {
+            print("[VOIID] Auth.useUserAccessGroup(nil) note: \(error)")
+        }
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategories()
         // A SAFETY NET, NOT THE ASK. Onboarding's PermissionsScreen is where this app
