@@ -58,11 +58,28 @@ import androidx.compose.ui.unit.sp
 import com.voiid.app.net.ApiClient
 import com.voiid.app.net.GamesService
 import com.voiid.app.net.TokenStore
+import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
 import kotlinx.coroutines.launch
+
+/**
+ * One action in the Games header, styled exactly as Communities styles its create button:
+ * a 40dp circle of [VoiidColor.fieldFill] around an accent glyph. The filled circle is the
+ * whole point — a bare icon gives no indication of where the tap target ends.
+ */
+@Composable
+private fun HeaderAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+    val haptics = LocalVoiidHaptics.current
+    Box(
+        Modifier.size(40.dp).clip(CircleShape).background(VoiidColor.fieldFill)
+            .softClickable { haptics.tap(); onClick() },
+        contentAlignment = Alignment.Center,
+    ) { Icon(icon, label, tint = VoiidColor.primary) }
+}
 
 /**
  * The Games arcade tab: 1-screen, fast entry, hero playable games, and honest upcoming games.
@@ -120,30 +137,19 @@ fun GamesHomeScreen(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Sized and weighted to match Communities — the two tabs sit next to each
+                // other in the same bar, so a 32sp title on one and 22sp on the other read
+                // as two different apps.
                 Text(
                     "Games",
-                    style = VoiidFont.rounded(32, FontWeight.Bold),
+                    style = VoiidFont.rounded(22, FontWeight.Bold),
                     color = VoiidColor.textPrimary,
-                    modifier = Modifier.weight(1f),
                 )
-                Icon(
-                    Icons.Outlined.EmojiEvents,
-                    contentDescription = "Leaderboard",
-                    tint = VoiidColor.primary,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable { onLeaderboard() }
-                        .padding(VoiidSpacing.sm),
-                )
-                Icon(
-                    Icons.Outlined.Tune,
-                    contentDescription = "Settings",
-                    tint = VoiidColor.textSecondary,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable { showSettings = true }
-                        .padding(VoiidSpacing.sm),
-                )
+                Spacer(Modifier.weight(1f))
+                // Communities' header treatment: each action is a 40dp filled circle, not a
+                // bare glyph, so the tap target is visible before it is touched.
+                HeaderAction(Icons.Outlined.EmojiEvents, "Leaderboard", onLeaderboard)
+                HeaderAction(Icons.Outlined.Tune, "Game settings") { showSettings = true }
 
                 // The same identity, in the same corner, as Clips and Communities.
                 com.voiid.app.main.clips.SocialProfileButton(

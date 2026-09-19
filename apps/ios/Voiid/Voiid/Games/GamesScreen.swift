@@ -84,28 +84,33 @@ struct GamesScreen: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
             HStack(alignment: .center) {
+                // Communities' screen title, not a larger one of this tab's own. The two tabs
+                // are one tap apart in the same bar, so a 32pt title here and a 26pt one
+                // there reads as two apps rather than two rooms of the same app.
                 Text("Games")
-                    .font(VoiidFont.rounded(32, .bold))
+                    .font(VoiidFont.screenTitle)
                     .foregroundColor(VoiidColor.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
 
                 Spacer()
 
+                // Communities' toolbar treatment: a plain accent glyph in a 44pt target. The
+                // bordered card circle that was here had no counterpart on any other tab.
                 Button {
                     Haptics.tap()
                     showSettings = true
                 } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(VoiidColor.surfaceCard))
-                        .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(VoiidColor.accent)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Game settings")
 
-                // The same identity Clips and Communities show, in the same corner. Renders
-                // nothing until a Social Profile exists — see SocialProfileButton.
-                SocialProfileButton { openHandle = $0 }
+                // The same identity Clips and Communities show, in the same corner, at the
+                // same size. Renders nothing until a Social Profile exists.
+                SocialProfileButton(diameter: 30) { openHandle = $0 }
             }
 
             if let last = store.lastPlayed {
