@@ -61,14 +61,13 @@ const MOBILE_QUERY = '(max-width: 1020px)';
 export function SiteHeader() {
   const pathname = usePathname() ?? '/';
   const [open, setOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const navRef = useRef<HTMLElement>(null);
   const brandRef = useRef<HTMLAnchorElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
-  // Whether the collapsing menu is the one on screen. Read from the SAME query the stylesheet
-  // uses, because the two disagreeing is how the desktop navigation would end up inert.
-  //
-  // Start collapsed for server rendering; measure before paint during hydration.
+  // Whether the collapsing menu is the one on screen.
   const [isMobile, setIsMobile] = useState(true);
   useLayoutEffect(() => {
     const mq = window.matchMedia(MOBILE_QUERY);
@@ -81,6 +80,7 @@ export function SiteHeader() {
       if (!mq.matches && focused === toggleRef.current) brandRef.current?.focus();
       setIsMobile(mq.matches);
       setOpen(false);
+      setMenuOpen(false);
     };
     sync();
     mq.addEventListener('change', sync);
@@ -90,22 +90,35 @@ export function SiteHeader() {
   const close = useCallback((restoreFocus: boolean) => {
     if (restoreFocus && navRef.current?.contains(document.activeElement)) toggleRef.current?.focus();
     setOpen(false);
+    setMenuOpen(false);
   }, []);
 
-  // Escape closes and hands focus back to the control that opened it.
+  // Escape closes
   useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(true); };
+    if (!open && !menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (menuOpen) setMenuOpen(false);
+        if (open) close(true);
+      }
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, close]);
+  }, [open, menuOpen, close]);
 
-  // A navigation closes the menu. Without this the panel stays open over the new page, and
-  // focus is left inside a menu describing somewhere the user has already left.
+  // Click outside to close features dropdown on desktop
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [menuOpen]);
+
   useLayoutEffect(() => { close(true); }, [pathname, close]);
-
-  // Growing past the breakpoint with the menu open must not leave the desktop header in a
-  // half-open state, or `inert` applied from a mobile flag nobody can see any more.
   useEffect(() => { if (!isMobile) setOpen(false); }, [isMobile]);
 
   const collapsed = isMobile && !open;
@@ -123,11 +136,6 @@ export function SiteHeader() {
           <Wordmark size={22} />
         </Link>
 
-        {/*
-          A BUTTON, not a checkbox. A checkbox has a checked state, which assistive technology
-          announces as "checked" rather than "expanded", and it cannot carry aria-expanded at
-          all. This is the control the disclosure pattern actually asks for.
-        */}
         <button
           type="button"
           ref={toggleRef}
@@ -144,67 +152,79 @@ export function SiteHeader() {
           <span className="srOnly">{open ? 'Close menu' : 'Menu'}</span>
         </button>
 
-        {/*
-          `inert` when collapsed: one attribute that takes the links out of the focus order AND
-          out of the accessibility tree, which `overflow: hidden` never did. Applied only at
-          the mobile breakpoint — at desktop this element IS the navigation.
-        */}
         <nav ref={navRef} aria-hidden={collapsed || undefined} id="site-nav" className={styles.nav} aria-label="Main" inert={collapsed}>
-          {/* The collapsing wrapper: `grid-template-rows` on .nav animates the
-              height, and this element is what gets clipped while it does. */}
           <div className={styles.navInner}>
-          <ul className={styles.list}>
-            <li className={styles.hasMenu}>
-              <details className={styles.menu}>
-                <summary
-                  className={styles.link}
-                  data-current={inFeatures ? 'true' : undefined}
-                >
-                  Features
-                  <Glyph name="arrow-right" size={13} className={styles.chevron} />
-                </summary>
-                <div className={styles.menuPanel}>
-                  <ul className={styles.menuList}>
-                    {SURFACES.map((s) => (
-                      <li key={s.href}>
-                        <Link
-                          href={s.href}
-                          className={styles.menuItem}
-                          aria-current={isCurrent(s.href) ? 'page' : undefined}
-                        >
-                          <span className={styles.menuIcon} style={{ color: `var(--hue-${s.hue})` }}>
-                            <Glyph name={SURFACE_GLYPH[s.href] ?? 'chat'} size={16} />
-                          </span>
-                          <span className={styles.menuText}>
-                            <span className={styles.menuLabel}>{s.label}</span>
-                            <span className={styles.menuBlurb}>{s.blurb}</span>
-                          </span>
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
+            <ul className={styles.list}>
+              <li className={styles.hasMenu}>
+                <div ref={menuRef} className={styles.menuWrapper}>
+                  <button
+                    type="button"
+                    className={[styles.link, styles.menuTrigger, menuOpen ? styles.menuTriggerActive : ''].join(' ')}
+                    data-current={inFeatures ? 'true' : undefined}
+                    aria-expanded={menuOpen}
+                    onClick={() => setMenuOpen((v) => !v)}
+                  >
+                    <span>Features</span>
+                    <Glyph
+                      name="arrow-right"
+                      size={12}
+                      className={[styles.chevron, menuOpen ? styles.chevronOpen : ''].join(' ')}
+                    />
+                  </button>
+
+                  <div className={[styles.menuPanel, menuOpen ? styles.menuPanelOpen : ''].join(' ')}>
+                    <div className={styles.menuPanelHeader}>
+                      <span className={styles.menuHeaderLabel}>Explore Surfaces</span>
+                      <span className={styles.menuHeaderPill}>End-to-End Encrypted</span>
+                    </div>
+                    <ul className={styles.menuList}>
+                      {SURFACES.map((s) => (
+                        <li key={s.href}>
+                          <Link
+                            href={s.href}
+                            className={styles.menuItem}
+                            aria-current={isCurrent(s.href) ? 'page' : undefined}
+                            onClick={() => setMenuOpen(false)}
+                          >
+                            <span className={styles.menuIcon} style={{ color: `var(--hue-${s.hue})` }}>
+                              <Glyph name={SURFACE_GLYPH[s.href] ?? 'chat'} size={18} />
+                            </span>
+                            <span className={styles.menuText}>
+                              <span className={styles.menuLabelRow}>
+                                <span className={styles.menuLabel}>{s.label}</span>
+                                {s.href === '/clips' || s.href === '/games' ? (
+                                  <span className={styles.badgePublic}>Public</span>
+                                ) : (
+                                  <span className={styles.badgeEncrypted}>E2EE</span>
+                                )}
+                              </span>
+                              <span className={styles.menuBlurb}>{s.blurb}</span>
+                            </span>
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
-              </details>
-            </li>
-
-            {HEADER_NAV.filter((i) => i.href !== '/messaging').map((item) => (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className={styles.link}
-                  aria-current={isCurrent(item.href) ? 'page' : undefined}
-                >
-                  {item.label}
-                </Link>
               </li>
-            ))}
-          </ul>
 
-          {/* The one call to action in the chrome. Every reference site has one;
-              without it the header reads as a table of contents. */}
-          <Link href="/messaging" className={styles.cta}>
-            Get Voiid
-          </Link>
+              {HEADER_NAV.filter((i) => i.href !== '/messaging').map((item) => (
+                <li key={item.href}>
+                  <Link
+                    href={item.href}
+                    className={styles.link}
+                    aria-current={isCurrent(item.href) ? 'page' : undefined}
+                  >
+                    {item.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+
+            <Link href="/messaging" className={styles.cta}>
+              <span>Get Voiid</span>
+              <Glyph name="arrow-right" size={13} className={styles.ctaArrow} />
+            </Link>
           </div>
         </nav>
       </div>

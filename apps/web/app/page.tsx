@@ -14,6 +14,7 @@ import {
   ChatBubble,
   PhoneAvatar,
 } from '../components/PhoneMockup';
+import { InteractivePhoneHero } from '../components/InteractivePhoneHero';
 import type { DomainHue } from '../lib/hues';
 import styles from './page.module.css';
 
@@ -244,39 +245,7 @@ export default function HomePage() {
          * The mockup below is the same one the honesty section used; it has
          * simply been moved to where it does the most work.
          */
-        aside={
-          <PhoneMockup
-            hue="chat"
-            size="lg"
-            tilt="left"
-            label="A Voiid chat. The conversation header shows the chat is end-to-end encrypted."
-          >
-            <PhoneAppBar
-              title="Aditi"
-              subtitle="End-to-end encrypted"
-              trailing={<Glyph name="call" size={16} />}
-            />
-            <div className={styles.thread}>
-              <ChatBubble side="received">
-                Landed. Sharing my location for the next hour?
-              </ChatBubble>
-              <ChatBubble side="sent" meta="19:04">
-                Please do — I&rsquo;ll start walking over.
-              </ChatBubble>
-              <ChatBubble side="received">
-                Shared. It stops on its own at 20:04.
-              </ChatBubble>
-              <div className={styles.systemNote}>
-                <Glyph name="lock" size={12} />
-                Messages and calls in this chat are end-to-end encrypted.
-              </div>
-            </div>
-            <div className={styles.composer}>
-              <span className={styles.composerField}>Message</span>
-              <PhoneAvatar initials="A" size={26} seed={2} />
-            </div>
-          </PhoneMockup>
-        }
+        aside={<InteractivePhoneHero />}
       />
 
       {/*

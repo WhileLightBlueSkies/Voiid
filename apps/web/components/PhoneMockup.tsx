@@ -33,6 +33,8 @@ export type PhoneMockupProps = {
   decorative?: boolean;
   /** Status-bar clock. Fixed by default so no build looks like it drifted. */
   time?: string;
+  /** When true, screen fills edge-to-edge without internal padding, ideal for real device screenshots. */
+  fullBleed?: boolean;
   className?: string;
 };
 
@@ -45,6 +47,7 @@ export function PhoneMockup({
   label,
   decorative = false,
   time = '9:41',
+  fullBleed = false,
   className,
 }: PhoneMockupProps) {
   return (
@@ -70,19 +73,23 @@ export function PhoneMockup({
         <span className={styles.buttonVolumeDown} aria-hidden="true" />
         <span className={styles.buttonPower} aria-hidden="true" />
 
-        <div className={styles.screen}>
-          <div className={styles.statusBar} aria-hidden="true">
-            <span className={styles.clock}>{time}</span>
-            <span className={styles.island} />
-            <span className={styles.indicators}>
-              <span className={styles.signal} />
-              <span className={styles.battery} />
-            </span>
+        <div className={[styles.screen, fullBleed ? styles.screenFullBleed : ''].join(' ')}>
+          {!fullBleed && (
+            <div className={styles.statusBar} aria-hidden="true">
+              <span className={styles.clock}>{time}</span>
+              <span className={styles.island} />
+              <span className={styles.indicators}>
+                <span className={styles.signal} />
+                <span className={styles.battery} />
+              </span>
+            </div>
+          )}
+
+          <div className={[styles.content, fullBleed ? styles.contentFullBleed : ''].join(' ')}>
+            {children}
           </div>
 
-          <div className={styles.content}>{children}</div>
-
-          <span className={styles.homeIndicator} aria-hidden="true" />
+          {!fullBleed && <span className={styles.homeIndicator} aria-hidden="true" />}
         </div>
       </div>
     </div>

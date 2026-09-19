@@ -65,6 +65,11 @@ test('community roles, official controls, invite admission and encrypted lifecyc
   }
   try {
     for (const [i, id] of users.entries()) await query(`insert into users(id,phone_number,username,full_name) values($1,$2,$3,$4)`, [id, '+' + Date.now() + i, prefix + i, 'Community fixture ' + i]);
+    // A Social Profile is now a prerequisite for every public act — joining a community,
+    // posting, liking (see social/identity.ts). Without one the routes answer 428
+    // `profile_required`, which is correct behaviour and would make every fixture here fail
+    // as a missing member rather than an authorization result.
+    for (const [i, id] of users.entries()) await query(`insert into social_profiles(user_id,handle,display_name) values($1,$2,$3)`, [id, prefix + i, 'Community fixture ' + i]);
     for (const [id, uid, reg] of [[device,owner,1],[secondDevice,owner,2],[memberDevice,member,1],[memberSibling,member,2]]) await query(`insert into devices(id,user_id,platform,registration_id,identity_public_key) values($1,$2,'ios',$3,$4)`, [id,uid,reg,Buffer.from('test')]);
     for (const [id, token, role] of [[adminId,adminToken,'admin'],[moderatorId,moderatorToken,'moderator']]) {
       await query(`insert into admin_users(id,email,password_hash,role) values($1,$2,'unused-test-hash',$3)`,[id,`${id}@example.invalid`,role]);

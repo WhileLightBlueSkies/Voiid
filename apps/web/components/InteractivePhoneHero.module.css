@@ -1,0 +1,752 @@
+/* ---- Interactive Phone Hero Styling ---- */
+
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+}
+
+/* Floating Surface Switcher Pills */
+.tabSelector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-surface) 85%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-card);
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabSelector::-webkit-scrollbar {
+  display: none;
+}
+
+.tabButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: transparent;
+  color: var(--color-text-dim);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tabButton:hover {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+
+.tabButton:active {
+  transform: scale(0.96);
+}
+
+.tabActive {
+  background: var(--color-primary) !important;
+  color: #ffffff !important;
+  font-weight: var(--weight-semibold);
+  box-shadow: 0 2px 8px -2px rgba(19, 130, 140, 0.45);
+}
+
+/* Internal Screen Layouts */
+.screenContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-background);
+}
+
+.headerIconButton {
+  background: transparent;
+  border: none;
+  color: var(--color-primary);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 150ms ease;
+}
+
+.headerIconButton:hover {
+  background: var(--color-surface-2);
+}
+
+.headerIconButton:active {
+  transform: scale(0.92);
+}
+
+/* Chat Screen */
+.chatStream {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 0.3em;
+  padding: 0.8em 0;
+  overflow: hidden;
+}
+
+.encryptionPill {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  border: 0.5px solid var(--color-divider);
+  color: var(--color-text-dim);
+  font-size: 0.72em;
+  margin-block-end: 0.6em;
+}
+
+.typingIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-start: 1.1em;
+  margin-block-start: 0.4em;
+  padding: 0.4em 0.8em;
+  border-radius: 1em;
+  background: var(--color-surface-2);
+  border: 0.5px solid var(--color-divider);
+  width: fit-content;
+}
+
+.typingDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-text-dim);
+  opacity: 0.4;
+  animation: typingBounce 1.2s infinite ease-in-out;
+}
+
+.typingDot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.typingDot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typingBounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.composerBar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0.6em 0.8em;
+  border-block-start: 0.5px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-surface) 90%, transparent);
+}
+
+.quickSend {
+  align-self: flex-start;
+  font-size: 0.75em;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  border: 1px dashed var(--color-primary);
+  color: var(--color-primary);
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.quickSend:hover {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.quickSend:active {
+  transform: scale(0.95);
+}
+
+.composerField {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45em 0.8em;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-divider);
+  color: var(--color-text-dim);
+  font-size: 0.85em;
+}
+
+.composerSend {
+  color: var(--color-primary);
+}
+
+/* Call Screen */
+.callContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-background);
+}
+
+.callBody {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5em 1em;
+  text-align: center;
+}
+
+.callAvatarWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-block-end: 1em;
+}
+
+.callPulseRing {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 2px solid var(--color-primary);
+  opacity: 0.5;
+  animation: callPulse 2.4s infinite cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+@keyframes callPulse {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.45);
+    opacity: 0;
+  }
+}
+
+.callAvatar {
+  position: relative;
+  z-index: 1;
+}
+
+.callCaller {
+  font-size: 1.4em;
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+  margin: 0;
+}
+
+.callTimer {
+  font-size: 0.9em;
+  color: var(--color-text-dim);
+  font-variant-numeric: tabular-nums;
+  margin-block: 0.3em 1em;
+}
+
+.callWaveform {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 32px;
+  margin-block-end: 1.2em;
+}
+
+.waveBar {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--color-primary);
+  animation: waveAnim 1s ease-in-out infinite alternate;
+}
+
+@keyframes waveAnim {
+  0% {
+    transform: scaleY(0.3);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+.callBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  border: 0.5px solid var(--color-divider);
+  font-size: 0.72em;
+  color: var(--color-success);
+  font-weight: var(--weight-medium);
+}
+
+.callControlsRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2em;
+  padding: 1.2em 0 1.8em;
+  border-block-start: 0.5px solid var(--color-divider);
+}
+
+.callBtn {
+  width: 2.8em;
+  height: 2.8em;
+  border-radius: 50%;
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.callBtn:active {
+  transform: scale(0.92);
+}
+
+.callBtnActive {
+  background: var(--color-text);
+  color: #fff;
+}
+
+.callBtnEnd {
+  width: 2.8em;
+  height: 2.8em;
+  border-radius: 50%;
+  border: none;
+  background: var(--color-error);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 150ms ease;
+}
+
+.callBtnEnd:active {
+  transform: scale(0.92);
+}
+
+/* Map Screen */
+.mapContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #0f1618;
+}
+
+.ghostToggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+
+.ghostOn {
+  background: #e53e3e !important;
+  color: #fff !important;
+  border-color: #e53e3e !important;
+}
+
+.mapViewport {
+  position: relative;
+  flex: 1;
+  background: radial-gradient(circle at 50% 50%, #1a272c 0%, #0d1518 100%);
+  overflow: hidden;
+  transition: background 300ms ease;
+}
+
+.mapDark {
+  background: #080c0d !important;
+}
+
+.mapGridLines {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.mapPinSelf {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+
+.mapPulse {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(19, 130, 140, 0.35);
+  animation: radarPulse 2s infinite ease-out;
+}
+
+@keyframes radarPulse {
+  0% {
+    transform: translate(-50%, -50%) scale(0.4);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.6);
+    opacity: 0;
+  }
+}
+
+.mapPinDot {
+  position: relative;
+  z-index: 1;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 0.72em;
+  font-weight: var(--weight-bold);
+  box-shadow: 0 0 10px rgba(19, 130, 140, 0.6);
+}
+
+.mapPinFriend {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+
+.mapPinLabel {
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.16);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 0.5px solid rgba(255, 255, 255, 0.3);
+  color: #fff;
+  font-size: 0.7em;
+  font-weight: var(--weight-medium);
+}
+
+.ghostNotice {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 2em;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.8em;
+}
+
+.mapFooterBanner {
+  position: absolute;
+  bottom: 8px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.68em;
+}
+
+/* Clips Screen */
+.clipsContainer {
+  position: relative;
+  height: 100%;
+  background: #000;
+  color: #fff;
+}
+
+.clipsVideoSim {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #1b0a2a 0%, #0e1a24 50%, #0a1f1a 100%);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 1em;
+}
+
+.clipsGradientOverlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, transparent 25%, transparent 65%, rgba(0, 0, 0, 0.8) 100%);
+  pointer-events: none;
+}
+
+.clipsTopBar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  font-size: 0.85em;
+  font-weight: var(--weight-bold);
+}
+
+.clipsScopeActive {
+  color: #fff;
+  border-bottom: 2px solid #fff;
+  padding-bottom: 2px;
+}
+
+.clipsScopeInactive {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.clipsFloatingRight {
+  position: absolute;
+  right: 12px;
+  bottom: 72px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.clipActionBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+
+.clipActionBtn:active {
+  transform: scale(0.88);
+}
+
+.clipHeartIcon {
+  font-size: 24px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.85);
+  transition: color 150ms ease, transform 150ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.clipLiked .clipHeartIcon {
+  color: #ff3366;
+  transform: scale(1.15);
+}
+
+.clipActionCount {
+  font-size: 0.68em;
+  font-weight: var(--weight-semibold);
+}
+
+.clipsBottomMeta {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 78%;
+}
+
+.clipAuthor {
+  font-weight: var(--weight-bold);
+  font-size: 0.88em;
+  margin: 0;
+}
+
+.clipCaption {
+  font-size: 0.76em;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0;
+}
+
+.clipAudioTrack {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68em;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 4px;
+}
+
+.musicBars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 10px;
+}
+
+.musicBars span {
+  width: 2px;
+  height: 100%;
+  background: #fff;
+  animation: musicBeat 0.8s infinite ease-in-out alternate;
+}
+
+.musicBars span:nth-child(2) {
+  animation-delay: 0.25s;
+}
+.musicBars span:nth-child(3) {
+  animation-delay: 0.5s;
+}
+
+@keyframes musicBeat {
+  0% {
+    height: 3px;
+  }
+  100% {
+    height: 10px;
+  }
+}
+
+/* Games Screen */
+.gamesContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-background);
+}
+
+.gameBoard {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.2em;
+  gap: 1em;
+}
+
+.scoreboard {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  width: 100%;
+  padding: 1em;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-card);
+}
+
+.scoreCol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.scoreName {
+  font-size: 0.8em;
+  color: var(--color-text-dim);
+}
+
+.scoreNum {
+  font-size: 2em;
+  font-weight: var(--weight-bold);
+  color: var(--color-primary);
+  line-height: 1.1;
+}
+
+.scoreRole {
+  font-size: 0.65em;
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+}
+
+.vsBadge {
+  font-size: 0.72em;
+  font-weight: var(--weight-bold);
+  color: var(--color-text-dim);
+  padding: 4px 8px;
+  border-radius: 50%;
+  background: var(--color-surface-2);
+}
+
+.gameActionPrompt {
+  font-size: 0.82em;
+  font-weight: var(--weight-medium);
+  color: var(--color-text-dim);
+}
+
+.gameRunPicker {
+  display: flex;
+  gap: 6px;
+}
+
+.runPickBtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--color-primary);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  font-weight: var(--weight-bold);
+  font-size: 0.95em;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.runPickBtn:hover {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.runPickBtn:active {
+  transform: scale(0.9);
+}
+
+.gameRefereeNote {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.68em;
+  color: var(--color-text-dim);
+  text-align: center;
+  line-height: 1.35;
+  margin: 0;
+}

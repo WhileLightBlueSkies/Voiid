@@ -253,24 +253,33 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.6em;
-  margin-block-start: 1.06em;
+  gap: 0.8em;
+  margin-block-start: 1.2em;
 }
 
 .ctl {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2.6em;
-  height: 2.6em;
+  width: 2.7em;
+  height: 2.7em;
   border-radius: 50%;
-  background: var(--color-surface-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
   color: var(--color-text);
+  box-shadow: var(--shadow-xs);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.ctl:active {
+  transform: scale(0.92);
 }
 
 .ctlEnd {
   background: var(--color-error);
-  color: var(--color-text-on-primary);
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 4px 12px -2px rgba(200, 53, 59, 0.4);
 }
 
 /* ---- map (Map/MapHeader.swift) ---- */
@@ -280,29 +289,57 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  height: 100%;
+  min-height: 13em;
   padding: 0.8em 1.06em 1.4em;
+  background: radial-gradient(circle at 50% 45%, #1a262a 0%, #0d1518 100%);
+  overflow: hidden;
 }
 
-/* 11pt in accentInk, with the radiowaves glyph at 9pt. The always-visible
- * answer to "can anyone see me?". */
+/* Map grid background pattern */
+.mapProof::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 20px 20px;
+  pointer-events: none;
+}
+
+/* 11pt in accentInk, with the radiowaves glyph at 9pt. */
 .mapStatus {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   align-self: flex-start;
-  gap: 0.27em;
-  color: var(--color-primary-ink);
+  gap: 0.35em;
+  padding: 0.3em 0.7em;
+  border-radius: var(--radius-pill);
+  background: rgba(19, 130, 140, 0.15);
+  border: 0.5px solid rgba(19, 130, 140, 0.3);
+  color: #68b8bd;
   font-size: 0.73em;
   font-weight: var(--weight-medium);
 }
 
 .mapPin {
   position: relative;
-  width: 0.85em;
-  height: 0.85em;
-  margin-block: 1.6em 0.6em;
+  z-index: 1;
+  width: 1.1em;
+  height: 1.1em;
+  margin-block: 2.2em 0.8em;
   border-radius: 50%;
-  background: var(--hue);
-  box-shadow: 0 0 0 0.28em color-mix(in srgb, var(--hue) 22%, transparent);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 0.35em rgba(19, 130, 140, 0.3), 0 0 16px var(--color-primary);
+  animation: mapPulseAnim 2.2s infinite ease-out;
+}
+
+@keyframes mapPulseAnim {
+  0% { box-shadow: 0 0 0 0.2em rgba(19, 130, 140, 0.4), 0 0 8px var(--color-primary); }
+  50% { box-shadow: 0 0 0 0.6em rgba(19, 130, 140, 0.15), 0 0 20px var(--color-primary); }
+  100% { box-shadow: 0 0 0 0.2em rgba(19, 130, 140, 0.4), 0 0 8px var(--color-primary); }
 }
 
 /* The 38pt ghost toggle: surfaceCard circle with a divider hairline. */
@@ -310,15 +347,19 @@
   position: absolute;
   inset-block-start: 0.7em;
   inset-inline-end: 1.06em;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 2.5em;
   height: 2.5em;
   border-radius: 50%;
-  background: var(--color-surface);
-  border: 1px solid var(--color-divider);
-  color: var(--color-text-dim);
+  background: rgba(255, 255, 255, 0.1);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 /* ---- clips (Clips/ClipsFeedView.swift) ---- */
@@ -329,10 +370,9 @@
   align-items: center;
   gap: 0.8em;
   padding: 0.8em 0 0;
+  width: 100%;
 }
 
-/* The segmented scope control: a fieldFill capsule, filled primary on the
- * selected half, held to 280pt rather than full bleed. */
 .clipScope {
   display: inline-flex;
   align-items: center;
@@ -354,6 +394,7 @@
 .clipScopeOn {
   background: var(--color-primary);
   color: var(--color-text-on-primary);
+  box-shadow: 0 1px 4px rgba(19, 130, 140, 0.3);
 }
 
 .clipScopeOff { color: var(--color-text-dim); }
@@ -362,57 +403,69 @@
 .clipGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 2px;
+  gap: 3px;
   width: 100%;
+  padding-inline: 4px;
 }
 
 .clipTile {
+  position: relative;
   aspect-ratio: 9 / 16;
-  background:
-    radial-gradient(60% 40% at 50% 32%, color-mix(in srgb, var(--hue) 34%, transparent), transparent 72%),
-    linear-gradient(180deg, var(--color-surface-2), var(--color-surface));
+  border-radius: 4px;
+  overflow: hidden;
+  background: linear-gradient(145deg, #241432 0%, #15222e 60%, #102422 100%);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  transition: transform 180ms ease;
+}
+
+.clipTile:hover {
+  transform: scale(1.02);
+  z-index: 1;
 }
 
 /* ---- games (ChatDetailView.swift · GameInviteBubble) ---- */
 
 .gameCard {
   align-self: flex-start;
-  width: 68%;
+  width: 76%;
   margin: 0.45em 1.06em 0;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  background: var(--color-bubble-received);
-  border: 0.5px solid var(--color-divider);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-card);
+  transition: transform 180ms ease, box-shadow 180ms ease;
 }
 
-/* The 16:9 artwork panel — primary at 10% behind a tinted controller glyph,
- * which is exactly the no-art fallback the Swift view degrades to. */
+.gameCard:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lift);
+}
+
 .gameArt {
   display: flex;
   align-items: center;
   justify-content: center;
   aspect-ratio: 16 / 9;
-  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-  color: var(--color-primary);
+  background: linear-gradient(135deg, rgba(138, 84, 0, 0.12) 0%, rgba(19, 130, 140, 0.14) 100%);
+  color: var(--color-accent);
 }
 
 .gameBody {
   display: flex;
   flex-direction: column;
   gap: 0.25em;
-  padding: 0.53em 0.7em 0.7em;
+  padding: 0.6em 0.8em 0.8em;
 }
 
-/* 10pt bold in primary. */
 .gameKicker {
-  color: var(--color-primary-ink);
+  color: var(--color-accent);
   font-size: 0.66em;
   font-weight: var(--weight-bold);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
 }
 
-/* 16pt bold. */
 .gameName {
   font-size: 1.06em;
   font-weight: var(--weight-bold);

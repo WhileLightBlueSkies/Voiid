@@ -94,6 +94,10 @@ test('posting policy: everyone, managers, selected and none', { skip: !url }, as
     for (const [i, id] of [owner, plain, picked].entries()) {
       await query('insert into users (id, phone_number) values ($1,$2) on conflict do nothing',
                   [id, `+9198000000${i}${Math.floor(Math.random() * 90 + 10)}`]);
+      // Posting is a public act and now requires a Social Profile (social/identity.ts);
+      // without one these fixtures would get 428 rather than the permission answer under test.
+      await query('insert into social_profiles (user_id, handle) values ($1,$2) on conflict do nothing',
+                  [id, `perm${i}${Math.floor(Math.random() * 9000 + 1000)}`]);
     }
     await query(
       `insert into communities (id, name, handle, owner_id, posting_policy)
@@ -243,7 +247,10 @@ test('posting policy: everyone, managers, selected and none', { skip: !url }, as
     await t.test('Space likes are idempotent and cannot be added by a non-member',async()=>{
       const row=(await query('select id from community_posts where community_id=$1 and channel_id=$2 limit 1',[community,space]))[0];
       const path=`/posts/${row.id}/like`;
-      assert.equal((await request(path,randomUUID(),'POST',{})).status,403);
+      // 428, not 403: liking is a public act, so requireSocialProfile() runs before the
+      // membership check. A stranger with no Social Profile is told to make one rather than
+      // told they are not a member — which also says less about the community than 403 did.
+      assert.equal((await request(path,randomUUID(),'POST',{})).status,428);
       for(let i=0;i<2;i++) assert.equal((await request(path,plain,'POST',{})).status,200);
       assert.equal((await query('select like_count from community_posts where id=$1',[row.id]))[0].like_count,1);
       for(let i=0;i<2;i++) assert.equal((await request(path,plain,'DELETE')).status,200);

@@ -7,6 +7,7 @@
       "Bash(open -a Simulator:*)",
       "Bash(ssh voiid-api:*)",
       "Bash(sudo rm:*)"
+
     ]
   }
 }
