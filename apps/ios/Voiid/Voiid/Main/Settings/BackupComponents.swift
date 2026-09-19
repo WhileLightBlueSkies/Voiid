@@ -12,47 +12,60 @@ import SwiftUI
 // MARK: - PIN rules
 
 enum PinRules {
-    /// ENTRY floor. Deliberately stays at 4 so a backup wrapped under the old policy
-    /// can still be unwrapped — this predicate guards UNLOCKING, and tightening it
-    /// would brick existing restores.
-    static let minLen = 4
-    /// CHOICE floor. The wrap is only as strong as the PIN is unguessable offline
-    /// (Argon2id m=19MiB/t=2/p=1 ≈ 300ms/guess/core), and a 4-digit keyspace falls in
-    /// minutes once `recovery_keys.wrapped_key` is in hand (audit finding M9). Six
-    /// digits moves mass cracking from trivial to expensive; the common-PIN blocklist
-    /// below removes the rest of the top of the distribution.
-    static let newMinLen = 6
+    /// EXACTLY EIGHT, for choosing and for entering alike.
+    ///
+    /// The wrap is only as strong as the PIN is unguessable offline (Argon2id
+    /// m=19MiB/t=2/p=1 ≈ 300ms/guess/core). A 4-digit keyspace falls in minutes once
+    /// `recovery_keys.wrapped_key` is in hand (audit finding M9), and 6 digits is
+    /// expensive rather than infeasible. Eight is 100 million candidates — at ~300ms a
+    /// guess per core that is years on commodity hardware, which is the point at which
+    /// the phrase, not the PIN, becomes the weakest way in.
+    ///
+    /// THE ENTRY FLOOR MOVED TOO, which is the part worth understanding. It used to sit
+    /// at 4 so a backup wrapped under an older policy could still be unwrapped, and
+    /// raising it would have bricked those restores. There are none: `recovery_keys` is
+    /// empty, so no wrap exists that a shorter PIN could open. If that ever stops being
+    /// true, this needs a migration path — not a quiet loosening back to 4.
+    static let minLen = 8
+    static let newMinLen = 8
     static let maxLen = 8
 
     /// The most-chosen short PINs. Not secrecy — a public denylist of the first keys
     /// any attacker tries, so they cost a real Argon2 evaluation like everything else.
+    /// EIGHT-DIGIT ENTRIES ONLY, now that nothing shorter can be chosen. The old list was
+    /// mostly 6s and 7s, which `valid` rejects on length before this is ever consulted —
+    /// keeping them would have looked like protection that no longer did anything.
     private static let commonPINs: Set<String> = [
-        "000000", "111111", "121212", "123123", "123321", "123456", "112233",
-        "654321", "666666", "696969", "777777", "888888", "999999", "101010",
-        "0000000", "1234567", "1111111", "7777777", "12345678", "87654321",
-        "11111111", "12121212",
-        // Top repeated-digit / pattern 4-digit PINs padded variants are covered by
-        // length; these are the famous 6s.
-        "159753", "112358", "147258", "159357",
+        // Runs and reverses.
+        "12345678", "87654321", "01234567", "76543210", "23456789", "98765432",
+        // Single repeated digit.
+        "00000000", "11111111", "22222222", "33333333", "44444444",
+        "55555555", "66666666", "77777777", "88888888", "99999999",
+        // Two- and four-digit patterns tiled to length — what someone reaches for when
+        // told "eight digits" and wanting something they can remember.
+        "12121212", "21212121", "10101010", "13131313", "69696969",
+        "11223344", "12341234", "43214321", "11112222", "12312312",
+        // Dates people actually use: years doubled, and common DDMMYYYY anchors.
+        "19801980", "19901990", "20002000", "20202020", "01011990",
+        "01012000", "01011980", "31121999",
+        // Keypad shapes.
+        "14725836", "15935748", "11235813",
     ]
 
-    /// Entry/unlock: digits within the legacy length bounds. Never tightened.
+    /// Entry/unlock: exactly eight digits.
     static func valid(_ pin: String) -> Bool {
-        pin.count >= minLen && pin.count <= maxLen && pin.allSatisfy(\.isNumber)
+        pin.count == maxLen && pin.allSatisfy(\.isNumber)
     }
 
-    /// Choosing a NEW PIN: the stricter policy. Existing wraps keep unlocking via
-    /// `valid`; the next PIN change migrates the wrap up to this standard.
+    /// Choosing a NEW PIN: the same length, plus the blocklist.
     static func validNew(_ pin: String) -> Bool {
-        valid(pin) && pin.count >= newMinLen && !commonPINs.contains(pin)
+        valid(pin) && !commonPINs.contains(pin)
     }
 
     /// Human-readable reason a NEW PIN was refused, for inline field errors.
     static func rejectionReason(_ pin: String) -> String? {
-        guard pin.count >= minLen && pin.count <= maxLen && pin.allSatisfy(\.isNumber) else {
-            return "Use \(minLen)–\(maxLen) digits."
-        }
-        if pin.count < newMinLen { return "Choose at least \(newMinLen) digits." }
+        guard pin.allSatisfy(\.isNumber) else { return "Digits only." }
+        guard pin.count == maxLen else { return "Your PIN must be exactly \(maxLen) digits." }
         if commonPINs.contains(pin) { return "That PIN is too easy to guess." }
         return nil
     }
@@ -107,7 +120,7 @@ struct PinChooseView: View {
             Text(title).font(VoiidFont.title).foregroundColor(VoiidColor.textPrimary)
             Text(subtitle).font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
 
-            PinField(placeholder: "PIN (\(PinRules.newMinLen)–\(PinRules.maxLen) digits)", text: $pin)
+            PinField(placeholder: "PIN (\(PinRules.maxLen) digits)", text: $pin)
             PinField(placeholder: "Confirm PIN", text: $confirm)
 
             if mismatch { fieldError("PINs don’t match.") }

@@ -70,6 +70,8 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun GamesHomeScreen(
+    /** Opening a Social Profile by handle. The root owns the destination. */
+    onOpenProfile: (String) -> Unit = {},
     onPickGame: (GamesService.CatalogGame) -> Unit,
     onLeaderboard: () -> Unit,
     onDaily: () -> Unit = {},
@@ -141,6 +143,12 @@ fun GamesHomeScreen(
                         .clip(CircleShape)
                         .clickable { showSettings = true }
                         .padding(VoiidSpacing.sm),
+                )
+
+                // The same identity, in the same corner, as Clips and Communities.
+                com.voiid.app.main.clips.SocialProfileButton(
+                    creators = androidx.lifecycle.viewmodel.compose.viewModel(),
+                    onOpen = onOpenProfile,
                 )
             }
 

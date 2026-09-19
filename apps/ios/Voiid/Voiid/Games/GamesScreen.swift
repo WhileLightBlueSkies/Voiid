@@ -20,6 +20,8 @@ struct GamesScreen: View {
     @State private var path: [Step] = []
     @State private var setup: Game?
     @State private var showSettings = false
+    /// The Social Profile handle being opened from the header avatar.
+    @State private var openHandle: String?
     @State private var selectedUpcoming: Game?
 
     var body: some View {
@@ -56,6 +58,9 @@ struct GamesScreen: View {
                 case .ludo(let difficulty): LudoGameView(difficulty: difficulty)
                 case .snake(let mode):       SnakeGameView(mode: mode)
                 }
+            }
+            .navigationDestination(item: $openHandle) { handle in
+                SocialProfileView(handle: handle)
             }
         }
     }
@@ -97,6 +102,10 @@ struct GamesScreen: View {
                         .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
                 }
                 .accessibilityLabel("Game settings")
+
+                // The same identity Clips and Communities show, in the same corner. Renders
+                // nothing until a Social Profile exists — see SocialProfileButton.
+                SocialProfileButton { openHandle = $0 }
             }
 
             if let last = store.lastPlayed {
@@ -259,13 +268,7 @@ private struct GameCard: View {
 
     private var artwork: some View {
         ZStack(alignment: .bottomLeading) {
-            LinearGradient(colors: [game.tintA, game.tintB.opacity(0.75)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-
-            Image(systemName: game.symbol)
-                .font(.system(size: 120, weight: .medium))
-                .foregroundColor(.white.opacity(0.16))
-                .offset(x: 168, y: 30)
+            GameArtwork(game: game, isSetup: false)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(game.title)

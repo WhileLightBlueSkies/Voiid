@@ -35,6 +35,9 @@ struct CommunitiesHomeView: View {
     @State private var showCreate = false
     /// The community opened from a card. Held by id so a refresh cannot swap it underneath.
     @State private var openHandle: String?
+    /// A PERSON's Social Profile handle, as opposed to `openHandle` above which is a
+    /// community's. The two share one namespace but not one destination.
+    @State private var openProfileHandle: String?
 
     /// Searching replaces the list entirely rather than filtering `mine` — discovery is a
     /// different SOURCE (its own endpoint, its own results), not a filter over what you have.
@@ -69,6 +72,11 @@ struct CommunitiesHomeView: View {
                         }
                         .accessibilityLabel("Create a community")
                     }
+                    // The same identity, in the same corner, as Clips and Games. Renders
+                    // nothing until a Social Profile exists — see SocialProfileButton.
+                    ToolbarItem(placement: .primaryAction) {
+                        SocialProfileButton(diameter: 30) { openProfileHandle = $0 }
+                    }
                 }
                 .sheet(isPresented: $showDiscover) {
                     CommunityDiscoverSheet { handle in openHandle = handle }
@@ -85,6 +93,12 @@ struct CommunitiesHomeView: View {
                 }
                 .navigationDestination(item: $openHandle) { handle in
                     CommunityDetailView(handle: handle)
+                }
+                // Separate from `openHandle`, which carries a COMMUNITY handle. They share a
+                // namespace but not a destination, so one state for both would open a
+                // community page for a person.
+                .navigationDestination(item: $openProfileHandle) { handle in
+                    SocialProfileView(handle: handle)
                 }
                 .task { await loadMine() }
                 .onChange(of: search) { _, _ in Task { await runSearch() } }
@@ -445,7 +459,7 @@ private struct CommunityCreateSheet: View {
                     TextField("What it's for (optional)", text: $blurb, axis: .vertical)
                         .lineLimit(2...4)
                 } footer: {
-                    Text("Handles share one namespace with usernames and creator handles, so "
+                    Text("Handles share one namespace with usernames and social handles, so "
                          + "@\(handle.isEmpty ? "yourname" : handle) can only mean one thing across Voiid.")
                 }
                 if let error {

@@ -382,7 +382,7 @@ private fun BackupSetupFlow(manager: BackupManager, onBack: () -> Unit, onDone: 
     when (step) {
         SetupStep.PIN -> PinEntryScreen(
             title = "Choose a PIN",
-            subtitle = "Pick a 6-digit PIN. You'll need it to restore your chats on a new device.",
+            subtitle = "Pick an 8-digit PIN. You'll need it to restore your chats on a new device.",
             value = pin, onValueChange = { pin = it; error = null },
             error = error, busy = false, cta = "Next",
             ctaEnabled = pin.length == VOIID_PIN_LENGTH,
@@ -472,7 +472,7 @@ private fun ChangePinScreen(manager: BackupManager, onBack: () -> Unit, onDone: 
     if (!confirming) {
         PinEntryScreen(
             title = "New PIN",
-            subtitle = "Choose a new 6-digit PIN.",
+            subtitle = "Choose a new 8-digit PIN.",
             value = newPin, onValueChange = { newPin = it; error = null },
             error = error, busy = false, cta = "Next",
             ctaEnabled = newPin.length == VOIID_PIN_LENGTH,
@@ -506,8 +506,15 @@ private fun ChangePinScreen(manager: BackupManager, onBack: () -> Unit, onDone: 
 
 // MARK: - Shared building blocks (internal — reused by the login-restore flow)
 
-/** The backup PIN is EXACTLY SIX digits — setup, confirm, change, and restore all enforce it. */
-internal const val VOIID_PIN_LENGTH = 6
+/**
+ * The backup PIN is EXACTLY EIGHT digits — setup, confirm, change, and restore all enforce it.
+ *
+ * The wrap is only as strong as the PIN is unguessable offline: at roughly 300ms per Argon2id
+ * guess per core, six digits is expensive but finite, and eight is 100 million candidates —
+ * years on commodity hardware, which is where the recovery phrase rather than the PIN becomes
+ * the weakest way in. Matches iOS `PinRules`.
+ */
+internal const val VOIID_PIN_LENGTH = 8
 
 /** Simple full-screen scaffold with a circular back button + title, matching onboarding. */
 @Composable

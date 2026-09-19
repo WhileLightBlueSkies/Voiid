@@ -84,6 +84,8 @@ struct CommunityHomeTab: View {
     /// The post being reported. Non-nil IS the sheet's presented state, so it can never fire
     /// against a post the feed has since reloaded away.
     @State private var reporting: CommunityService.Post?
+    /// The author handle whose Social Profile is open. Non-nil IS the presented state.
+    @State private var openHandle: String?
 
     // ── The admin dashboard (053_community_moderation.sql) ───────────────────────
     // Both of these were `AdminStat.samples` and `AdminTask.samples` — invented constants and a
@@ -182,6 +184,11 @@ struct CommunityHomeTab: View {
         // Presented from HERE rather than from inside the card, for the same reason the delete
         // confirmation is: a sheet owned by a row in a lazy stack is torn down when that row
         // scrolls out of the stack, which can happen while the user is mid-report.
+        // PUSHED, not sheeted: a Social Profile is a place you go and come back from, and it
+        // has its own back button. A sheet would stack a second dismissal on top of that.
+        .navigationDestination(item: $openHandle) { handle in
+            SocialProfileView(handle: handle)
+        }
         .sheet(item: $reporting) { post in
             ReportSheet(target: .communityPost(postId: post.id)) { reporting = nil }
         }
@@ -530,7 +537,8 @@ struct CommunityHomeTab: View {
                     // Delete on somebody else's post is an invitation to wonder why.
                     onDelete: canDelete(post) ? { pendingDelete = post } : nil,
                     onLike: { Task { await toggleLike(post) } },
-                    onReport: { reporting = post }
+                    onReport: { reporting = post },
+                    onOpenAuthor: { openHandle = $0 }
                 )
                 // The row is mid-delete: dimmed and inert, so a second tap cannot start a
                 // duplicate write against a post that is already on its way out.
@@ -1038,10 +1046,27 @@ private struct CommunityPostCard: View {
     /// confirmation: a sheet presented from inside a row in a lazy stack is a sheet that can be
     /// torn down mid-interaction when the row scrolls out.
     let onReport: () -> Void
+    /// Opening the author's Social Profile. Optional because a deleted author has no handle
+    /// to open — see the `author_name` note on CommunityService.Post.
+    var onOpenAuthor: ((String) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
             HStack(spacing: 9) {
+                // THE AUTHOR OPENS THEIR SOCIAL PROFILE.
+                //
+                // One public identity across Clips, Communities and Games is only true if you
+                // can reach it from all three — until now it opened from the Clips feed alone,
+                // so the same person was tappable in one place and inert in another.
+                //
+                // Avatar and name are ONE target, the way a byline reads as one thing.
+                Button {
+                    guard let handle = post.author_username, !handle.isEmpty,
+                          let onOpenAuthor else { return }
+                    Haptics.tap()
+                    onOpenAuthor(handle)
+                } label: {
+                  HStack(spacing: 9) {
                 CommunityAvatar(name: post.displayName, size: 32)
 
                 VStack(alignment: .leading, spacing: 1) {
@@ -1066,6 +1091,11 @@ private struct CommunityPostCard: View {
                         .font(VoiidFont.rounded(11.5))
                         .foregroundColor(VoiidColor.textSecondary)
                 }
+                  }
+                  .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(post.author_username?.isEmpty != false || onOpenAuthor == nil)
 
                 Spacer(minLength: 0)
 

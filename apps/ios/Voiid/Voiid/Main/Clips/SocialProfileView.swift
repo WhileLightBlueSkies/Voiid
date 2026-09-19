@@ -29,10 +29,13 @@
 //
 
 import SwiftUI
+import PhotosUI
 
 struct SocialProfileView: View {
 
     let handle: String
+    @State private var renamedHandle: String?
+    private var activeHandle: String { renamedHandle ?? handle }
 
     @EnvironmentObject private var creators: SocialEngine
     @Environment(\.dismiss) private var dismiss
@@ -46,19 +49,20 @@ struct SocialProfileView: View {
     /// banner rather than an alert: it is information, not a decision to make.
     @State private var hintText: String?
     @State private var bioExpanded = false
+    @State private var tab: ProfileTab = .grid
     @State private var openIndex: Int?
     @State private var highlightRows: [SocialService.Highlight] = []
     @State private var highlightsLoading = true
     @State private var highlightsError: String?
     @Namespace private var zoom
 
-    private var profile: SocialService.Profile? { creators.cachedProfile(handle) }
+    private var profile: SocialService.Profile? { creators.cachedProfile(activeHandle) }
 
     /// The reference's 3 × 3pt mesh.
     private let columns = [
-        GridItem(.flexible(), spacing: 3),
-        GridItem(.flexible(), spacing: 3),
-        GridItem(.flexible(), spacing: 3),
+        GridItem(.flexible(minimum: 0), spacing: 3),
+        GridItem(.flexible(minimum: 0), spacing: 3),
+        GridItem(.flexible(minimum: 0), spacing: 3),
     ]
 
     var body: some View {
@@ -79,13 +83,14 @@ struct SocialProfileView: View {
                         tabBar
                         grid(p)
                     }
+                    .containerRelativeFrame(.horizontal)
                 }
                 .scrollIndicators(.hidden)
                 .ignoresSafeArea(edges: .top)
                 .contentMargins(.bottom, max(session.bottomInset, 96), for: .scrollContent)
                 .refreshable {
                     await load()
-                    await creators.refreshClips(for: handle)
+                    await creators.refreshClips(for: activeHandle)
                 }
             } else if loading {
                 ProgressView().tint(VoiidColor.primary)
@@ -109,17 +114,30 @@ struct SocialProfileView: View {
                 if let hintText { hintBanner(hintText) }
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
-        .navigationBarBackButtonHidden(true)
-        // `navigationBarBackButtonHidden` also kills the interactive swipe-back gesture, and
-        // losing edge-swipe on a pushed screen is a real regression — it is how most people
-        // actually go back. This restores it so the drawn chevron is a VISUAL replacement
-        // for the system button, not a behavioural one.
-        .voiidInteractiveSwipeBack()
+        // THE SYSTEM BACK BUTTON, not a drawn one.
+        //
+        // The Voiid Ui reference hides the bar and paints a glass chevron on the cover, and
+        // this screen used to match it. The cost is that the one control every pushed screen
+        // shares stops looking like itself here — and a hidden bar also takes the swipe-back
+        // gesture with it, which then has to be restored by hand.
+        //
+        // An inline bar over a scrolling cover is transparent until the content reaches it,
+        // so the photograph is still edge to edge; the difference is that going back is the
+        // platform's affordance, in the platform's place, with its gesture intact.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .task {
             if profile == nil { await load() }
-            if creators.clips(for: handle).isEmpty { await creators.refreshClips(for: handle) }
+            if creators.clips(for: activeHandle).isEmpty { await creators.refreshClips(for: activeHandle) }
             await loadHighlights()
+        }
+        .onChange(of: creators.me?.handle) { oldHandle, newHandle in
+            guard oldHandle == activeHandle, let newHandle, oldHandle != newHandle else { return }
+            renamedHandle = newHandle
+            Task {
+                await creators.refreshClips(for: newHandle)
+                await loadHighlights()
+            }
         }
         .sheet(isPresented: $showEdit) {
             if let p = profile { CreatorEditSheet(profile: p).environmentObject(creators) }
@@ -144,9 +162,8 @@ struct SocialProfileView: View {
             // an optional cover. Blurring the avatar is the fallback so the band is never
             // empty — the same treatment, one source down.
             if let url = p.avatar_url {
-                ClipThumbnail(url: url)
-                    .frame(height: 148)
-                    .frame(maxWidth: .infinity)
+                Color.clear
+                    .overlay { ClipThumbnail(url: url) }
                     .clipped()
                     .blur(radius: 14)
                     .overlay(VoiidColor.background.opacity(0.35))
@@ -185,14 +202,10 @@ struct SocialProfileView: View {
     /// the actions it belongs to (Grouping — a control sits near what it affects).
     ///
     /// So the top bar carries navigation only, which is what a navigation bar is for.
+    /// Empty now that the system bar carries the back button. Kept as the spacer that holds
+    /// the cover's top inset, so removing it would shift the whole header up.
     private var topBar: some View {
-        HStack {
-            backButton
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, VoiidSpacing.sm)
+        Color.clear.frame(height: 0)
     }
 
     /// The system's own back affordance: a chevron at the leading edge that also responds to
@@ -258,8 +271,9 @@ struct SocialProfileView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Text(p.display_name ?? p.handle)
-                        .font(VoiidFont.rounded(21, .bold))
+                        .font(.title2.weight(.bold))
                         .foregroundColor(VoiidColor.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     if p.is_verified {
                         Image(systemName: "checkmark.seal.fill")
@@ -269,7 +283,7 @@ struct SocialProfileView: View {
                 }
 
                 Text("@\(p.handle)")
-                    .font(VoiidFont.rounded(13.5))
+                    .font(.subheadline)
                     .foregroundColor(VoiidColor.textSecondary)
             }
 
@@ -337,7 +351,7 @@ struct SocialProfileView: View {
             HStack(spacing: 4) {
                 Image(systemName: "link").font(.system(size: 11, weight: .semibold))
                 Text(link.replacingOccurrences(of: "https://", with: ""))
-                    .font(VoiidFont.rounded(13.5))
+                    .font(.subheadline)
                     .lineLimit(1)
             }
             .foregroundColor(VoiidColor.accentInk)
@@ -362,7 +376,6 @@ struct SocialProfileView: View {
                     countItem(ClipCount.compact(following), "Following")
                 }
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.top, VoiidSpacing.md)
@@ -372,7 +385,7 @@ struct SocialProfileView: View {
     /// open — a control that presses and goes nowhere is the dead affordance this screen is
     /// meant to avoid.
     private func countItem(_ value: String, _ label: String) -> some View {
-        HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(value)
                 .font(VoiidFont.rounded(15, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
@@ -383,6 +396,7 @@ struct SocialProfileView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(value) \(label)")
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Actions
@@ -398,11 +412,12 @@ struct SocialProfileView: View {
                     Task { await creators.toggleFollow(p.handle) }
                 } label: {
                     Text(p.following ? "Following" : "Follow")
-                        .font(VoiidFont.rounded(14.5, .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundColor(p.following ? VoiidColor.textPrimary
                                                      : VoiidColor.textOnAccent)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 38)
+                        .padding(.vertical, 10)
+                .frame(minHeight: 44)
                         .background(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .fill(p.following ? VoiidColor.surfaceCard : VoiidColor.accent))
@@ -440,7 +455,7 @@ struct SocialProfileView: View {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(VoiidColor.textPrimary)
-                        .frame(width: 42, height: 38)
+                        .frame(width: 44, height: 44)
                         .background(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .fill(VoiidColor.surfaceCard))
@@ -462,10 +477,11 @@ struct SocialProfileView: View {
             tap()
         } label: {
             Text(title)
-                .font(VoiidFont.rounded(14.5, .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundColor(fill ? VoiidColor.textOnAccent : VoiidColor.textPrimary)
                 .frame(maxWidth: .infinity)
-                .frame(height: 38)
+                .padding(.vertical, 10)
+                .frame(minHeight: 44)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(fill ? VoiidColor.accent : VoiidColor.surfaceCard))
@@ -509,34 +525,54 @@ struct SocialProfileView: View {
 
     // MARK: - Tabs
 
-    /// Load-bearing even with one tab: it is the rule that separates the header from the
-    /// grid. The reference's Posts/Tagged are omitted rather than stubbed — see the file
-    /// note.
+    /// Three tabs, matching the Voiid Ui reference.
+    ///
+    /// ALL THREE SHOW THE SAME GRID, and that is what the reference does too — its `tab`
+    /// state only moves the underline. There is no server-side distinction to honour: a
+    /// "reel" is the player mode for a clip, not a separate kind of content (clips.ts:2),
+    /// and nothing tags a person in a clip yet.
+    ///
+    /// So this is chrome that matches the design without claiming content that does not
+    /// exist. When tagging ships, this is where it hangs.
     private var tabBar: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                VStack(spacing: 8) {
-                    Image(systemName: "square.grid.3x3")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                    Rectangle()
-                        .fill(VoiidColor.accent)
-                        .frame(height: 2)
+                ForEach(ProfileTab.allCases) { option in
+                    let selected = option == tab
+
+                    Button {
+                        Haptics.selection()
+                        withAnimation(.easeOut(duration: 0.18)) { tab = option }
+                    } label: {
+                        VStack(spacing: 8) {
+                            Image(systemName: option.icon)
+                                .font(.system(size: 16, weight: selected ? .semibold : .regular))
+                                .foregroundColor(selected ? VoiidColor.textPrimary
+                                                          : VoiidColor.textSecondary)
+
+                            Rectangle()
+                                .fill(selected ? VoiidColor.accent : .clear)
+                                .frame(height: 2)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(option.label)
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
                 }
-                .frame(maxWidth: .infinity)
             }
             .padding(.top, VoiidSpacing.md)
 
             Divider().overlay(VoiidColor.divider)
         }
-        .accessibilityLabel("Clips")
     }
 
     // MARK: - Grid
 
     @ViewBuilder
     private func grid(_ p: SocialService.Profile) -> some View {
-        let rows = creators.clips(for: handle)
+        let rows = creators.clips(for: activeHandle)
 
         if p.can_see_grid == false {
             // A deliberate setting, not a failure: say so plainly rather than showing an
@@ -564,7 +600,7 @@ struct SocialProfileView: View {
                     postTile(row) { openIndex = index }
                         .matchedTransitionSource(id: row.id, in: zoom)
                         .task {
-                            await creators.loadMoreClipsIfNeeded(handle: handle, currentItem: row)
+                            await creators.loadMoreClipsIfNeeded(handle: activeHandle, currentItem: row)
                         }
                 }
             }
@@ -606,20 +642,20 @@ struct SocialProfileView: View {
     // MARK: - Pager
 
     private var pagerFeed: ClipFullscreenView.Feed {
-        let rows = creators.clips(for: handle)
+        let rows = creators.clips(for: activeHandle)
         return ClipFullscreenView.Feed(
-            clips: rows.map { Clip(creatorRow: $0, handle: handle) },
+            clips: rows.map { Clip(creatorRow: $0, handle: activeHandle) },
             // Matched back to its source row by id: `rows.last!` would both crash on an
             // empty grid and ask for the next page from the wrong position, so the pager
             // would stop paginating at the end of page one.
             loadMore: { reached in
                 guard let row = rows.first(where: { $0.id == reached.id }) else { return }
-                await creators.loadMoreClipsIfNeeded(handle: handle, currentItem: row)
+                await creators.loadMoreClipsIfNeeded(handle: activeHandle, currentItem: row)
             })
     }
 
     private func zoomID(_ index: Int) -> String {
-        let rows = creators.clips(for: handle)
+        let rows = creators.clips(for: activeHandle)
         return index < rows.count ? rows[index].id : "\(index)"
     }
 
@@ -663,7 +699,7 @@ struct SocialProfileView: View {
     private func load() async {
         loading = profile == nil
         loadError = nil
-        do { _ = try await creators.loadProfile(handle) }
+        do { _ = try await creators.loadProfile(activeHandle) }
         catch { loadError = "Couldn't load that profile." }
         loading = false
     }
@@ -671,7 +707,7 @@ struct SocialProfileView: View {
     private func loadHighlights() async {
         highlightsLoading = true
         highlightsError = nil
-        do { highlightRows = try await SocialService.shared.highlights(handle: handle).rows }
+        do { highlightRows = try await SocialService.shared.highlights(handle: activeHandle).rows }
         catch { highlightsError = "Couldn't load highlights." }
         highlightsLoading = false
     }
@@ -688,75 +724,294 @@ struct CreatorEditSheet: View {
     @EnvironmentObject var creators: SocialEngine
     @Environment(\.dismiss) private var dismiss
 
+    @State private var username: String
+    @State private var handleState: SocialEngine.HandleState = .idle
+    @State private var confirmRename = false
+    @State private var confirmDiscard = false
     @State private var displayName: String
     @State private var bio: String
     @State private var link: String
     @State private var saving = false
     @State private var errorText: String?
+    @State private var photoItem: PhotosPickerItem?
+    @State private var uploadingPhoto = false
+    /// The bytes just picked, shown immediately so the avatar does not wait on a presigned
+    /// re-download — the same local-first trick EditProfileView uses for the account photo.
+    @State private var pickedImage: UIImage?
 
     init(profile: SocialService.Profile) {
         self.profile = profile
+        _username = State(initialValue: profile.handle)
         _displayName = State(initialValue: profile.display_name ?? "")
         _bio = State(initialValue: profile.bio ?? "")
         _link = State(initialValue: profile.link_url ?? "")
     }
 
+    private var normalizedUsername: String {
+        username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var usernameChanged: Bool { normalizedUsername != profile.handle.lowercased() }
+    private var hasChanges: Bool {
+        usernameChanged || displayName != (profile.display_name ?? "")
+            || bio != (profile.bio ?? "") || link != (profile.link_url ?? "")
+    }
+    private var canSave: Bool {
+        hasChanges && !saving && !uploadingPhoto
+            && SocialEngine.isWellFormed(normalizedUsername)
+            && (!usernameChanged || handleState != .taken)
+            && displayName.count <= 40 && bio.count <= 160 && link.count <= 200
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                    field("Display name", $displayName)
-                    field("Bio", $bio)
-                    field("Link", $link)
+                VStack(alignment: .leading, spacing: 24) {
+                    avatarPicker
+                        .padding(.vertical, VoiidSpacing.sm)
 
-                    if let errorText {
-                        Text(errorText)
-                            .font(VoiidFont.footnote)
-                            .foregroundColor(VoiidColor.error)
+                    VoiidCardSection("Identity", footer: "Use 3–20 letters, numbers or underscores, starting with a letter. You can change your social username once every 30 days. Your chat username stays the same.") {
+                        field("Display name", placeholder: "Your name", text: $displayName)
+                        VoiidRowDivider(inset: VoiidSpacing.md)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Username").font(.footnote.weight(.medium))
+                                .foregroundStyle(VoiidColor.textSecondary)
+                            HStack(spacing: 4) {
+                                Text("@").foregroundStyle(VoiidColor.textSecondary)
+                                TextField("username", text: $username)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .keyboardType(.asciiCapable)
+                                    .accessibilityLabel("Social username")
+                            }
+                            .font(.body)
+                            if usernameChanged { usernameFeedback.font(.footnote) }
+                        }
+                        .padding(VoiidSpacing.md)
+                    }
+                    VoiidCardSection("About you") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Bio").font(.footnote.weight(.medium))
+                                Spacer()
+                                Text("\(bio.count)/160")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(bio.count > 160 ? VoiidColor.error : VoiidColor.textSecondary)
+                            }
+                            .foregroundStyle(VoiidColor.textSecondary)
+                            TextField("A little about you", text: $bio, axis: .vertical)
+                                .lineLimit(3...6)
+                                .font(.body)
+                                .accessibilityLabel("Bio")
+                        }
+                        .padding(VoiidSpacing.md)
+                        VoiidRowDivider(inset: VoiidSpacing.md)
+                        field("Link", placeholder: "https://", text: $link, keyboard: .URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
                     }
 
-                    VoiidPrimaryButton(title: saving ? "Saving…" : "Save", enabled: !saving) {
-                        Haptics.tap()
-                        Task { await save() }
+                    if displayName.count > 40 || link.count > 200 {
+                        Text("Keep your name within 40 characters and your link within 200.")
+                            .font(.footnote).foregroundStyle(VoiidColor.error)
+                    }
+                    if let errorText {
+                        Label(errorText, systemImage: "exclamationmark.circle")
+                            .font(.footnote)
+                            .foregroundStyle(VoiidColor.error)
+                            .accessibilityLabel("Couldn’t save. \(errorText)")
                     }
                 }
                 .padding(VoiidSpacing.md)
+                .disabled(saving)
             }
-            .background(VoiidColor.background.ignoresSafeArea())
-            .navigationTitle("Edit profile")
-            .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.interactively)
+            .fontDesign(.rounded)
+            .foregroundStyle(VoiidColor.textPrimary)
+            .voiidSettingsPage()
+            .navigationTitle("Edit social profile")
+            .interactiveDismissDisabled(hasChanges || saving || uploadingPhoto)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                        .foregroundColor(VoiidColor.textSecondary)
+                    Button("Cancel") {
+                        if hasChanges { confirmDiscard = true } else { dismiss() }
+                    }
+                    .disabled(saving || uploadingPhoto)
+                    .tint(VoiidColor.textSecondary)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Saving…" : "Save") {
+                        if usernameChanged { confirmRename = true }
+                        else { Task { await save() } }
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!canSave)
+                    .tint(VoiidColor.primary)
                 }
             }
+            .confirmationDialog("Change your username?", isPresented: $confirmRename,
+                                titleVisibility: .visible) {
+                Button("Change to @\(normalizedUsername)") { Task { await save() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("You won’t be able to change it again for 30 days.")
+            }
+            .confirmationDialog("Discard profile changes?", isPresented: $confirmDiscard,
+                                titleVisibility: .visible) {
+                Button("Discard changes", role: .destructive) { dismiss() }
+                Button("Keep editing", role: .cancel) {}
+            }
+            .onChange(of: username) { _, _ in
+                if usernameChanged {
+                    creators.checkHandle(username) { handleState = $0 }
+                } else {
+                    creators.cancelHandleCheck()
+                    handleState = .idle
+                }
+            }
+            .onDisappear { creators.cancelHandleCheck() }
         }
     }
 
-    private func field(_ label: String, _ binding: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.xs) {
-            Text(label).font(VoiidFont.footnote)
-                .foregroundColor(VoiidColor.textSecondary)
-            VoiidTextField(placeholder: "Optional", text: binding)
+    @ViewBuilder
+    private var usernameFeedback: some View {
+        switch handleState {
+        case .checking:
+            Label("Checking availability…", systemImage: "ellipsis")
+                .foregroundStyle(VoiidColor.textSecondary)
+        case .available:
+            Label("Username available", systemImage: "checkmark.circle")
+                .foregroundStyle(VoiidColor.success)
+        case .taken:
+            Label("This username is taken", systemImage: "xmark.circle")
+                .foregroundStyle(VoiidColor.error)
+        case .badFormat, .idle:
+            Text("Start with a letter. Use 3–20 letters, numbers or underscores.")
+                .foregroundStyle(VoiidColor.textSecondary)
+        case .failed:
+            Text("Availability will be checked when you save.")
+                .foregroundStyle(VoiidColor.textSecondary)
         }
     }
 
-    /// The handle is deliberately NOT sent: this sheet does not edit it, and including it
-    /// unchanged would still be a no-op that risks burning the 30-day rename window if the
-    /// server's comparison ever changed.
+    /// THE PUBLIC AVATAR, and the copy says so.
+    ///
+    /// This is `social_profiles.avatar_r2_key` — plaintext, visible to strangers on Clips,
+    /// community posts and game rosters. It is NOT the account photo from Settings, which is
+    /// governed by `photo_privacy` and shown only to people you have connected with. Two
+    /// pictures for two audiences; conflating them is the bug 029 created this column to
+    /// avoid.
+    private var avatarPicker: some View {
+        VStack(spacing: VoiidSpacing.sm) {
+            PhotosPicker(selection: $photoItem, matching: .images) {
+                ZStack(alignment: .bottomTrailing) {
+                    Group {
+                        if let pickedImage {
+                            Image(uiImage: pickedImage).resizable().scaledToFill()
+                        } else if let url = profile.avatar_url {
+                            ClipThumbnail(url: url)
+                        } else {
+                            ZStack {
+                                Circle().fill(VoiidColor.accentTint)
+                                Text(String(profile.handle.prefix(1)).uppercased())
+                                    .font(VoiidFont.rounded(34, .bold))
+                                    .foregroundColor(VoiidColor.accent)
+                            }
+                        }
+                    }
+                    .frame(width: 96, height: 96)
+                    .clipShape(Circle())
+                    .overlay(Circle().strokeBorder(VoiidColor.divider, lineWidth: 1))
+
+                    // The affordance, because a tappable avatar with no badge reads as
+                    // decoration and nobody finds it.
+                    ZStack {
+                        Circle().fill(VoiidColor.accent).frame(width: 30, height: 30)
+                        if uploadingPhoto {
+                            ProgressView().controlSize(.small).tint(.white)
+                        } else {
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .overlay(Circle().strokeBorder(VoiidColor.background, lineWidth: 2))
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(uploadingPhoto || saving)
+            .accessibilityLabel("Change your public profile photo")
+
+            Text(uploadingPhoto ? "Uploading photo…" : "Change photo")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(VoiidColor.primary)
+                .accessibilityHidden(true)
+            Text("Your social photo is public. Photo changes save immediately.")
+                .font(.footnote)
+                .foregroundStyle(VoiidColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task { await uploadAvatar(item) }
+        }
+    }
+
+    private func uploadAvatar(_ item: PhotosPickerItem) async {
+        uploadingPhoto = true
+        defer { uploadingPhoto = false }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data) else {
+                errorText = "Couldn't read that image."
+                return
+            }
+            pickedImage = image
+            // Re-encoded rather than sent as-is: a HEIC straight off the camera is several
+            // megabytes and the server stores exactly what it is given.
+            guard let jpeg = image.jpegData(compressionQuality: 0.85) else {
+                pickedImage = nil
+                errorText = "Couldn't prepare that image."
+                return
+            }
+            _ = try await creators.uploadAvatar(jpeg: jpeg)
+            errorText = nil
+            Haptics.success()
+        } catch {
+            pickedImage = nil
+            errorText = (error as? APIError)?.errorDescription ?? "Couldn't upload that photo."
+        }
+    }
+
+    private func field(_ label: String, placeholder: String, text: Binding<String>,
+                       keyboard: UIKeyboardType = .default) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label).font(.footnote.weight(.medium))
+                .foregroundStyle(VoiidColor.textSecondary)
+            TextField(placeholder, text: text)
+                .font(.body)
+                .keyboardType(keyboard)
+                .accessibilityLabel(label)
+        }
+        .padding(VoiidSpacing.md)
+    }
+
     private func save() async {
+        guard canSave else { return }
         saving = true
         errorText = nil
         defer { saving = false }
         do {
             _ = try await creators.updateProfile(
+                handle: usernameChanged ? normalizedUsername : nil,
                 displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines),
                 bio: bio.trimmingCharacters(in: .whitespacesAndNewlines),
                 linkURL: link.trimmingCharacters(in: .whitespacesAndNewlines))
+            Haptics.success()
             dismiss()
         } catch {
-            errorText = error.localizedDescription
+            errorText = (error as? APIError)?.errorDescription ?? error.localizedDescription
         }
     }
 }
@@ -766,3 +1021,27 @@ struct CreatorEditSheet: View {
 // `ProfileHighlight` and its `samples` are GONE. The rail reads `SocialService.Highlight`
 // straight from GET /creators/:handle/highlights (048_creator_highlights.sql), so a local
 // mirror of the type would be a second shape to keep in step with the wire for no gain.
+
+/// The profile's tab bar. Mirrors `ProfileTab` in the Voiid Ui reference, including the
+/// labels: "Posts" for the grid and "Clips" for the reels icon.
+enum ProfileTab: String, CaseIterable, Identifiable {
+    case grid, reels, tagged
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .grid:   "square.grid.3x3"
+        case .reels:  "play.square"
+        case .tagged: "person.crop.square"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .grid:   "Posts"
+        case .reels:  "Clips"
+        case .tagged: "Tagged"
+        }
+    }
+}

@@ -236,7 +236,7 @@ struct ClipsGuideline: Identifiable {
               points: [
                 "Absolutely no sexual content involving anyone under 18. This is removed immediately and reported.",
                 "No sexualising minors, in any form, including animation or AI-generated material.",
-                "You must be 13 or older to have a Clips profile.",
+                "You must be 13 or older to have a Social Profile.",
               ]),
         .init(id: "adult", title: "Keep it appropriate", icon: "eye.slash.fill",
               tint: Color(hex: 0xA78BFA),

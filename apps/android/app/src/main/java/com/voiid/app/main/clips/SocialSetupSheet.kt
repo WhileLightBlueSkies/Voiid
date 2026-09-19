@@ -156,12 +156,12 @@ fun SocialSetupSheet(
 
             if (step == 1) {
             Text(
-                "Pick a name for your clips",
+                "Create your Social Profile",
                 style = VoiidFont.rounded(24, FontWeight.Bold),
                 color = VoiidColor.textPrimary,
             )
             Text(
-                "This is how people find and follow you on Clips.",
+                "One public identity for Clips, Games and Communities. This is how people find you.",
                 style = VoiidFont.rounded(15),
                 color = VoiidColor.textSecondary,
             )
@@ -259,7 +259,8 @@ fun SocialSetupSheet(
                 Icon(Icons.Filled.Public, null,
                     tint = VoiidColor.textSecondary, modifier = Modifier.size(16.dp))
                 Text(
-                    "Your handle, profile and clips are public and are not end-to-end " +
+                    "Your handle, name and photo are public. They appear on your Clips, " +
+                        "your community posts and your games, and are not end-to-end " +
                         "encrypted. Your messages, calls and locations stay encrypted.",
                     style = VoiidFont.rounded(12),
                     color = VoiidColor.textSecondary,
@@ -299,7 +300,7 @@ fun SocialSetupSheet(
                 }
                 if (age != null && age < 13) {
                     Text(
-                        "You need to be 13 or older to have a Clips profile.",
+                        "You need to be 13 or older to have a Social Profile.",
                         style = VoiidFont.rounded(13), color = VoiidColor.error,
                     )
                 } else if (age != null && isMinor) {

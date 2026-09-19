@@ -72,7 +72,7 @@ struct SocialSetupSheet: View {
 
         var title: String {
             switch self {
-            case .identity:  "Clips Identity"
+            case .identity:  "Social Identity"
             case .age:       "Age & Safety"
             case .interests: "Feed Tuning"
             }
@@ -208,16 +208,16 @@ struct SocialSetupSheet: View {
     private var identityStep: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Build Your Clips Profile")
+                Text("Create your Social Profile")
                     .font(VoiidFont.rounded(24, .bold))
                     .foregroundColor(VoiidColor.textPrimary)
-                Text("This is how people find you on Clips.")
+                Text("One public identity for Clips, Games and Communities. This is how people find you.")
                     .font(VoiidFont.subhead)
                     .foregroundColor(VoiidColor.textSecondary)
             }
 
             VStack(alignment: .leading, spacing: VoiidSpacing.xs) {
-                Text("Clips Handle")
+                Text("Handle")
                     .font(VoiidFont.rounded(14, .semibold))
                     .foregroundColor(VoiidColor.textPrimary)
 
@@ -301,7 +301,7 @@ struct SocialSetupSheet: View {
             Image(systemName: "globe")
                 .font(.system(size: 15))
                 .foregroundColor(VoiidColor.textSecondary)
-            Text("Your handle, name and bio are public and attached to every Clip you post. This is separate from your chat username.")
+            Text("Your handle, name and photo are public. They appear on your Clips, your community posts and your games. This is separate from your chat username, and your messages stay end-to-end encrypted.")
                 .font(VoiidFont.caption)
                 .foregroundColor(VoiidColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -363,7 +363,7 @@ struct SocialSetupSheet: View {
                 Image(systemName: "lock.fill")
                     .font(.system(size: 14))
                     .foregroundColor(VoiidColor.textSecondary)
-                Text("Your date of birth is never visible on your profile or shared with other creators. It is used to apply the right protections.")
+                Text("Your date of birth is never shown on your profile and never shared with anyone. It is used only to apply the right safety protections.")
                     .font(VoiidFont.caption)
                     .foregroundColor(VoiidColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -526,7 +526,7 @@ struct SocialSetupSheet: View {
             Spacer()
             VoiidPrimaryButton(
                 title: submitting ? "Creating…"
-                     : (step == .interests ? "Enter Voiid Clips" : "Continue"),
+                     : (step == .interests ? "Create profile" : "Continue"),
                 action: advance
             )
             .disabled(!stepValid || submitting)

@@ -64,6 +64,8 @@ import com.voiid.app.main.walkthrough.spotlightTarget
 fun CommunitiesHomeView(
     /** Handed a conversation id from the host inbox — the caller owns navigation. */
     onOpenConversation: (String) -> Unit = {},
+    /** Opening a Social Profile by handle. The root owns the destination. */
+    onOpenProfile: (String) -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val haptics = LocalVoiidHaptics.current
@@ -147,6 +149,12 @@ fun CommunitiesHomeView(
                     .softClickable { haptics.tap(); showCreate = true },
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Default.Add, "Create a community", tint = VoiidColor.primary) }
+
+            // The same identity, in the same corner, as Clips and Games.
+            com.voiid.app.main.clips.SocialProfileButton(
+                creators = androidx.lifecycle.viewmodel.compose.viewModel(),
+                onOpen = onOpenProfile,
+            )
         }
 
         if (!discovering) {

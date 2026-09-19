@@ -447,6 +447,10 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                     val shownTab = Tab.visible[page]
                     when (shownTab) {
                         Tab.COMMUNITIES -> CommunitiesHomeView(
+                            // The same Social Profile the Clips tab opens. Routed through the
+                            // root's `openCreator` so all three tabs land on one screen rather
+                            // than each pushing its own copy.
+                            onOpenProfile = { openCreator = it },
                             onOpenConversation = { conversationId ->
                                 // Host-inbox taps land in the Chats tab like any other
                                 // conversation — the inbox only ever hands back an id.
@@ -458,6 +462,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                             },
                         )
                         Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
+                            onOpenProfile = { openCreator = it },
                             onPickGame = { setupGame = it },
                             onLeaderboard = { showLeaderboard = true },
                             onDaily = { showDaily = true },

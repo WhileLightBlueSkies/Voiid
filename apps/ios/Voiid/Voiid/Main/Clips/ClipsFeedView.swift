@@ -411,7 +411,7 @@ struct ClipsFeedView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(SoftPressStyle())
-                .accessibilityLabel("Your creator profile, @\(mine.handle)")
+                .accessibilityLabel("Your Social Profile, @\(mine.handle)")
             }
         }
     }
