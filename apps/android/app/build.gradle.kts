@@ -256,6 +256,12 @@ dependencies {
     // Recording, not just stills — see ClipCameraView. The clip composer used to hand off to
     // the system camera intent because this artifact was missing.
     implementation(libs.androidx.camera.video)
+    // MediaPipe Face Landmarker -- the tracker behind the new Clips face
+    // filters. See docs/FACE_FILTERS_REBUILD.md for why this and not ML Kit.
+    implementation(libs.mediapipe.tasks.vision)
+    // ML Kit still drives the OLD ClipFaceEffects path; removed in Phase 10
+    // once facefx replaces it.
+    implementation(libs.mlkit.face.detection)
 
     // Media3 — Clips: ExoPlayer for the reels player, Transformer + Effect for the
     // editor's trim/filter export. See docs/CLIPS.md §5.3 for why this is the correct
