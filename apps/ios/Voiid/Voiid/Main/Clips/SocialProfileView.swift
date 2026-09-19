@@ -1,5 +1,5 @@
 //
-//  CreatorProfileView.swift
+//  SocialProfileView.swift
 //  Voiid
 //
 //  A creator's public profile, reached from a clip.
@@ -30,11 +30,11 @@
 
 import SwiftUI
 
-struct CreatorProfileView: View {
+struct SocialProfileView: View {
 
     let handle: String
 
-    @EnvironmentObject private var creators: CreatorEngine
+    @EnvironmentObject private var creators: SocialEngine
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var session: AppSession
 
@@ -47,12 +47,12 @@ struct CreatorProfileView: View {
     @State private var hintText: String?
     @State private var bioExpanded = false
     @State private var openIndex: Int?
-    @State private var highlightRows: [CreatorService.Highlight] = []
+    @State private var highlightRows: [SocialService.Highlight] = []
     @State private var highlightsLoading = true
     @State private var highlightsError: String?
     @Namespace private var zoom
 
-    private var profile: CreatorService.Profile? { creators.cachedProfile(handle) }
+    private var profile: SocialService.Profile? { creators.cachedProfile(handle) }
 
     /// The reference's 3 × 3pt mesh.
     private let columns = [
@@ -125,7 +125,7 @@ struct CreatorProfileView: View {
             if let p = profile { CreatorEditSheet(profile: p).environmentObject(creators) }
         }
         .navigationDestination(isPresented: $showPrivacy) {
-            CreatorPrivacyView().environmentObject(creators)
+            SocialPrivacyView().environmentObject(creators)
         }
         .fullScreenCover(item: $openIndex.asIdentifiable()) { boxed in
             ClipFullscreenView(startIndex: boxed.value, feed: pagerFeed)
@@ -138,7 +138,7 @@ struct CreatorProfileView: View {
 
     /// 148pt, blurred, fading into the page. The reference note: without the fade the cover
     /// ends on a hard horizontal line and reads as a banner ad.
-    private func cover(_ p: CreatorService.Profile) -> some View {
+    private func cover(_ p: SocialService.Profile) -> some View {
         ZStack {
             // The reference has a dedicated cover image; a creator profile has an avatar and
             // an optional cover. Blurring the avatar is the fallback so the band is never
@@ -248,7 +248,7 @@ struct CreatorProfileView: View {
     /// circle twice its height and forces the bio into a narrow gutter. Stacked, the bio gets
     /// the full width and the name is the largest thing on screen — which, on a profile, it
     /// should be.
-    private func identity(_ p: CreatorService.Profile) -> some View {
+    private func identity(_ p: SocialService.Profile) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             avatar(p)
                 // Pulls the avatar up onto the cover.
@@ -293,7 +293,7 @@ struct CreatorProfileView: View {
     }
 
     /// 82pt — the reference's size exactly.
-    private func avatar(_ p: CreatorService.Profile) -> some View {
+    private func avatar(_ p: SocialService.Profile) -> some View {
         avatarImage(p)
             .frame(width: 82, height: 82)
             .clipShape(Circle())
@@ -315,7 +315,7 @@ struct CreatorProfileView: View {
     }
 
     @ViewBuilder
-    private func avatarImage(_ p: CreatorService.Profile) -> some View {
+    private func avatarImage(_ p: SocialService.Profile) -> some View {
         if let url = p.avatar_url {
             ClipThumbnail(url: url)
         } else {
@@ -346,7 +346,7 @@ struct CreatorProfileView: View {
 
     // MARK: - Counts
 
-    private func counts(_ p: CreatorService.Profile) -> some View {
+    private func counts(_ p: SocialService.Profile) -> some View {
         HStack(spacing: 18) {
             // A nil count means the server WITHHELD it (see publicProfile). The item is
             // omitted rather than shown as 0 — zero is a factual claim this profile is not
@@ -387,7 +387,7 @@ struct CreatorProfileView: View {
 
     // MARK: - Actions
 
-    private func actions(_ p: CreatorService.Profile) -> some View {
+    private func actions(_ p: SocialService.Profile) -> some View {
         HStack(spacing: 8) {
             if p.is_self {
                 secondaryAction("Edit profile", fill: true) { showEdit = true }
@@ -535,7 +535,7 @@ struct CreatorProfileView: View {
     // MARK: - Grid
 
     @ViewBuilder
-    private func grid(_ p: CreatorService.Profile) -> some View {
+    private func grid(_ p: SocialService.Profile) -> some View {
         let rows = creators.clips(for: handle)
 
         if p.can_see_grid == false {
@@ -572,7 +572,7 @@ struct CreatorProfileView: View {
         }
     }
 
-    private func postTile(_ row: CreatorService.CreatorClipRow,
+    private func postTile(_ row: SocialService.CreatorClipRow,
                           _ tap: @escaping () -> Void) -> some View {
         Button {
             Haptics.tap()
@@ -651,9 +651,9 @@ struct CreatorProfileView: View {
 
     // MARK: - Actions plumbing
 
-    private func share(_ p: CreatorService.Profile) { copyLink(p) }
+    private func share(_ p: SocialService.Profile) { copyLink(p) }
 
-    private func copyLink(_ p: CreatorService.Profile) {
+    private func copyLink(_ p: SocialService.Profile) {
         UIPasteboard.general.string = "https://voiid.app/@\(p.handle)"
         Haptics.success()
     }
@@ -671,7 +671,7 @@ struct CreatorProfileView: View {
     private func loadHighlights() async {
         highlightsLoading = true
         highlightsError = nil
-        do { highlightRows = try await CreatorService.shared.highlights(handle: handle).rows }
+        do { highlightRows = try await SocialService.shared.highlights(handle: handle).rows }
         catch { highlightsError = "Couldn't load highlights." }
         highlightsLoading = false
     }
@@ -683,9 +683,9 @@ struct CreatorProfileView: View {
 /// days server-side, so the field says as much rather than letting the user discover the
 /// limit via a 429.
 struct CreatorEditSheet: View {
-    let profile: CreatorService.Profile
+    let profile: SocialService.Profile
 
-    @EnvironmentObject var creators: CreatorEngine
+    @EnvironmentObject var creators: SocialEngine
     @Environment(\.dismiss) private var dismiss
 
     @State private var displayName: String
@@ -694,7 +694,7 @@ struct CreatorEditSheet: View {
     @State private var saving = false
     @State private var errorText: String?
 
-    init(profile: CreatorService.Profile) {
+    init(profile: SocialService.Profile) {
         self.profile = profile
         _displayName = State(initialValue: profile.display_name ?? "")
         _bio = State(initialValue: profile.bio ?? "")
@@ -763,6 +763,6 @@ struct CreatorEditSheet: View {
 
 // MARK: - Highlights
 //
-// `ProfileHighlight` and its `samples` are GONE. The rail reads `CreatorService.Highlight`
+// `ProfileHighlight` and its `samples` are GONE. The rail reads `SocialService.Highlight`
 // straight from GET /creators/:handle/highlights (048_creator_highlights.sql), so a local
 // mirror of the type would be a second shape to keep in step with the wire for no gain.

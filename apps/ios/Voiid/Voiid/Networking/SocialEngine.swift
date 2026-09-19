@@ -1,11 +1,11 @@
 //
-//  CreatorEngine.swift
+//  SocialEngine.swift
 //  Voiid
 //
 //  Observable state for creator profiles, the follow graph, and the Following feed.
-//  Transport lives in CreatorService; this owns the cache and the optimistic updates.
+//  Transport lives in SocialService; this owns the cache and the optimistic updates.
 //
-//  NOT E2EE — see the header of CreatorService.swift. A follow grants no messaging right.
+//  NOT E2EE — see the header of SocialService.swift. A follow grants no messaging right.
 //
 
 import Combine
@@ -13,8 +13,8 @@ import Foundation
 import SwiftUI
 
 @MainActor
-final class CreatorEngine: ObservableObject {
-    private let svc = CreatorService.shared
+final class SocialEngine: ObservableObject {
+    private let svc = SocialService.shared
 
     // MARK: - Your own profile (the gate)
 
@@ -22,7 +22,7 @@ final class CreatorEngine: ObservableObject {
     /// both "not loaded yet" and "you have none" — so `hasLoadedMe` distinguishes them.
     /// Without that split the composer cannot tell a cold start from a genuine no-profile
     /// and would show the handle picker to someone who already has a handle.
-    @Published private(set) var me: CreatorService.Profile?
+    @Published private(set) var me: SocialService.Profile?
     @Published private(set) var hasLoadedMe = false
     @Published private(set) var meLoading = false
 
@@ -30,8 +30,36 @@ final class CreatorEngine: ObservableObject {
     /// loaded, so a slow network never fires a spurious picker.
     var needsProfile: Bool { hasLoadedMe && me == nil }
 
+    /// ONE FLAG FOR EVERY SURFACE.
+    ///
+    /// The server now returns `profile_required` from liking a clip, commenting, publishing,
+    /// joining a community and starting a match — not just the clip-commit path it used to.
+    /// Each of those raising its own flag would mean five copies of "present the setup sheet"
+    /// that drift apart; this is the one place any of them can set.
+    ///
+    /// Set it through `raiseGate(for:)` rather than assigning directly, so an unrelated error
+    /// cannot open the sheet.
+    @Published var showSetup = false
+
+    /// Turns a caught error into the gate, if that is what it is. Returns true when it handled
+    /// the error, so a caller can stop rather than also showing a failure toast — a person who
+    /// is being asked to pick a handle should not simultaneously be told something broke.
     @discardableResult
-    func refreshMe() async -> CreatorService.Profile? {
+    func raiseGate(for error: Error) -> Bool {
+        guard (error as? APIError)?.serverCode == "profile_required" else { return false }
+        showSetup = true
+        return true
+    }
+
+    /// Called after the sheet completes, so the surface that was blocked can proceed.
+    func profileCreated(_ profile: SocialService.Profile) {
+        me = profile
+        hasLoadedMe = true
+        showSetup = false
+    }
+
+    @discardableResult
+    func refreshMe() async -> SocialService.Profile? {
         meLoading = true
         defer { meLoading = false }
         do {
@@ -48,14 +76,14 @@ final class CreatorEngine: ObservableObject {
 
     /// Ensures `me` is loaded, fetching only once. Called before the composer opens.
     @discardableResult
-    func ensureMeLoaded() async -> CreatorService.Profile? {
+    func ensureMeLoaded() async -> SocialService.Profile? {
         if hasLoadedMe { return me }
         return await refreshMe()
     }
 
     func createProfile(handle: String, displayName: String?, bio: String?,
                        linkURL: String?, birthDate: String? = nil,
-                       interests: [String] = []) async throws -> CreatorService.Profile {
+                       interests: [String] = []) async throws -> SocialService.Profile {
         let p = try await svc.create(handle: handle, displayName: displayName,
                                      bio: bio, linkURL: linkURL,
                                      birthDate: birthDate, interests: interests)
@@ -67,7 +95,7 @@ final class CreatorEngine: ObservableObject {
 
     func updateProfile(handle: String? = nil, displayName: String? = nil,
                        bio: String? = nil, linkURL: String? = nil) async throws
-        -> CreatorService.Profile {
+        -> SocialService.Profile {
         let old = me?.handle.lowercased()
         let p = try await svc.update(handle: handle, displayName: displayName,
                                      bio: bio, linkURL: linkURL)
@@ -91,7 +119,7 @@ final class CreatorEngine: ObservableObject {
         cache[p.handle.lowercased()] = p
     }
 
-    func uploadAvatar(jpeg: Data) async throws -> CreatorService.Profile {
+    func uploadAvatar(jpeg: Data) async throws -> SocialService.Profile {
         let p = try await svc.uploadAvatar(jpeg: jpeg)
         me = p
         cache[p.handle.lowercased()] = p
@@ -158,14 +186,14 @@ final class CreatorEngine: ObservableObject {
 
     /// Keyed on the lowercased handle. Small and short-lived: a profile carries a presigned
     /// avatar URL that expires, so this is a within-session convenience, not a store.
-    @Published private(set) var cache: [String: CreatorService.Profile] = [:]
+    @Published private(set) var cache: [String: SocialService.Profile] = [:]
 
-    func cachedProfile(_ handle: String) -> CreatorService.Profile? {
+    func cachedProfile(_ handle: String) -> SocialService.Profile? {
         cache[handle.lowercased()]
     }
 
     @discardableResult
-    func loadProfile(_ handle: String) async throws -> CreatorService.Profile {
+    func loadProfile(_ handle: String) async throws -> SocialService.Profile {
         let p = try await svc.profile(handle: handle)
         cache[p.handle.lowercased()] = p
         // The server is authoritative about whether this is you; keep `me` in step so an
@@ -212,11 +240,11 @@ final class CreatorEngine: ObservableObject {
 
     // MARK: - A creator's grid
 
-    @Published private(set) var grids: [String: [CreatorService.CreatorClipRow]] = [:]
+    @Published private(set) var grids: [String: [SocialService.CreatorClipRow]] = [:]
     private var gridCursors: [String: String?] = [:]
     private var gridLoading: Set<String> = []
 
-    func clips(for handle: String) -> [CreatorService.CreatorClipRow] {
+    func clips(for handle: String) -> [SocialService.CreatorClipRow] {
         grids[handle.lowercased()] ?? []
     }
 
@@ -235,7 +263,7 @@ final class CreatorEngine: ObservableObject {
     }
 
     /// Keyset pagination, triggered by the tile near the end of the grid coming into view.
-    func loadMoreClipsIfNeeded(handle: String, currentItem: CreatorService.CreatorClipRow) async {
+    func loadMoreClipsIfNeeded(handle: String, currentItem: SocialService.CreatorClipRow) async {
         let key = handle.lowercased()
         guard let rows = grids[key], let cursor = gridCursors[key] ?? nil,
               !gridLoading.contains(key) else { return }
@@ -258,7 +286,7 @@ final class CreatorEngine: ObservableObject {
 
     // MARK: - Following feed
 
-    @Published private(set) var following: [CreatorService.CreatorClipRow] = []
+    @Published private(set) var following: [SocialService.CreatorClipRow] = []
     @Published private(set) var followingLoading = false
     @Published private(set) var followingError: String?
     @Published private(set) var followingLoadedOnce = false
@@ -278,7 +306,7 @@ final class CreatorEngine: ObservableObject {
         }
     }
 
-    func loadMoreFollowingIfNeeded(currentItem: CreatorService.CreatorClipRow) async {
+    func loadMoreFollowingIfNeeded(currentItem: SocialService.CreatorClipRow) async {
         guard let cursor = followingCursor, !followingLoading,
               following.suffix(6).contains(where: { $0.id == currentItem.id }) else { return }
         followingLoading = true

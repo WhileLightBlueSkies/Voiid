@@ -57,8 +57,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.voiid.app.model.ClipCount
-import com.voiid.app.model.CreatorStore
-import com.voiid.app.net.CreatorService
+import com.voiid.app.model.SocialStore
+import com.voiid.app.net.SocialService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidStyledField
 import com.voiid.app.ui.components.softClickable
@@ -72,7 +72,7 @@ import kotlinx.coroutines.launch
 
 /**
  * A creator's public page: header, follow button, and their grid of clips.
- * Mirrors iOS `CreatorProfileView.swift`.
+ * Mirrors iOS `SocialProfileView.swift`.
  *
  * The grid is the SAME 3-column, 2dp-gutter, 9:16 layout as the Explore feed and My Clips,
  * reusing [ClipThumbnail]. That is deliberate and not up for redesign — it is the layout the
@@ -85,9 +85,9 @@ import kotlinx.coroutines.launch
  * conversation, and there is deliberately no "Message" affordance here.
  */
 @Composable
-fun CreatorProfileView(
+fun SocialProfileView(
     handle: String,
-    creators: CreatorStore,
+    creators: SocialStore,
     onBack: () -> Unit,
     onOpenClip: (Int) -> Unit = {},
 ) {
@@ -197,8 +197,8 @@ fun CreatorProfileView(
 
 @Composable
 private fun ProfileHeader(
-    p: CreatorService.Profile,
-    creators: CreatorStore,
+    p: SocialService.Profile,
+    creators: SocialStore,
     onEdit: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
@@ -323,7 +323,7 @@ private fun ProfileHeader(
  * someone else's rainbow.
  */
 @Composable
-private fun GradientAvatar(p: CreatorService.Profile) {
+private fun GradientAvatar(p: SocialService.Profile) {
     val ring = Brush.linearGradient(listOf(VoiidColor.primary, VoiidColor.accent))
     Box(
         Modifier
@@ -376,8 +376,8 @@ private fun StatDivider() {
  */
 @Composable
 private fun FollowButton(
-    p: CreatorService.Profile,
-    creators: CreatorStore,
+    p: SocialService.Profile,
+    creators: SocialStore,
     modifier: Modifier = Modifier,
 ) {
     val haptics = LocalVoiidHaptics.current
@@ -448,7 +448,7 @@ private fun HeaderButton(
 
 @Composable
 private fun CreatorClipTile(
-    clip: CreatorService.CreatorClipRow,
+    clip: SocialService.CreatorClipRow,
     modifier: Modifier = Modifier,
     onTap: () -> Unit,
 ) {
@@ -493,8 +493,8 @@ private fun CreatorClipTile(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreatorEditSheet(
-    profile: CreatorService.Profile,
-    creators: CreatorStore,
+    profile: SocialService.Profile,
+    creators: SocialStore,
     onDismiss: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current

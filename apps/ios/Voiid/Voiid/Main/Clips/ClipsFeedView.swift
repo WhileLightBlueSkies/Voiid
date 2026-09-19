@@ -14,7 +14,10 @@ import SwiftUI
 struct ClipsFeedView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var engine = ClipsEngine.shared
-    @StateObject private var creators = CreatorEngine()
+    // From the root, not owned here: a second instance would hold a second copy of `me` and
+    // a second gate flag, so the sheet raised by a community join would not be the one this
+    // screen is watching.
+    @EnvironmentObject private var creators: SocialEngine
 
     @State private var openIndex: Int?
     /// Index into the Following feed, kept separate from `openIndex` so switching scope
@@ -63,7 +66,7 @@ struct ClipsFeedView: View {
                 MyClipsView().environmentObject(engine)
             }
             .navigationDestination(item: $openHandle) { handle in
-                CreatorProfileView(handle: handle)
+                SocialProfileView(handle: handle)
                     .environmentObject(creators)
             }
             .background(VoiidColor.background.ignoresSafeArea())
@@ -96,7 +99,7 @@ struct ClipsFeedView: View {
                     .environmentObject(creators)
             }
             .sheet(isPresented: $showHandleSheet) {
-                CreatorSetupSheet { _ in
+                SocialSetupSheet { _ in
                     // Whatever raised the gate can now proceed: either finish an upload
                     // parked at the commit step, or open the composer that was blocked.
                     Task {
@@ -437,7 +440,7 @@ struct ClipsFeedView: View {
     /// Reuses ClipThumbnail — an avatar is the same problem as a cover frame: a presigned
     /// URL that can expire or 404, wanting a shimmer rather than a grey hole.
     @ViewBuilder
-    private func myAvatar(_ p: CreatorService.Profile) -> some View {
+    private func myAvatar(_ p: SocialService.Profile) -> some View {
         if let url = p.avatar_url {
             // ClipThumbnail fills internally; a second scaledToFill leaves it unbounded.
             ClipThumbnail(url: url)

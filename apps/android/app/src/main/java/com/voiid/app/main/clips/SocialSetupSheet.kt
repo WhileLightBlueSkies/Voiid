@@ -42,9 +42,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
-import com.voiid.app.model.CreatorStore
+import com.voiid.app.model.SocialStore
 import com.voiid.app.net.ApiError
-import com.voiid.app.net.CreatorService
+import com.voiid.app.net.SocialService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -56,7 +56,7 @@ import kotlinx.coroutines.launch
  * THE GATE — a creator profile is required before a first clip can be posted, and this is
  * where it gets created: on demand, at first post, not at signup (see 029's header for why
  * manufacturing a public identity for every account is both a privacy and a namespace
- * problem). Mirrors iOS `CreatorHandleSheet.swift`.
+ * problem). Mirrors iOS `SocialSetupSheet.swift`.
  *
  * ── THIS IS PUBLIC, AND THE COPY SAYS SO ─────────────────────────────────────────
  * A creator handle is BROADCAST IDENTITY: visible to strangers, attached to every clip.
@@ -66,9 +66,9 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CreatorHandleSheet(
-    creators: CreatorStore,
-    onCreated: (CreatorService.Profile) -> Unit,
+fun SocialSetupSheet(
+    creators: SocialStore,
+    onCreated: (SocialService.Profile) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
@@ -87,8 +87,8 @@ fun CreatorHandleSheet(
     // blocking on Available would strand the user whenever the check itself failed, and the
     // create call re-validates under the real unique constraint regardless.
     val canSubmit = !submitting &&
-        CreatorService.isWellFormed(normalized) &&
-        state !is CreatorStore.HandleState.Taken
+        SocialService.isWellFormed(normalized) &&
+        state !is SocialStore.HandleState.Taken
 
     LaunchedEffect(Unit) { creators.resetHandleState() }
 
@@ -120,9 +120,9 @@ fun CreatorHandleSheet(
 
             // ── Handle ────────────────────────────────────────────────────────────
             val borderColor = when (state) {
-                is CreatorStore.HandleState.Available -> VoiidColor.success
-                is CreatorStore.HandleState.Taken,
-                is CreatorStore.HandleState.BadFormat -> VoiidColor.error
+                is SocialStore.HandleState.Available -> VoiidColor.success
+                is SocialStore.HandleState.Taken,
+                is SocialStore.HandleState.BadFormat -> VoiidColor.error
                 else -> VoiidColor.fieldBorder
             }
             Row(
@@ -161,17 +161,17 @@ fun CreatorHandleSheet(
                     }
                 }
                 when (state) {
-                    is CreatorStore.HandleState.Checking ->
+                    is SocialStore.HandleState.Checking ->
                         CircularProgressIndicator(
                             Modifier.size(18.dp),
                             strokeWidth = 2.dp,
                             color = VoiidColor.textSecondary,
                         )
-                    is CreatorStore.HandleState.Available ->
+                    is SocialStore.HandleState.Available ->
                         Icon(Icons.Filled.CheckCircle, null,
                             tint = VoiidColor.success, modifier = Modifier.size(20.dp))
-                    is CreatorStore.HandleState.Taken,
-                    is CreatorStore.HandleState.BadFormat ->
+                    is SocialStore.HandleState.Taken,
+                    is SocialStore.HandleState.BadFormat ->
                         Icon(Icons.Filled.Cancel, null,
                             tint = VoiidColor.error, modifier = Modifier.size(20.dp))
                     else -> Unit
@@ -179,17 +179,17 @@ fun CreatorHandleSheet(
             }
 
             val hint = when (state) {
-                is CreatorStore.HandleState.Available -> "@$normalized is available."
-                is CreatorStore.HandleState.Taken -> "That handle is taken."
-                is CreatorStore.HandleState.Checking -> "Checking…"
-                is CreatorStore.HandleState.Failed -> state.message
+                is SocialStore.HandleState.Available -> "@$normalized is available."
+                is SocialStore.HandleState.Taken -> "That handle is taken."
+                is SocialStore.HandleState.Checking -> "Checking…"
+                is SocialStore.HandleState.Failed -> state.message
                 else ->
                     "3–20 characters. Letters, numbers and underscores, starting with a letter."
             }
             val hintColor = when (state) {
-                is CreatorStore.HandleState.Available -> VoiidColor.success
-                is CreatorStore.HandleState.Taken,
-                is CreatorStore.HandleState.BadFormat -> VoiidColor.error
+                is SocialStore.HandleState.Available -> VoiidColor.success
+                is SocialStore.HandleState.Taken,
+                is SocialStore.HandleState.BadFormat -> VoiidColor.error
                 else -> VoiidColor.textSecondary
             }
             Text(hint, style = VoiidFont.rounded(12), color = hintColor)

@@ -1,5 +1,5 @@
 //
-//  CreatorSetupSheet.swift
+//  SocialSetupSheet.swift
 //  Voiid
 //
 //  THE GATE — a creator profile is required before a first clip can be posted, and this is
@@ -32,24 +32,24 @@
 //  to `user_id`, and `auth.ts` resolves a phone number to the same `user_id` every time
 //  (`on conflict (phone_number) do update`). So restoring an account on a new phone returns
 //  the same handle, birth date and interests without this flow running again — the gate
-//  reads `CreatorEngine.me`, which is the server's answer, not a local flag.
+//  reads `SocialEngine.me`, which is the server's answer, not a local flag.
 //
 
 import SwiftUI
 
-struct CreatorSetupSheet: View {
-    @EnvironmentObject var creators: CreatorEngine
+struct SocialSetupSheet: View {
+    @EnvironmentObject var creators: SocialEngine
     @Environment(\.dismiss) private var dismiss
 
     /// Called with the created profile once the gate is satisfied. The caller resumes
     /// whatever it was trying to do (posting a clip).
-    var onCreated: (CreatorService.Profile) -> Void
+    var onCreated: (SocialService.Profile) -> Void
 
     // Step 1
     @State private var handle = ""
     @State private var displayName = ""
     @State private var bio = ""
-    @State private var handleState: CreatorEngine.HandleState = .idle
+    @State private var handleState: SocialEngine.HandleState = .idle
     @FocusState private var handleFocused: Bool
 
     // Step 2
@@ -101,7 +101,7 @@ struct CreatorSetupSheet: View {
     private var stepValid: Bool {
         switch step {
         case .identity:
-            return CreatorEngine.isWellFormed(normalized) && handleState != .taken
+            return SocialEngine.isWellFormed(normalized) && handleState != .taken
         case .age:
             // 13 is the floor for having a profile at all. Under-18 is allowed through and
             // flagged, because DPDP's answer to a minor is restriction, not exclusion.

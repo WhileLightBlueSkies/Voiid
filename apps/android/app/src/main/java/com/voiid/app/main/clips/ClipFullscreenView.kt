@@ -73,10 +73,10 @@ import androidx.media3.ui.PlayerView
 import com.voiid.app.model.ClipCount
 import com.voiid.app.model.ClipsStore
 import com.voiid.app.model.CommentSendState
-import com.voiid.app.model.CreatorStore
+import com.voiid.app.model.SocialStore
 import com.voiid.app.model.VClip
 import com.voiid.app.model.VClipComment
-import com.voiid.app.net.CreatorService
+import com.voiid.app.net.SocialService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
 import com.voiid.app.ui.components.softClickable
@@ -130,7 +130,7 @@ data class ClipPagerRow(
          * page), so only the Following feed carries them inline.
          */
         fun of(
-            c: CreatorService.CreatorClipRow,
+            c: SocialService.CreatorClipRow,
             authorName: String? = null,
             authorHandle: String? = null,
         ) = ClipPagerRow(
@@ -171,7 +171,7 @@ sealed interface ClipPagerSource {
 fun ClipPagerHost(
     source: ClipPagerSource,
     clips: ClipsStore,
-    creators: CreatorStore,
+    creators: SocialStore,
     onOpenCreator: (String) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -245,7 +245,7 @@ fun ClipFullscreenView(
     startIndex: Int,
     myUserId: String,
     myName: String,
-    creators: CreatorStore? = null,
+    creators: SocialStore? = null,
     onLoadMore: (Int) -> Unit = {},
     onOpenCreator: ((String) -> Unit)? = null,
     onClose: () -> Unit,

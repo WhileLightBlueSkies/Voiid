@@ -34,7 +34,16 @@ class LudoBotHaptics(context: Context) {
         val v = vibrator ?: return
         if (!v.hasVibrator()) return
         runCatching {
-            v.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
+            // `VibrationEffect` is API 26 and minSdk is 24, so the two oldest supported
+            // versions take the deprecated call. They lose amplitude control — a pre-26
+            // vibrate is on or off — which is why the durations carry the weight difference
+            // there: a 45ms capture still feels heavier than an 18ms tick.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                v.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(durationMs)
+            }
         }
     }
 

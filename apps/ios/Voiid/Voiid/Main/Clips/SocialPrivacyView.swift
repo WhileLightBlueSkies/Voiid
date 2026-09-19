@@ -1,5 +1,5 @@
 //
-//  CreatorPrivacyView.swift
+//  SocialPrivacyView.swift
 //  Voiid
 //
 //  Privacy controls for the PUBLIC creator profile.
@@ -26,9 +26,9 @@
 
 import SwiftUI
 
-struct CreatorPrivacyView: View {
+struct SocialPrivacyView: View {
 
-    @EnvironmentObject private var creators: CreatorEngine
+    @EnvironmentObject private var creators: SocialEngine
 
     /// Seeded from the loaded profile; each is written through on change.
     @State private var gridVisibility = "everyone"
@@ -43,7 +43,7 @@ struct CreatorPrivacyView: View {
     /// simply opening the screen PATCHes every field back to the server.
     @State private var seeded = false
 
-    private var profile: CreatorService.Profile? { creators.me }
+    private var profile: SocialService.Profile? { creators.me }
 
     var body: some View {
         ScrollView {

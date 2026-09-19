@@ -26,7 +26,7 @@ struct ClipFullscreenView: View {
     /// An injected list of pages, for a feed this view does not own.
     ///
     /// Explore lives in `ClipsEngine` and mutates in place, so it needs none of this. A
-    /// creator's grid and the Following feed live in `CreatorEngine`, so their owner hands
+    /// creator's grid and the Following feed live in `SocialEngine`, so their owner hands
     /// over a snapshot plus the closure that extends it.
     struct Feed {
         var clips: [Clip]
@@ -39,7 +39,7 @@ struct ClipFullscreenView: View {
     private let feed: Feed?
 
     @EnvironmentObject var engine: ClipsEngine
-    @EnvironmentObject var creators: CreatorEngine
+    @EnvironmentObject var creators: SocialEngine
     @EnvironmentObject var session: AppSession
     @Environment(\.dismiss) private var dismiss
 
@@ -691,7 +691,7 @@ private struct ClipPlayerPage: View {
     }
 
     /// Deliberately NOT a per-clip deep link: nothing in the app resolves one yet, and a
-    /// shared link that opens nothing is worse than no link. Same text CreatorProfileView
+    /// shared link that opens nothing is worse than no link. Same text SocialProfileView
     /// shares, so the two cannot drift.
     private var shareText: String {
         let who = clip.authorHandle.map { "@\($0)" } ?? clip.authorName

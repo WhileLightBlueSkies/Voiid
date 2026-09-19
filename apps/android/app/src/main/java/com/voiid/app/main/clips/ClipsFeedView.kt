@@ -47,7 +47,7 @@ import com.voiid.app.model.ClipCount
 import com.voiid.app.model.ClipUploadState
 import com.voiid.app.model.ClipsStore
 import com.voiid.app.model.VClip
-import com.voiid.app.net.CreatorService
+import com.voiid.app.net.SocialService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.components.voiidPullRefresh
@@ -67,7 +67,7 @@ import com.voiid.app.ui.theme.VoiidRadius
 @Composable
 fun ClipsFeedView(
     clips: ClipsStore,
-    creators: com.voiid.app.model.CreatorStore,
+    creators: com.voiid.app.model.SocialStore,
     onOpenClip: (Int) -> Unit,
     onOpenFollowingClip: (Int) -> Unit,
     onNewClip: () -> Unit,
@@ -253,7 +253,7 @@ private fun HeaderIcon(
 
 /** 28dp circle: the real avatar when there is one, the handle's initial when there is not. */
 @Composable
-private fun MyCreatorAvatar(me: CreatorService.Profile) {
+private fun MyCreatorAvatar(me: SocialService.Profile) {
     if (me.avatar_url != null) {
         ClipThumbnail(
             url = me.avatar_url,
@@ -439,7 +439,7 @@ private fun ScopePill(label: String, selected: Boolean, onClick: () -> Unit) {
  */
 @Composable
 private fun FollowingFeed(
-    creators: com.voiid.app.model.CreatorStore,
+    creators: com.voiid.app.model.SocialStore,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
     modifier: Modifier,
     onOpenClip: (Int) -> Unit,

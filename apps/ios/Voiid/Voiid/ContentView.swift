@@ -35,6 +35,14 @@ struct ContentView: View {
     /// anywhere (see `ProfileLink`).
     @ObservedObject private var profileLinks = ProfileLinkRouter.shared
 
+    /// APP-WIDE, not per-screen.
+    ///
+    /// This used to be a @StateObject inside ClipsFeedView, which made it unreachable from
+    /// Communities and Games — so when the server started gating those too, there was no
+    /// engine there to raise the setup sheet. Owning it here means one profile, one gate, and
+    /// one sheet no matter which surface asked for it.
+    @StateObject private var social = SocialEngine()
+
     var body: some View {
         Group {
             switch session.route {
@@ -43,6 +51,16 @@ struct ContentView: View {
             case .main:
                 RootTabView()
             }
+        }
+        .environmentObject(social)
+        // MOUNTED ONCE, at the root. Any surface that hits `profile_required` sets
+        // `social.showSetup`, and the sheet appears over whatever the person was doing —
+        // rather than each screen carrying its own copy that only works where it was added.
+        .sheet(isPresented: $social.showSetup) {
+            SocialSetupSheet { profile in
+                social.profileCreated(profile)
+            }
+            .environmentObject(social)
         }
         .overlay(alignment: .top) {
             if session.route == .main, let banner = notificationRouter.banner {

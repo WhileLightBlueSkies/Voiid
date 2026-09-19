@@ -27,7 +27,7 @@
 //
 //  IF YOU EVER FIND CODE — HERE, IN A VIEW, OR ON THE SERVER — THAT READS COMMUNITY
 //  MEMBERSHIP TO AUTHORISE A MESSAGE BETWEEN TWO ORDINARY MEMBERS, THAT IS A BUG. It is the
-//  same rule CreatorService.swift states for follows: membership is a SOCIAL graph, and a
+//  same rule SocialService.swift states for follows: membership is a SOCIAL graph, and a
 //  social graph quietly becoming a MESSAGING graph is the exact failure mode these gates
 //  exist to prevent. Fix the caller; do not widen this.
 //

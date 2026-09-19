@@ -12,7 +12,7 @@ import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * Creator profiles + the follow graph (mirrors iOS `CreatorService.swift`).
+ * Creator profiles + the follow graph (mirrors iOS `SocialService.swift`).
  * Transport for backend/api/src/routes/creators.ts.
  *
  * ======================== NOT END-TO-END ENCRYPTED ========================
@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
  * (mutual contact / one-way contact / @username + PIN) remain the only ways to open a
  * chat. If you find yourself reading a follow state to unlock messaging, that is a bug.
  */
-class CreatorService(private val tokens: TokenStore) {
+class SocialService(private val tokens: TokenStore) {
     private val api = ApiClient(tokens)
     private val json = ApiClient.json
 
@@ -74,6 +74,11 @@ class CreatorService(private val tokens: TokenStore) {
         val clip_count: Int = 0,
         val is_verified: Boolean = false,
         val is_self: Boolean = false,
+        // Owner-only (the server sends these when is_self), and the reason a restored account
+        // does not re-run onboarding: the answer lives on the server keyed to user_id, not in
+        // local state.
+        val birth_date: String? = null,
+        val interests: List<String> = emptyList(),
         val following: Boolean = false,
     )
 
@@ -129,6 +134,11 @@ class CreatorService(private val tokens: TokenStore) {
         val display_name: String? = null,
         val bio: String? = null,
         val link_url: String? = null,
+        // Both columns have existed since 080 and the route has always accepted them; this
+        // client simply never sent them, so every Android-created profile had a null birth
+        // date — the field the whole under-18 restriction depends on.
+        val birth_date: String? = null,
+        val interests: List<String> = emptyList(),
     )
     @Serializable private data class UpdateBody(
         val handle: String? = null,
@@ -165,9 +175,12 @@ class CreatorService(private val tokens: TokenStore) {
         displayName: String?,
         bio: String?,
         linkUrl: String?,
+        birthDate: String? = null,
+        interests: List<String> = emptyList(),
     ): Profile = json.decodeFromString<ProfileResp>(
         api.request("POST", "creators",
-            ApiClient.json.encodeToString(CreateBody(handle, displayName, bio, linkUrl)))
+            ApiClient.json.encodeToString(
+                CreateBody(handle, displayName, bio, linkUrl, birthDate, interests)))
     ).profile
 
     /**

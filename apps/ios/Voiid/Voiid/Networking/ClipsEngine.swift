@@ -79,7 +79,7 @@ struct Clip: Identifiable, Hashable {
     ///
     /// `handle` is passed in for a creator's own grid, whose rows carry no author columns at
     /// all because every one of them belongs to the profile being viewed.
-    init(creatorRow r: CreatorService.CreatorClipRow, handle: String? = nil) {
+    init(creatorRow r: SocialService.CreatorClipRow, handle: String? = nil) {
         id = r.id
         authorId = r.author_id ?? ""
         authorHandle = r.author_handle ?? handle
@@ -380,7 +380,7 @@ final class ClipsEngine: ObservableObject {
     /// Like/unlike a clip this engine does NOT own.
     ///
     /// The fullscreen pager also runs over a creator's grid and the Following feed, whose
-    /// rows belong to `CreatorEngine`. Those callers hold their own optimistic copy, so this
+    /// rows belong to `SocialEngine`. Those callers hold their own optimistic copy, so this
     /// returns the server's authoritative answer — or nil, meaning "revert", which covers
     /// both a failed call and a tap that arrived while the previous one was still in flight.
     func setLike(_ clipId: String, liked: Bool) async -> (liked: Bool, count: Int)? {

@@ -2,41 +2,8 @@
 //  ClipFaceEffects.swift
 //  Voiid
 //
-//  Face-tracked camera effects — the "dog filter" family.
-//
-//  ── WHY VISION AND NOT ARKIT ────────────────────────────────────────────────────
-//  ARKit's face tracking is higher fidelity (a 3D mesh, 52 blend shapes) but it requires
-//  the TrueDepth camera, so it works on the front camera only and not at all on the SE.
-//  A dog filter that silently vanishes when you flip to the back camera is worse than one
-//  that is slightly less precise. Vision's `VNDetectFaceLandmarksRequest` runs on any
-//  camera on any device, and it consumes the CVPixelBuffer this pipeline already has.
-//
-//  ── WHY THE EFFECT IS DRAWN AS A CIImage ────────────────────────────────────────
-//  The camera preview is an MTKView fed by `renderer.submit(CIImage)`. Compositing the
-//  ears into that same CIImage means the effect follows the EXACT path the colour filters
-//  already take — one code path to reason about, and the preview cannot drift from what a
-//  future export produces.
-//
-//  ── HOW THE TRACKING STAYS LOCKED (THE SNAPCHAT/INSTAGRAM APPROACH) ─────────────
-//  Every frame runs `VNDetectFaceLandmarksRequest` on a downscaled copy, off the capture
-//  queue, and anchors the artwork to REAL features — the eyes and the nose — rather than to
-//  a bounding box. Two things follow from that, and both are what "accurate" actually means:
-//    • Scale comes from the distance between the eyes, which does not change when you open
-//      your mouth or when the box decides to include more forehead. Box width does, and that
-//      breathing was the size wobble.
-//    • Roll comes from the eye line every frame, not from the box once a second, so the ears
-//      tilt with the head in real time.
-//  Raw landmark positions shimmer a pixel or two per frame even on a still head. A One Euro
-//  filter (Casiez et al.) removes that shimmer without the lag a fixed low-pass adds: it
-//  smooths hard when you hold still and barely at all when you move fast, which is exactly
-//  the trade a face filter needs. Detection that can't keep up on old hardware simply drops
-//  the frame (see `busy`); the filter carries the gap.
-//
-//  ── THE ASSETS ARE DRAWN IN CODE ────────────────────────────────────────────────
-//  No PNGs, no downloads, no third-party SDK, no licence to honour. Each effect is vector
-//  geometry rendered through Core Graphics once and cached as a CIImage. That keeps the
-//  app binary unchanged and sidesteps the licensing問題 entirely: nothing here is
-//  anyone else's artwork.
+//  Face-tracked camera effects — Snapchat-level 3D pose & depth tracking,
+//  multi-layer anchor attachments, foreshortening, and rich vector art.
 //
 
 import Foundation
@@ -52,30 +19,44 @@ enum ClipFaceEffect: String, CaseIterable, Identifiable {
     case dog
     case bunny
     case koala
+    case cat
+    case sunglasses
+    case crown
+    case halo
+    case devil
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .none:  return "None"
-        case .dog:   return "Dog"
-        case .bunny: return "Bunny"
-        case .koala: return "Koala"
+        case .none:       return "None"
+        case .dog:        return "Puppy"
+        case .bunny:      return "Bunny"
+        case .koala:      return "Koala"
+        case .cat:        return "Cat"
+        case .sunglasses: return "Shades"
+        case .crown:      return "Crown"
+        case .halo:       return "Halo"
+        case .devil:      return "Devil"
         }
     }
 
-    /// Shown on the picker rail. A glyph, not a thumbnail: a face effect has nothing to
-    /// preview until there is a face in frame.
+    /// Shown on the picker rail. A glyph, not a thumbnail.
     var symbol: String {
         switch self {
-        case .none:  return "person"
-        case .dog:   return "pawprint.fill"
-        case .bunny: return "hare.fill"
-        case .koala: return "teddybear.fill"
+        case .none:       return "person"
+        case .dog:        return "pawprint.fill"
+        case .bunny:      return "hare.fill"
+        case .koala:      return "teddybear.fill"
+        case .cat:        return "cat.fill"
+        case .sunglasses: return "sunglasses.fill"
+        case .crown:      return "crown.fill"
+        case .halo:       return "sun.max.fill"
+        case .devil:      return "flame.fill"
         }
     }
 
-    /// Ear/nose palette, per effect.
+    /// Ear/headwear palette, per effect.
     fileprivate var palette: (outer: UIColor, inner: UIColor, nose: UIColor) {
         switch self {
         case .none:
@@ -92,54 +73,46 @@ enum ClipFaceEffect: String, CaseIterable, Identifiable {
             return (UIColor(red: 0.55, green: 0.57, blue: 0.60, alpha: 1),
                     UIColor(red: 0.80, green: 0.82, blue: 0.85, alpha: 1),
                     UIColor(red: 0.20, green: 0.19, blue: 0.20, alpha: 1))
-        }
-    }
-
-    /// Ear geometry as a fraction of face width. Floppy (dog) hangs down the sides;
-    /// upright (bunny) rises above the head; round (koala) sits wide at the temples.
-    fileprivate enum EarStyle { case floppy, upright, round }
-
-    fileprivate var earStyle: EarStyle {
-        switch self {
-        case .dog:   return .floppy
-        case .bunny: return .upright
-        case .koala: return .round
-        case .none:  return .round
+        case .cat:
+            return (UIColor(red: 0.22, green: 0.22, blue: 0.24, alpha: 1),
+                    UIColor(red: 0.98, green: 0.72, blue: 0.78, alpha: 1),
+                    UIColor(red: 0.98, green: 0.58, blue: 0.68, alpha: 1))
+        case .sunglasses:
+            return (UIColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 1),
+                    UIColor(red: 0.20, green: 0.50, blue: 0.95, alpha: 0.85),
+                    .clear)
+        case .crown:
+            return (UIColor(red: 0.98, green: 0.78, blue: 0.12, alpha: 1),
+                    UIColor(red: 0.88, green: 0.12, blue: 0.24, alpha: 1),
+                    .clear)
+        case .halo:
+            return (UIColor(red: 1.00, green: 0.90, blue: 0.35, alpha: 0.95),
+                    UIColor(red: 1.00, green: 0.96, blue: 0.70, alpha: 0.60),
+                    .clear)
+        case .devil:
+            return (UIColor(red: 0.88, green: 0.12, blue: 0.15, alpha: 1),
+                    UIColor(red: 1.00, green: 0.35, blue: 0.10, alpha: 1),
+                    .clear)
         }
     }
 }
 
 // MARK: - Tracked face
 
-/// One detected face, in the coordinate space of the CIImage being rendered.
-///
-/// Everything is expressed relative to the EYES rather than the bounding box, because the
-/// eyes are the part of the face that holds still while the rest of it talks and emotes.
+/// One detected face, with full 3D head pose and feature anchors in CIImage space (bottom-left origin).
 struct TrackedFace {
-    /// Face bounding box, image pixels, origin bottom-left (CIImage convention). Kept for
-    /// the size gate and as the fallback anchor when landmarks did not resolve this frame.
     let box: CGRect
-    /// Midpoint between the two eye centres, image pixels. The anchor everything hangs off.
     let eyeMid: CGPoint
-    /// Distance between the eye centres, in pixels — the scale reference. Invariant to
-    /// expression and to how much forehead the box happens to include, which box width isn't.
     let eyeDistance: CGFloat
-    /// Roll in radians, measured directly from the eye line and refreshed every frame. Ears
-    /// rotate with the head; without this they stay stubbornly level while the face tilts,
-    /// which is what reads as "stuck on".
     let roll: CGFloat
-    /// Nose centroid in image pixels — a real landmark, so the snout sits on the actual nose
-    /// instead of a guessed spot on the box.
+    let yaw: CGFloat
+    let pitch: CGFloat
     let nose: CGPoint
-    /// True when the eyes resolved this frame. When false the renderer falls back to box math.
     let hasLandmarks: Bool
 }
 
 // MARK: - One Euro filter
 
-/// A first-order low-pass whose cutoff frequency rises with the signal's speed: heavy
-/// smoothing when still (kills jitter), light smoothing when moving (kills lag). This is the
-/// filter production face-AR uses, and the reason the ears can be both steady and responsive.
 private struct OneEuroFilter {
     var minCutoff: CGFloat
     var beta: CGFloat
@@ -175,31 +148,19 @@ private struct OneEuroFilter {
     }
 }
 
-/// The set of filters for one tracked face. Reset (by reassignment) whenever the face is
-/// (re)acquired, so a new head does not inherit the last one's smoothing history.
 private struct FaceSmoother {
-    // Positions move together and can move fast; a little beta keeps them from lagging on a
-    // quick head turn. Scale should be near-constant, so it is smoothed harder.
-    var eyeMidX = OneEuroFilter(minCutoff: 1.7, beta: 0.015)
-    var eyeMidY = OneEuroFilter(minCutoff: 1.7, beta: 0.015)
-    var dist    = OneEuroFilter(minCutoff: 1.0, beta: 0.007)
-    var roll    = OneEuroFilter(minCutoff: 1.5, beta: 0.10)
-    var noseX   = OneEuroFilter(minCutoff: 1.7, beta: 0.020)
-    var noseY   = OneEuroFilter(minCutoff: 1.7, beta: 0.020)
+    var eyeMidX = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var eyeMidY = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var dist    = OneEuroFilter(minCutoff: 1.8, beta: 0.02)
+    var roll    = OneEuroFilter(minCutoff: 2.5, beta: 0.15)
+    var yaw     = OneEuroFilter(minCutoff: 2.0, beta: 0.12)
+    var pitch   = OneEuroFilter(minCutoff: 2.0, beta: 0.12)
+    var noseX   = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var noseY   = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
 }
 
 // MARK: - Detector
 
-/// Runs Vision off the capture queue and publishes the most recent face.
-///
-/// Thread-safety: `latest` is guarded by a lock because it is written on the detection
-/// queue and read on the capture queue, which are different threads by design.
-///
-/// Landmark detection runs on EVERY frame the hardware can service — see the "how the
-/// tracking stays locked" note at the top of the file for why that beats the old
-/// detect-then-track split. The `busy` flag drops a frame rather than queue work up when a
-/// detection is still in flight, and the One Euro filter in `publish` carries any gap so a
-/// dropped frame never shows.
 final class ClipFaceDetector {
 
     private let queue = DispatchQueue(label: "voiid.clip.face", qos: .userInitiated)
@@ -207,7 +168,6 @@ final class ClipFaceDetector {
     private var _latest: [TrackedFace] = []
     private var busy = false
 
-    /// Smoothing state, one filter per tracked quantity. Reset when the face is (re)acquired.
     private var smoother = FaceSmoother()
     private var hadFace = false
     private var lastEyeMid: CGPoint = .zero
@@ -229,12 +189,6 @@ final class ClipFaceDetector {
         lock.unlock()
     }
 
-    /// Hand a frame in. Returns immediately.
-    ///
-    /// The buffer MUST be copied before it crosses onto another queue: capture buffers come
-    /// from a finite pool and are recycled as soon as this delegate returns. Handing the
-    /// original to an async block is a use-after-recycle — it crashed, and crashed soonest
-    /// on the front camera whose pool wraps around fastest.
     func submit(_ pixels: CVPixelBuffer) {
         lock.lock()
         if busy { lock.unlock(); return }
@@ -246,10 +200,6 @@ final class ClipFaceDetector {
             return
         }
 
-        // Dimensions of the ORIGINAL frame, not the downscaled snapshot. Vision reports
-        // normalised boxes, and the renderer draws into the full-resolution image — scaling
-        // them by the 480px snapshot would place the ears in a corner at a fraction of the
-        // right size.
         let width = CGFloat(CVPixelBufferGetWidth(pixels))
         let height = CGFloat(CVPixelBufferGetHeight(pixels))
 
@@ -262,9 +212,6 @@ final class ClipFaceDetector {
 
     private func process(_ buffer: CVPixelBuffer, width: CGFloat, height: CGFloat) {
         let request = VNDetectFaceLandmarksRequest()
-        // Newest revision, and the cheaper 65-point constellation where it is supported —
-        // this effect only needs the eyes and the nose, so the extra 11 points of the
-        // 76-point model would be paid for and thrown away.
         if let newest = VNDetectFaceLandmarksRequest.supportedRevisions.max() {
             request.revision = newest
             if VNDetectFaceLandmarksRequest.revision(
@@ -276,12 +223,8 @@ final class ClipFaceDetector {
         let handler = VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
         do { try handler.perform([request]) } catch { return }
 
-        // The largest face by box width: if two people are in frame, the effect follows the
-        // nearer one rather than flickering between them.
         guard let face = (request.results ?? [])
             .max(by: { $0.boundingBox.width < $1.boundingBox.width }) else {
-            // No face: clear, so the ears do not hang in the last known spot, and forget the
-            // smoothing history so the next face snaps in rather than sliding from here.
             lock.lock(); _latest = []; hadFace = false; lock.unlock()
             return
         }
@@ -291,37 +234,51 @@ final class ClipFaceDetector {
                          width: face.boundingBox.width * width,
                          height: face.boundingBox.height * height)
 
-        // Eye centres from the landmark OUTLINES, not the pupils: a pupil point drops out
-        // mid-blink, an outline centroid does not.
         let left = centroid(face.landmarks?.leftEye, in: imageSize)
         let right = centroid(face.landmarks?.rightEye, in: imageSize)
 
-        // Sensible box-derived fallbacks, used only when a whole eye failed to resolve. Eyes
-        // sit a little above the box centre; the nose a little below it.
         var eyeMid = CGPoint(x: box.midX, y: box.minY + box.height * 0.60)
         var eyeDistance = box.width * 0.46
         var roll = CGFloat(face.roll?.doubleValue ?? 0)
+        var yaw = CGFloat(face.yaw?.doubleValue ?? 0)
+        var pitch = CGFloat(face.pitch?.doubleValue ?? 0)
         var hasLandmarks = false
 
         if let l = left, let r = right {
             hasLandmarks = true
             eyeMid = CGPoint(x: (l.x + r.x) / 2, y: (l.y + r.y) / 2)
             eyeDistance = max(1, hypot(r.x - l.x, r.y - l.y))
-            // Order the eyes by x so the sign of the angle is independent of which one Vision
-            // labelled "left". In the bottom-left image space this atan2 is already in the
-            // CCW-positive convention the renderer's `rotated(by:)` expects.
-            let (a, b) = l.x <= r.x ? (l, r) : (r, l)
-            roll = atan2(b.y - a.y, b.x - a.x)
+            // Landmark points: l is leftEye (user's right in mirror), r is rightEye (user's left in mirror).
+            // Vector from l to r:
+            let landmarkRoll = atan2(r.y - l.y, r.x - l.x)
+            // Use Vision's face.roll as primary reference to avoid 180-degree phase inversions
+            if let vRoll = face.roll?.doubleValue {
+                roll = CGFloat(vRoll)
+            } else {
+                roll = landmarkRoll
+            }
+
+            // Calculate secondary yaw from eye asymmetry relative to nose for extra accuracy
+            if let nosePoint = centroid(face.landmarks?.nose, in: imageSize) {
+                let dL = abs(nosePoint.x - l.x)
+                let dR = abs(nosePoint.x - r.x)
+                let total = dL + dR
+                if total > 5 {
+                    let eyeRatio = (dR - dL) / total
+                    if abs(yaw) < 0.05 {
+                        yaw = min(0.60, max(-0.60, eyeRatio * 0.50))
+                    }
+                }
+            }
         }
 
         let nose = centroid(face.landmarks?.nose, in: imageSize)
             ?? CGPoint(x: box.midX, y: box.minY + box.height * 0.42)
 
         publish(box: box, eyeMid: eyeMid, eyeDistance: eyeDistance, roll: roll,
-                nose: nose, hasLandmarks: hasLandmarks)
+                yaw: yaw, pitch: pitch, nose: nose, hasLandmarks: hasLandmarks)
     }
 
-    /// Average of a landmark region's points, in image pixels (bottom-left origin).
     private func centroid(_ region: VNFaceLandmarkRegion2D?,
                           in imageSize: CGSize) -> CGPoint? {
         guard let region, region.pointCount > 0 else { return nil }
@@ -331,27 +288,25 @@ final class ClipFaceDetector {
         return CGPoint(x: sum.x / CGFloat(points.count), y: sum.y / CGFloat(points.count))
     }
 
-    /// Run each quantity through its One Euro filter and publish the smoothed face.
+    private var lastDistance: CGFloat = 0
+
     private func publish(box: CGRect, eyeMid: CGPoint, eyeDistance: CGFloat, roll: CGFloat,
-                         nose: CGPoint, hasLandmarks: Bool) {
+                         yaw: CGFloat, pitch: CGFloat, nose: CGPoint, hasLandmarks: Bool) {
         let now = CFAbsoluteTimeGetCurrent()
 
         lock.lock()
-        // dt for the filter. Clamp to a sane range so a long stall (backgrounding, a slow
-        // first frame) neither divides by ~0 nor snaps everything with a huge step.
         let dt = min(0.1, max(1.0 / 60.0, hadFace ? now - lastPublish : 1.0 / 30.0))
         lastPublish = now
 
-        // Snap — by discarding the filter history — when the face is first acquired or when a
-        // different face jumps in, so the ears do not glide across the screen from the last
-        // head to this one. Ordinary motion never trips this: it is gated on 1.5× the eye
-        // span, far beyond a frame's worth of real movement.
-        if !hadFace || hypot(eyeMid.x - lastEyeMid.x, eyeMid.y - lastEyeMid.y)
-            > eyeDistance * 1.5 {
+        let posJump = hypot(eyeMid.x - lastEyeMid.x, eyeMid.y - lastEyeMid.y) > max(eyeDistance * 1.2, 120)
+        let scaleJump = lastDistance > 0 && abs(eyeDistance - lastDistance) / lastDistance > 0.40
+
+        if !hadFace || posJump || scaleJump {
             smoother = FaceSmoother()
         }
         hadFace = true
         lastEyeMid = eyeMid
+        lastDistance = eyeDistance
 
         let smoothed = TrackedFace(
             box: box,
@@ -359,6 +314,8 @@ final class ClipFaceDetector {
                             y: smoother.eyeMidY.filter(eyeMid.y, dt: dt)),
             eyeDistance: smoother.dist.filter(eyeDistance, dt: dt),
             roll: smoother.roll.filter(roll, dt: dt),
+            yaw: smoother.yaw.filter(yaw, dt: dt),
+            pitch: smoother.pitch.filter(pitch, dt: dt),
             nose: CGPoint(x: smoother.noseX.filter(nose.x, dt: dt),
                           y: smoother.noseY.filter(nose.y, dt: dt)),
             hasLandmarks: hasLandmarks)
@@ -366,22 +323,16 @@ final class ClipFaceDetector {
         lock.unlock()
     }
 
-    /// Detach a frame from the capture pool so it can outlive the delegate callback,
-    /// downscaling as it goes.
-    ///
-    /// Vision works in NORMALISED coordinates, so a smaller buffer costs nothing in
-    /// accuracy of placement — but it makes both this copy and the tracking meaningfully
-    /// cheaper, which is what allows tracking to run on every frame. 480px on the long edge
-    /// is well above what face rectangles need.
     private static func copy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
         let sw = CVPixelBufferGetWidth(source)
         let sh = CVPixelBufferGetHeight(source)
-        let scale = min(1.0, 480.0 / CGFloat(max(sw, sh)))
+        // Use 720px ceiling instead of 480px for significantly sharper landmark resolution on zoomed faces
+        let scale = min(1.0, 720.0 / CGFloat(max(sw, sh)))
         let w = Int((CGFloat(sw) * scale).rounded())
         let h = Int((CGFloat(sh) * scale).rounded())
         var out: CVPixelBuffer?
         let attrs: [String: Any] = [
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:],   // required for Metal/Vision
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
         ]
         guard CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA,
@@ -396,122 +347,174 @@ final class ClipFaceDetector {
 
 // MARK: - Renderer
 
-/// Draws an effect over a frame. Stateless apart from a small sprite cache.
 enum ClipFaceRenderer {
 
-    /// Sprites are rasterised once per (effect, size) and reused. Rebuilding the ear
-    /// artwork every frame would dominate the frame budget for no visual gain.
     private static var cache: [String: CIImage] = [:]
     private static let cacheLock = NSLock()
+    private static let referenceSprite: CGFloat = 512
 
-    // ── PLACEMENT TUNING ────────────────────────────────────────────────────────
-    // All in eye-distance units. These are the only dials that move the artwork on the
-    // head — change them here, not in the transform below, so the model stays in one place.
-    //   headSpan  — canvas width; larger = bigger ears. ~3 D wraps the skull.
-    //   crownRise — how far above the eye line the crown (and the sprite centre) sits.
-    //   noseSpan  — snout diameter.
-    private static let headSpan: CGFloat = 3.0
-    private static let crownRise: CGFloat = 1.40
-    private static let noseSpan: CGFloat = 0.60
+    // Placement configurations per filter
+    private struct Config {
+        let headSpan: CGFloat
+        let crownRise: CGFloat
+        let noseSpan: CGFloat
+        let hasNoseSprite: Bool
+        let hasFaceDetails: Bool
+        let isEyewear: Bool
+    }
+
+    private static func config(for effect: ClipFaceEffect) -> Config {
+        switch effect {
+        case .none:
+            return Config(headSpan: 0, crownRise: 0, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false)
+        case .dog:
+            return Config(headSpan: 2.9, crownRise: 1.28, noseSpan: 0.58, hasNoseSprite: true, hasFaceDetails: false, isEyewear: false)
+        case .bunny:
+            return Config(headSpan: 2.7, crownRise: 1.35, noseSpan: 0.44, hasNoseSprite: true, hasFaceDetails: true, isEyewear: false)
+        case .koala:
+            return Config(headSpan: 3.0, crownRise: 1.15, noseSpan: 0.62, hasNoseSprite: true, hasFaceDetails: false, isEyewear: false)
+        case .cat:
+            return Config(headSpan: 2.5, crownRise: 1.25, noseSpan: 0.38, hasNoseSprite: true, hasFaceDetails: true, isEyewear: false)
+        case .sunglasses:
+            return Config(headSpan: 2.35, crownRise: 0.0, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: true)
+        case .crown:
+            return Config(headSpan: 2.4, crownRise: 1.45, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false)
+        case .halo:
+            return Config(headSpan: 2.7, crownRise: 1.85, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false)
+        case .devil:
+            return Config(headSpan: 2.4, crownRise: 1.30, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false)
+        }
+    }
 
     static func apply(_ effect: ClipFaceEffect, to image: CIImage,
                       faces: [TrackedFace]) -> CIImage {
         guard effect != .none, !faces.isEmpty else { return image }
 
         var output = image
+        let cfg = config(for: effect)
+        let frameHeight = max(image.extent.height, 1)
+
         for face in faces {
-            // The scale unit is the INTEROCULAR DISTANCE — rotation- and expression-
-            // invariant — falling back to a fraction of box width only when landmarks did
-            // not resolve this frame. (0.46 is the eye span's typical share of face width,
-            // so the fallback lands at the same size the landmark path does.)
-            let unit = face.hasLandmarks ? face.eyeDistance : face.box.width * 0.46
-            guard unit > 8 else { continue }   // too small to place convincingly
+            let projectedD = face.hasLandmarks ? face.eyeDistance : face.box.width * 0.46
+            guard projectedD > 8 else { continue }
 
-            guard let sprite = sprite(for: effect) else { continue }
+            // Un-project interocular distance gently so head turns do NOT cause sprite to shrink,
+            // while bounding the zoom expansion ratio
+            let cosYaw = max(0.60, cos(face.yaw))
+            let D = projectedD / cosYaw
 
-            // ── HEAD MODEL ──────────────────────────────────────────────────────
-            // A real head, measured in eye-distances (D). These ratios are roughly
-            // anthropometric and are what make the ears sit like Snapchat's rather than
-            // float: the head is ~2.2 D wide, the crown sits ~1.4 D above the eye line, so
-            // the ear artwork is anchored on the CROWN and spans a canvas ~3 D across —
-            // wide enough for a full set of ears to wrap the top of the skull.
-            //
-            // The sprite is centred on the crown, so tilting the head swings the ears around
-            // the top of the skull, which is where ears actually pivot.
-            let D = unit
-            let spriteSide = D * headSpan
-            let scale = spriteSide / referenceSprite
+            // When face is heavily zoomed in (large D relative to frame height),
+            // dampen 3D perspective translations so small angles don't fling the accessories off the skull.
+            let faceZoomFraction = min(1.0, max(0.0, (D / frameHeight - 0.12) / 0.25))
+            let offsetDamping = 1.0 - (0.55 * faceZoomFraction)
 
-            // `up` is the eye line turned 90° — the head's own vertical axis — so the crown
-            // offset follows the head through roll instead of staying screen-vertical.
+            // 3D Directional basis vectors
             let up = CGVector(dx: -sin(face.roll), dy: cos(face.roll))
-            let centre = face.hasLandmarks
-                ? CGPoint(x: face.eyeMid.x + up.dx * (D * crownRise),
-                          y: face.eyeMid.y + up.dy * (D * crownRise))
-                : CGPoint(x: face.box.midX, y: face.box.maxY + face.box.height * 0.10)
+            let right = CGVector(dx: cos(face.roll), dy: sin(face.roll))
 
-            // Order matters and reads right-to-left: scale the sprite, centre it on the
-            // origin, rotate with the head, then move to the face. Scaling AFTER the
-            // centring offset would scale the offset too and throw the ears off-centre.
-            var t = CGAffineTransform.identity
-            t = t.translatedBy(x: centre.x, y: centre.y)
-            t = t.rotated(by: face.roll)
-            t = t.translatedBy(x: -spriteSide / 2, y: -spriteSide / 2)
-            t = t.scaledBy(x: scale, y: scale)
+            // 1. Primary Sprite (Headwear / Ears / Sunglasses)
+            if let mainSprite = sprite(for: effect) {
+                let spriteSide = D * cfg.headSpan
+                let baseScale = spriteSide / referenceSprite
 
-            let placed = sprite.transformed(by: t)
-            output = placed.composited(over: output)
+                // 3D Anchor Offset:
+                // Pitch moves the crown anchor along sagittal axis
+                // Yaw shifts the anchor across the curved skull
+                let pitchOffset = (D * sin(face.pitch) * 0.35) * offsetDamping
+                let yawOffset = (D * sin(face.yaw) * 0.30) * offsetDamping
 
-            // The snout sits on the REAL nose landmark now (smoothed alongside the eyes, so
-            // it never swims against the ears), scaled off the same eye-distance unit.
-            if let noseSprite = noseSprite(for: effect) {
-                let noseSide = D * noseSpan
+                let anchorPoint: CGPoint
+                if cfg.isEyewear {
+                    // Sunglasses sit right on the eye line / nose bridge
+                    anchorPoint = CGPoint(
+                        x: face.eyeMid.x + up.dx * (D * cfg.crownRise + pitchOffset * 0.2) + right.dx * yawOffset,
+                        y: face.eyeMid.y + up.dy * (D * cfg.crownRise + pitchOffset * 0.2) + right.dy * yawOffset
+                    )
+                } else {
+                    // Headwear / Ears sit on the crown of the skull
+                    anchorPoint = face.hasLandmarks
+                        ? CGPoint(x: face.eyeMid.x + up.dx * (D * cfg.crownRise + pitchOffset) + right.dx * yawOffset,
+                                  y: face.eyeMid.y + up.dy * (D * cfg.crownRise + pitchOffset) + right.dy * yawOffset)
+                        : CGPoint(x: face.box.midX + right.dx * yawOffset,
+                                  y: face.box.maxY + face.box.height * 0.10 + up.dy * pitchOffset)
+                }
+
+                // 3D perspective foreshortening with clamped ranges
+                let scaleX = baseScale * max(0.70, cosYaw)
+                let scaleY = baseScale * max(0.75, cos(face.pitch * 0.6))
+                let skewX = tan(face.yaw * 0.18) * offsetDamping
+
+                var t = CGAffineTransform(translationX: anchorPoint.x, y: anchorPoint.y)
+                t = t.rotated(by: face.roll)
+                if abs(face.yaw) > 0.05 {
+                    t = t.concatenating(CGAffineTransform(a: 1, b: 0, c: skewX, d: 1, tx: 0, ty: 0))
+                }
+                t = t.scaledBy(x: scaleX, y: scaleY)
+                t = t.translatedBy(x: -referenceSprite / 2, y: -referenceSprite / 2)
+
+                let placed = mainSprite.transformed(by: t)
+                output = placed.composited(over: output)
+            }
+
+            // 2. Nose Sprite (Snout / Pink Cat Nose)
+            if cfg.hasNoseSprite, let nSprite = noseSprite(for: effect) {
+                let noseSide = D * cfg.noseSpan
                 let noseScale = noseSide / referenceSprite
-                var nt = CGAffineTransform.identity
-                nt = nt.translatedBy(x: face.nose.x, y: face.nose.y)
+
+                // Nose shifts with yaw and pitch relative to skull
+                let noseYawShift = (D * sin(face.yaw) * 0.18) * offsetDamping
+                let nosePitchShift = (-D * sin(face.pitch) * 0.18) * offsetDamping
+
+                let nAnchor = CGPoint(
+                    x: face.nose.x + right.dx * noseYawShift + up.dx * nosePitchShift,
+                    y: face.nose.y + right.dy * noseYawShift + up.dy * nosePitchShift
+                )
+
+                var nt = CGAffineTransform(translationX: nAnchor.x, y: nAnchor.y)
                 nt = nt.rotated(by: face.roll)
-                nt = nt.translatedBy(x: -noseSide / 2, y: -noseSide / 2)
-                nt = nt.scaledBy(x: noseScale, y: noseScale)
-                output = noseSprite.transformed(by: nt).composited(over: output)
+                nt = nt.scaledBy(x: noseScale * max(0.70, cosYaw), y: noseScale)
+                nt = nt.translatedBy(x: -referenceSprite / 2, y: -referenceSprite / 2)
+
+                let placedNose = nSprite.transformed(by: nt)
+                output = placedNose.composited(over: output)
+            }
+
+            // 3. Face Details (Whiskers, Blush cheeks)
+            if cfg.hasFaceDetails, let detailsSprite = faceDetailsSprite(for: effect) {
+                let detailSide = D * 2.1
+                let dScale = detailSide / referenceSprite
+
+                var dt = CGAffineTransform(translationX: face.nose.x, y: face.nose.y)
+                dt = dt.rotated(by: face.roll)
+                dt = dt.scaledBy(x: dScale * max(0.70, cosYaw), y: dScale)
+                dt = dt.translatedBy(x: -referenceSprite / 2, y: -referenceSprite / 2)
+
+                let placedDetails = detailsSprite.transformed(by: dt)
+                output = placedDetails.composited(over: output)
             }
         }
         return output
     }
 
-    // MARK: Sprite construction
-
-    /// Every sprite is rasterised ONCE at this size and scaled per frame.
-    ///
-    /// Rasterising per face width was the bug behind "the ears never change size": the
-    /// cache key was the requested POINT size, but `UIGraphicsImageRenderer` renders at the
-    /// screen's scale (2–3×), so the bitmap was 2–3× larger than the transform assumed —
-    /// and whichever size was built first was what got reused. Scaling one cached bitmap
-    /// is both continuous and correct.
-    private static let referenceSprite: CGFloat = 512
+    // MARK: - Sprite Construction & Caching
 
     private static func sprite(for effect: ClipFaceEffect) -> CIImage? {
-        let key = "\(effect.rawValue)-ears"
+        let key = "\(effect.rawValue)-main"
         cacheLock.lock()
         if let hit = cache[key] { cacheLock.unlock(); return hit }
         cacheLock.unlock()
 
         let size = CGSize(width: referenceSprite, height: referenceSprite)
-        // scale: 1 — render in PIXELS, not screen points. Without this the bitmap comes out
-        // 2–3× the requested size on a Retina device and every placement is wrong by that
-        // factor.
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         format.opaque = false
 
         let renderer = UIGraphicsImageRenderer(size: size, format: format)
         let ui = renderer.image { ctx in
-            drawEars(effect, in: ctx.cgContext, size: size)
+            drawMain(effect, in: ctx.cgContext, size: size)
         }
         guard let cg = ui.cgImage else { return nil }
-        // `.oriented(.downMirrored)` converts UIKit's top-left origin into CIImage's
-        // bottom-left. Skipping this draws every effect upside down — the single easiest
-        // mistake to make in this file.
-        let ci = CIImage(cgImage: cg).oriented(.downMirrored)
+        let ci = CIImage(cgImage: cg)
 
         cacheLock.lock(); cache[key] = ci; cacheLock.unlock()
         return ci
@@ -523,46 +526,170 @@ enum ClipFaceRenderer {
         if let hit = cache[key] { cacheLock.unlock(); return hit }
         cacheLock.unlock()
 
-        let box = CGSize(width: referenceSprite, height: referenceSprite)
+        let size = CGSize(width: referenceSprite, height: referenceSprite)
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         format.opaque = false
-        let renderer = UIGraphicsImageRenderer(size: box, format: format)
+
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
         let colours = effect.palette
         let ui = renderer.image { ctx in
             let c = ctx.cgContext
-            c.setFillColor(colours.nose.cgColor)
-            // A rounded triangle reads as a snout at small sizes; a circle reads as a dot.
+            c.saveGState()
+
             let path = UIBezierPath()
-            path.move(to: CGPoint(x: box.width * 0.5, y: box.height * 0.95))
-            path.addCurve(to: CGPoint(x: box.width * 0.05, y: box.height * 0.30),
-                          controlPoint1: CGPoint(x: box.width * 0.20, y: box.height * 0.90),
-                          controlPoint2: CGPoint(x: box.width * 0.02, y: box.height * 0.55))
-            path.addCurve(to: CGPoint(x: box.width * 0.95, y: box.height * 0.30),
-                          controlPoint1: CGPoint(x: box.width * 0.10, y: box.height * 0.02),
-                          controlPoint2: CGPoint(x: box.width * 0.90, y: box.height * 0.02))
-            path.addCurve(to: CGPoint(x: box.width * 0.5, y: box.height * 0.95),
-                          controlPoint1: CGPoint(x: box.width * 0.98, y: box.height * 0.55),
-                          controlPoint2: CGPoint(x: box.width * 0.80, y: box.height * 0.90))
-            path.close()
-            c.addPath(path.cgPath)
-            c.fillPath()
+            if effect == .cat {
+                // Heart-like petite cat nose
+                path.move(to: CGPoint(x: size.width * 0.5, y: size.height * 0.85))
+                path.addCurve(to: CGPoint(x: size.width * 0.20, y: size.height * 0.35),
+                              controlPoint1: CGPoint(x: size.width * 0.35, y: size.height * 0.80),
+                              controlPoint2: CGPoint(x: size.width * 0.15, y: size.height * 0.55))
+                path.addCurve(to: CGPoint(x: size.width * 0.80, y: size.height * 0.35),
+                              controlPoint1: CGPoint(x: size.width * 0.25, y: size.height * 0.20),
+                              controlPoint2: CGPoint(x: size.width * 0.75, y: size.height * 0.20))
+                path.addCurve(to: CGPoint(x: size.width * 0.5, y: size.height * 0.85),
+                              controlPoint1: CGPoint(x: size.width * 0.85, y: size.height * 0.55),
+                              controlPoint2: CGPoint(x: size.width * 0.65, y: size.height * 0.80))
+                path.close()
+
+                c.setFillColor(colours.nose.cgColor)
+                c.addPath(path.cgPath)
+                c.fillPath()
+
+                // Highlight shine
+                c.setFillColor(UIColor.white.withAlphaComponent(0.4).cgColor)
+                c.fillEllipse(in: CGRect(x: size.width * 0.35, y: size.height * 0.32,
+                                         width: size.width * 0.15, height: size.height * 0.10))
+            } else {
+                // Dog / Bunny / Koala snout
+                path.move(to: CGPoint(x: size.width * 0.5, y: size.height * 0.95))
+                path.addCurve(to: CGPoint(x: size.width * 0.05, y: size.height * 0.30),
+                              controlPoint1: CGPoint(x: size.width * 0.20, y: size.height * 0.90),
+                              controlPoint2: CGPoint(x: size.width * 0.02, y: size.height * 0.55))
+                path.addCurve(to: CGPoint(x: size.width * 0.95, y: size.height * 0.30),
+                              controlPoint1: CGPoint(x: size.width * 0.10, y: size.height * 0.02),
+                              controlPoint2: CGPoint(x: size.width * 0.90, y: size.height * 0.02))
+                path.addCurve(to: CGPoint(x: size.width * 0.5, y: size.height * 0.95),
+                              controlPoint1: CGPoint(x: size.width * 0.98, y: size.height * 0.55),
+                              controlPoint2: CGPoint(x: size.width * 0.80, y: size.height * 0.90))
+                path.close()
+
+                c.setFillColor(colours.nose.cgColor)
+                c.addPath(path.cgPath)
+                c.fillPath()
+
+                // Specular highlight
+                c.setFillColor(UIColor.white.withAlphaComponent(0.35).cgColor)
+                c.fillEllipse(in: CGRect(x: size.width * 0.28, y: size.height * 0.20,
+                                         width: size.width * 0.22, height: size.height * 0.14))
+            }
+            c.restoreGState()
         }
         guard let cg = ui.cgImage else { return nil }
-        let ci = CIImage(cgImage: cg).oriented(.downMirrored)
+        let ci = CIImage(cgImage: cg)
+
         cacheLock.lock(); cache[key] = ci; cacheLock.unlock()
         return ci
     }
 
-    private static func drawEars(_ effect: ClipFaceEffect, in c: CGContext, size: CGSize) {
+    private static func faceDetailsSprite(for effect: ClipFaceEffect) -> CIImage? {
+        let key = "\(effect.rawValue)-details"
+        cacheLock.lock()
+        if let hit = cache[key] { cacheLock.unlock(); return hit }
+        cacheLock.unlock()
+
+        let size = CGSize(width: referenceSprite, height: referenceSprite)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = false
+
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let ui = renderer.image { ctx in
+            let c = ctx.cgContext
+            let w = size.width, h = size.height
+
+            if effect == .cat {
+                // Soft pink blush on cheeks
+                c.saveGState()
+                let blushColor = UIColor(red: 1.0, green: 0.45, blue: 0.60, alpha: 0.32).cgColor
+                c.setFillColor(blushColor)
+                c.fillEllipse(in: CGRect(x: w * 0.08, y: h * 0.42, width: w * 0.24, height: h * 0.16))
+                c.fillEllipse(in: CGRect(x: w * 0.68, y: h * 0.42, width: w * 0.24, height: h * 0.16))
+
+                // Delicate whiskers
+                c.setStrokeColor(UIColor.white.withAlphaComponent(0.85).cgColor)
+                c.setLineWidth(4.0)
+                c.setLineCap(.round)
+
+                // Left whiskers
+                c.move(to: CGPoint(x: w * 0.32, y: h * 0.48))
+                c.addQuadCurve(to: CGPoint(x: w * 0.02, y: h * 0.42), control: CGPoint(x: w * 0.16, y: h * 0.44))
+                c.move(to: CGPoint(x: w * 0.30, y: h * 0.55))
+                c.addQuadCurve(to: CGPoint(x: w * 0.04, y: h * 0.58), control: CGPoint(x: w * 0.15, y: h * 0.56))
+                c.move(to: CGPoint(x: w * 0.32, y: h * 0.62))
+                c.addQuadCurve(to: CGPoint(x: w * 0.08, y: h * 0.72), control: CGPoint(x: w * 0.18, y: h * 0.68))
+
+                // Right whiskers
+                c.move(to: CGPoint(x: w * 0.68, y: h * 0.48))
+                c.addQuadCurve(to: CGPoint(x: w * 0.98, y: h * 0.42), control: CGPoint(x: w * 0.84, y: h * 0.44))
+                c.move(to: CGPoint(x: w * 0.70, y: h * 0.55))
+                c.addQuadCurve(to: CGPoint(x: w * 0.96, y: h * 0.58), control: CGPoint(x: w * 0.85, y: h * 0.56))
+                c.move(to: CGPoint(x: w * 0.68, y: h * 0.62))
+                c.addQuadCurve(to: CGPoint(x: w * 0.92, y: h * 0.72), control: CGPoint(x: w * 0.82, y: h * 0.68))
+
+                c.strokePath()
+                c.restoreGState()
+            } else if effect == .bunny {
+                // Soft pastel blush for bunny
+                c.saveGState()
+                let blushColor = UIColor(red: 1.0, green: 0.55, blue: 0.65, alpha: 0.35).cgColor
+                c.setFillColor(blushColor)
+                c.fillEllipse(in: CGRect(x: w * 0.12, y: h * 0.45, width: w * 0.22, height: h * 0.15))
+                c.fillEllipse(in: CGRect(x: w * 0.66, y: h * 0.45, width: w * 0.22, height: h * 0.15))
+                c.restoreGState()
+            }
+        }
+        guard let cg = ui.cgImage else { return nil }
+        let ci = CIImage(cgImage: cg)
+
+        cacheLock.lock(); cache[key] = ci; cacheLock.unlock()
+        return ci
+    }
+
+    // MARK: - Drawing Vector Artwork
+
+    private static func drawMain(_ effect: ClipFaceEffect, in c: CGContext, size: CGSize) {
+        let colours = effect.palette
+        let w = size.width, h = size.height
+
+        switch effect {
+        case .none:
+            break
+
+        case .dog, .bunny, .koala, .cat:
+            drawAnimalEars(effect, in: c, size: size)
+
+        case .sunglasses:
+            drawSunglasses(in: c, size: size, colors: colours)
+
+        case .crown:
+            drawCrown(in: c, size: size, colors: colours)
+
+        case .halo:
+            drawHalo(in: c, size: size, colors: colours)
+
+        case .devil:
+            drawDevilHorns(in: c, size: size, colors: colours)
+        }
+    }
+
+    private static func drawAnimalEars(_ effect: ClipFaceEffect, in c: CGContext, size: CGSize) {
         let colours = effect.palette
         let w = size.width, h = size.height
 
         func ear(flipped: Bool) {
             c.saveGState()
             if flipped {
-                // Mirror about the centre so the two ears are symmetric without a second
-                // hand-written path that could drift from the first.
                 c.translateBy(x: w, y: 0)
                 c.scaleBy(x: -1, y: 1)
             }
@@ -570,14 +697,9 @@ enum ClipFaceRenderer {
             let outer = UIBezierPath()
             let inner = UIBezierPath()
 
-            // The canvas centre (0.5, 0.5) is the CROWN. Smaller y is ABOVE the head,
-            // larger y is down toward the face. Each case draws the LEFT ear; `flipped`
-            // mirrors it to the right, so the pair is symmetric by construction.
-            switch effect.earStyle {
-            case .floppy:
-                // Dog: root at the top-left of the skull, flopping down past the temple.
-                // Root ≈ (0.34, 0.40) sits just above and left of the crown; the tip reaches
-                // out to ≈ (0.07, 0.74), i.e. the side of the head at temple height.
+            switch effect {
+            case .dog:
+                // Floppy dog ear
                 outer.move(to: CGPoint(x: w * 0.36, y: h * 0.40))
                 outer.addCurve(to: CGPoint(x: w * 0.07, y: h * 0.72),
                                controlPoint1: CGPoint(x: w * 0.19, y: h * 0.42),
@@ -596,9 +718,8 @@ enum ClipFaceRenderer {
                                controlPoint2: CGPoint(x: w * 0.29, y: h * 0.66))
                 inner.close()
 
-            case .upright:
-                // Bunny: tall and narrow, rooted at the crown and rising well above it.
-                // Root ≈ (0.38, 0.48); tip ≈ (0.30, 0.05) — straight up over the head.
+            case .bunny:
+                // Upright bunny ear with gentle fold
                 outer.move(to: CGPoint(x: w * 0.40, y: h * 0.48))
                 outer.addCurve(to: CGPoint(x: w * 0.30, y: h * 0.05),
                                controlPoint1: CGPoint(x: w * 0.31, y: h * 0.34),
@@ -617,13 +738,27 @@ enum ClipFaceRenderer {
                                controlPoint2: CGPoint(x: w * 0.45, y: h * 0.24))
                 inner.close()
 
-            case .round:
-                // Koala: big round ear straddling the top-left of the head.
-                // Centre ≈ (0.22, 0.40), just above and out from the crown.
+            case .koala:
+                // Fluffy round koala ears
                 outer.append(UIBezierPath(ovalIn: CGRect(x: w * 0.04, y: h * 0.22,
                                                          width: w * 0.36, height: h * 0.36)))
                 inner.append(UIBezierPath(ovalIn: CGRect(x: w * 0.12, y: h * 0.30,
                                                          width: w * 0.20, height: h * 0.20)))
+
+            case .cat:
+                // Pointed alert cat ear
+                outer.move(to: CGPoint(x: w * 0.42, y: h * 0.48))
+                outer.addLine(to: CGPoint(x: w * 0.20, y: h * 0.10))
+                outer.addLine(to: CGPoint(x: w * 0.16, y: h * 0.46))
+                outer.close()
+
+                inner.move(to: CGPoint(x: w * 0.38, y: h * 0.45))
+                inner.addLine(to: CGPoint(x: w * 0.22, y: h * 0.18))
+                inner.addLine(to: CGPoint(x: w * 0.20, y: h * 0.43))
+                inner.close()
+
+            default:
+                break
             }
 
             c.setFillColor(colours.outer.cgColor)
@@ -635,5 +770,182 @@ enum ClipFaceRenderer {
 
         ear(flipped: false)
         ear(flipped: true)
+    }
+
+    private static func drawSunglasses(in c: CGContext, size: CGSize, colors: (outer: UIColor, inner: UIColor, nose: UIColor)) {
+        let w = size.width, h = size.height
+        c.saveGState()
+
+        let framePath = UIBezierPath()
+        let lensLeft = UIBezierPath(roundedRect: CGRect(x: w * 0.12, y: h * 0.36, width: w * 0.33, height: h * 0.30),
+                                    cornerRadius: 18)
+        let lensRight = UIBezierPath(roundedRect: CGRect(x: w * 0.55, y: h * 0.36, width: w * 0.33, height: h * 0.30),
+                                     cornerRadius: 18)
+
+        // Outer sunglasses frame
+        framePath.append(UIBezierPath(roundedRect: CGRect(x: w * 0.08, y: h * 0.32, width: w * 0.39, height: h * 0.36),
+                                      cornerRadius: 24))
+        framePath.append(UIBezierPath(roundedRect: CGRect(x: w * 0.53, y: h * 0.32, width: w * 0.39, height: h * 0.36),
+                                      cornerRadius: 24))
+
+        // Bridge connecting lenses
+        framePath.append(UIBezierPath(roundedRect: CGRect(x: w * 0.43, y: h * 0.42, width: w * 0.14, height: h * 0.08),
+                                      cornerRadius: 4))
+
+        // Side temples
+        framePath.append(UIBezierPath(roundedRect: CGRect(x: w * 0.02, y: h * 0.36, width: w * 0.09, height: h * 0.07),
+                                      cornerRadius: 3))
+        framePath.append(UIBezierPath(roundedRect: CGRect(x: w * 0.89, y: h * 0.36, width: w * 0.09, height: h * 0.07),
+                                      cornerRadius: 3))
+
+        // Fill black glossy frame
+        c.setFillColor(colors.outer.cgColor)
+        c.addPath(framePath.cgPath)
+        c.fillPath()
+
+        // Lenses with deep gradient tint
+        c.setFillColor(colors.inner.cgColor)
+        c.addPath(lensLeft.cgPath)
+        c.addPath(lensRight.cgPath)
+        c.fillPath()
+
+        // Specular highlight streaks across both lenses
+        let glarePath = UIBezierPath()
+        glarePath.move(to: CGPoint(x: w * 0.16, y: h * 0.62))
+        glarePath.addLine(to: CGPoint(x: w * 0.32, y: h * 0.38))
+        glarePath.addLine(to: CGPoint(x: w * 0.37, y: h * 0.38))
+        glarePath.addLine(to: CGPoint(x: w * 0.21, y: h * 0.62))
+        glarePath.close()
+
+        glarePath.move(to: CGPoint(x: w * 0.59, y: h * 0.62))
+        glarePath.addLine(to: CGPoint(x: w * 0.75, y: h * 0.38))
+        glarePath.addLine(to: CGPoint(x: w * 0.80, y: h * 0.38))
+        glarePath.addLine(to: CGPoint(x: w * 0.64, y: h * 0.62))
+        glarePath.close()
+
+        c.setFillColor(UIColor.white.withAlphaComponent(0.28).cgColor)
+        c.addPath(glarePath.cgPath)
+        c.fillPath()
+
+        c.restoreGState()
+    }
+
+    private static func drawCrown(in c: CGContext, size: CGSize, colors: (outer: UIColor, inner: UIColor, nose: UIColor)) {
+        let w = size.width, h = size.height
+        c.saveGState()
+
+        // 5-Point Regal Gold Crown
+        let crownPath = UIBezierPath()
+        crownPath.move(to: CGPoint(x: w * 0.16, y: h * 0.76))
+        crownPath.addLine(to: CGPoint(x: w * 0.12, y: h * 0.30))  // Left peak
+        crownPath.addLine(to: CGPoint(x: w * 0.30, y: h * 0.52))  // Valley 1
+        crownPath.addLine(to: CGPoint(x: w * 0.38, y: h * 0.22))  // Mid-left peak
+        crownPath.addLine(to: CGPoint(x: w * 0.50, y: h * 0.46))  // Center valley
+        crownPath.addLine(to: CGPoint(x: w * 0.50, y: h * 0.10))  // High center peak
+        crownPath.addLine(to: CGPoint(x: w * 0.50, y: h * 0.46))
+        crownPath.addLine(to: CGPoint(x: w * 0.62, y: h * 0.22))  // Mid-right peak
+        crownPath.addLine(to: CGPoint(x: w * 0.70, y: h * 0.52))  // Valley 2
+        crownPath.addLine(to: CGPoint(x: w * 0.88, y: h * 0.30))  // Right peak
+        crownPath.addLine(to: CGPoint(x: w * 0.84, y: h * 0.76))  // Base right
+        crownPath.close()
+
+        // Rich Gold Fill
+        c.setFillColor(colors.outer.cgColor)
+        c.addPath(crownPath.cgPath)
+        c.fillPath()
+
+        // Crown headband trim
+        let bandPath = UIBezierPath(roundedRect: CGRect(x: w * 0.15, y: h * 0.72, width: w * 0.70, height: h * 0.10),
+                                    cornerRadius: 6)
+        c.setFillColor(UIColor(red: 0.85, green: 0.65, blue: 0.08, alpha: 1).cgColor)
+        c.addPath(bandPath.cgPath)
+        c.fillPath()
+
+        // Ruby Gems on peaks & headband
+        c.setFillColor(colors.inner.cgColor)
+        c.fillEllipse(in: CGRect(x: w * 0.46, y: h * 0.14, width: w * 0.08, height: h * 0.08))
+        c.fillEllipse(in: CGRect(x: w * 0.35, y: h * 0.25, width: w * 0.06, height: h * 0.06))
+        c.fillEllipse(in: CGRect(x: w * 0.59, y: h * 0.25, width: w * 0.06, height: h * 0.06))
+        c.fillEllipse(in: CGRect(x: w * 0.10, y: h * 0.32, width: w * 0.05, height: h * 0.05))
+        c.fillEllipse(in: CGRect(x: w * 0.85, y: h * 0.32, width: w * 0.05, height: h * 0.05))
+
+        // Center oval ruby in headband
+        c.fillEllipse(in: CGRect(x: w * 0.46, y: h * 0.73, width: w * 0.08, height: h * 0.08))
+
+        c.restoreGState()
+    }
+
+    private static func drawHalo(in c: CGContext, size: CGSize, colors: (outer: UIColor, inner: UIColor, nose: UIColor)) {
+        let w = size.width, h = size.height
+        c.saveGState()
+
+        let haloRect = CGRect(x: w * 0.15, y: h * 0.35, width: w * 0.70, height: h * 0.28)
+
+        // Outer glow
+        c.setShadow(offset: .zero, blur: 28, color: UIColor.systemYellow.cgColor)
+
+        // Torus Ring Path
+        let ringPath = UIBezierPath(ovalIn: haloRect)
+        c.setStrokeColor(colors.outer.cgColor)
+        c.setLineWidth(24)
+        c.addPath(ringPath.cgPath)
+        c.strokePath()
+
+        // Inner luminous core
+        c.setShadow(offset: .zero, blur: 10, color: UIColor.white.cgColor)
+        c.setStrokeColor(UIColor.white.withAlphaComponent(0.92).cgColor)
+        c.setLineWidth(10)
+        c.addPath(ringPath.cgPath)
+        c.strokePath()
+
+        c.restoreGState()
+    }
+
+    private static func drawDevilHorns(in c: CGContext, size: CGSize, colors: (outer: UIColor, inner: UIColor, nose: UIColor)) {
+        let w = size.width, h = size.height
+
+        func horn(flipped: Bool) {
+            c.saveGState()
+            if flipped {
+                c.translateBy(x: w, y: 0)
+                c.scaleBy(x: -1, y: 1)
+            }
+
+            let hornPath = UIBezierPath()
+            // Root at brow/skull side, curving outward and upward sharply
+            hornPath.move(to: CGPoint(x: w * 0.32, y: h * 0.62))
+            hornPath.addCurve(to: CGPoint(x: w * 0.14, y: h * 0.15),
+                              controlPoint1: CGPoint(x: w * 0.22, y: h * 0.52),
+                              controlPoint2: CGPoint(x: w * 0.12, y: h * 0.32))
+            hornPath.addCurve(to: CGPoint(x: w * 0.40, y: h * 0.55),
+                              controlPoint1: CGPoint(x: w * 0.20, y: h * 0.22),
+                              controlPoint2: CGPoint(x: w * 0.32, y: h * 0.40))
+            hornPath.close()
+
+            // Crimson red horn
+            c.setFillColor(colors.outer.cgColor)
+            c.addPath(hornPath.cgPath)
+            c.fillPath()
+
+            // Glowing inner ridge highlight
+            let ridgePath = UIBezierPath()
+            ridgePath.move(to: CGPoint(x: w * 0.31, y: h * 0.58))
+            ridgePath.addCurve(to: CGPoint(x: w * 0.16, y: h * 0.20),
+                               controlPoint1: CGPoint(x: w * 0.23, y: h * 0.48),
+                               controlPoint2: CGPoint(x: w * 0.15, y: h * 0.34))
+            ridgePath.addCurve(to: CGPoint(x: w * 0.35, y: h * 0.54),
+                               controlPoint1: CGPoint(x: w * 0.22, y: h * 0.28),
+                               controlPoint2: CGPoint(x: w * 0.30, y: h * 0.44))
+            ridgePath.close()
+
+            c.setFillColor(colors.inner.cgColor)
+            c.addPath(ridgePath.cgPath)
+            c.fillPath()
+
+            c.restoreGState()
+        }
+
+        horn(flipped: false)
+        horn(flipped: true)
     }
 }

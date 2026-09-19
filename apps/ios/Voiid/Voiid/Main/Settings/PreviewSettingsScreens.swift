@@ -133,10 +133,10 @@ struct AccountCenterScreen: View {
 //
 //   * PROFILES — the honest version of the reference's row. Voiid genuinely HAS two
 //     identities today: the account (phone, username, photo — Edit Profile) and the creator
-//     profile (handle, bio, clips — CreatorProfileView). They are separate on purpose and a
+//     profile (handle, bio, clips — SocialProfileView). They are separate on purpose and a
 //     user has no single place that says so. This is the strongest candidate and needs
-//     nothing new server-side: `CreatorEngine.me` already resolves the second one. It does
-//     need `CreatorEngine` lifted from a per-view @StateObject in ClipsFeedView to something
+//     nothing new server-side: `SocialEngine.me` already resolves the second one. It does
+//     need `SocialEngine` lifted from a per-view @StateObject in ClipsFeedView to something
 //     Settings can reach, which is the one real blocker.
 //
 //   * SECURITY — "Password & security" cannot port: Voiid has no password. What it DOES have

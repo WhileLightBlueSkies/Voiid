@@ -232,7 +232,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
     var showMyClips by remember { mutableStateOf(false) }
     // The creator-profile gate. `creators` is hoisted here rather than inside the Clips tab
     // so the handle sheet survives a tab switch mid-flow.
-    val creators: com.voiid.app.model.CreatorStore =
+    val creators: com.voiid.app.model.SocialStore =
         androidx.lifecycle.viewmodel.compose.viewModel()
     var showHandleSheet by remember { mutableStateOf(false) }
     /** The creator page open on top of the grid, by handle. */
@@ -312,6 +312,13 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
             showHandleSheet = true
             clips.needsCreatorProfile = false
         }
+    }
+
+    // ONE GATE FOR EVERY SURFACE. Liking, commenting, joining a community and starting a
+    // match now return `profile_required` too, and they all set the same flag on the store —
+    // so the sheet appears over whatever the person was doing rather than only in Clips.
+    androidx.compose.runtime.LaunchedEffect(creators.showSetup) {
+        if (creators.showSetup) showHandleSheet = true
     }
 
     // Feature (B) — the Map. Its store (allow-list, ghost state, subjects) is a ViewModel so
@@ -529,7 +536,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // a creator's page now opens that player. Drawn after it, the profile would cover
         // the very clip it was asked to play.
         openCreator?.let { handle ->
-            com.voiid.app.main.clips.CreatorProfileView(
+            com.voiid.app.main.clips.SocialProfileView(
                 handle = handle,
                 creators = creators,
                 onBack = { openCreator = null },
@@ -1037,7 +1044,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         )
     }
     if (showHandleSheet) {
-        com.voiid.app.main.clips.CreatorHandleSheet(
+        com.voiid.app.main.clips.SocialSetupSheet(
             creators = creators,
             onCreated = {
                 // Whatever raised the gate can now proceed: either finish an upload parked at

@@ -9,12 +9,17 @@
 -- =================================================================================
 --
 -- ── WHY THIS IS NOT COSMETIC ────────────────────────────────────────────────────
--- Communities and Games currently join `users` for display, selecting `u.photo_url`. That
--- column is the E2EE PROFILE PHOTO (021) — encrypted to a known audience, i.e. people the
--- user actually connected with. A community roster is visible to every member and a game
--- invite reaches strangers, so those surfaces were showing a photo that was encrypted for a
--- private audience. 029 created `avatar_r2_key` as plaintext precisely so public surfaces
--- would stop reusing the private one; Clips honoured that and the other two never did.
+-- Communities and Games currently join `users` for display, selecting `u.photo_url`. That is
+-- the ACCOUNT photo, governed by `photo_privacy` (019: everyone / contacts / nobody).
+-- `users.ts` honours that setting and returns null when it is not allowed; those routers never
+-- checked it. So a person who limited their photo to contacts still had it shown to every
+-- member of any community they joined and to strangers receiving a game invite.
+--
+-- (Not a decryption failure: `photo_url` is the plaintext legacy column and
+-- `encrypted_photo_url` from 021 is the E2EE one. An earlier draft of this header said
+-- otherwise and was wrong.) 029 created `avatar_r2_key` as the public avatar precisely so
+-- public surfaces would stop reaching into the account row; Clips honoured that, the other
+-- two never did.
 --
 -- Renaming the table is what makes that mistake hard to repeat: a developer joining
 -- `social_profiles` for a public surface is doing the obvious thing, where joining
@@ -38,16 +43,44 @@
 
 do $$
 begin
+    -- THE RE-RUN CASE, and why this is not just `if old exists then rename`.
+    --
+    -- 029 creates the table with `create table if not exists creator_profiles`. Once 081 has
+    -- renamed it, a SECOND replay of the migration set finds no `creator_profiles`, so 029
+    -- happily creates a fresh empty one — and this block, seeing `social_profiles` already
+    -- there, used to skip. The database ended up with BOTH tables: the real data under the new
+    -- name and an empty decoy under the old one, whose auto-generated constraints then
+    -- collided by name. CI replays migrations into a live database, which is exactly how it
+    -- found this.
+    --
+    -- So the empty re-creation is dropped rather than skipped. Dropping is safe precisely
+    -- because it can only ever be the decoy: if the rename already happened, every real row
+    -- is in `social_profiles`, and anything 029 just built is a table nothing has written to
+    -- yet in this same replay.
+    if to_regclass('public.creator_profiles') is not null
+       and to_regclass('public.social_profiles') is not null then
+        drop table creator_profiles cascade;
+    end if;
+
     if to_regclass('public.creator_profiles') is not null
        and to_regclass('public.social_profiles') is null then
         alter table creator_profiles rename to social_profiles;
     end if;
 
+    -- Same re-run hazard for the two child tables.
+    if to_regclass('public.creator_handle_history') is not null
+       and to_regclass('public.social_handle_history') is not null then
+        drop table creator_handle_history cascade;
+    end if;
     if to_regclass('public.creator_handle_history') is not null
        and to_regclass('public.social_handle_history') is null then
         alter table creator_handle_history rename to social_handle_history;
     end if;
 
+    if to_regclass('public.creator_follows') is not null
+       and to_regclass('public.social_follows') is not null then
+        drop table creator_follows cascade;
+    end if;
     if to_regclass('public.creator_follows') is not null
        and to_regclass('public.social_follows') is null then
         alter table creator_follows rename to social_follows;

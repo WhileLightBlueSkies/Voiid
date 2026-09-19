@@ -1,5 +1,5 @@
 //
-//  CreatorService.swift
+//  SocialService.swift
 //  Voiid
 //
 //  Thin API layer for the creator-profile + follow endpoints
@@ -22,8 +22,8 @@
 import Foundation
 
 @MainActor
-final class CreatorService {
-    static let shared = CreatorService()
+final class SocialService {
+    static let shared = SocialService()
     private let api = APIClient()
     private init() {}
 

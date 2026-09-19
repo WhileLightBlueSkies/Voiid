@@ -8,7 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.voiid.app.net.CreatorService
+import com.voiid.app.net.SocialService
 import com.voiid.app.net.TokenStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -16,13 +16,13 @@ import kotlinx.coroutines.launch
 
 /**
  * Creator profiles, the follow graph and the Following feed (mirrors iOS `CreatorEngine`).
- * Transport lives in [CreatorService]; this owns the cache and the optimistic updates.
+ * Transport lives in [SocialService]; this owns the cache and the optimistic updates.
  *
- * NOT E2EE — see the header of [CreatorService]. A follow grants no messaging right.
+ * NOT E2EE — see the header of [SocialService]. A follow grants no messaging right.
  */
-class CreatorStore(app: Application) : AndroidViewModel(app) {
+class SocialStore(app: Application) : AndroidViewModel(app) {
 
-    private val svc = CreatorService(TokenStore.get(app))
+    private val svc = SocialService(TokenStore.get(app))
 
     // ── Your own profile (the gate) ───────────────────────────────────────────────
 
@@ -32,7 +32,7 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
      * that split the composer cannot tell a cold start from a genuine no-profile and would
      * show the handle picker to someone who already has a handle.
      */
-    var me by mutableStateOf<CreatorService.Profile?>(null)
+    var me by mutableStateOf<SocialService.Profile?>(null)
         private set
     var hasLoadedMe by mutableStateOf(false)
         private set
@@ -45,7 +45,39 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
      */
     val needsProfile: Boolean get() = hasLoadedMe && me == null
 
-    suspend fun refreshMe(): CreatorService.Profile? {
+    /**
+     * ONE FLAG FOR EVERY SURFACE.
+     *
+     * The server now returns `profile_required` from liking a clip, commenting, publishing,
+     * joining a community and starting a match — not just the clip-commit path it used to.
+     * Each of those raising its own flag would mean five copies of "show the setup sheet"
+     * that drift apart; this is the one place any of them can set.
+     *
+     * Set it through [raiseGate] rather than assigning directly, so an unrelated failure
+     * cannot open the sheet.
+     */
+    var showSetup by mutableStateOf(false)
+
+    /**
+     * Turns a caught error into the gate, if that is what it is. Returns true when it handled
+     * the error, so a caller can stop rather than also showing a failure toast — someone being
+     * asked to pick a handle should not simultaneously be told something broke.
+     */
+    fun raiseGate(e: Throwable): Boolean {
+        val code = (e as? com.voiid.app.net.ApiError.Http)?.code
+        if (code != "profile_required") return false
+        showSetup = true
+        return true
+    }
+
+    /** Called after the sheet completes, so the surface that was blocked can proceed. */
+    fun profileCreated(profile: SocialService.Profile) {
+        me = profile
+        hasLoadedMe = true
+        showSetup = false
+    }
+
+    suspend fun refreshMe(): SocialService.Profile? {
         meLoading = true
         try {
             me = svc.me()
@@ -62,7 +94,7 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
     }
 
     /** Ensures [me] is loaded, fetching only once. Called before the composer opens. */
-    suspend fun ensureMeLoaded(): CreatorService.Profile? {
+    suspend fun ensureMeLoaded(): SocialService.Profile? {
         if (hasLoadedMe) return me
         return refreshMe()
     }
@@ -72,8 +104,10 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
         displayName: String?,
         bio: String?,
         linkUrl: String?,
-    ): CreatorService.Profile {
-        val p = svc.create(handle, displayName, bio, linkUrl)
+        birthDate: String? = null,
+        interests: List<String> = emptyList(),
+    ): SocialService.Profile {
+        val p = svc.create(handle, displayName, bio, linkUrl, birthDate, interests)
         me = p
         hasLoadedMe = true
         cache[p.handle.lowercase()] = p
@@ -85,7 +119,7 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
         displayName: String? = null,
         bio: String? = null,
         linkUrl: String? = null,
-    ): CreatorService.Profile {
+    ): SocialService.Profile {
         val old = me?.handle?.lowercase()
         val p = svc.update(handle, displayName, bio, linkUrl)
         me = p
@@ -95,7 +129,7 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
         return p
     }
 
-    suspend fun uploadAvatar(jpeg: ByteArray): CreatorService.Profile {
+    suspend fun uploadAvatar(jpeg: ByteArray): SocialService.Profile {
         val p = svc.uploadAvatar(jpeg)
         me = p
         cache[p.handle.lowercase()] = p
@@ -128,7 +162,7 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
         val handle = raw.trim().lowercase()
 
         if (handle.isEmpty()) { handleState = HandleState.Idle; return }
-        if (!CreatorService.isWellFormed(handle)) { handleState = HandleState.BadFormat; return }
+        if (!SocialService.isWellFormed(handle)) { handleState = HandleState.BadFormat; return }
 
         handleState = HandleState.Checking
         handleCheckJob = viewModelScope.launch {
@@ -163,7 +197,7 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
      * Keyed on the lowercased handle. Small and short-lived: a profile carries a presigned
      * avatar URL that expires, so this is a within-session convenience, not a store.
      */
-    val cache = mutableStateMapOf<String, CreatorService.Profile>()
+    val cache = mutableStateMapOf<String, SocialService.Profile>()
 
     var profileError by mutableStateOf<String?>(null)
         private set
@@ -186,7 +220,7 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun cachedProfile(handle: String): CreatorService.Profile? = cache[handle.lowercase()]
+    fun cachedProfile(handle: String): SocialService.Profile? = cache[handle.lowercase()]
 
     // ── Follow ────────────────────────────────────────────────────────────────────
 
@@ -231,11 +265,11 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
 
     // ── A creator's grid ──────────────────────────────────────────────────────────
 
-    val grids = mutableStateMapOf<String, List<CreatorService.CreatorClipRow>>()
+    val grids = mutableStateMapOf<String, List<SocialService.CreatorClipRow>>()
     private val gridCursors = mutableMapOf<String, String?>()
     private val gridLoading = mutableSetOf<String>()
 
-    fun clipsFor(handle: String): List<CreatorService.CreatorClipRow> =
+    fun clipsFor(handle: String): List<SocialService.CreatorClipRow> =
         grids[handle.lowercase()] ?: emptyList()
 
     fun refreshClips(handle: String) {
@@ -278,7 +312,7 @@ class CreatorStore(app: Application) : AndroidViewModel(app) {
 
     // ── Following feed ────────────────────────────────────────────────────────────
 
-    val following = mutableStateListOf<CreatorService.CreatorClipRow>()
+    val following = mutableStateListOf<SocialService.CreatorClipRow>()
     var followingLoading by mutableStateOf(false)
         private set
     var followingError by mutableStateOf<String?>(null)
