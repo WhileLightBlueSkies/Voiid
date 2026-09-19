@@ -15,6 +15,7 @@ struct GamesScreen: View {
     private enum Step: Hashable {
         case ludo(difficulty: String)
         case snake(mode: String)
+        case carrom
     }
 
     @State private var path: [Step] = []
@@ -31,7 +32,7 @@ struct GamesScreen: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: VoiidSpacing.xl) {
-                        header
+                        continueRow
                         library
                         comingSoon
                     }
@@ -41,7 +42,33 @@ struct GamesScreen: View {
                 .softScrollEdge()
                 .contentMargins(.bottom, max(session.bottomInset, 96), for: .scrollContent)
             }
-            .toolbar(.hidden, for: .navigationBar)
+            // A REAL nav bar, as Communities has — not a hand-drawn header row.
+            //
+            // This tab used to hide the bar and draw its own title and buttons. That is why
+            // the gear and the avatar sat bare here while the same controls in Communities
+            // sat in the system's glass pill: the pill is something the toolbar gives its
+            // items, so a hand-drawn row can never get it, and no amount of restyling the
+            // row would have closed the gap.
+            .navigationTitle("Games")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("Games")
+                        .font(VoiidFont.screenTitle)
+                        .foregroundStyle(VoiidColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button { Haptics.tap(); showSettings = true } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Game settings")
+                }
+                // The same identity, in the same corner, as Clips and Communities.
+                ToolbarItem(placement: .primaryAction) {
+                    SocialProfileButton(diameter: 30) { openHandle = $0 }
+                }
+            }
             .sheet(item: $setup) { game in
                 GameSetupSheet(game: game) { mode in
                     start(game, mode: mode)
@@ -57,6 +84,7 @@ struct GamesScreen: View {
                 switch step {
                 case .ludo(let difficulty): LudoGameView(difficulty: difficulty)
                 case .snake(let mode):       SnakeGameView(mode: mode)
+                case .carrom:                CarromGameView()
                 }
             }
             .navigationDestination(item: $openHandle) { handle in
@@ -75,44 +103,17 @@ struct GamesScreen: View {
         switch game.id {
         case "ludo":  path.append(.ludo(difficulty: mode.id))
         case "snake": path.append(.snake(mode: mode.id))
+        case "carrom": path.append(.carrom)
         default:      break
         }
     }
 
-    // MARK: Header
+    // MARK: Continue
 
-    private var header: some View {
+    /// The "continue last played" row. The title and the header actions moved to the real
+    /// toolbar above, so what is left here is content, not chrome.
+    private var continueRow: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-            HStack(alignment: .center) {
-                // Communities' screen title, not a larger one of this tab's own. The two tabs
-                // are one tap apart in the same bar, so a 32pt title here and a 26pt one
-                // there reads as two apps rather than two rooms of the same app.
-                Text("Games")
-                    .font(VoiidFont.screenTitle)
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .accessibilityAddTraits(.isHeader)
-
-                Spacer()
-
-                // Communities' toolbar treatment: a plain accent glyph in a 44pt target. The
-                // bordered card circle that was here had no counterpart on any other tab.
-                Button {
-                    Haptics.tap()
-                    showSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(VoiidColor.accent)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Game settings")
-
-                // The same identity Clips and Communities show, in the same corner, at the
-                // same size. Renders nothing until a Social Profile exists.
-                SocialProfileButton(diameter: 30) { openHandle = $0 }
-            }
-
             if let last = store.lastPlayed {
                 Button {
                     open(last)
