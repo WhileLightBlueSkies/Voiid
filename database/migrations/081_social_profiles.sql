@@ -57,32 +57,32 @@ begin
     -- because it can only ever be the decoy: if the rename already happened, every real row
     -- is in `social_profiles`, and anything 029 just built is a table nothing has written to
     -- yet in this same replay.
-    if to_regclass('public.creator_profiles') is not null
-       and to_regclass('public.social_profiles') is not null then
+    if to_regclass('creator_profiles') is not null
+       and to_regclass('social_profiles') is not null then
         drop table creator_profiles cascade;
     end if;
 
-    if to_regclass('public.creator_profiles') is not null
-       and to_regclass('public.social_profiles') is null then
+    if to_regclass('creator_profiles') is not null
+       and to_regclass('social_profiles') is null then
         alter table creator_profiles rename to social_profiles;
     end if;
 
     -- Same re-run hazard for the two child tables.
-    if to_regclass('public.creator_handle_history') is not null
-       and to_regclass('public.social_handle_history') is not null then
+    if to_regclass('creator_handle_history') is not null
+       and to_regclass('social_handle_history') is not null then
         drop table creator_handle_history cascade;
     end if;
-    if to_regclass('public.creator_handle_history') is not null
-       and to_regclass('public.social_handle_history') is null then
+    if to_regclass('creator_handle_history') is not null
+       and to_regclass('social_handle_history') is null then
         alter table creator_handle_history rename to social_handle_history;
     end if;
 
-    if to_regclass('public.creator_follows') is not null
-       and to_regclass('public.social_follows') is not null then
+    if to_regclass('creator_follows') is not null
+       and to_regclass('social_follows') is not null then
         drop table creator_follows cascade;
     end if;
-    if to_regclass('public.creator_follows') is not null
-       and to_regclass('public.social_follows') is null then
+    if to_regclass('creator_follows') is not null
+       and to_regclass('social_follows') is null then
         alter table creator_follows rename to social_follows;
     end if;
 end $$;
@@ -114,7 +114,7 @@ begin
             to social_profiles_link_len;
     end if;
 
-    if to_regclass('public.idx_creator_profiles_discoverable') is not null then
+    if to_regclass('idx_creator_profiles_discoverable') is not null then
         alter index idx_creator_profiles_discoverable
             rename to idx_social_profiles_discoverable;
     end if;
