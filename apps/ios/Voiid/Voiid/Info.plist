@@ -11,6 +11,14 @@
 			<array>
 				<string>app-1-104136277519-ios-0b4fe6f8547f936c6b6d7a</string>
 				<string>app-1-104136277519-ios-d155569c969bffc86b6d7a</string>
+				<!-- The scheme for the CURRENT GoogleService-Info.plist (GOOGLE_APP_ID
+				     1:104136277519:ios:9b93a182b924f4f76b6d7a). Firebase Phone Auth needs
+				     its app's reverse id registered for the reCAPTCHA fallback, and it
+				     does not degrade: PhoneAuthProvider raises a FATAL ERROR the moment
+				     you submit a number, so the app dies on the signup screen. The two
+				     above belong to older Firebase apps and are kept so a build using an
+				     earlier GoogleService-Info.plist still works. -->
+				<string>app-1-104136277519-ios-9b93a182b924f4f76b6d7a</string>
 			</array>
 		</dict>
 	</array>
