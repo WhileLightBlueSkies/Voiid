@@ -729,7 +729,9 @@ const PENDING_MAX_BYTES = Number(process.env.VOIID_PENDING_MAX_BYTES) || 4 * 102
 interface PendingRow {
   id: string;
   conversation_id: string;
-  sender_id: string;
+  /// Null when the sender erased their account — see 084. The message still belongs to its
+  /// recipients; it just has nobody to attribute it to.
+  sender_id: string | null;
   sender_device_id: string | null;
   ciphertext: string;
   content_type: string | null;

@@ -98,7 +98,11 @@ struct BoardCanvas: View {
         let inner = outer * 0.45
         for i in 0..<10 {
             let radius = i.isMultiple(of: 2) ? outer : inner
-            let angle = -.pi / 2 + Double(i) * .pi / 5
+            // CGFloat throughout. `angle` was a Double, and on arm64 CGFloat IS Double so
+            // `radius * cos(angle)` resolved fine — on x86_64 they are distinct types and
+            // `cos` became ambiguous, so this compiled on device and failed the simulator
+            // build in CI.
+            let angle: CGFloat = -.pi / 2 + CGFloat(i) * .pi / 5
             let pt = CGPoint(x: c.x + radius * cos(angle), y: c.y + radius * sin(angle))
             i == 0 ? path.move(to: pt) : path.addLine(to: pt)
         }
