@@ -23,6 +23,7 @@ import { publisher } from '../redis';
 import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
 import { readClient, cmpVersion } from '../version';
+import { signAvatars, requireSocialProfile } from '../social/identity';
 
 const router = Router();
 
@@ -308,6 +309,9 @@ router.put(
 router.post(
   '/matches',
   requireAuth,
+  // A match roster carries a public byline, so playing with other people is a public act.
+  // The offline bot games never reach the server, so this does not gate them.
+  requireSocialProfile(),
   rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
@@ -539,6 +543,9 @@ router.post(
 router.post(
   '/matches/:id/join',
   requireAuth,
+  // A match roster carries a public byline, so playing with other people is a public act.
+  // The offline bot games never reach the server, so this does not gate them.
+  requireSocialProfile(),
   rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }),
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
@@ -661,12 +668,18 @@ router.get(
       created_at: Date;
       inviter_name: string | null;
       inviter_username: string | null;
+      inviter_display_name: string | null;
+      inviter_photo_url: string | null;
     }>(
       `select m.id, g.slug, g.name, g.icon_key, m.options, m.created_by, m.created_at,
-              u.full_name as inviter_name, u.username as inviter_username
+              u.full_name as inviter_name,
+              coalesce(sp.handle, u.username) as inviter_username,
+              sp.display_name as inviter_display_name,
+              sp.avatar_r2_key as inviter_photo_url
          from game_matches m
          join games g on g.id = m.game_id
          left join users u on u.id = m.created_by
+         left join social_profiles sp on sp.user_id = m.created_by
         where m.status = 'waiting'
           -- ::uuid, not a bare parameter. created_by is a uuid column and pg infers an untyped
           -- parameter as text, and there is no uuid <> text operator — so this comparison made the
@@ -701,7 +714,7 @@ router.get(
         missed: age > INVITE_TTL_MS,
       };
     });
-    res.json({ invites });
+    res.json({ invites: await signAvatars(invites, 'inviter_photo_url') });
   })
 );
 
@@ -1166,7 +1179,7 @@ router.get(
 
 /** The leaderboard query itself, split out so the route above can log a failure with context. */
 async function runLeaderboard(userId: string, slug: string | null) {
-  return query(
+  return signAvatars(await query(
       `with mine as (
          select m.id, m.winner_id, m.player_ids
            from game_matches m
@@ -1184,7 +1197,9 @@ async function runLeaderboard(userId: string, slug: string | null) {
        )
        select p.opponent_id,
               u.full_name,
-              u.username,
+              coalesce(sp.handle, u.username) as username,
+              sp.display_name,
+              sp.avatar_r2_key as photo_url,
               count(*)::int                                                    as played,
               -- TWO PARAMETERS FOR ONE VALUE, deliberately. The caller's id is needed as TEXT
               -- above (opponent_id comes out of jsonb as text) and as UUID here (winner_id is a
@@ -1197,10 +1212,12 @@ async function runLeaderboard(userId: string, slug: string | null) {
               count(*) filter (where p.winner_id = p.opponent_id::uuid)::int   as losses
          from pairs p
          left join users u on u.id = p.opponent_id::uuid
-        group by p.opponent_id, u.full_name, u.username
+         left join social_profiles sp on sp.user_id = p.opponent_id::uuid
+        group by p.opponent_id, u.full_name, u.username,
+                 sp.handle, sp.display_name, sp.avatar_r2_key
         order by wins desc, played desc`,
       [JSON.stringify([userId]), slug, userId, userId]
-  );
+  ));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -1317,22 +1334,27 @@ router.get(
     const { user_id: userId } = (req as any).auth as { user_id: string };
     const day = challengeDay();
 
-    const board = await query<{
+    const board = await signAvatars(await query<{
       user_id: string;
       full_name: string | null;
       username: string | null;
+      display_name: string | null;
+      photo_url: string | null;
       score: number;
     }>(
-      `select r.user_id, u.full_name, u.username, r.score
+      `select r.user_id, u.full_name,
+              coalesce(sp.handle, u.username) as username,
+              sp.display_name, sp.avatar_r2_key as photo_url, r.score
          from game_matches m
          join game_match_results r on r.match_id = m.id
          left join users u on u.id = r.user_id
+         left join social_profiles sp on sp.user_id = r.user_id
         where m.challenge_day = $1::date
           and m.status = 'finished'
         order by r.score desc
         limit 50`,
       [day]
-    );
+    ));
 
     // Reported separately from the board, because a player can have played and still not be in
     // the top 50 — and "you already played" is the fact the button needs, not "you are ranked".
@@ -1443,15 +1465,21 @@ interface LobbyMemberRow {
  * already returns.
  */
 async function lobbyMembers(matchId: string): Promise<LobbyMemberRow[]> {
-  return query<LobbyMemberRow>(
+  // Signed here rather than at each call site: this helper feeds both the REST routes and the
+  // websocket frames, and an avatar signed in one path but not the other is exactly the drift
+  // this refactor exists to stop.
+  return signAvatars(await query<LobbyMemberRow>(
     `select m.user_id, m.state, m.mic_on, m.seat, m.joined_at, m.seen_at,
-            u.full_name, u.username
+            u.full_name,
+            coalesce(sp.handle, u.username) as username,
+            sp.display_name, sp.avatar_r2_key as photo_url
        from game_lobby_members m
        left join users u on u.id = m.user_id
+       left join social_profiles sp on sp.user_id = m.user_id
       where m.match_id = $1
       order by m.joined_at`,
     [matchId]
-  );
+  ));
 }
 
 /** The wire shape of one member. Built in one place so every route and every WS frame agrees. */

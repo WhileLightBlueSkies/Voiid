@@ -18,6 +18,7 @@ import { query } from '../db';
 import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
 import { presignPut, presignGet, deleteObject, r2Configured, GET_URL_TTL_SECONDS } from '../r2';
+import { requireSocialProfile } from '../social/identity';
 
 const router = Router();
 
@@ -240,7 +241,7 @@ router.post('/presign-upload', requireAuth, rateLimit({ max: 240, windowSeconds:
 // Called only AFTER both R2 PUTs succeed, so the row is born 'ready'. See the
 // migration header for why there is no 'uploading' state.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
+router.post('/', requireAuth, requireSocialProfile(), rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const {
     clip_id, r2_key, thumb_r2_key, caption, duration_ms, width, height, byte_size,
@@ -253,21 +254,10 @@ router.post('/', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: '
     return res.status(400).json({ error: 'clip_id must be a uuid (client-generated)' });
   }
 
-  // THE PROFILE GATE. A clip cannot exist without a creator profile behind it: the feed
-  // attributes every clip to a public handle, and a clip whose author has no public identity
-  // has nothing to attribute it to. Enforced here rather than only in the client because a
-  // client-only gate is not a gate.
-  //
-  // 428 rather than 403 — the request is not forbidden, it is PRECONDITION REQUIRED, and the
-  // client turns this specific code into "choose your handle" rather than an error toast.
-  const profile = await query<{ suspended_at: Date | null }>(
-    `select suspended_at from social_profiles where user_id = $1`, [user_id]);
-  if (!profile[0]) {
-    return res.status(428).json({ error: 'creator profile required', code: 'profile_required' });
-  }
-  if (profile[0].suspended_at) {
-    return res.status(403).json({ error: 'this profile is suspended', code: 'suspended' });
-  }
+  // THE PROFILE GATE now lives in `requireSocialProfile()` (social/identity.ts), mounted on
+  // this route alongside the like and comment routes. One implementation rather than five —
+  // the previous inline copy here was the only one, which is why Communities and Games had
+  // no gate at all.
 
   // AUTHORIZATION: the caller may only claim object keys inside its OWN namespace,
   // and the tail must be the uuid presign-upload minted (optionally with a rendition
@@ -543,7 +533,7 @@ router.post('/:id/view', requireAuth, rateLimit({ max: 240, windowSeconds: 60, b
 // to become the source of truth, or a rapid double-tap permanently desyncs the
 // displayed count from the table.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/like', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
+router.post('/:id/like', requireAuth, requireSocialProfile(), rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -572,7 +562,7 @@ router.post('/:id/like', requireAuth, rateLimit({ max: 240, windowSeconds: 60, b
   return res.json({ liked: true, like_count: rows[0].like_count });
 }));
 
-router.delete('/:id/like', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
+router.delete('/:id/like', requireAuth, requireSocialProfile(), rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -642,7 +632,7 @@ router.get('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 60
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /clips/:id/comments  { text } -> { comment }
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
+router.post('/:id/comments', requireAuth, requireSocialProfile(), rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const clipId = req.params.id;
   if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
@@ -703,7 +693,7 @@ router.post('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 6
 // Author of the COMMENT, or author of the CLIP (so a creator can moderate their
 // own post's comments), may delete.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.delete('/:id/comments/:commentId', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
+router.delete('/:id/comments/:commentId', requireAuth, requireSocialProfile(), rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { id: clipId, commentId } = req.params;
   if (!UUID_RE.test(clipId) || !UUID_RE.test(commentId)) {

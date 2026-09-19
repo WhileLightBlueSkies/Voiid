@@ -55,6 +55,7 @@ import { rateLimit } from '../security';
 import { asyncHandler } from '../util';
 import { publisher } from '../redis';
 import { presignGet, r2Configured } from '../r2';
+import { requireSocialProfile } from '../social/identity';
 // The roster/role authority (communityRoles.ts). Used by the write paths below that need
 // "is this an ACTIVE member of a LIVE community" — a question with a suspended-is-frozen rule
 // and a pending-is-not-a-member rule that must not be re-implemented per route.
@@ -871,6 +872,9 @@ router.get(
 router.post(
   '/:id/join',
   requireAuth,
+  // A community roster is public to its members and a post carries a public byline, so
+  // joining is a public act and needs the public identity.
+  requireSocialProfile(),
   rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
@@ -2234,6 +2238,7 @@ router.get(
 router.post(
   '/:id/posts',
   requireAuth,
+  requireSocialProfile(),
   rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   // Tighter than the router-wide ceiling. A feed is the surface where a script does the most
   // damage per request, and 30/hour is far above any human posting rate.
@@ -2389,6 +2394,7 @@ router.delete(
 router.post(
   '/:id/posts/:postId/like',
   requireAuth,
+  requireSocialProfile(),
   rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
@@ -2452,6 +2458,7 @@ router.post(
 router.delete(
   '/:id/posts/:postId/like',
   requireAuth,
+  requireSocialProfile(),
   rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;

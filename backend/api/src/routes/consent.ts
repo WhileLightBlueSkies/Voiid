@@ -73,7 +73,60 @@ interface Purpose {
  * the rule is: this table is the AUTHORITY for what may be stored, the app copy is a
  * DISPLAY copy, and a key the app invents is rejected here rather than written.
  */
+// ── TWO NOTICE SCOPES ───────────────────────────────────────────────────────────
+// The chat notice ('2026-08-01') covers the Voiid ACCOUNT: a phone number, encrypted
+// delivery, security, diagnostics. Those are the purposes of a messenger.
+//
+// The Social Profile is a different bargain and needs its own notice. It is the PUBLIC
+// identity used by Clips, Games and Communities: a handle and photo anyone can see, and
+// content stored unencrypted so it can be shown to strangers. Bundling that into the chat
+// notice would mean someone who only wants to message is asked to agree to publishing, and
+// DPDP s.6 requires consent to be specific to a purpose rather than a single tick over
+// everything. Hence a second scope, chosen by `?scope=` rather than replacing the first.
+const SOCIAL_NOTICE_VERSION = '2026-09-19-social';
+
+// Every account-scope version, not just the first: 068 published '2026-09-10' and aliased it
+// to the same purposes (see below). Omitting it here would make currentNotice() skip the
+// newest account notice and serve a retired one.
+const NOTICE_SCOPES: Record<string, string[]> = {
+  account: ['2026-08-01', '2026-09-10'],
+  social: [SOCIAL_NOTICE_VERSION],
+};
+
 const NOTICE_PURPOSES: Record<string, Purpose[]> = {
+  [SOCIAL_NOTICE_VERSION]: [
+    {
+      key: 'public_identity',
+      required: true,
+      summary:
+        'Your handle, display name, photo and bio are public. Anyone can see them, including people who do not use Voiid.',
+    },
+    {
+      key: 'content_hosting',
+      required: true,
+      summary:
+        'Clips, community posts and comments you publish are stored unencrypted so they can be shown publicly. Your chats and calls stay end-to-end encrypted and are not affected.',
+    },
+    {
+      key: 'age_verification',
+      required: true,
+      summary:
+        'Your date of birth, used only to apply the right safety protections. It is never shown on your profile and never shared with anyone.',
+    },
+    {
+      // THE ONLY OPTIONAL PURPOSE, and it is genuinely optional — a switch that changes
+      // nothing is a lie with a nicer shape (see the support_diagnostics note below).
+      //
+      // DPDP s.9 bans behavioural advertising and tracking directed at children, so for
+      // anyone under 18 this is not merely unticked: `POST /consent` refuses it outright.
+      // A restriction a teenager can switch off is not a restriction.
+      key: 'personalisation',
+      required: false,
+      summary:
+        'Using what you watch and follow to order your feed. You can turn this off at any time, and it is unavailable under 18.',
+    },
+  ],
+
   '2026-08-01': [
     {
       key: 'identity',
@@ -140,8 +193,11 @@ interface NoticeRow {
  * requested language and returns nothing rather than silently serving English to someone
  * who asked for Tamil — an unanswered request is visible; a wrong one is not.
  */
-async function currentNotice(language: string): Promise<NoticeRow | null> {
-  const known = Object.keys(NOTICE_PURPOSES);
+async function currentNotice(language: string, scope = 'account'): Promise<NoticeRow | null> {
+  // Scoped, because the account notice and the Social Profile notice are both current at the
+  // same time. Without this the newest row would win globally and asking for one would return
+  // the other.
+  const known = NOTICE_SCOPES[scope] ?? [];
   if (known.length === 0) return null;
   const rows = await query<NoticeRow>(
     `select version, language, url, published_at, content_sha256
@@ -222,7 +278,9 @@ router.get(
   '/notice',
   asyncHandler(async (req, res) => {
     const language = typeof req.query.language === 'string' && req.query.language ? req.query.language : 'en';
-    const notice = await currentNotice(language);
+    const scope = typeof req.query.scope === 'string' && NOTICE_SCOPES[req.query.scope]
+      ? req.query.scope : 'account';
+    const notice = await currentNotice(language, scope);
     if (!notice) {
       // 404 rather than an empty 200: "there is no notice published in this language"
       // is a real answer the client must handle (fall back to its bundled English copy
@@ -331,6 +389,29 @@ router.post(
 
     const normalised = normalisePurposes(version, body.purposes);
     if (!normalised.ok) return res.status(400).json({ error: normalised.error });
+
+    // ── THE UNDER-18 RULE, ENFORCED SERVER-SIDE ─────────────────────────────────
+    // DPDP s.9 bans behavioural advertising and tracking directed at children, and defines
+    // a child as anyone under 18 — broader than COPPA's under-13.
+    //
+    // Checked HERE rather than trusted from the client, because a restriction the restricted
+    // party can lift is not a restriction. The birth date comes from social_profiles, where
+    // 082 makes it immutable once set: an editable age gate would be the other way around
+    // this same check.
+    if (version === SOCIAL_NOTICE_VERSION && normalised.purposes.personalisation === true) {
+      const age = await query<{ under_18: boolean }>(
+        `select (birth_date > current_date - interval '18 years') as under_18
+           from social_profiles
+          where user_id = $1 and birth_date is not null`,
+        [user_id],
+      );
+      if (age[0]?.under_18) {
+        return res.status(403).json({
+          error: 'personalisation is not available under 18',
+          code: 'minor_restricted',
+        });
+      }
+    }
 
     // ON CONFLICT against the PARTIAL unique index idx_consent_active — note the WHERE
     // clause, which is not optional decoration: without it Postgres cannot infer a

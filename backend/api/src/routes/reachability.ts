@@ -19,6 +19,7 @@ import { pool, query } from '../db';
 import { requireAuth } from '../auth';
 import { clientIp, logSecurityEvent } from '../security';
 import { open, seal, secretboxAvailable } from '../secretbox';
+import { signAvatars } from '../social/identity';
 
 const router = Router();
 
@@ -99,14 +100,26 @@ router.get('/by-username', requireAuth, rateLimit({ max: 30, windowSeconds: 60, 
   const u = String(req.query.username ?? '').trim().toLowerCase();
   if (!u) return res.status(400).json({ error: 'username required' });
 
+  // THE AVATAR COMES FROM THE SOCIAL PROFILE, NOT THE ACCOUNT.
+  //
+  // This used to select `u.photo_url` — the ACCOUNT photo, governed by `photo_privacy`
+  // (019: everyone / contacts / nobody). users.ts honours that setting; this route never
+  // did. So a person who limited their photo to contacts still had it shown to any stranger
+  // who typed their handle here, which is precisely the audience the setting excludes.
+  //
+  // `social_profiles.avatar_r2_key` is the avatar they chose to publish, on a profile that
+  // is public by definition. Null when they have no Social Profile, and the client renders
+  // initials — never a fallback to the account photo, because that is the bug.
   const rows = await query<{
     id: string; full_name: string | null; photo_url: string | null;
     username: string | null; bio: string | null;
     contact_pin_hash: string | null; contact_pin_enc: string | null;
   }>(
-    `select id, full_name, photo_url, username, bio, contact_pin_hash, contact_pin_enc
-       from users
-      where lower(username) = $1 and deleted_at is null
+    `select u.id, u.full_name, sp.avatar_r2_key as photo_url,
+            u.username, u.bio, u.contact_pin_hash, u.contact_pin_enc
+       from users u
+       left join social_profiles sp on sp.user_id = u.id
+      where lower(u.username) = $1 and u.deleted_at is null
       limit 1`,
     [u]
   );
@@ -116,6 +129,8 @@ router.get('/by-username', requireAuth, rateLimit({ max: 30, windowSeconds: 60, 
   // Whether a PIN is even required is public: the sender has to know whether to prompt for
   // one. WHAT the pin is, of course, is not.
   const mutual = target.id === user_id ? true : await isMutualContact(user_id, target.id);
+
+  await signAvatars([target], 'photo_url');
 
   res.json({
     user_id: target.id,
