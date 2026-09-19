@@ -184,7 +184,7 @@ out to be infeasible, stop and escalate rather than substituting.
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | **MediaPipe Face Landmarker on both platforms** | One model → one geometry → one manifest. 478 landmarks, 52 blendshapes, and a 4×4 facial transformation matrix, so no PnP solve is needed. ~3.2 MB, GPU delegate. ARKit is *not* used: it is TrueDepth-only, front-camera-only, and a second geometry would mean authoring every filter twice. |
+| D1 | **ARKit on iOS, MediaPipe Face Landmarker on Android** | *Revised 2026-09-19 after measuring the real dependency cost — see §3.1.* ARKit is 0 MB, gives a 1220-vertex mesh with true TrueDepth depth, and its 52 blendshapes are the taxonomy MediaPipe copied, so manifest bindings port unchanged. Android uses MediaPipe (478 landmarks, 52 blendshapes, 4×4 matrix, ~4.7 MB). Manifests stay shared because anchors are **named**, not raw indices (§5.3). Cost: no rear-camera face filters on iOS, and the two meshes have different UV layouts, so `faceTexture` art needs a per-platform variant (affects `tiger` and `cat` only). |
 | D2 | **Shared GPU pipeline — Metal (iOS) + OpenGL ES 3.0 (Android)** | Same pass structure, shader sources kept line-for-line parallel. Renders into the camera texture so preview and recording are one path. Adds no binary weight. No RealityKit/Filament (≈4–8 MB and two different looks); no commercial SDK (per-MAU cost, 10–40 MB, vendor-locked format). |
 | D3 | **9 filters bundled, 11 CDN-delivered** | Install grows ~3.6 MB. Every shader-only filter (8 of them) costs ~0 MB and ships in the binary; the 11 asset-backed prop packs download on first tap and sit in a 40 MB LRU cache. Directly serves "don't make the app heavy." *(The decision was framed as ~6 bundled when the mix was 5 beauty + 5 warp; D4's prop-heavy mix leaves 8 shader-only filters, and bundling a zero-cost filter is strictly better than downloading it.)* |
 | D4 | **Prop-heavy mix: 12 props, 4 beauty, 4 warp** | Matches what users expect from the category. Full list in §9. |
@@ -193,6 +193,50 @@ out to be infeasible, stop and escalate rather than substituting.
 (`project.pbxproj:592`); Android **minSdk 24, compileSdk 36**
 (`app/build.gradle.kts:50-61`). OpenGL ES 3.0 is safe at API 24. AGSL is API 33+
 and therefore **not usable** — all Android shaders are GLSL ES 3.0.
+
+### 3.1 Why D1 changed — measured, not estimated
+
+The original decision assumed MediaPipe cost ~3.2 MB on both platforms. Measured
+against the real artefacts (2026-09-19):
+
+| | iOS | Android |
+|---|---|---|
+| Download delta | **~21–25 MB** | **~4.7 MB** (arm64) |
+| On disk | ~60–100 MB | ~12 MB |
+
+iOS is expensive for a specific, unfixable reason: `MediaPipeTasksCommon` ships
+`graph_libraries/libMediaPipeTasksCommon_device_graph.a` at **60.4 MB**, and its
+podspec requires `-force_load`. Force-loaded objects are exempt from dead
+-stripping, so **none of it can be removed** — 17.6 MB of that survives
+compression as pure download cost before the rest of the framework is counted.
+Android has no equivalent: the AAR is a normal native library and App Bundle
+ships a single ABI.
+
+ARKit was originally rejected as "TrueDepth-only". That was wrong.
+`ARFaceTrackingConfiguration` requires a TrueDepth camera **or an A12 chip or
+later**, and iOS 18's own minimum device (iPhone XS/XR) is A12. **Coverage is
+100 % of this app's iOS install base**, iPhone SE 2nd/3rd generation included.
+
+The blocker that remained — two meshes meaning every filter authored twice —
+was removed by making anchors **named** rather than index-based (§5.3). Each
+platform resolves names against its own mesh; the manifests do not change.
+
+### 3.2 What ARKit changes on iOS, beyond the tracker
+
+ARKit's `ARSession` **owns the camera**; an `AVCaptureSession` cannot run
+against the same device at the same time. The iOS capture path therefore moves
+from `AVCaptureVideoDataOutput` to `ARFrame`. Three consequences:
+
+1. **Tracker latency goes to zero.** `ARFrame` delivers `capturedImage` and
+   `ARFaceAnchor` in the *same* synchronised callback, already matched to that
+   frame. The mailbox, the 24 Hz tracker thread and the velocity extrapolation
+   of §5.4 are **Android-only**. On iOS the pose is exact, not predicted, which
+   is the single largest contributor to "smooth".
+2. **Front camera only.** `ARFaceTrackingConfiguration` does not run on the rear
+   camera. Face filters are hidden when the rear camera is selected on iOS; the
+   colour filters and the rest of the camera are unaffected.
+3. **Capture quality is chosen from `supportedVideoFormats`**, not a session
+   preset. §7.4 sets the rule.
 
 ---
 
