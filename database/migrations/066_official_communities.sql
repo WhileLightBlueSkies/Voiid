@@ -2,18 +2,10 @@
 -- Public community creation/PATCH deliberately cannot write this column.
 alter table communities add column if not exists official_key text;
 alter table communities add column if not exists posting_policy text not null default 'members';
--- Guarded: `add constraint` has no IF NOT EXISTS, and the migration-replay CI job runs the
--- whole set against a live database. Same `duplicate_object` pattern as 058 and 059.
-do $$ begin
-  alter table communities add constraint communities_official_key_check
-    check (official_key is null or official_key in ('jobs', 'feedback', 'updates'));
-exception when duplicate_object then null;
-end $$;
-do $$ begin
-  alter table communities add constraint communities_posting_policy_check
-    check (posting_policy in ('members', 'managers'));
-exception when duplicate_object then null;
-end $$;
+alter table communities add constraint communities_official_key_check
+  check (official_key is null or official_key in ('jobs', 'feedback', 'updates'));
+alter table communities add constraint communities_posting_policy_check
+  check (posting_policy in ('members', 'managers'));
 create unique index if not exists communities_official_key_unique
   on communities (official_key) where official_key is not null;
 
