@@ -44,6 +44,7 @@ enum GameRules {
         case "snake":     return snake
         case "seabattle": return seabattle
         case "ludo":      return ludoRules
+        case "carrom":    return carromRules
         default:          return []
         }
     }
@@ -57,9 +58,18 @@ enum GameRules {
         case "snake":     return "Eat, grow, survive. Six snakes, one arena, no brakes."
         case "seabattle": return "Hide a fleet, hunt theirs. Play a shot now, the next one tonight."
         case "ludo":      return "Four tokens, one board, and a die that owes you nothing."
+        case "carrom":    return "You play white. The bot plays black."
         default:          return nil
         }
     }
+
+    private static let carromRules: [Line] = [
+        Line(icon: "slider.horizontal.3", text: "Move the striker along your baseline. Touch the board to aim, set the power, then tap Strike."),
+        Line(icon: "circle.circle", text: "You play white and the bot plays black. Pocket your colour to take another shot. Opponent pieces count for them."),
+        Line(icon: "crown", text: "Cover the queen by pocketing your colour in the same shot or your next shot. Miss the cover and she returns."),
+        Line(icon: "exclamationmark.triangle", text: "Pocket the striker and your turn ends. One of your pocketed pieces returns, if you have any."),
+        Line(icon: "trophy", text: "Clear your nine pieces to win. The queen must be covered first, by either side; otherwise your last piece returns. Clearing the opponent’s colour helps them win."),
+    ]
 
     // MARK: - Per game
 

@@ -53,6 +53,12 @@ struct Game: Identifiable, Hashable {
               symbol: "dice.fill",
               lastPlayed: "Yesterday", bestScore: "12 wins"),
 
+        .init(id: "carrom", title: "Carrom", pitch: "You play white. Clear your colour to win.",
+              category: .board, players: "You + bot", minutes: "5–15 min",
+              isPlayable: true,
+              tintA: Color(ludoHex: 0x13828C), tintB: Color(ludoHex: 0xE8A72E),
+              symbol: "circle.circle.fill"),
+
         .init(id: "snake", title: "Snake Arena",
               pitch: "Eat, grow, and cut off anyone bigger than you.",
               category: .arcade, players: "You + 11 bots", minutes: "3–8 min",
@@ -67,10 +73,6 @@ struct Game: Identifiable, Hashable {
               category: .trivia,
               tintA: Color(ludoHex: 0x3B7DD8), tintB: Color(ludoHex: 0x8BE8EA),
               symbol: "textformat.abc"),
-        .init(id: "carrom", title: "Carrom", pitch: "Flick, pocket, repeat.",
-              category: .board,
-              tintA: Color(ludoHex: 0xE8A72E), tintB: Color(ludoHex: 0xE0503F),
-              symbol: "circle.circle.fill"),
         .init(id: "quiz", title: "Quiz Night", pitch: "Ten questions, everyone at once.",
               category: .trivia,
               tintA: Color(ludoHex: 0x8B5CF6), tintB: Color(ludoHex: 0xE879A6),
@@ -114,6 +116,12 @@ struct GameMode: Identifiable, Hashable {
                 .init(id: "hard", title: "Hard Mode (vs Bots)",
                       detail: "Aggressive bots that cut and race",
                       icon: "flame.fill", humans: 1, seats: 4),
+            ]
+        case "carrom":
+            [
+                .init(id: "solo", title: "Play vs Bot",
+                      detail: "You play white, the bot plays black",
+                      icon: "cpu", humans: 1, seats: 2),
             ]
         case "snake":
             [

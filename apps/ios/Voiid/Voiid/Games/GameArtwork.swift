@@ -11,6 +11,7 @@ struct GameArtwork: View {
         switch game.id {
         case "ludo": return "GameLudo\(suffix)"
         case "snake": return "GameSnake\(suffix)"
+        case "carrom": return "GameCarrom\(suffix)"
         default: return nil
         }
     }

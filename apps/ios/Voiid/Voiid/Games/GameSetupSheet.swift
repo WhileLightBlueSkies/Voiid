@@ -32,7 +32,7 @@ struct GameSetupSheet: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
                         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-                            Text("How do you want to play?")
+                            Text(modes.count == 1 ? "Your match" : "How do you want to play?")
                                 .font(VoiidFont.rounded(17, .bold))
                                 .foregroundColor(VoiidColor.textPrimary)
 
@@ -181,43 +181,45 @@ struct GameSetupSheet: View {
             .frame(height: 40, alignment: .leading)
             .animation(.easeOut(duration: 0.18), value: mode.id)
 
-            // CONTINUOUS WHILE DRAGGING, SETTLING ON RELEASE.
-            //
-            // `step: 1` made the thumb teleport between the three stops: it cannot rest
-            // between them, so the control stopped tracking the thumb and the motion read as
-            // broken rather than as snapping. Here the thumb follows the finger exactly, the
-            // selection updates as it crosses each stop, and only on release does it glide to
-            // the chosen one — which is what makes the travel feel smooth and still land on a
-            // real value.
-            Slider(
-                value: $sliderValue,
-                in: 0...Double(max(modes.count - 1, 1)),
-                onEditingChanged: { editing in
-                    guard !editing else { return }
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
-                        sliderValue = Double(index)
+            if modes.count > 1 {
+                // CONTINUOUS WHILE DRAGGING, SETTLING ON RELEASE.
+                //
+                // `step: 1` made the thumb teleport between the three stops: it cannot rest
+                // between them, so the control stopped tracking the thumb and the motion read as
+                // broken rather than as snapping. Here the thumb follows the finger exactly, the
+                // selection updates as it crosses each stop, and only on release does it glide to
+                // the chosen one — which is what makes the travel feel smooth and still land on a
+                // real value.
+                Slider(
+                    value: $sliderValue,
+                    in: 0...Double(max(modes.count - 1, 1)),
+                    onEditingChanged: { editing in
+                        guard !editing else { return }
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
+                            sliderValue = Double(index)
+                        }
                     }
+                )
+                .tint(VoiidColor.accent)
+                .accessibilityLabel("Difficulty")
+                .accessibilityValue(mode.title)
+                // Crossing a stop mid-drag picks it, so the description and icon above update
+                // under the thumb rather than only once the finger lifts.
+                .onChange(of: sliderValue) { _, new in
+                    let step = min(max(Int(new.rounded()), 0), modes.count - 1)
+                    guard step != index else { return }
+                    Haptics.selection()
+                    selected = modes[step]
                 }
-            )
-            .tint(VoiidColor.accent)
-            .accessibilityLabel("Difficulty")
-            .accessibilityValue(mode.title)
-            // Crossing a stop mid-drag picks it, so the description and icon above update
-            // under the thumb rather than only once the finger lifts.
-            .onChange(of: sliderValue) { _, new in
-                let step = min(max(Int(new.rounded()), 0), modes.count - 1)
-                guard step != index else { return }
-                Haptics.selection()
-                selected = modes[step]
-            }
 
-            HStack {
-                ForEach(Array(modes.enumerated()), id: \.element.id) { offset, m in
-                    Text(m.shortLabel)
-                        .font(VoiidFont.rounded(11.5, offset == index ? .bold : .medium))
-                        .foregroundColor(offset == index ? VoiidColor.accent
-                                                         : VoiidColor.textSecondary)
-                    if offset < modes.count - 1 { Spacer(minLength: 0) }
+                HStack {
+                    ForEach(Array(modes.enumerated()), id: \.element.id) { offset, m in
+                        Text(m.shortLabel)
+                            .font(VoiidFont.rounded(11.5, offset == index ? .bold : .medium))
+                            .foregroundColor(offset == index ? VoiidColor.accent
+                                                             : VoiidColor.textSecondary)
+                        if offset < modes.count - 1 { Spacer(minLength: 0) }
+                    }
                 }
             }
         }
