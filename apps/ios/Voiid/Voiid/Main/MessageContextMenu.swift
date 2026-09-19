@@ -56,6 +56,7 @@ struct MessageContextMenu<Content: View>: UIViewControllerRepresentable {
 
     private var hostedContent: AnyView {
         AnyView(content()
+            .fontDesign(.rounded)
             .environment(\.colorScheme, colorScheme)
             .environment(\.dynamicTypeSize, dynamicTypeSize))
     }
@@ -215,7 +216,7 @@ private enum ReactionImages {
     static func image(for emoji: String) -> UIImage {
         if let image = cache[emoji] { return image }
         let image = UIGraphicsImageRenderer(size: CGSize(width: 30, height: 30)).image { _ in
-            let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 25)]
+            let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.voiidRounded(ofSize: 25)]
             let text = emoji as NSString
             let size = text.size(withAttributes: attributes)
             text.draw(at: CGPoint(x: (30 - size.width) / 2, y: (30 - size.height) / 2),

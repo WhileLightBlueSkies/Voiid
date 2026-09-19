@@ -337,7 +337,7 @@ struct SnakeGameView: View {
 
             VStack(spacing: 6) {
                 Text("Eaten")
-                    .font(.system(size: 30, weight: .heavy, design: .serif))
+                    .font(.system(size: 30, weight: .heavy, design: .rounded))
                     .foregroundStyle(.white)
 
                 Text("\(session.score)")

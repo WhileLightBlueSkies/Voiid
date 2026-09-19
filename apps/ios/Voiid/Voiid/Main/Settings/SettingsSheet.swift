@@ -217,13 +217,12 @@ enum SettingsRoute: Hashable {
         switch self {
         case .editProfile, .linkedDevices, .backup, .privacy, .storage, .about, .legal:
             return true
-        case .chatSettings, .help, .qrCode, .shareProfile:
+        case .chatSettings, .help, .qrCode, .shareProfile, .accountCenter, .account, .encryption:
             return true
         // Still declared so the preview screens compile and re-adding a row is one line.
         // `voiidOne` and `payments` have NO row on the root any more — see the ecosystem
         // group — so these two are unreachable rather than merely unwired.
-        case .accountCenter, .encryption, .account,
-             .voiidOne, .payments:
+        case .voiidOne, .payments:
             return false
         }
     }
@@ -278,7 +277,7 @@ struct SettingsSheet: View {
                     encryptionBanner
 
                     group("Account", rows: [
-                        .init(.account, "person", "Account", "Phone, email, username"),
+                        .init(.account, "person", "Account", "Social profile, editing and privacy"),
                         .init(.privacy, "lock", "Privacy & security",
                               "Visibility, blocked contacts, app lock"),
                     ])
@@ -362,7 +361,7 @@ struct SettingsSheet: View {
                 case .shareProfile:  ShareProfileView()
                 case .accountCenter: AccountCenterScreen()
                 case .encryption:    EncryptionStatusScreen()
-                case .account:       AccountScreen()
+                case .account:       AccountCenterScreen(includesChatProfile: false)
                 case .chatSettings:  ChatSettingsView()
                 case .voiidOne:      VoiidOneScreen()
                 case .payments:      PaymentsScreen()
@@ -647,7 +646,7 @@ struct SettingsSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
 
-                    Text("Your chats, calls and data are always private.")
+                    Text("Learn how chats and calls are protected.")
                         .font(VoiidFont.rounded(12.5))
                         .foregroundColor(VoiidColor.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

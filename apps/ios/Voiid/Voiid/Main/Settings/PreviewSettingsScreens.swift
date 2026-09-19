@@ -100,109 +100,275 @@ private struct PreviewCard: View {
 /// worse than one that admits it is coming.
 // MARK: - Account center
 
+/// Social profile actions, shared by Account and Account Center in Settings.
 struct AccountCenterScreen: View {
+    var includesChatProfile = true
+    @EnvironmentObject private var creators: SocialEngine
+    @State private var showSetup = false
+    @State private var showEdit = false
+    @State private var loadingProfile = true
+
     var body: some View {
-        PreviewScaffold(title: "Account Center",
-                        missing: "Voiid has one account per device and nothing to centre yet. "
-                               + "The rows below are the shape this screen would take — see "
-                               + "the note in source for what each one needs first.") {
-            PreviewCard(rows: [
-                ("Profiles", "person.2"),
-                ("Password & security", "key"),
-                ("Ad preferences", "megaphone"),
-                ("Connected experiences", "app.connected.to.app.below.fill"),
-            ])
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VoiidSettingsHeader(includesChatProfile ? "Account Center" : "Account",
+                                    subtitle: includesChatProfile ? "Manage your chat and social profiles." : "Manage your social profile.")
+
+                if includesChatProfile {
+                    VoiidCardSection("Chat profile") {
+                        NavigationLink {
+                            EditProfileView()
+                        } label: {
+                            VoiidSettingsRow(icon: "person.crop.circle", title: "Chat profile",
+                                             detail: "Your name, photo and chat username") {
+                                VoiidChevron()
+                            }
+                        }
+                        .buttonStyle(RowButtonStyle())
+                    }
+                }
+
+                VoiidCardSection("Social profile",
+                                 footer: "Your social identity and privacy are separate from your chats.") {
+                    if let profile = creators.me {
+                        NavigationLink {
+                            SocialProfileView(handle: profile.handle)
+                        } label: {
+                            VoiidSettingsRow(icon: "person.crop.square", title: "View profile",
+                                             detail: "@\(profile.handle)") {
+                                VoiidChevron()
+                            }
+                        }
+                        .buttonStyle(RowButtonStyle())
+
+                        VoiidRowDivider()
+
+                        VoiidSettingsRow(icon: "pencil", title: "Edit profile",
+                                         detail: "Photo, username, bio and link", action: {
+                            showEdit = true
+                        }) {
+                            VoiidChevron()
+                        }
+
+                        VoiidRowDivider()
+
+                        NavigationLink {
+                            SocialPrivacyView()
+                        } label: {
+                            VoiidSettingsRow(icon: "slider.horizontal.3", title: "Profile settings",
+                                             detail: "Visibility, followers and comments") {
+                                VoiidChevron()
+                            }
+                        }
+                        .buttonStyle(RowButtonStyle())
+                    } else if loadingProfile || creators.meLoading {
+                        VoiidSettingsRow(icon: "person.crop.square", title: "Social profile",
+                                         detail: "Loading your profile…") {
+                            ProgressView().controlSize(.small)
+                        }
+                    } else if creators.hasLoadedMe {
+                        VoiidSettingsRow(icon: "person.crop.square", title: "Social profile",
+                                         detail: "Set up your social identity", action: {
+                            showSetup = true
+                        }) {
+                            VoiidChevron()
+                        }
+                    } else {
+                        VoiidSettingsRow(icon: "person.crop.square", title: "Social profile",
+                                         detail: "Couldn’t load your profile. Tap to retry.", action: {
+                            Task { await loadProfile() }
+                        }) {
+                            Image(systemName: "arrow.clockwise")
+                                .foregroundStyle(VoiidColor.textSecondary)
+                        }
+                    }
+                }
+            }
+            .padding(VoiidSpacing.md)
         }
-    }
-}
-
-// ── ACCOUNT CENTER: WHAT IT WOULD TAKE ──────────────────────────────────────────────
-//
-// Kept deliberately, unlike Voiid One and Payments which lost their rows entirely. Those
-// two describe features that do not exist and have no path to existing; this one describes
-// a REAL future shape — it is the roof over surfaces Voiid already half-owns — so the row
-// stays and this note records the thinking rather than making it twice.
-//
-// Meta's Accounts Center, which the reference is quoting, exists to span MULTIPLE apps and
-// MULTIPLE profiles under one login. Voiid has one account, on one device, in one app. Ported
-// literally it would be a screen whose entire purpose is a relationship the product does not
-// have — four rows deep and every one of them a lie.
-//
-// So the question is not "when do we build these four rows", it is "what does a single-app
-// account centre legitimately hold". Three candidates, and what each needs first:
-//
-//   * PROFILES — the honest version of the reference's row. Voiid genuinely HAS two
-//     identities today: the account (phone, username, photo — Edit Profile) and the creator
-//     profile (handle, bio, clips — SocialProfileView). They are separate on purpose and a
-//     user has no single place that says so. This is the strongest candidate and needs
-//     nothing new server-side: `SocialEngine.me` already resolves the second one. It does
-//     need `SocialEngine` lifted from a per-view @StateObject in ClipsFeedView to something
-//     Settings can reach, which is the one real blocker.
-//
-//   * SECURITY — "Password & security" cannot port: Voiid has no password. What it DOES have
-//     is scattered — linked devices (Devices), the safety number (per-conversation), the
-//     backup PIN (Backup & Recovery), the Contact PIN (Privacy & security). A screen that
-//     shows those four states in one place, without duplicating their controls, is a genuine
-//     improvement. Needs no backend; needs a decision about whether summarising security
-//     state in one screen makes it easier to audit or easier to attack.
-//
-//   * DATA & PERMISSIONS — the DPDP surface. Consent state, data export, deletion. Two of
-//     those already exist (Privacy & Legal withdraws consent; Edit Profile deletes the
-//     account) and export does not. If export is ever built, this is where it belongs.
-//
-// NOT candidates, and why: "Ad preferences" — Voiid has no advertising and building the row
-// would be an announcement that it will. "Connected experiences" — no cross-app surface
-// exists to connect.
-//
-// WHEN TO BUILD IT: when a second one of those three has real content. One populated section
-// under a heading called "Account Center" is a screen pretending to be a hub; two is a hub.
-// Profiles alone would be better placed as a row on the settings root than as a lone
-// inhabitant of a centre.
-
-// MARK: - Encryption status
-
-/// Reached from the banner at the top of the sheet. The CLAIM the banner makes is true — MLS
-/// for groups, Double Ratchet for direct messages — but there is no endpoint that reports
-/// per-conversation key state, so the detail this screen would show does not exist yet.
-struct EncryptionStatusScreen: View {
-    var body: some View {
-        PreviewScaffold(title: "Encryption",
-                        missing: "No endpoint reports per-conversation key state, so the "
-                               + "per-chat detail below cannot be filled in yet. The "
-                               + "protocols named are real and already in use.") {
-            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                // TRUE TODAY, and worth stating even on a preview screen: these are the
-                // protocols the app actually runs, not an aspiration.
-                infoBlock("Messages", "End-to-end encrypted with MLS for group conversations "
-                                    + "and the Double Ratchet for direct messages.")
-                infoBlock("Calls", "End-to-end encrypted media, keyed per call.")
-                infoBlock("Backups", "Encrypted with a key derived from your recovery phrase. "
-                                   + "Voiid cannot read them.")
-
-                PreviewCard(rows: [
-                    ("Verify safety numbers", "checkmark.shield"),
-                    ("Encryption details per chat", "list.bullet.rectangle"),
-                ])
+        .fontDesign(.rounded)
+        .voiidSettingsPage()
+        .task { await loadProfile() }
+        .sheet(isPresented: $showEdit) {
+            if let profile = creators.me {
+                CreatorEditSheet(profile: profile)
+            }
+        }
+        .sheet(isPresented: $showSetup) {
+            SocialSetupSheet { profile in
+                creators.profileCreated(profile)
             }
         }
     }
 
-    private func infoBlock(_ title: String, _ body: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(VoiidFont.rounded(15, .semibold))
-                .foregroundColor(VoiidColor.textPrimary)
-            Text(body)
-                .font(VoiidFont.rounded(13))
-                .foregroundColor(VoiidColor.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+    private func loadProfile() async {
+        loadingProfile = true
+        await creators.ensureMeLoaded()
+        loadingProfile = false
+    }
+}
+
+// MARK: - Encryption status
+
+/// Encryption information and entry points to the app’s real security controls.
+struct EncryptionStatusScreen: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VoiidSettingsHeader("End-to-end encryption",
+                                    subtitle: "Understand your protection and verify who you’re talking to.")
+
+                VoiidCardSection("Your conversations",
+                                 footer: "Safety numbers let you compare device identities with someone you trust. Check each linked device separately.") {
+                    NavigationLink {
+                        EncryptionChatsScreen()
+                    } label: {
+                        VoiidSettingsRow(icon: "checkmark.shield", title: "Chat encryption",
+                                         detail: "View details and verify safety numbers") {
+                            VoiidChevron()
+                        }
+                    }
+                    .buttonStyle(RowButtonStyle())
+                }
+
+                VoiidCardSection("Devices & recovery") {
+                    NavigationLink {
+                        LinkedDevicesView()
+                    } label: {
+                        VoiidSettingsRow(icon: "laptopcomputer.and.iphone", title: "Linked devices",
+                                         detail: "Review and remove device access") { VoiidChevron() }
+                    }
+                    .buttonStyle(RowButtonStyle())
+                    VoiidRowDivider()
+                    NavigationLink {
+                        BackupRecoveryView()
+                    } label: {
+                        VoiidSettingsRow(icon: "arrow.clockwise.icloud", title: "Backup & Recovery",
+                                         detail: "Manage encrypted backups and recovery") { VoiidChevron() }
+                    }
+                    .buttonStyle(RowButtonStyle())
+                }
+
+                VoiidCardSection("How protection works") {
+                    explanation("Messages & media", icon: "bubble.left.and.bubble.right",
+                                text: "Direct chats use the Double Ratchet; group chats use MLS. Messages and shared media are encrypted before they leave your device.")
+                    VoiidRowDivider()
+                    explanation("Calls", icon: "phone",
+                                text: "Calls use end-to-end encrypted media. Check the encryption indicator during a call for its current verification state.")
+                    VoiidRowDivider()
+                    explanation("Backups", icon: "externaldrive.badge.checkmark",
+                                text: "Backups are encrypted on your device. Keep your recovery phrase safe so you can restore them on a new phone.")
+                }
+                Text("Public social profiles and posts aren’t covered by chat encryption. Encryption also doesn’t prevent a recipient from saving or sharing what you send.")
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+            }
+            .padding(VoiidSpacing.md)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(VoiidSpacing.md)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-            .stroke(VoiidColor.divider, lineWidth: 1))
+        .fontDesign(.rounded)
+        .voiidSettingsPage()
+    }
+
+    private func explanation(_ title: String, icon: String, text: String) -> some View {
+        VoiidSettingsRow(icon: icon, title: title, detail: text)
+    }
+}
+
+/// Uses the existing chat store and never infers a verified state from a chat’s existence.
+private struct EncryptionChatsScreen: View {
+    @EnvironmentObject private var chat: ChatStore
+    @State private var search = ""
+
+    private var conversations: [VConversation] {
+        (chat.directConversations + chat.groupConversations)
+            .filter { $0.type != .self && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    var body: some View {
+        List {
+            if let error = chat.loadError {
+                SettingsSection {
+                    Text(error).font(.subheadline).foregroundStyle(VoiidColor.error)
+                    Button("Retry") { Task { await chat.loadConversations() } }
+                }
+            }
+            if !chat.didLoadConversations && chat.loadError == nil && conversations.isEmpty {
+                ProgressView("Loading chats…")
+            } else if conversations.isEmpty {
+                ContentUnavailableView(search.isEmpty ? "No chats yet" : "No matching chats",
+                                       systemImage: "bubble.left.and.bubble.right",
+                                       description: Text(search.isEmpty
+                                        ? "Your conversations will appear here so you can compare safety numbers."
+                                        : "Try another name."))
+            } else {
+                SettingsSection(footer: "Choose a chat to see its encryption details and compare safety numbers.") {
+                    ForEach(conversations) { conversation in
+                        NavigationLink {
+                            ChatEncryptionDetailsScreen(conversation: conversation)
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(conversation.title).font(.body)
+                                    Text(conversation.type == .group ? "Group chat" : "Direct chat")
+                                        .font(.footnote).foregroundStyle(VoiidColor.textSecondary)
+                                }
+                            } icon: {
+                                VoiidRowIcon(systemName: conversation.type == .group ? "person.2" : "person")
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+        }
+        .voiidSettingsList()
+        .background(VoiidColor.background.ignoresSafeArea())
+        .navigationTitle("Chat encryption")
+        .searchable(text: $search, prompt: "Find a chat")
+        .task { if !chat.didLoadConversations { await chat.loadConversations() } }
+        .refreshable { await chat.loadConversations() }
+        .tint(VoiidColor.primary)
+    }
+}
+
+private struct ChatEncryptionDetailsScreen: View {
+    let conversation: VConversation
+    @State private var showVerification = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VoiidSettingsHeader(conversation.title, subtitle: "Encryption details")
+                VoiidCardSection("Encryption") {
+                    VoiidSettingsRow(icon: "lock.shield", title: conversation.type == .group ? "MLS" : "Double Ratchet",
+                                     detail: conversation.type == .group
+                                        ? "End-to-end encryption for this group’s messages and media."
+                                        : "End-to-end encryption for this direct chat’s messages and media.")
+                }
+                VoiidCardSection("Verify identities",
+                                 footer: "Compare the safety number or scan the other person’s code in person or through a trusted channel. Verification is per device pair, so check other linked devices too.") {
+                    VoiidSettingsRow(icon: "qrcode.viewfinder",
+                                     title: conversation.type == .group ? "Verify a group member" : "Compare safety numbers",
+                                     action: { showVerification = true }) {
+                        VoiidChevron()
+                    }
+                }
+            }
+            .padding(VoiidSpacing.md)
+        }
+        .fontDesign(.rounded)
+        .voiidSettingsPage()
+        .sheet(isPresented: $showVerification) {
+            if conversation.type == .direct, let peer = conversation.peerUserId, !peer.isEmpty {
+                SafetyNumberView(peerUserId: peer, peerName: conversation.title)
+            } else {
+                // Fetches real members when a direct chat’s peer has not been resolved yet.
+                GroupSecurityVerificationSheet(conversationId: conversation.id)
+            }
+        }
     }
 }
 

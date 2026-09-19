@@ -35,7 +35,7 @@ struct LinkBrowserView: View {
                         VStack(spacing: 12) {
                             Text("Check this code matches your browser")
                                 .font(.subheadline).foregroundStyle(VoiidColor.textSecondary)
-                            Text(preview.verification_code).font(.title2.monospaced().bold())
+                            Text(preview.verification_code).font(.title2.monospacedDigit().bold())
                                 .accessibilityLabel("Verification code: \(preview.verification_code)")
                         }
                         .padding().frame(maxWidth: .infinity)

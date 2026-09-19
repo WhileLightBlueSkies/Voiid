@@ -65,13 +65,7 @@ struct GameSetupSheet: View {
 
     private var banner: some View {
         ZStack(alignment: .bottomLeading) {
-            LinearGradient(colors: [game.tintA, game.tintB.opacity(0.75)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-
-            Image(systemName: game.symbol)
-                .font(.system(size: 92, weight: .medium))
-                .foregroundColor(.white.opacity(0.16))
-                .offset(x: 170, y: 20)
+            GameArtwork(game: game, isSetup: true)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(game.title)

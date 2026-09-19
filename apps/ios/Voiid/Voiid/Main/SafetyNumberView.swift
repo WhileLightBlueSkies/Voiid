@@ -170,7 +170,7 @@ struct SafetyNumberView: View {
                             .accessibilityLabel("Security code QR")
                     }
                     Text(formattedCode(entry.number))
-                        .font(.system(size: 15, weight: .medium, design: .monospaced))
+                        .font(.system(size: 15, weight: .medium, design: .rounded)).monospacedDigit()
                         .lineSpacing(7).multilineTextAlignment(.center).foregroundStyle(VoiidColor.textPrimary)
                     Button { scanningEntry = entry } label: {
                         Label("Scan QR code", systemImage: "qrcode.viewfinder").frame(minHeight: 44)
@@ -232,7 +232,7 @@ struct SafetyNumberView: View {
     /// available.
     private func numberCard(_ number: String) -> some View {
         Text(number)
-            .font(.system(size: 19, weight: .medium, design: .monospaced))
+            .font(.system(size: 19, weight: .medium, design: .rounded)).monospacedDigit()
             .kerning(1.5)
             .lineSpacing(7)
             .foregroundStyle(VoiidColor.textPrimary)

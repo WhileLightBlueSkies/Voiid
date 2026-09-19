@@ -61,6 +61,123 @@
   box-shadow: 0 2px 8px -2px rgba(19, 130, 140, 0.45);
 }
 
+/* 3D Phone Stage & Orbiting Pills */
+.stageWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-style: preserve-3d;
+  width: 100%;
+  max-width: 100%;
+  margin-block-start: var(--space-xs);
+}
+
+/* Real App Screenshot Presentation */
+.realScreenWrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000000;
+  border-radius: inherit;
+}
+
+.realScreenshot {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+.glassReflection {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  mix-blend-mode: screen;
+  opacity: 0.9;
+  transition: background 150ms ease-out;
+}
+
+/* Floating Orbiting Feature Badges */
+.floatingBadge {
+  position: absolute;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid color-mix(in srgb, #ffffff 22%, var(--color-divider));
+  box-shadow: 0 16px 36px -4px rgba(0, 0, 0, 0.22),
+              0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: badgeFloat 6s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.badgeTopLeft {
+  top: 14%;
+  left: -44px;
+}
+
+.badgeTopRight {
+  top: 26%;
+  right: -48px;
+  animation-delay: -2s;
+}
+
+.badgeBottomRight {
+  bottom: 12%;
+  right: -36px;
+  animation-delay: -4s;
+}
+
+@keyframes badgeFloat {
+  0% {
+    transform: translateY(0px) translateZ(24px);
+  }
+  100% {
+    transform: translateY(-9px) translateZ(36px);
+  }
+}
+
+@media (max-width: 960px) {
+  .floatingBadge {
+    display: none;
+  }
+}
+
+.badgeDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 10px #10b981;
+  flex-shrink: 0;
+}
+
+.badgeIcon {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.badgeText {
+  letter-spacing: -0.01em;
+}
+
 /* Internal Screen Layouts */
 .screenContainer {
   display: flex;

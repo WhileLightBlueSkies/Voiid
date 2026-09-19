@@ -6,8 +6,7 @@
 //  Tokens mirror packages/design-tokens/tokens.json — single source of truth.
 //
 //  Typography rule (per design owner):
-//   - Splash + Terms screens: "voiid" wordmark uses Urbanist Bold (keep exactly as designed).
-//   - Everything else: SF Pro Rounded.
+//   - SF Pro Rounded throughout the app, including the text wordmark.
 //
 
 import SwiftUI
@@ -195,8 +194,7 @@ enum VoiidRadius {
 
 // MARK: - Typography (Section 6.2)
 //
-// Primary face = SF Pro Rounded (via .rounded design). Urbanist is only the logo wordmark
-// on Splash/Terms; register the Urbanist font file in the app bundle (see BUILD_NATIVE.md).
+// SF Pro Rounded is the shared face for UI text and the text wordmark.
 
 enum VoiidFont {
     static let screenTitle = Font.system(size: 26, weight: .bold, design: .rounded)
@@ -215,10 +213,19 @@ enum VoiidFont {
     static let footnote = rounded(13, .regular)
     static let caption  = rounded(12, .regular)
 
-    /// Urbanist Bold — ONLY for the "voiid" logo wordmark on Splash + Terms.
-    /// Falls back to rounded bold if the font isn't registered yet.
+    /// The text wordmark follows the app-wide rounded typography.
     static func logo(_ size: CGFloat) -> Font {
-        .custom("Urbanist-Bold", size: size)
+        rounded(size, .bold)
+    }
+}
+
+
+// UIKit surfaces do not inherit SwiftUI’s font design.
+extension UIFont {
+    static func voiidRounded(ofSize size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: weight)
+        guard let descriptor = base.fontDescriptor.withDesign(.rounded) else { return base }
+        return UIFont(descriptor: descriptor, size: size)
     }
 }
 

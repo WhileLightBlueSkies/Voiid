@@ -315,7 +315,7 @@ struct SeaBattleBotView: View {
                     ForEach(Array(s.fleetSpec.enumerated()), id: \.offset) { type, length in
                         let down = s.sunk.indices.contains(seat) && s.sunk[seat].contains(type)
                         Text("\(length)")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .font(.system(size: 10, weight: .semibold, design: .rounded)).monospacedDigit()
                             .foregroundStyle(down ? VoiidColor.textSecondary.opacity(0.35)
                                                   : VoiidColor.textPrimary)
                             .strikethrough(down)

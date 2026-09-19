@@ -47,7 +47,7 @@ enum Theme {
 
     // MARK: Type
     static func display(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .heavy, design: .serif)
+        .system(size: size, weight: .heavy, design: .rounded)
     }
     static func ui(_ size: CGFloat, _ weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .rounded)

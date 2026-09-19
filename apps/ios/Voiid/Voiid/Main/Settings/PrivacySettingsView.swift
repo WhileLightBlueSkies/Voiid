@@ -1,73 +1,10 @@
-//
-//  PrivacySettingsView.swift
-//  Voiid
-//
-//  Settings → Privacy. Spec §5.2.
-//
-//  Three toggles, and that is the whole screen. Each one is backed by
-//  `PrivacySettings.shared` (raw UserDefaults, see Models/PrivacySettings.swift) and each
-//  one has a consumer that genuinely reads it:
-//
-//      Send read receipts        ChatStore.syncMessages — both `ChatEngine.markRead`
-//                                call sites in Models/Stores.swift
-//      Send typing indicators    ChatDetailView — both `WebSocketClient.sendTyping`
-//                                call sites
-//      Show when contacts are    ChatDetailView.presenceText — the online / last-seen
-//      online                    line under the chat title
-//
-//  What is deliberately absent, and why
-//  ------------------------------------
-//  No disappearing messages, no screenshot blocking, no "who can add me to groups". Each
-//  has zero schema, zero route and zero client code, so shipping a control for it would be
-//  an advertisement for a feature that does not exist.
-//
-//  Blocking IS here now (043_user_blocks + /blocks, enforced server-side). It gets a row
-//  rather than a toggle, because blocking is per-person: the switch lives on each person's
-//  profile, and this screen is where you see the list and undo it.
-//
-//  No app lock and no PIN row either. There is no `LocalAuthentication` import anywhere
-//  in this app — no biometric or passcode gate exists to switch on. The only PIN Voiid
-//  has is the *backup* PIN that wraps the backup master secret, and it already has a
-//  home: Settings → Backup & Recovery → Change PIN. Duplicating it here would imply it
-//  locks the app, which it does not.
-//
-//  And there is no footer explaining any of that. A Settings screen states what it does;
-//  it does not narrate what it lacks.
-//
-//  "Who can reach you" is PROSE, not toggles, and that is not an omission
-//  ---------------------------------------------------------------------
-//  reachability.ts enforces exactly three routes into your inbox and offers no choice
-//  between them: no column turns requests off, none closes username search, none makes a
-//  mutual contact go through a request first. The rules were real and enforced but stated
-//  nowhere, so a user had no way to know who could message them or how. That is what the
-//  section fixes — by explaining, not by adding switches. A toggle here would promise a
-//  decision the server does not honour, which is worse than no toggle: a privacy control
-//  that silently does nothing. The Contact PIN sits under the explanation because it is the
-//  one genuine control among them, governing the third path.
-//
-//  "My status" is here rather than in Edit Profile
-//  -----------------------------------------------
-//  The server gates `status_text` on `last_seen_privacy` — a status says where you are and
-//  whether you are attending your phone, so it is presence information and rides the presence
-//  gate. That makes this the screen where the control and the switch deciding who sees it can
-//  be read together. Edit Profile is also a dirty-tracked form behind a Save button, and a
-//  status that took a Save to change would be the wrong shape for a thing you flip.
-//
-//  Every footer below is load-bearing. Each of these toggles creates a reasonable and
-//  wrong assumption — that turning receipts off also hides other people's receipts from
-//  you, that hiding the presence line hides you from others — and the footer's job is to
-//  correct it in its first sentence, before the user acts on the wrong belief.
-//
+// Settings → Privacy. A compact overview with focused controls on each destination.
 
 import SwiftUI
 
 struct PrivacySettingsView: View {
 
-    /// Your own availability status. Lives on this screen rather than in Edit Profile because
-    /// it is governed by the last-seen scope two cards below it — the server gates the status
-    /// on `last_seen_privacy`, so the control and the switch that decides who sees it belong
-    /// on one screen. Edit Profile is also a dirty-tracked form with a Save button, and a
-    /// status that took two taps and a Save to change would be the wrong shape entirely.
+    /// Status and its last-seen audience stay together on Profile & presence.
     @EnvironmentObject private var session: AppSession
 
     @ObservedObject private var settings = PrivacySettings.shared
@@ -101,268 +38,63 @@ struct PrivacySettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+            VStack(alignment: .leading, spacing: 24) {
 
             VoiidSettingsHeader(
                 "Privacy",
-                subtitle: "Who can reach you, what this device sends, and who you've blocked."
+                subtitle: "Choose what you share and who can reach you."
             )
 
-            // MARK: My status
-
-            statusSection
-
-            // MARK: Who can reach you
-
-            reachabilitySection
-
-            // MARK: Contact PIN (reachability by @username)
-
-            // ONE short footer, not three paragraphs. The old copy explained the storage
-            // model, the mutual-contact exception and the rotation semantics before the user
-            // had seen their own PIN — a wall of text where a number belongs. The card below
-            // shows the PIN; the sentence says what it's for; everything else moved to the
-            // moment it becomes relevant (the rotate confirmation).
-            //
-            // It now sits DIRECTLY UNDER the explanation of the three paths, because the PIN
-            // is only meaningful as the mechanism for the third of them. On its own it was a
-            // six-digit number with no stated purpose beyond one footer sentence; read after
-            // "Someone who searches your @username", it is the answer to a question the user
-            // has just been given.
-            VoiidCardSection(
-                "Contact PIN",
-                footer: "Share this with people who find you by @username. They'll need it to "
-                    + "message you — and you still choose whether to accept."
-            ) {
-                VStack(alignment: .leading, spacing: 0) {
-                ContactPinCard(
-                    pin: pinState?.pin,
-                    hasPin: pinState?.has_pin == true,
-                    storageConfigured: pinState?.storage_configured ?? true,
-                    busy: pinBusy,
-                    onRegenerate: {
-                        Haptics.tap()
-                        // Replacing an existing PIN locks out everyone holding the old one, so
-                        // it is confirmed. Creating the first one cannot break anything.
-                        if pinState?.has_pin == true { confirmRotate = true } else { rotatePin() }
+            VoiidCardSection("Visibility & activity") {
+                privacyLink("Profile & presence", icon: "person.crop.circle",
+                            detail: "Last seen, photo, about and status") {
+                    privacyPage("Profile & presence") {
+                        visibilitySection
+                        statusSection
                     }
-                )
-                if let pinError {
-                    Text(pinError)
-                        .font(.footnote)
-                        .foregroundStyle(VoiidColor.error)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                }
-                .padding(.horizontal, VoiidSpacing.md)
-                .padding(.vertical, VoiidSpacing.sm)
-            }
-
-            // MARK: Who can see (server-enforced visibility)
-
-            VoiidCardSection(
-                "Who can see my info",
-                footer: """
-                    Choose who can see your last seen & online, profile photo, and about. \
-                    “My Contacts” means people you’ve saved. This is enforced on the server — \
-                    other people won’t receive what you hide.
-
-                    Your messages, calls, and the photos, videos and voice notes you send are \
-                    end-to-end encrypted — Voiid can’t read them. Your profile photo is not: \
-                    it’s stored on Voiid’s servers so anyone you allow can load it.
-                    """
-            ) {
-                // The Pickers keep their bindings and their case list exactly; only the
-                // chrome around them changed. `.menu` style is what a card row can host —
-                // an inset-grouped List drew the same control as a pushed picker page.
-                VoiidSettingsRow(icon: "eye.trianglebadge.exclamationmark",
-                                 title: "Last seen & online") {
-                    Picker("Last seen & online", selection: $settings.lastSeenVisibility) {
-                        ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .tint(VoiidColor.textSecondary)
                 }
                 VoiidRowDivider()
-                VoiidSettingsRow(icon: "person.crop.circle", title: "Profile photo") {
-                    Picker("Profile photo", selection: $settings.photoVisibility) {
-                        ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                privacyLink("Messages", icon: "bubble.left.and.bubble.right",
+                            detail: "Read receipts and typing indicators") {
+                    privacyPage("Messages") {
+                        receiptsSection
+                        onlineSection
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .tint(VoiidColor.textSecondary)
                 }
                 VoiidRowDivider()
-                VoiidSettingsRow(icon: "text.quote", title: "About") {
-                    Picker("About", selection: $settings.aboutVisibility) {
-                        ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                privacyLink("Moments", icon: "circle.dashed",
+                            detail: "View receipts and your archive") {
+                    privacyPage("Moments") { momentsSection }
+                }
+                VoiidRowDivider()
+                privacyLink("Map location", icon: "location",
+                            detail: mapVisibility.isVisible ? "Location sharing is on" : "Ghost Mode is on") {
+                    privacyPage("Map location") { locationSection }
+                }
+            }
+
+            VoiidCardSection("Who can contact you") {
+                privacyLink("Contact PIN", icon: "key",
+                            detail: "Manage access through your username") {
+                    privacyPage("Contact PIN") {
+                        pinSection
+                        reachabilitySection
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .tint(VoiidColor.textSecondary)
+                    .confirmationDialog("Generate a new PIN?", isPresented: $confirmRotate,
+                                        titleVisibility: .visible) {
+                        Button("Generate", role: .destructive) { rotatePin() }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Anyone who has your current PIN will no longer be able to reach you with it.")
+                    }
                 }
-            }
-
-            // MARK: Message receipts
-
-            VoiidCardSection(
-                "Message receipts",
-                footer: """
-                    When these are off, this device stops sending read receipts and typing \
-                    indicators. It doesn’t stop them arriving from other people — Voiid has \
-                    no setting for that — so you’ll still see when someone is typing or has \
-                    read your message.
-                    """
-            ) {
-                VoiidSettingsRow(icon: "checkmark.message", title: "Send read receipts") {
-                    Toggle("", isOn: $settings.sendReadReceipts)
-                        .labelsHidden()
-                        .tint(VoiidColor.primary)
-                }
-                .accessibilityHint("Lets people see when you have read their message")
-
                 VoiidRowDivider()
-
-                VoiidSettingsRow(icon: "ellipsis.bubble", title: "Send typing indicators") {
-                    Toggle("", isOn: $settings.sendTypingIndicators)
-                        .labelsHidden()
-                        .tint(VoiidColor.primary)
-                }
-                .accessibilityHint("Lets people see when you are typing to them")
-            }
-
-            // MARK: Online status
-
-            VoiidCardSection(
-                "Online status",
-                footer: """
-                    Hides the online and last-seen line at the top of a chat. This changes \
-                    only what you see on this device — Voiid has no way to hide your own \
-                    online status from other people.
-                    """
-            ) {
-                VoiidSettingsRow(icon: "circle.fill", title: "Show when contacts are online") {
-                    Toggle("", isOn: $settings.showOnlineStatus)
-                        .labelsHidden()
-                        .tint(VoiidColor.primary)
-                }
-                .accessibilityHint("Shows the online and last-seen line at the top of a chat")
-            }
-
-            // MARK: Moments
-
-            // Default OFF and reciprocal: sending a receipt tells the Voiid SERVER you opened
-            // someone's moment (it has no other way to learn that, and there is no sealed
-            // sender to hide it). So the privacy-preserving default is that the viewer list
-            // starts empty until you opt in — and opting out hides your own viewers too.
-            VoiidCardSection(
-                "Moments",
-                footer: """
-                    If you turn receipts off, people won’t know when you’ve viewed their moment — \
-                    and you won’t see who viewed yours.
-
-                    Kept moments stay on this device only, after the 24 hours are up. \
-                    Nobody else can see them, and moments other people share with you \
-                    always expire.
-                    """
-            ) {
-                VoiidSettingsRow(icon: "eye.circle", title: "Moment view receipts") {
-                    Toggle("", isOn: $storySettings.sendViewReceipts)
-                        .labelsHidden()
-                        .tint(VoiidColor.primary)
-                }
-                .accessibilityHint("Lets people see that you viewed their moment, and shows you who viewed yours")
-
+                requestsRow
                 VoiidRowDivider()
-
-                // Author-only, and the footer says so plainly: this keeps YOUR copy of
-                // YOUR moment and changes nothing about who could see it. Kept in the
-                // same card as receipts because both are "what happens to a moment after
-                // it is posted", but they are independent switches.
-                VoiidSettingsRow(icon: "archivebox", title: "Keep my moments") {
-                    Toggle("", isOn: $storySettings.archiveByDefault)
-                        .labelsHidden()
-                        .tint(VoiidColor.primary)
-                }
-                .accessibilityHint("Saves your own moments to your archive on this device after they expire")
-            }
-
-            // MARK: Map location
-
-            // MARK: Blocked contacts
-
-            // A row, not a toggle: blocking is per-person and starts on that person's
-            // profile. This is the way back — you should not have to find someone you have
-            // been avoiding in order to stop avoiding them.
-            VoiidCardSection(
-                "Blocked",
-                footer: "Blocked people can't message or call you, and you can't message or "
-                    + "call them. They're never told."
-            ) {
-                NavigationLink {
+                privacyLink("Blocked contacts", icon: "hand.raised.slash",
+                            detail: blocks.didLoad ? (blocks.blocked.isEmpty ? "No blocked contacts" : "\(blocks.blocked.count) blocked") : "Manage people you’ve blocked") {
                     BlockedContactsView()
-                } label: {
-                    HStack(spacing: VoiidSpacing.md) {
-                        VoiidRowIcon(systemName: "hand.raised.slash")
-                        Text("Blocked contacts")
-                            .font(.body)
-                            .foregroundStyle(VoiidColor.textPrimary)
-                        Spacer(minLength: VoiidSpacing.sm)
-                        // Only once loaded, and only when non-zero: a "0" beside a settings
-                        // row invites the question of what it counts.
-                        if blocks.didLoad, !blocks.blocked.isEmpty {
-                            Text("\(blocks.blocked.count)")
-                                .font(.subheadline)
-                                .foregroundStyle(VoiidColor.textSecondary)
-                        }
-                        VoiidChevron()
-                    }
-                    .padding(.horizontal, VoiidSpacing.md)
-                    .padding(.vertical, 11)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(RowButtonStyle())
-            }
-
-            VoiidCardSection(
-                "Map location",
-                footer: """
-                    Ghost Mode hides you from everyone on the Map and stops your location \
-                    being taken at all — it’s a hard switch, not a filter. You’re hidden by \
-                    default and only ever visible to people you pick by name on the Map tab.
-                    """
-            ) {
-                VoiidSettingsRow(icon: "moon.zzz", title: "Ghost Mode") {
-                    Toggle("", isOn: Binding(
-                        get: { !mapVisibility.isVisible },
-                        set: { ghost in
-                            Haptics.tap()
-                            Task {
-                                if ghost { await mapEngine.enterGhost(.untilOff) }
-                                else { await mapEngine.leaveGhost() }
-                            }
-                        }
-                    ))
-                    .labelsHidden()
-                    .tint(VoiidColor.primary)
-                }
-                .accessibilityHint("Hides you from everyone on the Map")
-
-                VoiidRowDivider()
-
-                // Destructive, and haptically distinct: `rigid` alone, not `tap`.
-                // `VoiidSettingsRow` deliberately plays NO haptic of its own precisely so a
-                // control like this one keeps the single heavier confirmation it needs
-                // instead of stuttering through two.
-                VoiidSettingsRow(icon: "location.slash",
-                                 title: "Stop all location sharing",
-                                 destructive: true,
-                                 action: {
-                                     Haptics.rigid()
-                                     Task { await mapEngine.killSwitch() }
-                                 })
-                .accessibilityHint("Ends every share and turns Ghost Mode on")
             }
             }
             .padding(VoiidSpacing.md)
@@ -390,16 +122,209 @@ struct PrivacySettingsView: View {
                 Task { await loadRequestCount() }
             }
         }
-        .confirmationDialog("Generate a new PIN?", isPresented: $confirmRotate,
-                            titleVisibility: .visible) {
-            Button("Generate", role: .destructive) { rotatePin() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            // The rotation caveat lives HERE, at the moment it applies, rather than in a
-            // footer the user reads before they have any reason to care.
-            Text("Anyone who has your current PIN will no longer be able to reach you with it.")
+
+    }
+
+    // MARK: - Focused destinations
+
+    private func privacyPage<Content: View>(_ title: String,
+                                            @ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                content()
+            }
+            .padding(VoiidSpacing.md)
+        }
+        .font(.body)
+        .foregroundStyle(VoiidColor.textPrimary)
+        .fontDesign(.rounded)
+        .voiidSettingsPage()
+        .navigationTitle(title)
+    }
+
+    private func privacyLink<Destination: View>(_ title: String, icon: String,
+                                                detail: String,
+                                                @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink(destination: destination) {
+            VoiidSettingsRow(icon: icon, title: title, detail: detail) {
+                VoiidChevron()
+            }
+        }
+        .buttonStyle(RowButtonStyle())
+    }
+
+    private var pinSection: some View {
+        VoiidCardSection(
+            "Contact PIN",
+            footer: "Share this with people who find you by @username. They'll need it to "
+                + "message you — and you still choose whether to accept."
+        ) {
+            VStack(alignment: .leading, spacing: 0) {
+            ContactPinCard(
+                pin: pinState?.pin,
+                hasPin: pinState?.has_pin == true,
+                storageConfigured: pinState?.storage_configured ?? true,
+                busy: pinBusy,
+                onRegenerate: {
+                    Haptics.tap()
+                    if pinState?.has_pin == true { confirmRotate = true } else { rotatePin() }
+                }
+            )
+            if let pinError {
+                Text(pinError)
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.error)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            }
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.vertical, VoiidSpacing.sm)
         }
     }
+
+    private var visibilitySection: some View {
+        VoiidCardSection(
+            "Who can see my info",
+            footer: """
+                “My Contacts” means people you’ve saved. Your status follows your last-seen setting.
+
+                Your profile photo isn’t end-to-end encrypted. It’s stored on Voiid’s servers and shown only to the audience you choose.
+                """
+        ) {
+            VoiidSettingsRow(icon: "eye.trianglebadge.exclamationmark",
+                             title: "Last seen & online") {
+                Picker("Last seen & online", selection: $settings.lastSeenVisibility) {
+                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(VoiidColor.textSecondary)
+            }
+            VoiidRowDivider()
+            VoiidSettingsRow(icon: "person.crop.circle", title: "Profile photo") {
+                Picker("Profile photo", selection: $settings.photoVisibility) {
+                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(VoiidColor.textSecondary)
+            }
+            VoiidRowDivider()
+            VoiidSettingsRow(icon: "text.quote", title: "About") {
+                Picker("About", selection: $settings.aboutVisibility) {
+                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(VoiidColor.textSecondary)
+            }
+        }
+    }
+
+    private var receiptsSection: some View {
+        VoiidCardSection(
+            "Message receipts",
+            footer: """
+                These control what this device sends. You’ll still see read receipts and typing indicators from other people.
+                """
+        ) {
+            VoiidSettingsRow(icon: "checkmark.message", title: "Send read receipts") {
+                Toggle("Send read receipts", isOn: $settings.sendReadReceipts)
+                    .labelsHidden()
+                    .tint(VoiidColor.primary)
+            }
+            .accessibilityHint("Lets people see when you have read their message")
+
+            VoiidRowDivider()
+
+            VoiidSettingsRow(icon: "ellipsis.bubble", title: "Send typing indicators") {
+                Toggle("Send typing indicators", isOn: $settings.sendTypingIndicators)
+                    .labelsHidden()
+                    .tint(VoiidColor.primary)
+            }
+            .accessibilityHint("Lets people see when you are typing to them")
+        }
+    }
+
+    private var onlineSection: some View {
+        VoiidCardSection(
+            "Online status",
+            footer: """
+                Only changes what you see in chats on this device. To control who sees your activity, go to Profile & presence.
+                """
+        ) {
+            VoiidSettingsRow(icon: "circle.fill", title: "Show contacts’ activity") {
+                Toggle("Show contacts’ activity", isOn: $settings.showOnlineStatus)
+                    .labelsHidden()
+                    .tint(VoiidColor.primary)
+            }
+            .accessibilityHint("Shows the online and last-seen line at the top of a chat")
+        }
+    }
+
+    private var momentsSection: some View {
+        VoiidCardSection(
+            "Moments",
+            footer: """
+                View receipts work both ways: turn them off to hide your views and stop seeing who viewed yours.
+
+                Keep my moments saves your own posts on this device after 24 hours. Other people’s moments still expire.
+                """
+        ) {
+            VoiidSettingsRow(icon: "eye.circle", title: "Moment view receipts") {
+                Toggle("Moment view receipts", isOn: $storySettings.sendViewReceipts)
+                    .labelsHidden()
+                    .tint(VoiidColor.primary)
+            }
+            .accessibilityHint("Lets people see that you viewed their moment, and shows you who viewed yours")
+
+            VoiidRowDivider()
+
+            VoiidSettingsRow(icon: "archivebox", title: "Keep my moments") {
+                Toggle("Keep my moments", isOn: $storySettings.archiveByDefault)
+                    .labelsHidden()
+                    .tint(VoiidColor.primary)
+            }
+            .accessibilityHint("Saves your own moments to your archive on this device after they expire")
+        }
+    }
+
+    private var locationSection: some View {
+        VoiidCardSection(
+            "Map location",
+            footer: """
+                Ghost Mode hides you from everyone on the Map and stops location collection. When sharing, only people you choose on the Map can see you.
+                """
+        ) {
+            VoiidSettingsRow(icon: "moon.zzz", title: "Ghost Mode") {
+                Toggle("Ghost Mode", isOn: Binding(
+                    get: { !mapVisibility.isVisible },
+                    set: { ghost in
+                        Haptics.tap()
+                        Task {
+                            if ghost { await mapEngine.enterGhost(.untilOff) }
+                            else { await mapEngine.leaveGhost() }
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .tint(VoiidColor.primary)
+            }
+            .accessibilityHint("Hides you from everyone on the Map")
+
+            VoiidRowDivider()
+
+            VoiidSettingsRow(icon: "location.slash",
+                             title: "Stop all location sharing",
+                             destructive: true,
+                             action: {
+                                 Haptics.rigid()
+                                 Task { await mapEngine.killSwitch() }
+                             })
+            .accessibilityHint("Ends every share and turns Ghost Mode on")
+        }
+    }
+
 
     // MARK: - My status
 
@@ -510,31 +435,25 @@ struct PrivacySettingsView: View {
     private var reachabilitySection: some View {
         VoiidCardSection(
             "Who can reach you",
-            footer: "These are the only ways into your chats, and they're enforced on Voiid's "
-                + "servers — not by this app. Blocked people can't use any of them."
+            footer: "Blocked people can’t message or call you through any of these paths. They aren’t notified when you block them."
         ) {
             reachPath(
                 icon: "person.2.fill",
                 title: "People you've both saved",
-                detail: "If you have each other in your contacts, their message opens as a "
-                    + "normal chat straight away."
+                detail: "When you’ve saved each other, messages go straight to your chats."
             )
             VoiidRowDivider()
             reachPath(
                 icon: "person.crop.circle.badge.questionmark",
                 title: "Someone who has you saved",
-                detail: "If they've saved you but you haven't saved them, their message waits "
-                    + "as a request. Nothing reaches your chat list until you accept it."
+                detail: "If you haven’t saved them back, you choose whether to accept their request."
             )
             VoiidRowDivider()
             reachPath(
                 icon: "at",
-                title: "Someone who searched your @username",
-                detail: "A stranger who finds you by username has to enter your Contact PIN "
-                    + "first. Even then it still arrives as a request for you to accept."
+                title: "People who find your @username",
+                detail: "They need your Contact PIN first. You still choose whether to accept their request."
             )
-            VoiidRowDivider()
-            requestsRow
         }
     }
 
@@ -573,7 +492,7 @@ struct PrivacySettingsView: View {
     /// beside the chevron rather than a "0" that would claim there are no requests when we
     /// simply could not ask.
     private var requestsRow: some View {
-        VoiidSettingsRow(icon: "tray", title: "Message requests", action: {
+        VoiidSettingsRow(icon: "tray", title: "Message requests", detail: "Review who wants to chat", action: {
             Haptics.tap()
             showRequests = true
         }) {

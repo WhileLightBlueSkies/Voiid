@@ -135,7 +135,7 @@ private final class FloatingCallPill: UIView {
         label.tag = Self.timerLabelTag
         label.text = "0:00"
         label.textColor = .white
-        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.font = .voiidRounded(ofSize: 11, weight: .semibold)
         label.textAlignment = .center
 
         stack.addArrangedSubview(icon)

@@ -310,12 +310,12 @@ struct SeaBattleGrid: View {
         ZStack(alignment: .topLeading) {
             ForEach(0..<SeaBattle.size, id: \.self) { i in
                 Text(SeaBattle.columnLabel(i))
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .font(.system(size: 9, weight: .medium, design: .rounded)).monospacedDigit()
                     .foregroundStyle(ink.opacity(0.55))
                     .frame(width: cellSize, height: origin)
                     .offset(x: origin + CGFloat(i) * cellSize, y: 0)
                 Text("\(i + 1)")
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .font(.system(size: 9, weight: .medium, design: .rounded)).monospacedDigit()
                     .foregroundStyle(ink.opacity(0.55))
                     .frame(width: origin, height: cellSize)
                     .offset(x: 0, y: origin + CGFloat(i) * cellSize)

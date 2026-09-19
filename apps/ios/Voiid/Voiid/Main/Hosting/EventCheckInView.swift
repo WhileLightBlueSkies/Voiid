@@ -85,7 +85,7 @@ struct EventCheckInView: View {
             HStack(spacing: VoiidSpacing.md) {
                 VoiidRowIcon(systemName: "ticket")
                 TextField("Paste or type the code", text: $code)
-                    .font(.body.monospaced())
+                    .font(.body.monospacedDigit())
                     .foregroundStyle(VoiidColor.textPrimary)
                     .tint(VoiidColor.accent)
                     .textInputAutocapitalization(.never)

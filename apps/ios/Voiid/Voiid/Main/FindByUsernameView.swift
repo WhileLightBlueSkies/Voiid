@@ -220,7 +220,7 @@ struct FindByUsernameView: View {
                     TextField("6-digit PIN", text: $pin)
                         .keyboardType(.numberPad)
                         .textContentType(.oneTimeCode)
-                        .font(.system(.title2, design: .monospaced))
+                        .font(.system(.title2, design: .rounded)).monospacedDigit()
                         .padding(16)
                         .background(VoiidColor.fieldFill, in: RoundedRectangle(cornerRadius: 14))
                         .onChange(of: pin) { _, value in
@@ -308,7 +308,7 @@ struct FindByUsernameView: View {
                 TextField("6-digit PIN", text: $pin)
                     .keyboardType(.numberPad)
                     .textContentType(.oneTimeCode)
-                    .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 20, weight: .semibold, design: .rounded)).monospacedDigit()
                     .onChange(of: pin) { _, v in
                         // Digits only, capped at 6 — a paste of "418 302" should still work.
                         let digits = v.filter(\.isNumber)

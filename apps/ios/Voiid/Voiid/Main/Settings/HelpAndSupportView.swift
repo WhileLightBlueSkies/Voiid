@@ -41,121 +41,109 @@ struct HelpAndSupportView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+            VStack(alignment: .leading, spacing: 24) {
+                VoiidSettingsHeader("Help & support",
+                                    subtitle: "Find answers and get to know Voiid.")
 
-                VoiidCardSection(
-                    "Learn Voiid",
-                    footer: "A short guide to the features available in this version."
-                ) {
-                    Button {
+                VoiidCardSection("Get started") {
+                    VoiidSettingsRow(icon: "sparkles", title: "Replay app walkthrough",
+                                     detail: "A quick tour of Voiid", action: {
                         NotificationCenter.default.post(name: .voiidReplayAppWalkthrough, object: nil)
-                    } label: {
-                        HStack(spacing: VoiidSpacing.md) {
-                            VoiidRowIcon(systemName: "sparkles")
-                            Text("Replay app walkthrough")
-                                .font(.body)
-                                .foregroundStyle(VoiidColor.textPrimary)
-                            Spacer(minLength: 0)
-                            VoiidChevron()
-                        }
-                        .padding(.horizontal, VoiidSpacing.md)
-                        .padding(.vertical, 11)
-                        .contentShape(Rectangle())
+                    }) {
+                        VoiidChevron()
                     }
-                    .buttonStyle(RowButtonStyle())
                     .accessibilityHint("Closes Help and starts the app walkthrough")
                 }
 
-                VoiidCardSection(
-                    "Your messages",
-                    footer: "Voiid's servers relay ciphertext. They cannot read a message, "
-                          + "hear a call, or see a location you share."
-                ) {
-                    answer("Messages, calls, media and shared locations are end-to-end "
-                         + "encrypted. Keys are generated on your device and never leave it.")
-                }
-
-                VoiidCardSection(
-                    "If you lose your phone",
-                    footer: "Set this up before you need it — a backup cannot be created "
-                          + "after the device is gone."
-                ) {
-                    answer("Your chats can be restored on a new device from an encrypted "
-                         + "backup, using either your PIN or your 24-word recovery phrase.\n\n"
-                         + "The recovery phrase is the stronger of the two and the one to "
-                         + "keep safe: nobody — including Voiid — can recover your backup "
-                         + "without one of them.")
-                }
-
-                VoiidCardSection(
-                    "Linked devices",
-                    footer: "Unlink a device from Settings → Devices at any time."
-                ) {
-                    answer("A linked device gets its own keys and can read messages from "
-                         + "the moment it is linked. It cannot read anything sent before.")
+                VoiidCardSection("Common questions") {
+                    question("Are my conversations private?", icon: "lock.shield") {
+                        answer("Messages, calls, media and shared locations are end-to-end encrypted. Voiid’s servers relay ciphertext and cannot read your messages or hear your calls.")
+                    }
+                    VoiidRowDivider()
+                    question("What if I lose my phone?", icon: "arrow.clockwise.icloud") {
+                        answer("Restore your chats from an encrypted backup using your PIN or 24-word recovery phrase. Keep your recovery phrase safe: Voiid can’t recover your backup without one of them.")
+                        answer("Set up your backup before you need it. You can’t create one after your device is gone.")
+                        NavigationLink("Open Backup & Recovery") {
+                            BackupRecoveryView()
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .padding(.top, 4)
+                    }
+                    VoiidRowDivider()
+                    question("What can linked devices see?", icon: "laptopcomputer.and.iphone") {
+                        answer("A linked device gets its own keys and can read messages from the moment it is linked. It can’t read earlier messages. You can unlink it at any time in Settings → Devices.")
+                        NavigationLink("Manage devices") {
+                            LinkedDevicesView()
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .padding(.top, 4)
+                    }
                 }
 
                 if let supportAddress, let url = URL(string: "mailto:\(supportAddress)") {
-                    VoiidCardSection("Still stuck?") {
+                    VoiidCardSection("Get in touch") {
                         Link(destination: url) {
-                            HStack(spacing: VoiidSpacing.md) {
-                                VoiidRowIcon(systemName: "envelope")
-                                Text("Contact support")
-                                    .font(.body)
-                                    .foregroundStyle(VoiidColor.textPrimary)
-                                Spacer(minLength: 0)
+                            VoiidSettingsRow(icon: "envelope", title: "Contact support") {
                                 Image(systemName: "arrow.up.right")
-                                    .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(VoiidColor.textSecondary)
                             }
-                            .padding(.horizontal, VoiidSpacing.md)
-                            .padding(.vertical, 11)
-                            .contentShape(Rectangle())
                         }
                         .buttonStyle(RowButtonStyle())
                     }
                 }
 
-                // The one genuinely useful thing to hand a support channel, and it works
-                // whether or not one exists yet: version, server and identifiers, already
-                // assembled by AboutView.
-                VoiidCardSection(
-                    "Diagnostics",
-                    footer: "Includes your app version, server and device identifiers. "
-                          + "No message content."
-                ) {
+                VoiidCardSection("Troubleshooting",
+                                 footer: "Shares your app version, API version and iOS version. No message content.") {
                     ShareLink(item: diagnosticsText, subject: Text("Voiid diagnostics")) {
-                        HStack(spacing: VoiidSpacing.md) {
-                            VoiidRowIcon(systemName: "square.and.arrow.up")
-                            Text("Share diagnostics")
-                                .font(.body)
-                                .foregroundStyle(VoiidColor.textPrimary)
-                            Spacer(minLength: 0)
+                        VoiidSettingsRow(icon: "doc.text", title: "Share diagnostics",
+                                         detail: "App and device information") {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.subheadline)
+                                .foregroundStyle(VoiidColor.textSecondary)
                         }
-                        .padding(.horizontal, VoiidSpacing.md)
-                        .padding(.vertical, 11)
-                        .contentShape(Rectangle())
                     }
-                    .accessibilityHint("Shares your app version and device identifiers")
+                    .buttonStyle(RowButtonStyle())
+                    .accessibilityHint("Opens sharing options for app and operating system versions")
                 }
             }
             .padding(VoiidSpacing.md)
         }
         .softTopEdgeEffect()
-        .scrollIndicators(.hidden)
-        .background(VoiidColor.background.ignoresSafeArea())
-        .navigationTitle("Help & support")
-        .navigationBarTitleDisplayMode(.inline)
+        .font(.body)
+        .fontDesign(.rounded)
+        .foregroundStyle(VoiidColor.textPrimary)
+        .tint(VoiidColor.primary)
+        .voiidSettingsPage()
+    }
+
+    private func question<Content: View>(_ title: String, icon: String,
+                                         @ViewBuilder content: @escaping () -> Content) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 12) {
+                content()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, VoiidSpacing.sm)
+        } label: {
+            HStack(spacing: VoiidSpacing.md) {
+                VoiidRowIcon(systemName: icon)
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(VoiidColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 4)
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 7)
     }
 
     private func answer(_ text: String) -> some View {
         Text(text)
-            .font(VoiidFont.subhead)
-            .foregroundStyle(VoiidColor.textPrimary)
+            .font(.subheadline)
+            .foregroundStyle(VoiidColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, VoiidSpacing.md)
-            .padding(.vertical, VoiidSpacing.sm)
     }
 
     /// Mirrors `AboutView.diagnosticsText` — same fields, so a user can send this from

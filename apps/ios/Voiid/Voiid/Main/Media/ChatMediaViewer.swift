@@ -206,9 +206,9 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         back.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(back)
 
-        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        titleLabel.font = .voiidRounded(ofSize: 16, weight: .semibold)
         titleLabel.textColor = .white
-        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.font = .voiidRounded(ofSize: 12)
         subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.75)
 
         let stack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
@@ -528,7 +528,7 @@ private final class ThumbCell: UICollectionViewCell {
         imageView.clipsToBounds = true
         contentView.addSubview(imageView)
 
-        videoMark.font = .systemFont(ofSize: 8, weight: .semibold)
+        videoMark.font = .voiidRounded(ofSize: 8, weight: .semibold)
         videoMark.textColor = .white
         videoMark.layer.shadowOpacity = 0.6
         videoMark.layer.shadowRadius = 2

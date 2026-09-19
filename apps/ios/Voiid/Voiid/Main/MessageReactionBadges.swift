@@ -44,10 +44,10 @@ private struct NativeReactionBadge: UIViewRepresentable {
         context.coordinator.parent = self
         button.overrideUserInterfaceStyle = context.environment.colorScheme == .dark ? .dark : .light
         var title = AttributedString(reaction.emoji)
-        title.font = UIFont.systemFont(ofSize: 16)
+        title.font = UIFont.voiidRounded(ofSize: 16)
         if reaction.count > 1 {
             var count = AttributedString(" \(reaction.count)")
-            count.font = UIFont.systemFont(ofSize: 11, weight: .semibold)
+            count.font = UIFont.voiidRounded(ofSize: 11, weight: .semibold)
             title += count
         }
         var configuration = UIButton.Configuration.plain()

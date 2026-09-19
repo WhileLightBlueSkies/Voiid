@@ -239,7 +239,7 @@ struct VoiidLockup: View {
                 HStack(spacing: 18) {
                     VoiidMark(size: s)
                     Text("\(Int(s))")
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.system(size: 12, design: .rounded)).monospacedDigit()
                         .foregroundColor(VoiidColor.textSecondary)
                     Spacer()
                 }

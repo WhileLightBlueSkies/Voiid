@@ -239,7 +239,7 @@ struct CoinSceneView: UIViewRepresentable {
                 cg.setLineWidth(side * 0.014)
                 cg.strokeEllipse(in: rect.insetBy(dx: side * 0.135, dy: side * 0.135))
 
-                let font = UIFont.systemFont(ofSize: side * 0.52, weight: .black)
+                let font = UIFont.voiidRounded(ofSize: side * 0.52, weight: .black)
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: font,
                     .foregroundColor: UIColor(CricketGold.letter),

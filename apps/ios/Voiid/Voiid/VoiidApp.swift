@@ -387,6 +387,7 @@ struct VoiidApp: App {
                     CommunityLinkRouter.shared.handle(activity.webpageURL)
                     ProfileLinkRouter.shared.handle(activity.webpageURL)
                 }
+                .fontDesign(.rounded)
         }
     }
 }

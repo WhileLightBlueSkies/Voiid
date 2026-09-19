@@ -2258,7 +2258,7 @@ private final class LabelAtlas {
     private func rasterise(_ text: String) -> Entry? {
         guard let ctx = context, let texture else { return nil }
 
-        let font = UIFont.systemFont(ofSize: Self.fontSize, weight: .bold)
+        let font = UIFont.voiidRounded(ofSize: Self.fontSize, weight: .bold)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: UIColor.white,
