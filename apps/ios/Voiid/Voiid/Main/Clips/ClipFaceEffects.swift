@@ -17,6 +17,9 @@ import AVFoundation
 enum ClipFaceEffect: String, CaseIterable, Identifiable {
     case none
     case dog
+    case tiger
+    case party
+    case cyber
     case bunny
     case koala
     case cat
@@ -31,6 +34,9 @@ enum ClipFaceEffect: String, CaseIterable, Identifiable {
         switch self {
         case .none:       return "None"
         case .dog:        return "Puppy"
+        case .tiger:      return "Wildcat"
+        case .party:      return "Party"
+        case .cyber:      return "Cyber"
         case .bunny:      return "Bunny"
         case .koala:      return "Koala"
         case .cat:        return "Cat"
@@ -46,6 +52,9 @@ enum ClipFaceEffect: String, CaseIterable, Identifiable {
         switch self {
         case .none:       return "person"
         case .dog:        return "pawprint.fill"
+        case .tiger:      return "cat.circle.fill"
+        case .party:      return "sparkles"
+        case .cyber:      return "eyeglasses"
         case .bunny:      return "hare.fill"
         case .koala:      return "teddybear.fill"
         case .cat:        return "cat.fill"
@@ -65,6 +74,18 @@ enum ClipFaceEffect: String, CaseIterable, Identifiable {
             return (UIColor(red: 0.42, green: 0.28, blue: 0.18, alpha: 1),
                     UIColor(red: 0.85, green: 0.65, blue: 0.50, alpha: 1),
                     UIColor(red: 0.15, green: 0.12, blue: 0.11, alpha: 1))
+        case .tiger:
+            return (UIColor(red: 0.95, green: 0.56, blue: 0.12, alpha: 1),
+                    UIColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1),
+                    UIColor(red: 0.98, green: 0.62, blue: 0.70, alpha: 1))
+        case .party:
+            return (UIColor(red: 1.00, green: 0.82, blue: 0.15, alpha: 1),
+                    UIColor(red: 1.00, green: 0.22, blue: 0.40, alpha: 1),
+                    .clear)
+        case .cyber:
+            return (UIColor(red: 0.00, green: 0.94, blue: 1.00, alpha: 1),
+                    UIColor(red: 1.00, green: 0.00, blue: 0.55, alpha: 0.85),
+                    .clear)
         case .bunny:
             return (UIColor(red: 0.96, green: 0.94, blue: 0.94, alpha: 1),
                     UIColor(red: 0.98, green: 0.78, blue: 0.82, alpha: 1),
@@ -99,7 +120,7 @@ enum ClipFaceEffect: String, CaseIterable, Identifiable {
 
 // MARK: - Tracked face
 
-/// One detected face, with full 3D head pose and feature anchors in CIImage space (bottom-left origin).
+/// One detected face, with full 3D head pose, expression action units, and feature anchors in CIImage space.
 struct TrackedFace {
     let box: CGRect
     let eyeMid: CGPoint
@@ -108,10 +129,25 @@ struct TrackedFace {
     let yaw: CGFloat
     let pitch: CGFloat
     let nose: CGPoint
+    let mouthMid: CGPoint
+    let mouthOpenness: CGFloat // 0.0 (closed) to 1.0 (wide open)
+    let smilingRatio: CGFloat  // 0.0 to 1.0
+    let earWobble: CGFloat     // Spring inertia angle for bouncy ears/props
     let hasLandmarks: Bool
 }
 
-// MARK: - One Euro filter
+// MARK: - Physics & One Euro filter
+
+private struct SpringState {
+    var pos: CGFloat = 0
+    var vel: CGFloat = 0
+    mutating func update(target: CGFloat, dt: CGFloat, stiffness: CGFloat = 160, damping: CGFloat = 12) -> CGFloat {
+        let force = -stiffness * (pos - target) - damping * vel
+        vel += force * dt
+        pos += vel * dt
+        return pos
+    }
+}
 
 private struct OneEuroFilter {
     var minCutoff: CGFloat
@@ -149,14 +185,19 @@ private struct OneEuroFilter {
 }
 
 private struct FaceSmoother {
-    var eyeMidX = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var eyeMidY = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var dist    = OneEuroFilter(minCutoff: 1.8, beta: 0.02)
-    var roll    = OneEuroFilter(minCutoff: 2.5, beta: 0.15)
-    var yaw     = OneEuroFilter(minCutoff: 2.0, beta: 0.12)
-    var pitch   = OneEuroFilter(minCutoff: 2.0, beta: 0.12)
-    var noseX   = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var noseY   = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var eyeMidX   = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var eyeMidY   = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var dist      = OneEuroFilter(minCutoff: 1.8, beta: 0.02)
+    var roll      = OneEuroFilter(minCutoff: 2.5, beta: 0.15)
+    var yaw       = OneEuroFilter(minCutoff: 2.0, beta: 0.12)
+    var pitch     = OneEuroFilter(minCutoff: 2.0, beta: 0.12)
+    var noseX     = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var noseY     = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var mouthMidX = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var mouthMidY = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
+    var mouthOpen = OneEuroFilter(minCutoff: 3.2, beta: 0.22)
+    var smile     = OneEuroFilter(minCutoff: 2.0, beta: 0.10)
+    var earWobble = SpringState()
 }
 
 // MARK: - Detector
@@ -275,8 +316,50 @@ final class ClipFaceDetector {
         let nose = centroid(face.landmarks?.nose, in: imageSize)
             ?? CGPoint(x: box.midX, y: box.minY + box.height * 0.42)
 
+        var mouthMid = CGPoint(x: box.midX, y: box.minY + box.height * 0.28)
+        var rawMouthOpen: CGFloat = 0
+        var rawSmile: CGFloat = 0
+
+        if let innerLips = face.landmarks?.innerLips, innerLips.pointCount >= 4 {
+            let pts = innerLips.pointsInImage(imageSize: imageSize)
+            if !pts.isEmpty {
+                let minY = pts.map(\.y).min() ?? 0
+                let maxY = pts.map(\.y).max() ?? 0
+                let mouthH = max(0, maxY - minY)
+                rawMouthOpen = min(1.0, max(0.0, (mouthH / (eyeDistance * 0.40) - 0.08) / 0.38))
+                let avgX = pts.reduce(0) { $0 + $1.x } / CGFloat(pts.count)
+                let avgY = pts.reduce(0) { $0 + $1.y } / CGFloat(pts.count)
+                mouthMid = CGPoint(x: avgX, y: avgY)
+            }
+        } else if let outerLips = face.landmarks?.outerLips, outerLips.pointCount >= 4 {
+            let pts = outerLips.pointsInImage(imageSize: imageSize)
+            if !pts.isEmpty {
+                let minY = pts.map(\.y).min() ?? 0
+                let maxY = pts.map(\.y).max() ?? 0
+                let mouthH = max(0, maxY - minY)
+                rawMouthOpen = min(1.0, max(0.0, (mouthH / (eyeDistance * 0.44) - 0.12) / 0.40))
+                let avgX = pts.reduce(0) { $0 + $1.x } / CGFloat(pts.count)
+                let avgY = pts.reduce(0) { $0 + $1.y } / CGFloat(pts.count)
+                mouthMid = CGPoint(x: avgX, y: avgY)
+            }
+        }
+
+        if let outerLips = face.landmarks?.outerLips, outerLips.pointCount >= 6 {
+            let pts = outerLips.pointsInImage(imageSize: imageSize)
+            if pts.count >= 6 {
+                let sortedX = pts.sorted(by: { $0.x < $1.x })
+                if let leftC = sortedX.first, let rightC = sortedX.last {
+                    let cornerAvgY = (leftC.y + rightC.y) / 2
+                    let centerLipY = pts.reduce(0) { $0 + $1.y } / CGFloat(pts.count)
+                    let smileDelta = cornerAvgY - centerLipY
+                    rawSmile = min(1.0, max(0.0, (smileDelta / (eyeDistance * 0.12) + 0.15) / 0.50))
+                }
+            }
+        }
+
         publish(box: box, eyeMid: eyeMid, eyeDistance: eyeDistance, roll: roll,
-                yaw: yaw, pitch: pitch, nose: nose, hasLandmarks: hasLandmarks)
+                yaw: yaw, pitch: pitch, nose: nose, mouthMid: mouthMid,
+                mouthOpenness: rawMouthOpen, smilingRatio: rawSmile, hasLandmarks: hasLandmarks)
     }
 
     private func centroid(_ region: VNFaceLandmarkRegion2D?,
@@ -289,9 +372,11 @@ final class ClipFaceDetector {
     }
 
     private var lastDistance: CGFloat = 0
+    private var lastRoll: CGFloat = 0
 
     private func publish(box: CGRect, eyeMid: CGPoint, eyeDistance: CGFloat, roll: CGFloat,
-                         yaw: CGFloat, pitch: CGFloat, nose: CGPoint, hasLandmarks: Bool) {
+                         yaw: CGFloat, pitch: CGFloat, nose: CGPoint, mouthMid: CGPoint,
+                         mouthOpenness: CGFloat, smilingRatio: CGFloat, hasLandmarks: Bool) {
         let now = CFAbsoluteTimeGetCurrent()
 
         lock.lock()
@@ -308,6 +393,10 @@ final class ClipFaceDetector {
         lastEyeMid = eyeMid
         lastDistance = eyeDistance
 
+        let rollVelocity = (roll - lastRoll) / CGFloat(dt)
+        lastRoll = roll
+        let wobble = smoother.earWobble.update(target: -rollVelocity * 0.08, dt: dt)
+
         let smoothed = TrackedFace(
             box: box,
             eyeMid: CGPoint(x: smoother.eyeMidX.filter(eyeMid.x, dt: dt),
@@ -318,6 +407,11 @@ final class ClipFaceDetector {
             pitch: smoother.pitch.filter(pitch, dt: dt),
             nose: CGPoint(x: smoother.noseX.filter(nose.x, dt: dt),
                           y: smoother.noseY.filter(nose.y, dt: dt)),
+            mouthMid: CGPoint(x: smoother.mouthMidX.filter(mouthMid.x, dt: dt),
+                              y: smoother.mouthMidY.filter(mouthMid.y, dt: dt)),
+            mouthOpenness: smoother.mouthOpen.filter(mouthOpenness, dt: dt),
+            smilingRatio: smoother.smile.filter(smilingRatio, dt: dt),
+            earWobble: wobble,
             hasLandmarks: hasLandmarks)
         _latest = [smoothed]
         lock.unlock()
@@ -361,28 +455,35 @@ enum ClipFaceRenderer {
         let hasNoseSprite: Bool
         let hasFaceDetails: Bool
         let isEyewear: Bool
+        let hasReactiveMouth: Bool
     }
 
     private static func config(for effect: ClipFaceEffect) -> Config {
         switch effect {
         case .none:
-            return Config(headSpan: 0, crownRise: 0, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false)
+            return Config(headSpan: 0, crownRise: 0, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false, hasReactiveMouth: false)
         case .dog:
-            return Config(headSpan: 2.9, crownRise: 1.28, noseSpan: 0.58, hasNoseSprite: true, hasFaceDetails: false, isEyewear: false)
+            return Config(headSpan: 2.9, crownRise: 1.28, noseSpan: 0.58, hasNoseSprite: true, hasFaceDetails: false, isEyewear: false, hasReactiveMouth: true)
+        case .tiger:
+            return Config(headSpan: 2.8, crownRise: 1.22, noseSpan: 0.54, hasNoseSprite: true, hasFaceDetails: true, isEyewear: false, hasReactiveMouth: true)
+        case .party:
+            return Config(headSpan: 2.3, crownRise: 1.62, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: true, isEyewear: false, hasReactiveMouth: true)
+        case .cyber:
+            return Config(headSpan: 2.45, crownRise: 0.0, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: true, isEyewear: true, hasReactiveMouth: false)
         case .bunny:
-            return Config(headSpan: 2.7, crownRise: 1.35, noseSpan: 0.44, hasNoseSprite: true, hasFaceDetails: true, isEyewear: false)
+            return Config(headSpan: 2.7, crownRise: 1.35, noseSpan: 0.44, hasNoseSprite: true, hasFaceDetails: true, isEyewear: false, hasReactiveMouth: false)
         case .koala:
-            return Config(headSpan: 3.0, crownRise: 1.15, noseSpan: 0.62, hasNoseSprite: true, hasFaceDetails: false, isEyewear: false)
+            return Config(headSpan: 3.0, crownRise: 1.15, noseSpan: 0.62, hasNoseSprite: true, hasFaceDetails: false, isEyewear: false, hasReactiveMouth: false)
         case .cat:
-            return Config(headSpan: 2.5, crownRise: 1.25, noseSpan: 0.38, hasNoseSprite: true, hasFaceDetails: true, isEyewear: false)
+            return Config(headSpan: 2.5, crownRise: 1.25, noseSpan: 0.38, hasNoseSprite: true, hasFaceDetails: true, isEyewear: false, hasReactiveMouth: false)
         case .sunglasses:
-            return Config(headSpan: 2.35, crownRise: 0.0, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: true)
+            return Config(headSpan: 2.35, crownRise: 0.0, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: true, hasReactiveMouth: false)
         case .crown:
-            return Config(headSpan: 2.4, crownRise: 1.45, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false)
+            return Config(headSpan: 2.4, crownRise: 1.45, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false, hasReactiveMouth: false)
         case .halo:
-            return Config(headSpan: 2.7, crownRise: 1.85, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false)
+            return Config(headSpan: 2.7, crownRise: 1.85, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false, hasReactiveMouth: false)
         case .devil:
-            return Config(headSpan: 2.4, crownRise: 1.30, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: false, isEyewear: false)
+            return Config(headSpan: 2.4, crownRise: 1.30, noseSpan: 0, hasNoseSprite: false, hasFaceDetails: true, isEyewear: false, hasReactiveMouth: false)
         }
     }
 
@@ -398,13 +499,11 @@ enum ClipFaceRenderer {
             let projectedD = face.hasLandmarks ? face.eyeDistance : face.box.width * 0.46
             guard projectedD > 8 else { continue }
 
-            // Un-project interocular distance gently so head turns do NOT cause sprite to shrink,
-            // while bounding the zoom expansion ratio
+            // Un-project interocular distance gently so head turns do NOT cause sprite to shrink
             let cosYaw = max(0.60, cos(face.yaw))
             let D = projectedD / cosYaw
 
-            // When face is heavily zoomed in (large D relative to frame height),
-            // dampen 3D perspective translations so small angles don't fling the accessories off the skull.
+            // When face is zoomed in, dampen 3D perspective translations
             let faceZoomFraction = min(1.0, max(0.0, (D / frameHeight - 0.12) / 0.25))
             let offsetDamping = 1.0 - (0.55 * faceZoomFraction)
 
@@ -412,20 +511,17 @@ enum ClipFaceRenderer {
             let up = CGVector(dx: -sin(face.roll), dy: cos(face.roll))
             let right = CGVector(dx: cos(face.roll), dy: sin(face.roll))
 
-            // 1. Primary Sprite (Headwear / Ears / Sunglasses)
+            // 1. Primary Sprite (Headwear / Ears / Sunglasses / Visor)
             if let mainSprite = sprite(for: effect) {
                 let spriteSide = D * cfg.headSpan
                 let baseScale = spriteSide / referenceSprite
 
-                // 3D Anchor Offset:
-                // Pitch moves the crown anchor along sagittal axis
-                // Yaw shifts the anchor across the curved skull
                 let pitchOffset = (D * sin(face.pitch) * 0.35) * offsetDamping
                 let yawOffset = (D * sin(face.yaw) * 0.30) * offsetDamping
 
-                let anchorPoint: CGPoint
+                var anchorPoint: CGPoint
                 if cfg.isEyewear {
-                    // Sunglasses sit right on the eye line / nose bridge
+                    // Sunglasses / Cyber Visor sit right on the eye line / nose bridge
                     anchorPoint = CGPoint(
                         x: face.eyeMid.x + up.dx * (D * cfg.crownRise + pitchOffset * 0.2) + right.dx * yawOffset,
                         y: face.eyeMid.y + up.dy * (D * cfg.crownRise + pitchOffset * 0.2) + right.dy * yawOffset
@@ -439,13 +535,22 @@ enum ClipFaceRenderer {
                                   y: face.box.maxY + face.box.height * 0.10 + up.dy * pitchOffset)
                 }
 
-                // 3D perspective foreshortening with clamped ranges
+                // Halo floating hover bobbing
+                if effect == .halo {
+                    let haloBob = sin(CFAbsoluteTimeGetCurrent() * 4.0) * (D * 0.05)
+                    anchorPoint = CGPoint(x: anchorPoint.x + up.dx * haloBob, y: anchorPoint.y + up.dy * haloBob)
+                }
+
+                // 3D perspective foreshortening
                 let scaleX = baseScale * max(0.70, cosYaw)
                 let scaleY = baseScale * max(0.75, cos(face.pitch * 0.6))
                 let skewX = tan(face.yaw * 0.18) * offsetDamping
 
                 var t = CGAffineTransform(translationX: anchorPoint.x, y: anchorPoint.y)
-                t = t.rotated(by: face.roll)
+                let wobbleAngle = (effect == .dog || effect == .bunny || effect == .tiger || effect == .cat || effect == .koala)
+                    ? face.earWobble
+                    : 0
+                t = t.rotated(by: face.roll + wobbleAngle)
                 if abs(face.yaw) > 0.05 {
                     t = t.concatenating(CGAffineTransform(a: 1, b: 0, c: skewX, d: 1, tx: 0, ty: 0))
                 }
@@ -456,12 +561,11 @@ enum ClipFaceRenderer {
                 output = placed.composited(over: output)
             }
 
-            // 2. Nose Sprite (Snout / Pink Cat Nose)
+            // 2. Nose Sprite (Snout / Pink Cat / Tiger Nose)
             if cfg.hasNoseSprite, let nSprite = noseSprite(for: effect) {
                 let noseSide = D * cfg.noseSpan
                 let noseScale = noseSide / referenceSprite
 
-                // Nose shifts with yaw and pitch relative to skull
                 let noseYawShift = (D * sin(face.yaw) * 0.18) * offsetDamping
                 let nosePitchShift = (-D * sin(face.pitch) * 0.18) * offsetDamping
 
@@ -479,7 +583,7 @@ enum ClipFaceRenderer {
                 output = placedNose.composited(over: output)
             }
 
-            // 3. Face Details (Whiskers, Blush cheeks)
+            // 3. Face Details (Whiskers, Blush cheeks, Tiger stripes, Cyber HUD)
             if cfg.hasFaceDetails, let detailsSprite = faceDetailsSprite(for: effect) {
                 let detailSide = D * 2.1
                 let dScale = detailSide / referenceSprite
@@ -491,6 +595,62 @@ enum ClipFaceRenderer {
 
                 let placedDetails = detailsSprite.transformed(by: dt)
                 output = placedDetails.composited(over: output)
+            }
+
+            // 4. Reactive Mouth Action Trigger (Tongue, Fangs, Confetti)
+            if cfg.hasReactiveMouth {
+                if effect == .dog, face.mouthOpenness > 0.15, let tongue = dogTongueSprite() {
+                    let openProg = min(1.0, (face.mouthOpenness - 0.15) / 0.45)
+                    let tongueH = D * 0.90 * openProg
+                    let tongueW = D * 0.55
+                    let tongueScaleX = tongueW / referenceSprite
+                    let tongueScaleY = tongueH / referenceSprite
+
+                    let mouthOffset = -up.dy * (D * 0.08)
+                    let mAnchor = CGPoint(
+                        x: face.mouthMid.x + up.dx * mouthOffset + right.dx * (D * sin(face.yaw) * 0.15),
+                        y: face.mouthMid.y + up.dy * mouthOffset + right.dy * (D * sin(face.yaw) * 0.15)
+                    )
+
+                    var mt = CGAffineTransform(translationX: mAnchor.x, y: mAnchor.y)
+                    mt = mt.rotated(by: face.roll + face.earWobble * 0.3)
+                    mt = mt.scaledBy(x: tongueScaleX * max(0.70, cosYaw), y: tongueScaleY)
+                    mt = mt.translatedBy(x: -referenceSprite / 2, y: 0)
+
+                    let placedTongue = tongue.transformed(by: mt)
+                    output = placedTongue.composited(over: output)
+                } else if effect == .tiger, face.mouthOpenness > 0.18, let fangs = tigerFangsSprite() {
+                    let openProg = min(1.0, (face.mouthOpenness - 0.18) / 0.40)
+                    let fangsH = D * 0.52 * openProg
+                    let fangsW = D * 0.65
+                    let fScaleX = fangsW / referenceSprite
+                    let fScaleY = fangsH / referenceSprite
+
+                    let mAnchor = CGPoint(
+                        x: face.mouthMid.x + right.dx * (D * sin(face.yaw) * 0.12),
+                        y: face.mouthMid.y + right.dy * (D * sin(face.yaw) * 0.12)
+                    )
+
+                    var mt = CGAffineTransform(translationX: mAnchor.x, y: mAnchor.y)
+                    mt = mt.rotated(by: face.roll)
+                    mt = mt.scaledBy(x: fScaleX * max(0.70, cosYaw), y: fScaleY)
+                    mt = mt.translatedBy(x: -referenceSprite / 2, y: -referenceSprite * 0.15)
+
+                    let placedFangs = fangs.transformed(by: mt)
+                    output = placedFangs.composited(over: output)
+                } else if effect == .party, (face.mouthOpenness > 0.22 || face.smilingRatio > 0.40), let confetti = partyConfettiSprite() {
+                    let burstIntensity = max(face.mouthOpenness, face.smilingRatio)
+                    let burstSide = D * (2.2 + burstIntensity * 1.0)
+                    let bScale = burstSide / referenceSprite
+
+                    var pt = CGAffineTransform(translationX: face.mouthMid.x, y: face.mouthMid.y)
+                    pt = pt.rotated(by: face.roll)
+                    pt = pt.scaledBy(x: bScale, y: bScale)
+                    pt = pt.translatedBy(x: -referenceSprite / 2, y: -referenceSprite / 2)
+
+                    let placedConfetti = confetti.transformed(by: pt)
+                    output = placedConfetti.composited(over: output)
+                }
             }
         }
         return output
@@ -538,8 +698,8 @@ enum ClipFaceRenderer {
             c.saveGState()
 
             let path = UIBezierPath()
-            if effect == .cat {
-                // Heart-like petite cat nose
+            if effect == .cat || effect == .tiger {
+                // Heart-like feline nose
                 path.move(to: CGPoint(x: size.width * 0.5, y: size.height * 0.85))
                 path.addCurve(to: CGPoint(x: size.width * 0.20, y: size.height * 0.35),
                               controlPoint1: CGPoint(x: size.width * 0.35, y: size.height * 0.80),
@@ -588,6 +748,175 @@ enum ClipFaceRenderer {
         guard let cg = ui.cgImage else { return nil }
         let ci = CIImage(cgImage: cg)
 
+        cacheLock.lock(); cache[key] = ci; cacheLock.unlock()
+        return ci
+    }
+
+    private static func dogTongueSprite() -> CIImage? {
+        let key = "dog-tongue"
+        cacheLock.lock()
+        if let hit = cache[key] { cacheLock.unlock(); return hit }
+        cacheLock.unlock()
+
+        let size = CGSize(width: referenceSprite, height: referenceSprite)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = false
+
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let ui = renderer.image { ctx in
+            let c = ctx.cgContext
+            let w = size.width, h = size.height
+
+            let tongue = UIBezierPath()
+            tongue.move(to: CGPoint(x: w * 0.25, y: h * 0.02))
+            tongue.addLine(to: CGPoint(x: w * 0.22, y: h * 0.70))
+            tongue.addCurve(to: CGPoint(x: w * 0.78, y: h * 0.70),
+                            controlPoint1: CGPoint(x: w * 0.22, y: h * 0.98),
+                            controlPoint2: CGPoint(x: w * 0.78, y: h * 0.98))
+            tongue.addLine(to: CGPoint(x: w * 0.75, y: h * 0.02))
+            tongue.close()
+
+            c.setFillColor(UIColor(red: 1.0, green: 0.44, blue: 0.58, alpha: 1.0).cgColor)
+            c.addPath(tongue.cgPath)
+            c.fillPath()
+
+            c.setStrokeColor(UIColor(red: 0.82, green: 0.20, blue: 0.36, alpha: 0.80).cgColor)
+            c.setLineWidth(10.0)
+            c.setLineCap(.round)
+            c.move(to: CGPoint(x: w * 0.50, y: h * 0.10))
+            c.addLine(to: CGPoint(x: w * 0.50, y: h * 0.68))
+            c.strokePath()
+
+            c.setFillColor(UIColor.white.withAlphaComponent(0.40).cgColor)
+            c.fillEllipse(in: CGRect(x: w * 0.30, y: h * 0.30, width: w * 0.14, height: h * 0.28))
+        }
+        guard let cg = ui.cgImage else { return nil }
+        let ci = CIImage(cgImage: cg)
+        cacheLock.lock(); cache[key] = ci; cacheLock.unlock()
+        return ci
+    }
+
+    private static func tigerFangsSprite() -> CIImage? {
+        let key = "tiger-fangs"
+        cacheLock.lock()
+        if let hit = cache[key] { cacheLock.unlock(); return hit }
+        cacheLock.unlock()
+
+        let size = CGSize(width: referenceSprite, height: referenceSprite)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = false
+
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let ui = renderer.image { ctx in
+            let c = ctx.cgContext
+            let w = size.width, h = size.height
+
+            func fang(xCenter: CGFloat, flipped: Bool) {
+                let p = UIBezierPath()
+                let dx: CGFloat = flipped ? -1 : 1
+                p.move(to: CGPoint(x: xCenter - 30 * dx, y: h * 0.10))
+                p.addCurve(to: CGPoint(x: xCenter + 6 * dx, y: h * 0.88),
+                           controlPoint1: CGPoint(x: xCenter - 15 * dx, y: h * 0.45),
+                           controlPoint2: CGPoint(x: xCenter - 6 * dx, y: h * 0.70))
+                p.addCurve(to: CGPoint(x: xCenter + 30 * dx, y: h * 0.10),
+                           controlPoint1: CGPoint(x: xCenter + 15 * dx, y: h * 0.65),
+                           controlPoint2: CGPoint(x: xCenter + 25 * dx, y: h * 0.35))
+                p.close()
+
+                c.setFillColor(UIColor.white.cgColor)
+                c.addPath(p.cgPath)
+                c.fillPath()
+
+                c.setStrokeColor(UIColor(white: 0.2, alpha: 0.4).cgColor)
+                c.setLineWidth(4.0)
+                c.addPath(p.cgPath)
+                c.strokePath()
+
+                c.setStrokeColor(UIColor.white.withAlphaComponent(0.85).cgColor)
+                c.setLineWidth(3.0)
+                c.move(to: CGPoint(x: xCenter - 4 * dx, y: h * 0.20))
+                c.addLine(to: CGPoint(x: xCenter + 2 * dx, y: h * 0.75))
+                c.strokePath()
+            }
+
+            fang(xCenter: w * 0.32, flipped: false)
+            fang(xCenter: w * 0.68, flipped: true)
+        }
+        guard let cg = ui.cgImage else { return nil }
+        let ci = CIImage(cgImage: cg)
+        cacheLock.lock(); cache[key] = ci; cacheLock.unlock()
+        return ci
+    }
+
+    private static func partyConfettiSprite() -> CIImage? {
+        let key = "party-confetti"
+        cacheLock.lock()
+        if let hit = cache[key] { cacheLock.unlock(); return hit }
+        cacheLock.unlock()
+
+        let size = CGSize(width: referenceSprite, height: referenceSprite)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = false
+
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let ui = renderer.image { ctx in
+            let c = ctx.cgContext
+            let w = size.width, h = size.height
+
+            let colors: [UIColor] = [
+                UIColor(red: 1.0, green: 0.85, blue: 0.15, alpha: 0.95), // Gold
+                UIColor(red: 1.0, green: 0.25, blue: 0.45, alpha: 0.95), // Coral
+                UIColor(red: 0.20, green: 0.85, blue: 1.0, alpha: 0.95), // Cyan
+                UIColor(red: 0.65, green: 0.30, blue: 1.0, alpha: 0.95), // Violet
+                UIColor(red: 0.30, green: 0.95, blue: 0.55, alpha: 0.95)  // Mint
+            ]
+
+            let pieces: [(x: CGFloat, y: CGFloat, r: CGFloat, rot: CGFloat, c: Int, isStar: Bool)] = [
+                (0.20, 0.25, 24, 0.3, 0, true),
+                (0.80, 0.22, 28, -0.4, 1, true),
+                (0.12, 0.60, 20, 0.8, 2, false),
+                (0.88, 0.55, 22, -0.7, 3, false),
+                (0.35, 0.12, 26, 0.1, 4, true),
+                (0.65, 0.10, 22, -0.2, 0, false),
+                (0.25, 0.82, 18, 0.5, 1, false),
+                (0.75, 0.85, 20, -0.6, 2, true),
+                (0.08, 0.38, 16, 1.2, 3, false),
+                (0.92, 0.35, 18, -1.1, 4, true),
+                (0.40, 0.92, 22, 0.4, 0, true),
+                (0.60, 0.94, 20, -0.3, 1, false)
+            ]
+
+            for p in pieces {
+                c.saveGState()
+                c.translateBy(x: w * p.x, y: h * p.y)
+                c.rotate(by: p.rot)
+                c.setFillColor(colors[p.c % colors.count].cgColor)
+
+                if p.isStar {
+                    let sp = UIBezierPath()
+                    let r = p.r
+                    sp.move(to: CGPoint(x: 0, y: -r))
+                    sp.addQuadCurve(to: CGPoint(x: r, y: 0), control: CGPoint(x: r * 0.2, y: -r * 0.2))
+                    sp.addQuadCurve(to: CGPoint(x: 0, y: r), control: CGPoint(x: r * 0.2, y: r * 0.2))
+                    sp.addQuadCurve(to: CGPoint(x: -r, y: 0), control: CGPoint(x: -r * 0.2, y: r * 0.2))
+                    sp.addQuadCurve(to: CGPoint(x: 0, y: -r), control: CGPoint(x: -r * 0.2, y: -r * 0.2))
+                    sp.close()
+                    c.addPath(sp.cgPath)
+                    c.fillPath()
+                } else {
+                    let rect = CGRect(x: -p.r * 0.5, y: -p.r, width: p.r, height: p.r * 2)
+                    let dp = UIBezierPath(roundedRect: rect, cornerRadius: 4)
+                    c.addPath(dp.cgPath)
+                    c.fillPath()
+                }
+                c.restoreGState()
+            }
+        }
+        guard let cg = ui.cgImage else { return nil }
+        let ci = CIImage(cgImage: cg)
         cacheLock.lock(); cache[key] = ci; cacheLock.unlock()
         return ci
     }
@@ -647,6 +976,91 @@ enum ClipFaceRenderer {
                 c.fillEllipse(in: CGRect(x: w * 0.12, y: h * 0.45, width: w * 0.22, height: h * 0.15))
                 c.fillEllipse(in: CGRect(x: w * 0.66, y: h * 0.45, width: w * 0.22, height: h * 0.15))
                 c.restoreGState()
+            } else if effect == .tiger {
+                // Tiger cheek stripes & fierce whiskers
+                c.saveGState()
+                c.setFillColor(UIColor(red: 0.14, green: 0.14, blue: 0.16, alpha: 0.90).cgColor)
+
+                func stripe(startX: CGFloat, startY: CGFloat, endX: CGFloat, endY: CGFloat, thickness: CGFloat) {
+                    let sp = UIBezierPath()
+                    sp.move(to: CGPoint(x: startX, y: startY))
+                    sp.addQuadCurve(to: CGPoint(x: endX, y: endY),
+                                    control: CGPoint(x: (startX + endX) / 2, y: (startY + endY) / 2 + 8))
+                    sp.addQuadCurve(to: CGPoint(x: startX, y: startY + thickness),
+                                    control: CGPoint(x: (startX + endX) / 2, y: (startY + endY) / 2 + 12))
+                    sp.close()
+                    c.addPath(sp.cgPath)
+                    c.fillPath()
+                }
+
+                // Left cheek stripes
+                stripe(startX: w * 0.04, startY: h * 0.40, endX: w * 0.25, endY: h * 0.46, thickness: 12)
+                stripe(startX: w * 0.06, startY: h * 0.52, endX: w * 0.26, endY: h * 0.56, thickness: 10)
+                stripe(startX: w * 0.08, startY: h * 0.64, endX: w * 0.24, endY: h * 0.66, thickness: 9)
+
+                // Right cheek stripes
+                stripe(startX: w * 0.96, startY: h * 0.40, endX: w * 0.75, endY: h * 0.46, thickness: 12)
+                stripe(startX: w * 0.94, startY: h * 0.52, endX: w * 0.74, endY: h * 0.56, thickness: 10)
+                stripe(startX: w * 0.92, startY: h * 0.64, endX: w * 0.76, endY: h * 0.66, thickness: 9)
+
+                // White whiskers
+                c.setStrokeColor(UIColor.white.withAlphaComponent(0.90).cgColor)
+                c.setLineWidth(3.5)
+                c.setLineCap(.round)
+
+                c.move(to: CGPoint(x: w * 0.30, y: h * 0.50))
+                c.addLine(to: CGPoint(x: w * 0.02, y: h * 0.48))
+                c.move(to: CGPoint(x: w * 0.29, y: h * 0.58))
+                c.addLine(to: CGPoint(x: w * 0.04, y: h * 0.62))
+
+                c.move(to: CGPoint(x: w * 0.70, y: h * 0.50))
+                c.addLine(to: CGPoint(x: w * 0.98, y: h * 0.48))
+                c.move(to: CGPoint(x: w * 0.71, y: h * 0.58))
+                c.addLine(to: CGPoint(x: w * 0.96, y: h * 0.62))
+
+                c.strokePath()
+                c.restoreGState()
+            } else if effect == .party {
+                // Gold and magenta sparkles on cheeks
+                c.saveGState()
+                let gold = UIColor(red: 1.0, green: 0.82, blue: 0.15, alpha: 0.9).cgColor
+                c.setFillColor(gold)
+                c.fillEllipse(in: CGRect(x: w * 0.16, y: h * 0.48, width: 14, height: 14))
+                c.fillEllipse(in: CGRect(x: w * 0.24, y: h * 0.42, width: 10, height: 10))
+                c.fillEllipse(in: CGRect(x: w * 0.80, y: h * 0.48, width: 14, height: 14))
+                c.fillEllipse(in: CGRect(x: w * 0.72, y: h * 0.42, width: 10, height: 10))
+                c.restoreGState()
+            } else if effect == .cyber {
+                // Cyberpunk HUD telemetry and cheek nodes
+                c.saveGState()
+                c.setStrokeColor(UIColor(red: 0.0, green: 0.94, blue: 1.0, alpha: 0.85).cgColor)
+                c.setLineWidth(2.5)
+
+                // Left cheek HUD bracket
+                c.move(to: CGPoint(x: w * 0.12, y: h * 0.42))
+                c.addLine(to: CGPoint(x: w * 0.18, y: h * 0.42))
+                c.addLine(to: CGPoint(x: w * 0.22, y: h * 0.55))
+                c.strokePath()
+
+                // Right cheek HUD bracket
+                c.move(to: CGPoint(x: w * 0.88, y: h * 0.42))
+                c.addLine(to: CGPoint(x: w * 0.82, y: h * 0.42))
+                c.addLine(to: CGPoint(x: w * 0.78, y: h * 0.55))
+                c.strokePath()
+
+                // Glowing node dots
+                c.setFillColor(UIColor(red: 1.0, green: 0.0, blue: 0.55, alpha: 0.9).cgColor)
+                c.fillEllipse(in: CGRect(x: w * 0.21, y: h * 0.54, width: 6, height: 6))
+                c.fillEllipse(in: CGRect(x: w * 0.77, y: h * 0.54, width: 6, height: 6))
+
+                c.restoreGState()
+            } else if effect == .devil {
+                // Glowing crimson cheek embers
+                c.saveGState()
+                c.setFillColor(UIColor(red: 1.0, green: 0.30, blue: 0.10, alpha: 0.6).cgColor)
+                c.fillEllipse(in: CGRect(x: w * 0.16, y: h * 0.44, width: 12, height: 12))
+                c.fillEllipse(in: CGRect(x: w * 0.80, y: h * 0.44, width: 12, height: 12))
+                c.restoreGState()
             }
         }
         guard let cg = ui.cgImage else { return nil }
@@ -666,7 +1080,7 @@ enum ClipFaceRenderer {
         case .none:
             break
 
-        case .dog, .bunny, .koala, .cat:
+        case .dog, .bunny, .koala, .cat, .tiger:
             drawAnimalEars(effect, in: c, size: size)
 
         case .sunglasses:
@@ -680,6 +1094,12 @@ enum ClipFaceRenderer {
 
         case .devil:
             drawDevilHorns(in: c, size: size, colors: colours)
+
+        case .party:
+            drawPartyHat(in: c, size: size, colors: colours)
+
+        case .cyber:
+            drawCyberVisor(in: c, size: size, colors: colours)
         }
     }
 
@@ -755,6 +1175,24 @@ enum ClipFaceRenderer {
                 inner.move(to: CGPoint(x: w * 0.38, y: h * 0.45))
                 inner.addLine(to: CGPoint(x: w * 0.22, y: h * 0.18))
                 inner.addLine(to: CGPoint(x: w * 0.20, y: h * 0.43))
+            case .tiger:
+                // Rounded powerful tiger ear with dark stripe accent
+                outer.move(to: CGPoint(x: w * 0.44, y: h * 0.48))
+                outer.addCurve(to: CGPoint(x: w * 0.16, y: h * 0.16),
+                               controlPoint1: CGPoint(x: w * 0.38, y: h * 0.22),
+                               controlPoint2: CGPoint(x: w * 0.22, y: h * 0.14))
+                outer.addCurve(to: CGPoint(x: w * 0.16, y: h * 0.48),
+                               controlPoint1: CGPoint(x: w * 0.10, y: h * 0.22),
+                               controlPoint2: CGPoint(x: w * 0.12, y: h * 0.38))
+                outer.close()
+
+                inner.move(to: CGPoint(x: w * 0.38, y: h * 0.46))
+                inner.addCurve(to: CGPoint(x: w * 0.22, y: h * 0.24),
+                               controlPoint1: CGPoint(x: w * 0.34, y: h * 0.28),
+                               controlPoint2: CGPoint(x: w * 0.25, y: h * 0.22))
+                inner.addCurve(to: CGPoint(x: w * 0.22, y: h * 0.45),
+                               controlPoint1: CGPoint(x: w * 0.18, y: h * 0.28),
+                               controlPoint2: CGPoint(x: w * 0.19, y: h * 0.38))
                 inner.close()
 
             default:
@@ -947,5 +1385,139 @@ enum ClipFaceRenderer {
 
         horn(flipped: false)
         horn(flipped: true)
+    }
+
+    private static func drawPartyHat(in c: CGContext, size: CGSize, colors: (outer: UIColor, inner: UIColor, nose: UIColor)) {
+        let w = size.width, h = size.height
+        c.saveGState()
+
+        // Cone hat body
+        let cone = UIBezierPath()
+        cone.move(to: CGPoint(x: w * 0.50, y: h * 0.12)) // apex
+        cone.addLine(to: CGPoint(x: w * 0.22, y: h * 0.78))
+        cone.addQuadCurve(to: CGPoint(x: w * 0.78, y: h * 0.78), control: CGPoint(x: w * 0.50, y: h * 0.86))
+        cone.close()
+
+        c.setFillColor(colors.outer.cgColor) // Festive gold
+        c.addPath(cone.cgPath)
+        c.fillPath()
+
+        // Diagonal festive stripes
+        c.saveGState()
+        c.addPath(cone.cgPath)
+        c.clip()
+
+        let stripeColors = [
+            UIColor(red: 1.0, green: 0.25, blue: 0.45, alpha: 0.95), // Coral red
+            UIColor(red: 0.20, green: 0.85, blue: 1.0, alpha: 0.95), // Cyan
+            UIColor(red: 0.65, green: 0.30, blue: 1.0, alpha: 0.95)  // Violet
+        ]
+        for i in 0..<5 {
+            let sp = UIBezierPath()
+            let yBase = h * (0.25 + CGFloat(i) * 0.13)
+            sp.move(to: CGPoint(x: w * 0.10, y: yBase))
+            sp.addLine(to: CGPoint(x: w * 0.90, y: yBase - h * 0.12))
+            sp.addLine(to: CGPoint(x: w * 0.90, y: yBase - h * 0.05))
+            sp.addLine(to: CGPoint(x: w * 0.10, y: yBase + h * 0.07))
+            sp.close()
+            c.setFillColor(stripeColors[i % stripeColors.count].cgColor)
+            c.addPath(sp.cgPath)
+            c.fillPath()
+        }
+        c.restoreGState()
+
+        // Hat brim trim
+        let brim = UIBezierPath()
+        brim.move(to: CGPoint(x: w * 0.20, y: h * 0.78))
+        brim.addQuadCurve(to: CGPoint(x: w * 0.80, y: h * 0.78), control: CGPoint(x: w * 0.50, y: h * 0.88))
+        c.setStrokeColor(UIColor.white.withAlphaComponent(0.95).cgColor)
+        c.setLineWidth(14.0)
+        c.setLineCap(.round)
+        c.addPath(brim.cgPath)
+        c.strokePath()
+
+        // Top fluffy pom-pom
+        c.setFillColor(colors.inner.cgColor) // Ruby red
+        c.fillEllipse(in: CGRect(x: w * 0.43, y: h * 0.06, width: w * 0.14, height: h * 0.14))
+
+        // Sparkle glints on pom-pom
+        c.setFillColor(UIColor.white.cgColor)
+        c.fillEllipse(in: CGRect(x: w * 0.46, y: h * 0.09, width: 8, height: 8))
+
+        c.restoreGState()
+    }
+
+    private static func drawCyberVisor(in c: CGContext, size: CGSize, colors: (outer: UIColor, inner: UIColor, nose: UIColor)) {
+        let w = size.width, h = size.height
+        c.saveGState()
+
+        // Outer neon frame
+        let visorPath = UIBezierPath()
+        visorPath.move(to: CGPoint(x: w * 0.08, y: h * 0.38))
+        visorPath.addLine(to: CGPoint(x: w * 0.22, y: h * 0.34))
+        visorPath.addLine(to: CGPoint(x: w * 0.78, y: h * 0.34))
+        visorPath.addLine(to: CGPoint(x: w * 0.92, y: h * 0.38))
+        visorPath.addLine(to: CGPoint(x: w * 0.88, y: h * 0.62))
+        visorPath.addLine(to: CGPoint(x: w * 0.58, y: h * 0.66))
+        visorPath.addLine(to: CGPoint(x: w * 0.50, y: h * 0.54)) // bridge notch
+        visorPath.addLine(to: CGPoint(x: w * 0.42, y: h * 0.66))
+        visorPath.addLine(to: CGPoint(x: w * 0.12, y: h * 0.62))
+        visorPath.close()
+
+        // Polarized dark tint
+        c.setFillColor(UIColor(red: 0.04, green: 0.08, blue: 0.14, alpha: 0.85).cgColor)
+        c.addPath(visorPath.cgPath)
+        c.fillPath()
+
+        // Neon cyan border
+        c.setStrokeColor(colors.outer.cgColor) // #00F0FF
+        c.setLineWidth(6.0)
+        c.setLineJoin(.miter)
+        c.addPath(visorPath.cgPath)
+        c.strokePath()
+
+        // Glowing HUD grid lines across visor
+        c.saveGState()
+        c.addPath(visorPath.cgPath)
+        c.clip()
+
+        c.setStrokeColor(UIColor(red: 0.0, green: 0.94, blue: 1.0, alpha: 0.35).cgColor)
+        c.setLineWidth(1.5)
+        for y in stride(from: h * 0.36, to: h * 0.64, by: 12) {
+            c.move(to: CGPoint(x: w * 0.10, y: y))
+            c.addLine(to: CGPoint(x: w * 0.90, y: y))
+            c.strokePath()
+        }
+
+        // Hot pink telemetry crosshairs in right lens
+        c.setStrokeColor(colors.inner.cgColor) // #FF007F
+        c.setLineWidth(2.5)
+        let cx = w * 0.72, cy = h * 0.48
+        c.strokeEllipse(in: CGRect(x: cx - 18, y: cy - 18, width: 36, height: 36))
+        c.move(to: CGPoint(x: cx - 24, y: cy))
+        c.addLine(to: CGPoint(x: cx + 24, y: cy))
+        c.move(to: CGPoint(x: cx, y: cy - 24))
+        c.addLine(to: CGPoint(x: cx, y: cy + 24))
+        c.strokePath()
+
+        // Specular glare streak across left lens
+        let glare = UIBezierPath()
+        glare.move(to: CGPoint(x: w * 0.18, y: h * 0.60))
+        glare.addLine(to: CGPoint(x: w * 0.32, y: h * 0.36))
+        glare.addLine(to: CGPoint(x: w * 0.36, y: h * 0.36))
+        glare.addLine(to: CGPoint(x: w * 0.22, y: h * 0.60))
+        glare.close()
+        c.setFillColor(UIColor.white.withAlphaComponent(0.35).cgColor)
+        c.addPath(glare.cgPath)
+        c.fillPath()
+
+        c.restoreGState()
+
+        // Temple data hinges
+        c.setFillColor(colors.outer.cgColor)
+        c.fill(CGRect(x: w * 0.04, y: h * 0.36, width: w * 0.06, height: h * 0.08))
+        c.fill(CGRect(x: w * 0.90, y: h * 0.36, width: w * 0.06, height: h * 0.08))
+
+        c.restoreGState()
     }
 }

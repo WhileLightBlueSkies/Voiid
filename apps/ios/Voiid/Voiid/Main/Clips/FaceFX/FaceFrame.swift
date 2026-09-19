@@ -36,6 +36,15 @@ struct FaceFrame {
     /// Canonical space → metric camera space.
     var headMatrix: simd_float4x4 = matrix_identity_float4x4
 
+    /// Multiply a manifest's centimetre value by this to get mesh units.
+    ///
+    /// Android's mesh IS the canonical model, so this is 1. ARKit's mesh is in
+    /// metres and sized to the actual subject's head, so iOS derives this from
+    /// the mesh fit (§FaceGeometry.fitMesh) — which also means a prop scales
+    /// correctly on a small face and a large one, instead of being sized for an
+    /// average head and looking wrong on both.
+    var cmToUnits: Float = 1
+
     var imageWidth: Int = 0
     var imageHeight: Int = 0
 
@@ -50,11 +59,11 @@ struct FaceFrame {
     /// Distance between the outer eye corners in canonical centimetres.
     /// Used to scale warp radii and to clamp extrapolation, so both stay
     /// correct as the subject moves toward or away from the camera.
-    var interocularCm: Float {
-        guard vertices.count > FaceGeometry.eyeOuterRight else { return 8.892 }
-        return simd_distance(vertices[FaceGeometry.eyeOuterLeft],
-                             vertices[FaceGeometry.eyeOuterRight])
-    }
+    var interocularCm: Float = 8.892
+
+    /// Interocular distance in MESH units, for scaling warp radii and clamping
+    /// extrapolation in whatever space the platform's mesh lives in.
+    var interocularUnits: Float { interocularCm * cmToUnits }
 }
 
 /// MediaPipe's 52 blendshapes, in its fixed output order.
