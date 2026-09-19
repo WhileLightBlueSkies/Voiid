@@ -14,10 +14,15 @@ import android.provider.MediaStore
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
+import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.FileOutputOptions
@@ -29,8 +34,11 @@ import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
@@ -95,6 +103,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -146,11 +155,38 @@ fun ClipCameraView(
     // The rate the NEXT take will be recorded at. Never changes a take already on disk.
     var speed by remember { mutableStateOf(1f) }
     var filter by remember { mutableStateOf(ClipFilter.NONE) }
+    var faceEffect by remember { mutableStateOf(ClipFaceEffect.NONE) }
+    val faceDetector = remember { ClipFaceDetector() }
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     // Hardware control-plane state. `camera` is what carries zoom/torch/focus; it used to be
     // dropped on the floor at bind time, which is why none of them existed.
     var camera by remember { mutableStateOf<Camera?>(null) }
+    var currentZoom by remember { mutableStateOf(1f) }
+    var minZoom by remember { mutableStateOf(1f) }
+    var maxZoom by remember { mutableStateOf(5f) }
     var torchOn by remember { mutableStateOf(false) }
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
+
+    LaunchedEffect(camera) {
+        val cam = camera ?: return@LaunchedEffect
+        cam.cameraInfo.zoomState.observe(lifecycleOwner) { state ->
+            if (state != null) {
+                currentZoom = state.zoomRatio
+                minZoom = state.minZoomRatio
+                maxZoom = state.maxZoomRatio
+            }
+        }
+    }
+
+    val zoomPresets = remember(minZoom, maxZoom, lensFront) {
+        val list = mutableListOf<Float>()
+        if (!lensFront && minZoom <= 0.7f) list.add(0.6f)
+        list.add(1f)
+        if (maxZoom >= 2f) list.add(2f)
+        if (maxZoom >= 3f) list.add(3f)
+        if (maxZoom >= 5f && list.size < 4) list.add(5f)
+        list.filter { it in minZoom..maxZoom }
+    }
 
     val previewView = remember {
         // COMPATIBLE, not the default PERFORMANCE: it backs the preview with a TextureView,
@@ -159,6 +195,7 @@ fun ClipCameraView(
         // cannot be colour-filtered at all.
         PreviewView(context).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
         }
     }
     val recorder = remember {
@@ -196,18 +233,54 @@ fun ClipCameraView(
 
     // (Re)bind whenever the lens flips. unbindAll first so use-cases don't stack.
     DisposableEffect(lensFront) {
+        currentZoom = 1f
+        minZoom = 1f
+        maxZoom = 1f
+        faceDetector.isFrontCamera = lensFront
+        previewView.post {
+            runCatching { faceDetector.previewTransform = previewView.outputTransform }
+        }
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
             val provider = providerFuture.get()
-            val preview = Preview.Builder().build()
+            val resSelector = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(
+                    ResolutionStrategy(
+                        android.util.Size(1080, 1920),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                    )
+                )
+                .build()
+
+            val preview = Preview.Builder()
+                .setResolutionSelector(resSelector)
+                .build()
                 .also { it.setSurfaceProvider(previewView.surfaceProvider) }
             val selector = if (lensFront) CameraSelector.DEFAULT_FRONT_CAMERA
                            else CameraSelector.DEFAULT_BACK_CAMERA
+            val imageAnalysis = ImageAnalysis.Builder()
+                .setResolutionSelector(resSelector)
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                .build()
+                .also { analysis ->
+                    analysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                        if (faceDetector.activeEffect != ClipFaceEffect.NONE) {
+                            faceDetector.analyze(imageProxy)
+                        } else {
+                            imageProxy.close()
+                        }
+                    }
+                }
             runCatching {
                 provider.unbindAll()
                 camera = provider.bindToLifecycle(
-                    lifecycleOwner, selector, preview, videoCapture,
+                    lifecycleOwner, selector, preview, videoCapture, imageAnalysis,
                 )
+                previewView.post {
+                    runCatching { faceDetector.previewTransform = previewView.outputTransform }
+                }
             }.onFailure { errorText = "Couldn't start the camera." }
         }, ContextCompat.getMainExecutor(context))
         onDispose {
@@ -221,7 +294,11 @@ fun ClipCameraView(
     // Stop a recording still running when this screen goes away, or the file is left open and
     // the segment is unusable.
     DisposableEffect(Unit) {
-        onDispose { runCatching { recording?.stop() } }
+        onDispose {
+            runCatching { recording?.stop() }
+            runCatching { analysisExecutor.shutdown() }
+            runCatching { faceDetector.close() }
+        }
     }
 
     // ── Live filter ───────────────────────────────────────────────────────────────
@@ -254,13 +331,14 @@ fun ClipCameraView(
     }
     LaunchedEffect(previewTexture, filter) {
         val texture = previewTexture ?: return@LaunchedEffect
-        // A bare Paint is the identity: alpha 255, no colour filter. Passing one for NONE
-        // rather than null keeps the reset path identical to the apply path.
-        texture.setLayerPaint(
-            Paint().apply {
-                filter.colorMatrix()?.let { colorFilter = ColorMatrixColorFilter(it) }
-            }
-        )
+        val matrix = filter.colorMatrix()
+        if (matrix != null) {
+            texture.setLayerPaint(
+                Paint().apply { colorFilter = ColorMatrixColorFilter(matrix) }
+            )
+        } else {
+            texture.setLayerPaint(null)
+        }
     }
 
     // The tapped point is drawn for a beat and then dropped — a focus ring that stays on
@@ -439,6 +517,28 @@ fun ClipCameraView(
                 },
         )
 
+        if (faceEffect != ClipFaceEffect.NONE) {
+            val face = faceDetector.trackedFace
+            if (face != null) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val transform = previewView.outputTransform
+                    if (transform != null) {
+                        faceDetector.previewTransform = transform
+                    }
+                    with(ClipFaceRenderer) {
+                        drawFaceEffect(
+                            face = face,
+                            effect = faceEffect,
+                            previewWidth = size.width,
+                            previewHeight = size.height,
+                            cameraSourceWidth = faceDetector.sourceWidth,
+                            cameraSourceHeight = faceDetector.sourceHeight,
+                        )
+                    }
+                }
+            }
+        }
+
         focusPoint?.let { point ->
             val ringPx = with(density) { 72.dp.toPx() }
             Box(
@@ -498,6 +598,26 @@ fun ClipCameraView(
                     runCatching { camera?.cameraControl?.enableTorch(torchOn) }
                 }
             }
+            // Speed toggle
+            Box(
+                Modifier
+                    .size(width = 44.dp, height = 40.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.40f))
+                    .softClickable(scale = 0.90f, enabled = !isRecording) {
+                        haptics.tap()
+                        val speeds = listOf(0.5f, 1f, 2f)
+                        val next = (speeds.indexOf(speed) + 1) % speeds.size
+                        speed = speeds[next]
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    speedLabel(speed),
+                    style = VoiidFont.rounded(12, FontWeight.Bold),
+                    color = if (speed != 1f) VoiidColor.accent else Color.White,
+                )
+            }
             CircleButton(Icons.Default.Cameraswitch, "Flip") {
                 if (!isRecording) { haptics.tap(); lensFront = !lensFront }
             }
@@ -556,36 +676,87 @@ fun ClipCameraView(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // Speed rail. Recording always happens at 1x — the rate rides along with the take
-            // and is applied at export (see ClipTake) — so this is free to change between
-            // takes and costs nothing until the user commits.
-            Row(
+            // Face filter selector rail
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                SPEEDS.forEach { option ->
-                    val selected = option == speed
+                items(ClipFaceEffect.entries) { effect ->
+                    val selected = effect == faceEffect
                     Box(
                         Modifier
-                            .size(width = 52.dp, height = 44.dp)
                             .clip(RoundedCornerShape(VoiidRadius.pill))
                             .background(
-                                if (selected) Color.White else Color.Black.copy(alpha = 0.35f)
+                                if (selected) Color.White else Color.Black.copy(alpha = 0.40f)
                             )
-                            // Present but inert mid-take rather than hidden, so the rail does
-                            // not reflow under the user's thumb while they are shooting.
+                            .border(
+                                width = if (selected) 0.dp else 1.dp,
+                                color = Color.White.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(VoiidRadius.pill),
+                            )
                             .alpha(if (isRecording) 0.4f else 1f)
                             .softClickable(scale = 0.92f, enabled = !isRecording) {
                                 haptics.tap()
-                                speed = option
-                            },
+                                faceEffect = effect
+                                faceDetector.activeEffect = effect
+                                if (effect == ClipFaceEffect.NONE) {
+                                    faceDetector.reset()
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            speedLabel(option),
-                            style = VoiidFont.rounded(13, FontWeight.SemiBold),
-                            color = if (selected) Color.Black else Color.White,
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                effect.icon,
+                                style = VoiidFont.rounded(14),
+                            )
+                            Text(
+                                effect.label,
+                                style = VoiidFont.rounded(12, if (selected) FontWeight.Bold else FontWeight.Medium),
+                                color = if (selected) Color.Black else Color.White,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Camera Zoom Rail (0.6x, 1x, 2x, 3x)
+            if (zoomPresets.size > 1) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    zoomPresets.forEach { preset ->
+                        val isSelected = abs(currentZoom - preset) < 0.20f
+                        Box(
+                            Modifier
+                                .size(width = 48.dp, height = 36.dp)
+                                .clip(RoundedCornerShape(VoiidRadius.pill))
+                                .background(
+                                    if (isSelected) Color.White else Color.Black.copy(alpha = 0.45f)
+                                )
+                                .border(
+                                    width = if (isSelected) 0.dp else 1.dp,
+                                    color = Color.White.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(VoiidRadius.pill),
+                                )
+                                .softClickable(scale = 0.92f) {
+                                    haptics.tap()
+                                    camera?.cameraControl?.setZoomRatio(preset.coerceIn(minZoom, maxZoom))
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                if (preset == preset.toInt().toFloat()) "${preset.toInt()}×" else "${preset}×",
+                                style = VoiidFont.rounded(13, if (isSelected) FontWeight.Bold else FontWeight.Medium),
+                                color = if (isSelected) Color.Black else Color.White,
+                            )
+                        }
                     }
                 }
             }
