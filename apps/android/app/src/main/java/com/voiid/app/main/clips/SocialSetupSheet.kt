@@ -20,7 +20,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -29,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,15 +83,53 @@ fun SocialSetupSheet(
     var submitting by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
+    // ── THE THREE STEPS, matching iOS SocialSetupSheet.swift ────────────────────
+    // Identity was all this sheet ever collected. Age is what the under-18 protections
+    // read, and the guidelines are the agreement to POST — the signup Terms cover the
+    // account, not publishing to strangers (Apple 1.2 wants a EULA people actually accept).
+    var step by remember { mutableIntStateOf(1) }
+    var birthYear by remember { mutableStateOf("") }
+    var birthMonth by remember { mutableStateOf("") }
+    var birthDay by remember { mutableStateOf("") }
+    var interests by remember { mutableStateOf(setOf<String>()) }
+    var acceptedGuidelines by remember { mutableStateOf(false) }
+
+    val birthDate: String? = remember(birthYear, birthMonth, birthDay) {
+        val y = birthYear.toIntOrNull(); val m = birthMonth.toIntOrNull(); val d = birthDay.toIntOrNull()
+        if (y == null || m == null || d == null) null
+        else if (y < 1900 || m !in 1..12 || d !in 1..31) null
+        else "%04d-%02d-%02d".format(y, m, d)
+    }
+
+    // Whole years, the same arithmetic the server's age predicate uses.
+    val age: Int? = remember(birthDate) {
+        birthDate?.let {
+            runCatching {
+                val b = java.time.LocalDate.parse(it)
+                java.time.Period.between(b, java.time.LocalDate.now()).years
+            }.getOrNull()
+        }
+    }
+    val isMinor = (age ?: 99) < 18
+
     val state = creators.handleState
     val normalized = handle.trim().lowercase()
 
     // Submission needs only a well-formed handle. The availability check is ADVISORY —
     // blocking on Available would strand the user whenever the check itself failed, and the
     // create call re-validates under the real unique constraint regardless.
-    val canSubmit = !submitting &&
-        SocialService.isWellFormed(normalized) &&
+    val identityOk = SocialService.isWellFormed(normalized) &&
         state !is SocialStore.HandleState.Taken
+    // 13 is the floor for a profile at all; under-18 is allowed through and restricted
+    // rather than excluded, which is what DPDP asks for.
+    val ageOk = age != null && age >= 13
+    val interestsOk = interests.size >= 3 && acceptedGuidelines
+
+    val canSubmit = !submitting && when (step) {
+        1 -> identityOk
+        2 -> ageOk
+        else -> interestsOk
+    }
 
     LaunchedEffect(Unit) { creators.resetHandleState() }
 
@@ -107,6 +148,13 @@ fun SocialSetupSheet(
                 .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
         ) {
+            Text(
+                "Step $step of 3",
+                style = VoiidFont.rounded(12, FontWeight.SemiBold),
+                color = VoiidColor.textSecondary,
+            )
+
+            if (step == 1) {
             Text(
                 "Pick a name for your clips",
                 style = VoiidFont.rounded(24, FontWeight.Bold),
@@ -218,6 +266,130 @@ fun SocialSetupSheet(
                 )
             }
 
+            }
+
+            if (step == 2) {
+                Text(
+                    "When is your birthday?",
+                    style = VoiidFont.rounded(24, FontWeight.Bold),
+                    color = VoiidColor.textPrimary,
+                )
+                Text(
+                    "This sets your safety protections. It is never shown on your profile " +
+                        "and never shared with anyone.",
+                    style = VoiidFont.rounded(15),
+                    color = VoiidColor.textSecondary,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
+                    Box(Modifier.weight(1f)) {
+                        LabelledField("Day", birthDay, "DD") {
+                            birthDay = it.filter(Char::isDigit).take(2)
+                        }
+                    }
+                    Box(Modifier.weight(1f)) {
+                        LabelledField("Month", birthMonth, "MM") {
+                            birthMonth = it.filter(Char::isDigit).take(2)
+                        }
+                    }
+                    Box(Modifier.weight(1.3f)) {
+                        LabelledField("Year", birthYear, "YYYY") {
+                            birthYear = it.filter(Char::isDigit).take(4)
+                        }
+                    }
+                }
+                if (age != null && age < 13) {
+                    Text(
+                        "You need to be 13 or older to have a Clips profile.",
+                        style = VoiidFont.rounded(13), color = VoiidColor.error,
+                    )
+                } else if (age != null && isMinor) {
+                    // Told, not applied silently: the UK Children's Code wants the protection
+                    // legible, and a restriction a teenager discovers by accident is the one
+                    // they work around.
+                    Text(
+                        "Teen Safe mode — your feed won't be personalised from your activity, " +
+                            "and you won't see targeted ads.",
+                        style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+                    )
+                }
+                Text(
+                    "We do not sell your data, we do not share your date of birth, and we do " +
+                        "not use your clips or messages to train anything.",
+                    style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
+                )
+            }
+
+            if (step == 3) {
+                Text(
+                    "What do you want to see?",
+                    style = VoiidFont.rounded(24, FontWeight.Bold),
+                    color = VoiidColor.textPrimary,
+                )
+                Text(
+                    "Pick at least 3. You can change these any time.",
+                    style = VoiidFont.rounded(15),
+                    color = VoiidColor.textSecondary,
+                )
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.xs),
+                    verticalArrangement = Arrangement.spacedBy(VoiidSpacing.xs),
+                ) {
+                    SOCIAL_TOPICS.forEach { (id, label) ->
+                        val on = interests.contains(id)
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(VoiidRadius.md))
+                                .background(if (on) VoiidColor.primary else VoiidColor.fieldFill)
+                                .border(
+                                    1.dp,
+                                    if (on) VoiidColor.primary else VoiidColor.fieldBorder,
+                                    RoundedCornerShape(VoiidRadius.md),
+                                )
+                                .clickable {
+                                    haptics.tap()
+                                    interests = if (on) interests - id else interests + id
+                                }
+                                .padding(horizontal = VoiidSpacing.md, vertical = 10.dp),
+                        ) {
+                            Text(
+                                label,
+                                style = VoiidFont.rounded(14, FontWeight.Medium),
+                                color = if (on) VoiidColor.textOnPrimary else VoiidColor.textPrimary,
+                            )
+                        }
+                    }
+                }
+
+                // The agreement to POST. The signup Terms cover the account; this covers
+                // publishing to strangers, which Apple 1.2 requires people actually accept.
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(VoiidRadius.md))
+                        .background(VoiidColor.fieldFill.copy(alpha = 0.6f))
+                        .clickable {
+                            haptics.tap()
+                            acceptedGuidelines = !acceptedGuidelines
+                        }
+                        .padding(VoiidSpacing.sm),
+                    horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                ) {
+                    Icon(
+                        if (acceptedGuidelines) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                        null,
+                        tint = if (acceptedGuidelines) VoiidColor.primary else VoiidColor.textSecondary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        "I agree to the Community Guidelines. No harassment, hate, sexual " +
+                            "content involving minors, or violent or illegal material. " +
+                            "Accounts that post it are removed.",
+                        style = VoiidFont.rounded(12),
+                        color = VoiidColor.textSecondary,
+                    )
+                }
+            }
+
             errorText?.let {
                 Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
             }
@@ -236,6 +408,7 @@ fun SocialSetupSheet(
                         // for emoji reactions and would blow up a full-width button.
                         if (!canSubmit) m else m.clickable {
                             haptics.tap()
+                            if (step < 3) { step += 1; errorText = null; return@clickable }
                             submitting = true
                             errorText = null
                             scope.launch {
@@ -245,6 +418,8 @@ fun SocialSetupSheet(
                                         displayName = displayName.trim().ifEmpty { null },
                                         bio = bio.trim().ifEmpty { null },
                                         linkUrl = null,
+                                        birthDate = birthDate,
+                                        interests = interests.toList().sorted(),
                                     )
                                     onCreated(profile)
                                     onDismiss()
@@ -271,7 +446,9 @@ fun SocialSetupSheet(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    if (submitting) "Creating…" else "Create profile",
+                    if (submitting) "Creating…"
+                    else if (step < 3) "Continue"
+                    else "Enter Voiid Clips",
                     style = VoiidFont.rounded(17, FontWeight.SemiBold),
                     color = VoiidColor.textOnPrimary,
                 )
@@ -313,3 +490,19 @@ private fun LabelledField(
         }
     }
 }
+
+/** The topics that seed the recommendation feed. Same ids and order as iOS `ClipTopic.all`. */
+private val SOCIAL_TOPICS: List<Pair<String, String>> = listOf(
+    "gaming" to "Gaming",
+    "tech" to "Tech & AI",
+    "comedy" to "Comedy",
+    "cricket" to "Cricket & Sport",
+    "music" to "Music",
+    "travel" to "Travel",
+    "fashion" to "Fashion",
+    "food" to "Food",
+    "design" to "Design & Art",
+    "anime" to "Anime & Film",
+    "finance" to "Finance",
+    "motors" to "Cars & Speed",
+)
