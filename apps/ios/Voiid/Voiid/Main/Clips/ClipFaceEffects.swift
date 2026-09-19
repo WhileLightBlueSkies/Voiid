@@ -137,67 +137,51 @@ struct TrackedFace {
 }
 
 // MARK: - Physics & One Euro filter
+//
+// The filter and spring themselves now live in FaceFX/PoseStabilizer.swift, which the
+// new face-filter engine shares. This file used to carry its own private copies; once
+// PoseStabilizer landed they were duplicate declarations of the same two type names and
+// nothing in the target compiled.
+//
+// The shared versions work in Float (what Metal and simd want) while everything on this
+// older path is CGFloat, so these shims convert at the boundary rather than churning the
+// ~20 call sites below. Keeping the shared implementation matters beyond deduplication:
+// its spring integrates at a fixed 1/240s step, so bounce keeps its character when the
+// frame rate drops, which the variable-dt spring that used to be here did not.
 
-private struct SpringState {
-    var pos: CGFloat = 0
-    var vel: CGFloat = 0
-    mutating func update(target: CGFloat, dt: CGFloat, stiffness: CGFloat = 160, damping: CGFloat = 12) -> CGFloat {
-        let force = -stiffness * (pos - target) - damping * vel
-        vel += force * dt
-        pos += vel * dt
-        return pos
+private struct CGSpring {
+    private var inner = SpringState()
+    mutating func update(target: CGFloat, dt: CGFloat,
+                         stiffness: CGFloat = 160, damping: CGFloat = 12) -> CGFloat {
+        CGFloat(inner.update(target: Float(target), dt: Float(dt),
+                             stiffness: Float(stiffness), damping: Float(damping)))
     }
 }
 
-private struct OneEuroFilter {
-    var minCutoff: CGFloat
-    var beta: CGFloat
-    var dCutoff: CGFloat = 1.0
-
-    private var xPrev: CGFloat = 0
-    private var dxPrev: CGFloat = 0
-    private var hasPrev = false
-
+private struct CGOneEuro {
+    private var inner: OneEuroFilter
     init(minCutoff: CGFloat, beta: CGFloat) {
-        self.minCutoff = minCutoff
-        self.beta = beta
+        inner = OneEuroFilter(minCutoff: Float(minCutoff), beta: Float(beta))
     }
-
-    private func alpha(cutoff: CGFloat, dt: CGFloat) -> CGFloat {
-        let tau = 1 / (2 * .pi * cutoff)
-        return 1 / (1 + tau / dt)
-    }
-
     mutating func filter(_ x: CGFloat, dt: CGFloat) -> CGFloat {
-        guard hasPrev, dt > 0 else {
-            xPrev = x; dxPrev = 0; hasPrev = true
-            return x
-        }
-        let dx = (x - xPrev) / dt
-        let aD = alpha(cutoff: dCutoff, dt: dt)
-        let edx = aD * dx + (1 - aD) * dxPrev
-        let cutoff = minCutoff + beta * abs(edx)
-        let a = alpha(cutoff: cutoff, dt: dt)
-        let xHat = a * x + (1 - a) * xPrev
-        xPrev = xHat; dxPrev = edx
-        return xHat
+        CGFloat(inner.filter(Float(x), dt: Float(dt)))
     }
 }
 
 private struct FaceSmoother {
-    var eyeMidX   = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var eyeMidY   = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var dist      = OneEuroFilter(minCutoff: 1.8, beta: 0.02)
-    var roll      = OneEuroFilter(minCutoff: 2.5, beta: 0.15)
-    var yaw       = OneEuroFilter(minCutoff: 2.0, beta: 0.12)
-    var pitch     = OneEuroFilter(minCutoff: 2.0, beta: 0.12)
-    var noseX     = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var noseY     = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var mouthMidX = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var mouthMidY = OneEuroFilter(minCutoff: 2.2, beta: 0.04)
-    var mouthOpen = OneEuroFilter(minCutoff: 3.2, beta: 0.22)
-    var smile     = OneEuroFilter(minCutoff: 2.0, beta: 0.10)
-    var earWobble = SpringState()
+    var eyeMidX   = CGOneEuro(minCutoff: 2.2, beta: 0.04)
+    var eyeMidY   = CGOneEuro(minCutoff: 2.2, beta: 0.04)
+    var dist      = CGOneEuro(minCutoff: 1.8, beta: 0.02)
+    var roll      = CGOneEuro(minCutoff: 2.5, beta: 0.15)
+    var yaw       = CGOneEuro(minCutoff: 2.0, beta: 0.12)
+    var pitch     = CGOneEuro(minCutoff: 2.0, beta: 0.12)
+    var noseX     = CGOneEuro(minCutoff: 2.2, beta: 0.04)
+    var noseY     = CGOneEuro(minCutoff: 2.2, beta: 0.04)
+    var mouthMidX = CGOneEuro(minCutoff: 2.2, beta: 0.04)
+    var mouthMidY = CGOneEuro(minCutoff: 2.2, beta: 0.04)
+    var mouthOpen = CGOneEuro(minCutoff: 3.2, beta: 0.22)
+    var smile     = CGOneEuro(minCutoff: 2.0, beta: 0.10)
+    var earWobble = CGSpring()
 }
 
 // MARK: - Detector
@@ -899,10 +883,10 @@ enum ClipFaceRenderer {
                     let sp = UIBezierPath()
                     let r = p.r
                     sp.move(to: CGPoint(x: 0, y: -r))
-                    sp.addQuadCurve(to: CGPoint(x: r, y: 0), control: CGPoint(x: r * 0.2, y: -r * 0.2))
-                    sp.addQuadCurve(to: CGPoint(x: 0, y: r), control: CGPoint(x: r * 0.2, y: r * 0.2))
-                    sp.addQuadCurve(to: CGPoint(x: -r, y: 0), control: CGPoint(x: -r * 0.2, y: r * 0.2))
-                    sp.addQuadCurve(to: CGPoint(x: 0, y: -r), control: CGPoint(x: -r * 0.2, y: -r * 0.2))
+                    sp.addQuadCurve(to: CGPoint(x: r, y: 0), controlPoint: CGPoint(x: r * 0.2, y: -r * 0.2))
+                    sp.addQuadCurve(to: CGPoint(x: 0, y: r), controlPoint: CGPoint(x: r * 0.2, y: r * 0.2))
+                    sp.addQuadCurve(to: CGPoint(x: -r, y: 0), controlPoint: CGPoint(x: -r * 0.2, y: r * 0.2))
+                    sp.addQuadCurve(to: CGPoint(x: 0, y: -r), controlPoint: CGPoint(x: -r * 0.2, y: -r * 0.2))
                     sp.close()
                     c.addPath(sp.cgPath)
                     c.fillPath()
@@ -985,9 +969,9 @@ enum ClipFaceRenderer {
                     let sp = UIBezierPath()
                     sp.move(to: CGPoint(x: startX, y: startY))
                     sp.addQuadCurve(to: CGPoint(x: endX, y: endY),
-                                    control: CGPoint(x: (startX + endX) / 2, y: (startY + endY) / 2 + 8))
+                                    controlPoint: CGPoint(x: (startX + endX) / 2, y: (startY + endY) / 2 + 8))
                     sp.addQuadCurve(to: CGPoint(x: startX, y: startY + thickness),
-                                    control: CGPoint(x: (startX + endX) / 2, y: (startY + endY) / 2 + 12))
+                                    controlPoint: CGPoint(x: (startX + endX) / 2, y: (startY + endY) / 2 + 12))
                     sp.close()
                     c.addPath(sp.cgPath)
                     c.fillPath()
@@ -1395,7 +1379,7 @@ enum ClipFaceRenderer {
         let cone = UIBezierPath()
         cone.move(to: CGPoint(x: w * 0.50, y: h * 0.12)) // apex
         cone.addLine(to: CGPoint(x: w * 0.22, y: h * 0.78))
-        cone.addQuadCurve(to: CGPoint(x: w * 0.78, y: h * 0.78), control: CGPoint(x: w * 0.50, y: h * 0.86))
+        cone.addQuadCurve(to: CGPoint(x: w * 0.78, y: h * 0.78), controlPoint: CGPoint(x: w * 0.50, y: h * 0.86))
         cone.close()
 
         c.setFillColor(colors.outer.cgColor) // Festive gold
@@ -1429,7 +1413,7 @@ enum ClipFaceRenderer {
         // Hat brim trim
         let brim = UIBezierPath()
         brim.move(to: CGPoint(x: w * 0.20, y: h * 0.78))
-        brim.addQuadCurve(to: CGPoint(x: w * 0.80, y: h * 0.78), control: CGPoint(x: w * 0.50, y: h * 0.88))
+        brim.addQuadCurve(to: CGPoint(x: w * 0.80, y: h * 0.78), controlPoint: CGPoint(x: w * 0.50, y: h * 0.88))
         c.setStrokeColor(UIColor.white.withAlphaComponent(0.95).cgColor)
         c.setLineWidth(14.0)
         c.setLineCap(.round)
