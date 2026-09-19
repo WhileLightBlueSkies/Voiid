@@ -53,6 +53,19 @@ struct ContentView: View {
             }
         }
         .environmentObject(social)
+        // LOADED ONCE, AT THE ROOT, for the same reason the engine lives here.
+        //
+        // `ensureMeLoaded()` was called only from ClipsFeedView, so `social.me` stayed nil
+        // until somebody opened the Clips tab. Every surface that reads it — the profile
+        // button now in the Games and Communities headers — therefore rendered nothing on a
+        // fresh launch, and looked broken rather than empty.
+        //
+        // Guarded by the route: there is no profile to fetch during onboarding, and asking
+        // for one before a session exists is a 401 the engine would log for no reason.
+        .task(id: session.route) {
+            guard session.route == .main else { return }
+            await social.ensureMeLoaded()
+        }
         // MOUNTED ONCE, at the root. Any surface that hits `profile_required` sets
         // `social.showSetup`, and the sheet appears over whatever the person was doing —
         // rather than each screen carrying its own copy that only works where it was added.
