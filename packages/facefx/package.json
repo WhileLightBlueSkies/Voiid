@@ -1,0 +1,12 @@
+{
+  "name": "@voiid/facefx",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared face-filter definitions: canonical face model, manifests, LUTs and the pack builder. Single source of truth for iOS and Android.",
+  "scripts": {
+    "validate": "node build/validate.mjs",
+    "pack": "node build/pack.mjs",
+    "test": "node build/validate.mjs && node build/test-validate.mjs"
+  }
+}

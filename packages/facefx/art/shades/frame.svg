@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Sunglasses front. Authored at 4x the on-device size so the atlas can be
+     rasterised for any tier without re-authoring. Origin is the CENTRE of the
+     sprite; the manifest anchors that centre to the nose bridge. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="320" viewBox="0 0 1024 320">
+  <defs>
+    <linearGradient id="lens" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0"    stop-color="#1b2534" stop-opacity="0.92"/>
+      <stop offset="0.55" stop-color="#0d1420" stop-opacity="0.96"/>
+      <stop offset="1"    stop-color="#05080e" stop-opacity="0.99"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#3a3f4a"/>
+      <stop offset="0.4" stop-color="#16191f"/>
+      <stop offset="1"   stop-color="#0a0c10"/>
+    </linearGradient>
+    <linearGradient id="spec" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0"    stop-color="#ffffff" stop-opacity="0.00"/>
+      <stop offset="0.42" stop-color="#cfe6ff" stop-opacity="0.34"/>
+      <stop offset="0.52" stop-color="#ffffff" stop-opacity="0.52"/>
+      <stop offset="0.62" stop-color="#cfe6ff" stop-opacity="0.20"/>
+      <stop offset="1"    stop-color="#ffffff" stop-opacity="0.00"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#9aa6b8" stop-opacity="0.85"/>
+      <stop offset="0.25" stop-color="#5c6472" stop-opacity="0.30"/>
+      <stop offset="1"    stop-color="#ffffff" stop-opacity="0.10"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-40%" width="140%" height="180%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+  </defs>
+
+  <!-- bridge -->
+  <path d="M430 118 Q512 92 594 118 L594 150 Q512 124 430 150 Z" fill="url(#frame)"/>
+
+  <g>
+    <!-- LEFT lens -->
+    <rect x="52"  y="72" width="368" height="188" rx="66" fill="url(#frame)"/>
+    <rect x="68"  y="86" width="336" height="160" rx="56" fill="url(#lens)"/>
+    <rect x="68"  y="86" width="336" height="160" rx="56" fill="url(#spec)"/>
+    <path d="M96 200 Q150 120 260 104" stroke="#ffffff" stroke-opacity="0.16"
+          stroke-width="9" fill="none" stroke-linecap="round" filter="url(#soft)"/>
+    <rect x="68"  y="86" width="336" height="160" rx="56" fill="none"
+          stroke="url(#rim)" stroke-width="3"/>
+
+    <!-- RIGHT lens -->
+    <rect x="604" y="72" width="368" height="188" rx="66" fill="url(#frame)"/>
+    <rect x="620" y="86" width="336" height="160" rx="56" fill="url(#lens)"/>
+    <rect x="620" y="86" width="336" height="160" rx="56" fill="url(#spec)"/>
+    <path d="M648 200 Q702 120 812 104" stroke="#ffffff" stroke-opacity="0.16"
+          stroke-width="9" fill="none" stroke-linecap="round" filter="url(#soft)"/>
+    <rect x="620" y="86" width="336" height="160" rx="56" fill="none"
+          stroke="url(#rim)" stroke-width="3"/>
+  </g>
+
+  <!-- top brow bar: the detail that reads as "real frame" rather than "two ovals" -->
+  <path d="M60 104 Q170 64 412 78 L412 96 Q170 84 66 122 Z" fill="#20242c" opacity="0.95"/>
+  <path d="M964 104 Q854 64 612 78 L612 96 Q854 84 958 122 Z" fill="#20242c" opacity="0.95"/>
+  <path d="M60 104 Q170 64 412 78" stroke="#8791a1" stroke-opacity="0.5" stroke-width="2.5" fill="none"/>
+  <path d="M964 104 Q854 64 612 78" stroke="#8791a1" stroke-opacity="0.5" stroke-width="2.5" fill="none"/>
+</svg>

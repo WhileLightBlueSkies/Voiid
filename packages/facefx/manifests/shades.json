@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "id": "shades",
+  "version": 1,
+  "name": "Shades",
+  "tier": 3,
+  "bundled": true,
+
+  "passes": ["occluder", "props"],
+
+  "layers": [
+    {
+      "id": "armLeft",
+      "type": "quad",
+      "sprite": "arm",
+      "anchor": { "indices": [127, 234, 33], "weights": [0.6, 0.2, 0.2] },
+      "offsetCm": [-0.35, 0.55, 0.9],
+      "sizeCm": [9.6, 1.8],
+      "rotationDeg": [0, 90, -3],
+      "billboard": "none",
+      "depthTest": true,
+      "depthWrite": true,
+      "order": 10
+    },
+    {
+      "id": "armRight",
+      "type": "quad",
+      "sprite": "arm",
+      "anchor": { "indices": [356, 454, 263], "weights": [0.6, 0.2, 0.2] },
+      "offsetCm": [0.35, 0.55, 0.9],
+      "sizeCm": [9.6, 1.8],
+      "rotationDeg": [0, -90, 3],
+      "billboard": "none",
+      "depthTest": true,
+      "depthWrite": true,
+      "order": 11
+    },
+    {
+      "id": "frame",
+      "type": "quad",
+      "sprite": "frame",
+      "anchor": { "indices": [168, 33, 263], "weights": [0.4, 0.3, 0.3] },
+      "offsetCm": [0.0, -0.15, 1.35],
+      "sizeCm": [14.6, 4.56],
+      "rotationDeg": [0, 0, 0],
+      "billboard": "none",
+      "depthTest": true,
+      "depthWrite": true,
+      "order": 20
+    }
+  ]
+}

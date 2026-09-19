@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Temple arm, drawn pointing +X (forward). The manifest rotates it into the
+     YZ plane so it runs backwards past the ear, where the occluder hides it. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="96" viewBox="0 0 512 96">
+  <defs>
+    <linearGradient id="armG" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#434955"/>
+      <stop offset="0.35" stop-color="#1a1e25"/>
+      <stop offset="1"    stop-color="#0a0c10"/>
+    </linearGradient>
+  </defs>
+  <path d="M8 30 L470 22 Q500 22 502 40 L502 52 Q500 70 470 70 L8 62 Z" fill="url(#armG)"/>
+  <path d="M8 34 L468 26" stroke="#9aa6b8" stroke-opacity="0.42" stroke-width="3" fill="none"/>
+  <circle cx="30" cy="46" r="9" fill="#5b6473"/>
+</svg>
