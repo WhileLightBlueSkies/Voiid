@@ -22,6 +22,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -45,6 +46,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.GifDecoder
@@ -59,13 +61,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * GIF search, backed by our own /gifs proxy in front of Tenor. Mirrors iOS `GifPickerSheet`.
+ * GIF search, backed by our own /gifs proxy in front of GIPHY. Mirrors iOS `GifPickerSheet`.
  *
  * THE PRIVACY SHAPE, which is why this is not a two-line SDK drop-in:
  *  - Search goes through OUR backend, so the API key never ships in the APK and users'
  *    searches don't reach Google carrying their IP.
  *  - Picking a GIF DOWNLOADS it here, then hands the bytes to the normal `sendMedia` path —
- *    encrypted on-device, ciphertext to R2. The recipient never touches Tenor at all.
+ *    encrypted on-device, ciphertext to R2. The recipient never touches GIPHY at all.
  *
  * That second point matters most. Every other messenger sends a provider URL and lets each
  * recipient fetch it, which tells a third party who received what and when, and breaks the GIF
@@ -135,7 +137,7 @@ fun GifPickerSheet(
                         onValueChange = { q ->
                             query = q
                             // Debounced: a fast typist should produce one request per pause,
-                            // not one per keystroke — each call costs us Tenor quota.
+                            // not one per keystroke — each call costs us GIPHY quota.
                             searchJob?.cancel()
                             searchJob = scope.launch {
                                 delay(300)
@@ -162,8 +164,12 @@ fun GifPickerSheet(
 
             Spacer(Modifier.height(12.dp))
 
+            // `weight(1f)` rather than `fillMaxSize()`: the results take the space that is
+            // left AFTER the required attribution below, instead of taking all of it and
+            // pushing the mark off the bottom of the sheet.
+            Box(Modifier.weight(1f)) {
             when {
-                // A build with no TENOR_API_KEY says so, rather than spinning forever.
+                // A build with no GIPHY_API_KEY says so, rather than spinning forever.
                 !configured -> Column(
                     Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.Center,
@@ -200,7 +206,7 @@ fun GifPickerSheet(
                                     downloading = gif.id
                                     scope.launch {
                                         // Downloaded HERE and handed over as BYTES, never as a
-                                        // URL — the recipient's device must never contact Tenor.
+                                        // URL — the recipient's device must never contact GIPHY.
                                         GifService(context).download(gif.url)?.let {
                                             onPick(it)
                                             onDismiss()
@@ -226,6 +232,32 @@ fun GifPickerSheet(
                             }
                         }
                     }
+                }
+            }
+            }
+
+            // REQUIRED, not decorative. GIPHY's API terms oblige us to show a "Powered By
+            // GIPHY" mark wherever the API is used, so it is pinned outside the grid and
+            // stays visible in the empty and no-results states too.
+            if (configured) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.Bolt,
+                        null,
+                        tint = VoiidColor.textSecondary,
+                        modifier = Modifier.size(11.dp),
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        "POWERED BY GIPHY",
+                        style = VoiidFont.rounded(10, FontWeight.Bold),
+                        color = VoiidColor.textSecondary,
+                        letterSpacing = 0.6.sp,
+                    )
                 }
             }
         }
