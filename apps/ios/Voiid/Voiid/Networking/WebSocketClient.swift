@@ -255,11 +255,12 @@ final class WebSocketClient {
         connect()
     }
 
-    func sendTyping(conversationId: String, recipientIds: [String], isStart: Bool) {
-        let frame: [String: Any] = [
+    func sendTyping(conversationId: String, recipientIds: [String]?, isStart: Bool) {
+        var frame: [String: Any] = [
             "type": "typing", "conversation_id": conversationId,
-            "recipient_ids": recipientIds, "state": isStart ? "start" : "stop",
+            "state": isStart ? "start" : "stop",
         ]
+        if let recipientIds { frame["recipient_ids"] = recipientIds }
         sendJSON(frame)
     }
 

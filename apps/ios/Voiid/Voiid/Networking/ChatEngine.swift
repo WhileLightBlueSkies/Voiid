@@ -215,13 +215,6 @@ final class ChatEngine {
         // hang that task forever, and the work it was waiting to do is now meaningless.
         for (_, waiters) in syncWaiters { for w in waiters { w.resume() } }
         syncWaiters.removeAll()
-        // `readReported` is STATIC, and this process does not restart on sign-out (see the
-        // doc above). Leaving it populated means every id in it is permanently
-        // un-reportable for the life of the process: sign out, sign back in, and the next
-        // account's reads for those same server ids are silently swallowed by the dedup
-        // filter in `markRead`. Same for a restore-from-backup that re-ingests known ids.
-        Self.readReported.removeAll()
-        Self.pendingReadReceipts.removeAll()
     }
 
     /// Acquire the per-conversation lock (hand-off: a waiter is woken WITH the lock
@@ -1214,6 +1207,8 @@ final class ChatEngine {
     }
 
     private func markReceipts(_ messageIds: [String], status: String) async {
+        // Read disclosure must only use the bounded conversation queue below.
+        guard status == "delivered" else { return }
         guard !messageIds.isEmpty else { return }
         for start in stride(from: 0, to: messageIds.count, by: 500) {
             let ids = Array(messageIds[start..<min(start + 500, messageIds.count)])
@@ -1226,60 +1221,19 @@ final class ChatEngine {
                 let status: String
                 let device_id: String?
             }
-            // DETACHED, not awaited on the caller's task. `markRead` is called from the chat
-            // screen's 4-second polling Task, which is cancelled the moment the user navigates
-            // away — that cancellation propagated into this request and killed it mid-flight.
-            // The catch then released the ids, but nothing retried them, because the thing that
-            // would have retried was the task that just died. Opening a chat and backing out
-            // promptly meant the read receipt was never delivered at all.
-            //
-            // A detached task outlives the screen, so a receipt that has STARTED will finish.
+            // Delivery acknowledgements outlive the screen's polling task.
             let body = Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
             let api = self.api
             Task.detached {
             do {
                 _ = try await api.request("POST", "receipts/mark", body: body) as EmptyResponse
             } catch {
-                // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
-                // dropped request would otherwise strand it forever — the sender stuck on
-                // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
-                // never re-marking is unrecoverable.
-                if status == "read" {
-                    await MainActor.run {
-                        Self.readReported.subtract(ids)
-                        // AND QUEUE THEM FOR RETRY. Releasing the ids only helps if something
-                        // calls `markRead` again — and the only caller is gated on the chat
-                        // being open. A user who reads a message, loses signal for a moment and
-                        // then leaves the chat had their receipt dropped with nothing to
-                        // re-send it, so the sender sat on Delivered until they happened to
-                        // re-open that conversation. `flushPendingReceipts` drains this.
-                        Self.pendingReadReceipts.formUnion(ids)
-                    }
-                }
                 NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
             }
             }
         }
     }
 
-    /// Mark all locally-stored inbound messages in a conversation as read. The
-    /// server fans out a `receipt` WS event to the original senders (blue ticks).
-    /// Server ids this device has already reported as READ.
-    private static var readReported: Set<String> = []
-
-    /// Read receipts whose POST failed, waiting for a retry.
-    ///
-    /// Separate from `readReported` because they answer different questions: that one is
-    /// "have we already told the server", this one is "did we try and fail". An id lives in
-    /// exactly one of them at a time.
-    private static var pendingReadReceipts: Set<String> = []
-
-    /// Re-send read receipts that failed earlier. Safe to call often — a no-op when the
-    /// queue is empty, and the server upsert is idempotent besides.
-    ///
-    /// Called on websocket reconnect and app foreground, which are the two moments
-    /// connectivity typically comes back. Without a caller like this the retry queue is
-    /// just a slower way of losing the receipt.
     private var maySendReadReceipts: Bool {
         #if NSE_EXTENSION
         return false
@@ -1294,9 +1248,14 @@ final class ChatEngine {
 
     /// Persist before starting HTTP, so leaving the screen or restarting cannot lose it.
     func queueConversationRead(_ id: String) {
-        guard TokenStore.shared.userId != nil else { return }
+        guard TokenStore.shared.userId != nil, UIApplication.shared.applicationState == .active else { return }
         let now = Date().timeIntervalSince1970
         var pending = UserDefaults.standard.dictionary(forKey: readQueueKey) ?? [:]
+        if let prior = pending[id] as? [String: Any], prior["disclose"] as? Bool == false,
+           let through = prior["through"] as? Double {
+            PrivacySettings.shared.rememberPrivateRead(id, through: through)
+        }
+        if !maySendReadReceipts { PrivacySettings.shared.rememberPrivateRead(id, through: now) }
         pending[id] = ["through": now, "disclose": maySendReadReceipts]
         UserDefaults.standard.set(pending, forKey: readQueueKey)
         LocalStore.rememberReadPosition(id, through: now)
@@ -1311,16 +1270,21 @@ final class ChatEngine {
         let pending = UserDefaults.standard.dictionary(forKey: key) ?? [:]
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        struct Body: Encodable { let device_id: String; let read_before: String; let send_receipts: Bool }
+        struct Body: Encodable { let device_id: String; let read_before: String; let read_after: String?; let send_receipts: Bool }
         for (id, raw) in pending {
             guard TokenStore.shared.userId == account,
-                  let intent = raw as? [String: Any], let through = intent["through"] as? Double else { continue }
+                  let intent = (UserDefaults.standard.dictionary(forKey: key)?[id] ?? raw) as? [String: Any], let through = intent["through"] as? Double else { continue }
             let disclose = (intent["disclose"] as? Bool ?? false) && maySendReadReceipts
+            if !disclose { PrivacySettings.shared.rememberPrivateRead(id, through: through) }
+            let after = PrivacySettings.shared.privateReadPosition(id).map {
+                // Round the private boundary up, so sub-millisecond timestamps cannot leak.
+                formatter.string(from: Date(timeIntervalSince1970: ceil($0 * 1000) / 1000))
+            }
             do {
                 _ = try await api.request("POST", "receipts/conversation/\(id)/read",
                     body: Body(device_id: device,
                         read_before: formatter.string(from: Date(timeIntervalSince1970: through)),
-                        send_receipts: disclose), as: EmptyResponse.self)
+                        read_after: after, send_receipts: disclose), as: EmptyResponse.self)
                 var latest = UserDefaults.standard.dictionary(forKey: key) ?? [:]
                 if (latest[id] as? [String: Any])?["through"] as? Double == through {
                     latest.removeValue(forKey: id)
@@ -1338,40 +1302,18 @@ final class ChatEngine {
         Task { await LocalStore.recoverMissedCalls() }
         await flushConversationReads()
         #endif
-        guard maySendReadReceipts else { return }
-        let ids = Array(Self.pendingReadReceipts)
-        guard !ids.isEmpty else { return }
-        Self.pendingReadReceipts.removeAll()
-        // Re-mark as reported before sending, exactly as markRead does; markReceipts puts
-        // them back in the pending set if this attempt fails too.
-        Self.readReported.formUnion(ids)
-        await markReceipts(ids, status: "read")
     }
 
-    /// Mark inbound messages READ. See the Android twin for the full rationale.
-    ///
-    /// ONLY EVER CALL THIS FOR A CHAT THE USER IS LOOKING AT — it used to run from every
-    /// `syncMessages`, including the one a background push fires, so a message was marked
-    /// read the instant it arrived in a chat the user had never opened.
-    ///
-    /// Control envelopes and undecryptable tombstones are excluded (neither was ever READ by
-    /// a human), and each id is reported ONCE rather than resending the whole conversation on
-    /// every sync.
+    /// Capture only foreground viewing. The persistent conversation queue owns read
+    /// disclosure; sending a second ID-based receipt would bypass its private boundary.
     private struct EmptyBody: Encodable {}
 
     func markRead(conversationId: String) async {
         #if !NSE_EXTENSION
+        guard UIApplication.shared.applicationState == .active else { return }
         queueConversationRead(conversationId)
-        Task { await flushConversationReads() }
+        await flushConversationReads()
         #endif
-        guard maySendReadReceipts else { return }
-        ensureLoaded()
-        let ids = (store[conversationId] ?? [])
-            .filter { !$0.resolvingOwnership(for: TokenStore.shared.userId).isMine && $0.control != true && !$0.failed }
-            .map { $0.id }
-            .filter { Self.readReported.insert($0).inserted }
-        guard !ids.isEmpty else { return }
-        await markReceipts(ids, status: "read")
     }
 
     /// Decrypt a single inbound message and advance the session. Caller persists.

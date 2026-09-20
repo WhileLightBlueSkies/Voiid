@@ -28,6 +28,17 @@ final class ProfileService {
     private let api = APIClient()
     private init() {}
 
+    func privacySettings(userID: String) async throws -> PrivacySettings.Snapshot {
+        struct Envelope: Decodable { let user: PrivacySettings.Snapshot }
+        let envelope: Envelope = try await api.request("GET", "users/\(userID)")
+        return envelope.user
+    }
+
+    func updatePrivacy(field: PrivacySettings.Field, value: PrivacySettings.Visibility) async throws {
+        let _: ProfileEnvelope = try await api.request(
+            "POST", "users/profile/update", body: [field.rawValue: value.rawValue])
+    }
+
     /// Live availability check for a candidate username (Clips handle).
     func checkUsername(_ username: String) async throws -> UsernameAvailability {
         let q = username.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? username
@@ -72,9 +83,14 @@ final class ProfileService {
     @discardableResult
     func updateStatus(_ status: AvailabilityStatus?) async throws -> ProfileUser {
         struct Body: Encodable {
-            // Explicitly `String?` and always encoded — `Encodable` writes a JSON null for a
-            // nil optional property, which is exactly the "clear it" signal the route wants.
             let status_text: String?
+            enum CodingKeys: String, CodingKey { case status_text }
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                // Synthesized Encodable omits nil optionals; clearing requires JSON null.
+                try container.encode(status_text, forKey: .status_text)
+            }
         }
         let env: ProfileEnvelope = try await api.request(
             "POST", "users/profile/update", body: Body(status_text: status?.rawValue))

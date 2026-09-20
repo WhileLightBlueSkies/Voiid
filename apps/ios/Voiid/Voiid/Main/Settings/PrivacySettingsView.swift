@@ -6,6 +6,7 @@ struct PrivacySettingsView: View {
 
     /// Status and its last-seen audience stay together on Profile & presence.
     @EnvironmentObject private var session: AppSession
+    @Environment(\.scenePhase) private var scenePhase
 
     @ObservedObject private var settings = PrivacySettings.shared
     /// Blocking (043). Drives the count beside the Blocked contacts row.
@@ -51,6 +52,11 @@ struct PrivacySettingsView: View {
                     privacyPage("Profile & presence") {
                         visibilitySection
                         statusSection
+                        onlineSection
+                    }
+                    .task(id: scenePhase) {
+                        guard scenePhase == .active else { return }
+                        await settings.refreshVisibility()
                     }
                 }
                 VoiidRowDivider()
@@ -58,7 +64,6 @@ struct PrivacySettingsView: View {
                             detail: "Read receipts and typing indicators") {
                     privacyPage("Messages") {
                         receiptsSection
-                        onlineSection
                     }
                 }
                 VoiidRowDivider()
@@ -183,41 +188,69 @@ struct PrivacySettingsView: View {
     }
 
     private var visibilitySection: some View {
-        VoiidCardSection(
-            "Who can see my info",
-            footer: """
-                “My Contacts” means people you’ve saved. Your status follows your last-seen setting.
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            VoiidCardSection(
+                "Who can see my info",
+                footer: """
+                    “My Contacts” means people you’ve saved. Online visibility and your availability status follow your last-seen setting.
 
-                Your profile photo isn’t end-to-end encrypted. It’s stored on Voiid’s servers and shown only to the audience you choose.
-                """
-        ) {
-            VoiidSettingsRow(icon: "eye.trianglebadge.exclamationmark",
-                             title: "Last seen & online") {
-                Picker("Last seen & online", selection: $settings.lastSeenVisibility) {
-                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                    Your profile photo isn’t end-to-end encrypted. It’s shown only to the audience you choose.
+                    """
+            ) {
+                if settings.hasLoadedVisibility {
+                    visibilityRow("Last seen & online", icon: "eye.trianglebadge.exclamationmark", field: .lastSeen)
+                    VoiidRowDivider()
+                    visibilityRow("Profile photo", icon: "person.crop.circle", field: .photo)
+                    VoiidRowDivider()
+                    visibilityRow("About", icon: "text.quote", field: .about)
+                } else {
+                    HStack(spacing: 10) {
+                        if settings.isLoading { ProgressView() }
+                        Text(settings.isLoading ? "Loading saved settings…" : "Privacy settings unavailable")
+                            .font(.body)
+                            .foregroundStyle(VoiidColor.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(VoiidSpacing.md)
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .tint(VoiidColor.textSecondary)
             }
-            VoiidRowDivider()
-            VoiidSettingsRow(icon: "person.crop.circle", title: "Profile photo") {
-                Picker("Profile photo", selection: $settings.photoVisibility) {
-                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+            .disabled(!settings.canEditVisibility)
+
+            if settings.isSaving || (settings.isLoading && settings.hasLoadedVisibility) {
+                ProgressView(settings.isSaving ? "Saving privacy settings…" : "Refreshing privacy settings…")
+                    .font(.footnote)
+                    .tint(VoiidColor.accent)
+                    .padding(.horizontal, 4)
+            }
+            if let error = settings.syncError {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(VoiidColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Refresh settings") {
+                        Task { await settings.refreshVisibility() }
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .frame(minHeight: 44)
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .tint(VoiidColor.textSecondary)
+                .padding(.horizontal, 4)
             }
-            VoiidRowDivider()
-            VoiidSettingsRow(icon: "text.quote", title: "About") {
-                Picker("About", selection: $settings.aboutVisibility) {
-                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .tint(VoiidColor.textSecondary)
+        }
+    }
+
+    private func visibilityRow(_ title: String, icon: String,
+                               field: PrivacySettings.Field) -> some View {
+        VoiidSettingsRow(icon: icon, title: title) {
+            Picker(title, selection: Binding(
+                get: { settings.snapshot?[field] ?? .everyone },
+                set: { value in Task { await settings.setVisibility(value, for: field) } }
+            )) {
+                ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .tint(VoiidColor.textSecondary)
         }
     }
 
@@ -250,7 +283,7 @@ struct PrivacySettingsView: View {
         VoiidCardSection(
             "Online status",
             footer: """
-                Only changes what you see in chats on this device. To control who sees your activity, go to Profile & presence.
+                Only changes what you see in chats on this device. To control who sees your activity, use Last seen & online above.
                 """
         ) {
             VoiidSettingsRow(icon: "circle.fill", title: "Show contacts’ activity") {

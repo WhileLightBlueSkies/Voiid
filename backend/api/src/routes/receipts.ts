@@ -122,7 +122,13 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
   if (!UUID_RE.test(conversationId)) return res.status(403).json({ error: 'forbidden' });
 
   const readBefore = req.body?.read_before;
+  // Disclosure has a separate lower bound: clearing unread counts while private
+  // must not make those historical messages eligible when receipts are enabled again.
+  const readAfter = req.body?.read_after;
   const disclose = req.body?.send_receipts !== false;
+  if (readAfter !== undefined && (typeof readAfter !== 'string' || !Number.isFinite(Date.parse(readAfter)))) {
+    return res.status(400).json({ error: 'invalid read_after' });
+  }
   if (readBefore !== undefined && (typeof readBefore !== 'string' || !Number.isFinite(Date.parse(readBefore)))) {
     return res.status(400).json({ error: 'invalid read_before' });
   }
@@ -181,6 +187,7 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
            select m.id, m.sender_id from messages m
             where m.conversation_id = $1 and m.sender_id <> $2
               and m.created_at <= $5::timestamptz
+              and ($6::timestamptz is null or m.created_at > $6::timestamptz)
               and not exists (
                 select 1 from message_read_receipts r
                  where r.message_id = m.id and r.user_id = $2 and r.status = 'read')
@@ -197,7 +204,7 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
            returning message_id
          )
          select ins.message_id, due.sender_id from ins join due on due.id = ins.message_id`,
-        [conversationId, user_id, deviceId, BATCH, position.read_before],
+        [conversationId, user_id, deviceId, BATCH, position.read_before, readAfter ?? null],
       );
       changed.push(...batch);
 
@@ -220,12 +227,13 @@ router.post('/conversation/:id/read', requireAuth, asyncHandler(async (req, res)
            select 1 from messages m
             where m.conversation_id = $1 and m.sender_id <> $2
               and m.created_at <= $4::timestamptz
+              and ($5::timestamptz is null or m.created_at > $5::timestamptz)
               and not exists (
                 select 1 from message_read_receipts r
                  where r.message_id = m.id and r.user_id = $2 and r.status = 'read')
             limit $3
          ) t`,
-        [conversationId, user_id, BATCH, position.read_before],
+        [conversationId, user_id, BATCH, position.read_before, readAfter ?? null],
       );
       if (Number(remaining) === 0) break;
       if (pass === MAX_PASSES - 1) throw new Error('conversation read sweep limit reached');

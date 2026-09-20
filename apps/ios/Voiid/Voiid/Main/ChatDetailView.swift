@@ -26,6 +26,7 @@ struct ChatDetailView: View {
     /// sheet re-renders the presence line immediately instead of on the next open.
     @ObservedObject private var privacy = PrivacySettings.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var draft = ""
     @State private var transcriptNearBottom = true
@@ -69,11 +70,9 @@ struct ChatDetailView: View {
     @State private var showBulkDelete = false
     @State private var forwardBulk = false
     @State private var activeCall: CallRequest?
-    /// Set by ContactProfileView's Call / Video buttons. Placed once that screen has popped —
-    /// starting a call while a navigation transition is in flight drops the CallKit UI.
-    /// Re-sends "typing start" every 5s so the peer's 8s expiry never cuts off a slow
-    /// typist. Cancelled on stop and on disappear.
-    @State private var typingHeartbeat: Task<Void, Error>?
+    @State private var typingIdleTask: Task<Void, Never>?
+    @State private var typingActivity = TypingActivity()
+    /// Place profile-originated calls once the navigation transition finishes.
     @State private var pendingCall: CallKind?
     /// REAL group members (from the server), used for @mentions and group-call member tiles.
     /// Empty for 1:1 chats. Loaded on appear — never DummyData.
@@ -125,7 +124,8 @@ struct ChatDetailView: View {
                         role: m.role, statusText: nil, isYou: m.userId == myId)
             }
         }
-        .task(id: conversation.id) {
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
             // Poll the conversation while it's open — fetch+decrypt new messages, send
             // receipts, refresh presence — so delivery doesn't depend on the WS push
             // (which can be silently dropped). Every 4s.
@@ -143,16 +143,15 @@ struct ChatDetailView: View {
             // bar) the footer would flash back on over the profile. The bar is instead
             // restored solely by each ROOT tab's onAppear (hideTabBar = false), so returning
             // to Chats/Clips/etc. shows it and every detail screen keeps it hidden.
-            // Settings → Privacy → "Send typing indicators". With it off we never sent a
-            // start frame, so there is nothing to stop.
-            // Kill the heartbeat FIRST: a refresh firing after the stop would resurrect the
-            // indicator on the peer with no one left to clear it.
-            typingHeartbeat?.cancel()
-            typingHeartbeat = nil
-            if privacy.sendTypingIndicators, let peer = livePeerUserId {
-                WebSocketClient.shared.sendTyping(conversationId: conversation.id, recipientIds: [peer], isStart: false)
-            }
+            stopTyping()
         }
+        .onChange(of: privacy.sendTypingIndicators) { _, enabled in
+            if !enabled { stopTyping() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { stopTyping() }
+        }
+
         // The profile screen asks for a call by setting `pendingCall`; it is placed once the
         // push has finished unwinding, so ChatDetailView remains the single owner of call
         // setup rather than duplicating peer resolution and the group-call lock.
@@ -188,7 +187,7 @@ struct ChatDetailView: View {
         .sheet(isPresented: $showGifPicker) {
             GifPickerSheet { data in
                 // A GIF is ORDINARY E2EE MEDIA once it reaches here — same encrypt-and-upload
-                // path as a photo. The recipient never contacts Tenor, so no third party
+                // path as a photo. The recipient never contacts GIPHY, so no third party
                 // learns who received what, and the GIF survives the provider deleting it.
                 chat.sendMedia(data, mime: "image/gif", to: conversation.id)
             }
@@ -565,7 +564,7 @@ struct ChatDetailView: View {
         let live = chat.directConversations.first(where: { $0.id == conversation.id })
         if live?.isOnline == true { return "Online" }
         if let seen = live?.lastSeenAt { return "last seen \(VoiidDate.relative(seen))" }
-        return "last seen recently"
+        return nil
     }
 
     // MARK: message list with date separators + auto-scroll
@@ -1143,37 +1142,35 @@ struct ChatDetailView: View {
             // screenshot. Now the pill grows with the text and the buttons sit beside it,
             // fixed, exactly as they do when the field is one line.
 
-            // KEYED ON THE BOOLEAN, not on `draft`.
-            //
-            // `onChange(of: draft)` fired on EVERY KEYSTROKE, and each one serialised a frame
-            // and wrote it to the socket. Typing a normal sentence pushed ~40 redundant
-            // "state":"start" frames — identical to the first — which is what made the field
-            // stutter under fast input. The peer only ever needed the transition.
-            //
-            // Android keys on `draft.isNotEmpty()` for this reason; this now matches.
-            .onChange(of: !draft.isEmpty) { _, isTyping in
-                // Settings → Privacy → "Send typing indicators".
-                guard privacy.sendTypingIndicators, let peer = livePeerUserId else { return }
-                WebSocketClient.shared.sendTyping(conversationId: conversation.id,
-                                                  recipientIds: [peer],
-                                                  isStart: isTyping)
-                // While still typing, REFRESH every 5s. The receiver expires a stale
-                // indicator after 8s (a "stop" is not guaranteed to arrive), so without a
-                // heartbeat a slow typist's indicator would vanish mid-sentence.
-                typingHeartbeat?.cancel()
-                guard isTyping else { typingHeartbeat = nil; return }
-                typingHeartbeat = Task { @MainActor in
-                    // Exits by CANCELLATION — the next onChange (or onDisappear) cancels it.
-                    // `try await` rather than `try?`: a cancelled sleep must break the loop,
-                    // and swallowing that error would spin it at full speed instead.
-                    while true {
-                        try await Task.sleep(nanoseconds: 5_000_000_000)
-                        guard !draft.isEmpty, privacy.sendTypingIndicators else { return }
-                        WebSocketClient.shared.sendTyping(conversationId: conversation.id,
-                                                          recipientIds: [peer], isStart: true)
-                    }
+            .onChange(of: draft) { _, text in
+                let now = ProcessInfo.processInfo.systemUptime
+                let allowed = privacy.sendTypingIndicators && scenePhase == .active
+                    && chat.openConversationId == conversation.id
+                emitTyping(typingActivity.edited(at: now, allowed: allowed,
+                                                hasText: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                typingIdleTask?.cancel()
+                guard typingActivity.active else { typingIdleTask = nil; return }
+                typingIdleTask = Task { @MainActor in
+                    do { try await Task.sleep(nanoseconds: 3_000_000_000) }
+                    catch { return }
+                    emitTyping(typingActivity.expire(at: ProcessInfo.processInfo.systemUptime))
                 }
             }
+    }
+
+    private func emitTyping(_ state: Bool?) {
+        guard let state else { return }
+        if state && (!privacy.sendTypingIndicators || UIApplication.shared.applicationState != .active) { return }
+        // The server derives current group membership; direct chats narrow to their peer.
+        let recipients: [String]? = conversation.type == .group ? nil : livePeerUserId.map { [$0] }
+        WebSocketClient.shared.sendTyping(conversationId: conversation.id,
+                                          recipientIds: recipients, isStart: state)
+    }
+
+    private func stopTyping() {
+        typingIdleTask?.cancel()
+        typingIdleTask = nil
+        emitTyping(typingActivity.stop())
     }
 
     private var sendButton: some View {
@@ -2141,7 +2138,11 @@ struct BubbleShape: Shape {
 
     func image(_ k: String) -> UIImage? {
         if let img = images[k] { return img }
-        guard let d = data(k), let img = UIImage(data: d) else { return nil }
+        guard let d = data(k) else { return nil }
+        // Rebuilt as an animation when the cached bytes are a GIF. Without this, a GIF played
+        // on first receipt and then froze the next time it was drawn from cache — which is
+        // the harder bug to notice, because the first view looks right.
+        guard let img = AnimatedGif.image(from: d, key: k) ?? UIImage(data: d) else { return nil }
         images[k] = img                       // derive + memoize from the cached bytes
         return img
     }
@@ -2195,8 +2196,18 @@ struct AsyncMediaImage: View {
 
     @ViewBuilder private var content: some View {
         if let image {
-            Image(uiImage: image).resizable()
-                .aspectRatio(contentMode: fill ? .fill : .fit)
+            Group {
+                // A GIF arrives here as an animated UIImage (`images != nil`), which SwiftUI's
+                // Image draws as a single still. Handing it to UIKit is what makes a sent GIF
+                // actually play in the bubble instead of freezing on frame one.
+                if image.images != nil {
+                    AnimatedGifView(image: image,
+                                    contentMode: fill ? .scaleAspectFill : .scaleAspectFit)
+                } else {
+                    Image(uiImage: image).resizable()
+                        .aspectRatio(contentMode: fill ? .fill : .fit)
+                }
+            }
                 .frame(width: fill ? Self.width : nil, height: fill ? Self.height : nil)
                 .clipped()
                 .contentShape(Rectangle())
@@ -2237,7 +2248,11 @@ struct AsyncMediaImage: View {
         do {
             let data = try await ChatEngine.shared.fetchMedia(ref)
             try Task.checkCancellation()
-            guard let decoded = UIImage(data: data) else { failed = true; return }
+            // An animated GIF first: UIImage(data:) would give back frame one and the
+            // animation would be lost before it ever reached the view.
+            let animated = ref.mime == "image/gif"
+                ? AnimatedGif.image(from: data, key: ref.mediaUrl) : nil
+            guard let decoded = animated ?? UIImage(data: data) else { failed = true; return }
             MediaCache.shared.setData(data, ref.mediaUrl)
             MediaCache.shared.set(decoded, ref.mediaUrl)
             image = decoded

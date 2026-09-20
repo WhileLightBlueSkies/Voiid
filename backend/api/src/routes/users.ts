@@ -1,5 +1,6 @@
 // User / profile routes (Section 10). Identity is ours (Supabase Postgres); profile is not E2E content.
 import { Router } from 'express';
+import { isPrivacyVisibility, ownerPrivacyPreferences } from '../privacy';
 import { query } from '../db';
 import { isBlockedEitherWay } from '../blocking';
 import { requireAuth, invalidateAccountState, revokeAccountSessions } from '../auth';
@@ -119,13 +120,13 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   const rows = await query<{
     id: string; full_name: string | null; photo_url: string | null; bio: string | null;
     status_text: string | null; username: string | null; phone_number: string | null;
-    photo_privacy: string; about_privacy: string;
+    photo_privacy: string; about_privacy: string; last_seen_privacy: string;
     contact_pin_hash: string | null; contact_pin_enc: string | null;
     contact_pin_set_at: string | null;
     encrypted_photo_url: string | null; profile_key_version: number;
   }>(
     `select id, full_name, photo_url, bio, status_text, username, phone_number,
-            photo_privacy, about_privacy, contact_pin_hash, contact_pin_enc, contact_pin_set_at,
+            photo_privacy, about_privacy, last_seen_privacy, contact_pin_hash, contact_pin_enc, contact_pin_set_at,
             encrypted_photo_url, profile_key_version
        from users where id = $1 and deleted_at is null`,
     [targetId]
@@ -203,6 +204,7 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
       // every user who rotated after migration 026. See reachability.ts `hasPin`.
       has_contact_pin: isOwner ? !!(u.contact_pin_hash || u.contact_pin_enc) : undefined,
       contact_pin_set_at: isOwner ? u.contact_pin_set_at : undefined,
+      ...ownerPrivacyPreferences(viewerId, targetId, u),
     },
   });
 }));
@@ -212,7 +214,6 @@ router.post('/profile/update', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { full_name, email, photo_url, bio, status_text, username,
           photo_privacy, about_privacy, last_seen_privacy } = req.body ?? {};
-  const PRIVACY = new Set(['everyone', 'contacts', 'nobody']);
 
   // Diagnostic (presence only, no values) — shows whether the client actually
   // sends each field. Helps catch "email not saving" = app not sending it.
@@ -247,7 +248,7 @@ router.post('/profile/update', requireAuth, asyncHandler(async (req, res) => {
   for (const [col, v] of [['photo_privacy', photo_privacy], ['about_privacy', about_privacy],
                           ['last_seen_privacy', last_seen_privacy]] as const) {
     if (v !== undefined) {
-      if (!PRIVACY.has(String(v))) return res.status(400).json({ error: `invalid ${col}` });
+      if (!isPrivacyVisibility(v)) return res.status(400).json({ error: `invalid ${col}` });
       add(col, v);
     }
   }

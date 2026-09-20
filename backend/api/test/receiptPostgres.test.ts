@@ -363,6 +363,26 @@ test('receipt and message authorization against PostgreSQL', { skip: !url }, asy
       assert.equal((await call(path, ben, benDev, {read_before:'invalid'})).status, 400);
     });
 
+    await t.test('enabling receipts never discloses history below the private read boundary', async () => {
+      await reset();
+      const path = `/receipts/conversation/${conv}/read`;
+      const boundary = (await db.query('select clock_timestamp()::text as at')).rows[0].at;
+      assert.equal((await call(path, ben, benDev, {read_before: boundary, send_receipts: false})).status, 200);
+      const later = randomUUID();
+      await db.query('insert into messages(id,conversation_id,sender_id,ciphertext) values($1,$2,$3,$4)',
+        [later, conv, ana, Buffer.from('new')]);
+      const end = (await db.query('select clock_timestamp()::text as at')).rows[0].at;
+      const body = {read_before: end, read_after: boundary, send_receipts: true};
+      assert.equal((await call(path, ben, benDev, body)).status, 200);
+      assert.deepEqual(events.map(e => e.message_id), [later]);
+      assert.equal((await db.query('select 1 from message_read_receipts where message_id=any($1::uuid[])', [[msg,fanout]])).rowCount, 0);
+      assert.equal((await call(path, ben, benDev, body)).status, 200);
+      assert.equal(events.length, 1, 'retry is idempotent');
+      assert.equal((await call(path, ben, benDev, {read_before: boundary, read_after: end})).status, 200);
+      assert.equal(events.length, 1, 'stale intent below newer private boundary discloses nothing');
+      assert.equal((await call(path, ben, benDev, {read_after:'invalid'})).status, 400);
+    });
+
     await t.test('conversation read validates body device ownership and revocation', async () => {
       await reset();
       const path = `/receipts/conversation/${conv}/read`;

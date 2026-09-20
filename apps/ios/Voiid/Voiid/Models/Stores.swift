@@ -248,6 +248,7 @@ final class AppSession: ObservableObject {
     /// teardown's VoIP unregister still needs the JWT). Call them in that order or the
     /// previous account's data survives on the device.
     func signOut() {
+        PrivacySettings.shared.resetVisibility()
         auth.logout()
         // Your profile is per-account state; leaving it behind would show the previous
         // user's name and photo on the next login.
@@ -293,9 +294,10 @@ final class ChatStore: ObservableObject {
         didSet { mergeCache.removeAll(keepingCapacity: true) }
     }
     @Published var typingConversations: Set<String> = []
-    /// Pending auto-clears, one per conversation. See the onTyping handler: a "stop" that
+    /// Pending auto-clears, one per participant. See the onTyping handler: a "stop" that
     /// never arrives would otherwise strand the indicator forever.
     private var typingExpiry: [String: DispatchWorkItem] = [:]
+    private var typingUsers: [String: Set<String>] = [:]
     @Published var loadError: String?
     @Published var reactionError: String?
     @Published var mediaSendError: String?
@@ -337,6 +339,7 @@ final class ChatStore: ObservableObject {
         messagesByConversation = [:]
         typingExpiry.values.forEach { $0.cancel() }
         typingExpiry = [:]
+        typingUsers = [:]
         typingConversations = []
         loadError = nil
         reactionError = nil
@@ -647,7 +650,7 @@ final class ChatStore: ObservableObject {
             // Opening a thread answers every banner pointing at it, so they go now rather
             // than waiting for the next foreground transition — the user is already reading
             // the thing they were being notified about. Mirrors Android's RootTabView hook.
-            if let id = openConversationId { MessageNotifications.clear(conversationId: id) }
+            if UIApplication.shared.applicationState == .active, let id = openConversationId { MessageNotifications.clear(conversationId: id) }
         }
     }
 
@@ -659,7 +662,7 @@ final class ChatStore: ObservableObject {
         // is the single most obvious way for the count to look broken.
         ChatEngine.shared.queueConversationRead(conv.id)
         Task { await ChatEngine.shared.flushPendingReceipts() }
-        clearUnreadLocally(conv.id)
+        if UIApplication.shared.applicationState == .active { clearUnreadLocally(conv.id) }
         refresh(conv.id)
         Task { await syncMessages(conv) }
     }
@@ -685,7 +688,7 @@ final class ChatStore: ObservableObject {
     /// Mark the open chat read. Called on open, and whenever a message lands WHILE it is
     /// open — the arrival path must not rely on the next manual sync.
     func markOpenConversationRead(_ conversationId: String) async {
-        guard openConversationId == conversationId else { return }
+        guard openConversationId == conversationId, UIApplication.shared.applicationState == .active else { return }
         await ChatEngine.shared.markRead(conversationId: conversationId)
     }
 
@@ -744,10 +747,13 @@ final class ChatStore: ObservableObject {
 
     /// Fetch + apply the peer's online/last-seen presence to the conversation.
     func fetchPresence(_ convId: String, peerUserId: String) async {
-        guard let st = try? await ChatService.shared.status(userId: peerUserId),
+        let accountID = TokenStore.shared.userId
+        let status = try? await ChatService.shared.status(userId: peerUserId)
+        guard accountID == TokenStore.shared.userId,
               let i = directConversations.firstIndex(where: { $0.id == convId }) else { return }
-        directConversations[i].isOnline = st.online
-        directConversations[i].lastSeenAt = st.lastSeen
+        // Failed or hidden presence is unknown, never an indefinitely cached "Online".
+        directConversations[i].isOnline = status?.online ?? false
+        directConversations[i].lastSeenAt = status?.lastSeen
     }
 
     /// Apply a delivery/read receipt (WS) — persist it in the engine (no regression)
@@ -891,7 +897,11 @@ final class ChatStore: ObservableObject {
                 guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
                 pendingMediaMessages[tempId]?.status = .failed
                 refresh(conversationId)
-                mediaSendError = (error as? APIError)?.errorDescription ?? "Couldn’t send media. Please try again."
+                // The underlying error, not a generic string: "Couldn't send media" is
+                // indistinguishable between a dropped connection, a rejected upload and a
+                // crypto failure, and that ambiguity has cost real debugging time.
+                mediaSendError = (error as? APIError)?.errorDescription
+                    ?? "Couldn’t send media: \(error.localizedDescription)"
             }
         }
     }
@@ -991,6 +1001,15 @@ final class ChatStore: ObservableObject {
 
     // MARK: - Realtime (WebSocket) glue
 
+    private func removeTypingUser(_ userID: String, conversationID: String) {
+        typingExpiry["\(conversationID):\(userID)"] = nil
+        typingUsers[conversationID]?.remove(userID)
+        if typingUsers[conversationID]?.isEmpty != false {
+            typingUsers[conversationID] = nil
+            typingConversations.remove(conversationID)
+        }
+    }
+
     private var realtimeInstalled = false
     private func startRealtime() {
         guard !realtimeInstalled else { return }
@@ -999,26 +1018,21 @@ final class ChatStore: ObservableObject {
         WebSocketClient.shared.onMessageRef = { [weak self] cid in
             Task { await self?.handleIncoming(cid) }
         }
-        WebSocketClient.shared.onTyping = { [weak self] cid, _, isTyping in
+        WebSocketClient.shared.onTyping = { [weak self] cid, userID, isTyping in
             guard let self else { return }
+            let key = "\(cid):\(userID)"
+            self.typingExpiry[key]?.cancel()
+            self.typingExpiry[key] = nil
             if isTyping {
+                self.typingUsers[cid, default: []].insert(userID)
                 self.typingConversations.insert(cid)
-                // EXPIRE IT. "stop" is not guaranteed to arrive — the sender can background
-                // the app, lose signal, or have the socket drop mid-word, and every one of
-                // those leaves a permanent "typing…" that only a restart clears. The peer
-                // re-sends "start" while they are still typing, so refreshing the deadline is
-                // enough to keep a genuinely-typing indicator alive.
-                self.typingExpiry[cid]?.cancel()
                 let work = DispatchWorkItem { [weak self] in
-                    self?.typingConversations.remove(cid)
-                    self?.typingExpiry[cid] = nil
+                    self?.removeTypingUser(userID, conversationID: cid)
                 }
-                self.typingExpiry[cid] = work
+                self.typingExpiry[key] = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
             } else {
-                self.typingExpiry[cid]?.cancel()
-                self.typingExpiry[cid] = nil
-                self.typingConversations.remove(cid)
+                self.removeTypingUser(userID, conversationID: cid)
             }
         }
         WebSocketClient.shared.onReceipt = { [weak self] mid, status in
