@@ -672,8 +672,8 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				VOIID_API_BASE_URL = "https://api-dev.voiid.app";
-				VOIID_WS_URL = "wss://api-dev.voiid.app/ws";
+				VOIID_API_BASE_URL = "";
+				VOIID_WS_URL = "";
 			};
 			name = Release;
 		};

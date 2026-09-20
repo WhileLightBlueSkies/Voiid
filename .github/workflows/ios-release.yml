@@ -1,0 +1,90 @@
+name: iOS Release (endpoint by branch)
+
+# Build a RELEASE iOS archive pointed at the backend that matches the branch.
+#
+# ── THE PROBLEM THIS SOLVES ─────────────────────────────────────────────────────
+# The endpoint used to be hardcoded in project.pbxproj, identically for Debug and
+# Release, at the dev host. That meant an App Store build would have shipped talking
+# to the development backend — and nobody would have noticed, because the app works
+# fine that way.
+#
+# ── THE RULE ────────────────────────────────────────────────────────────────────
+#   main                            → https://api.voiid.app      (production)
+#   everything else (0.0.2, dev, …) → https://api-dev.voiid.app  (development)
+#
+# Release.xcconfig ships BLANK on purpose, so a release built without this workflow
+# refuses to launch rather than silently defaulting to dev. See that file.
+#
+# Android needs no equivalent: its release block already fails the build when the
+# endpoint is unset (see apps/android/app/build.gradle.kts, requireReleaseEndpoint).
+
+on:
+  push:
+    branches: [main, "0.0.2", dev]
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: "Override the endpoint (leave blank to pick from the branch)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ios-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  archive:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # One place decides dev-vs-prod, and it is the branch name. Encoding the rule
+      # here rather than in the project file is what makes it impossible for a stale
+      # checked-in value to reach the App Store.
+      - name: Choose the endpoint for this branch
+        id: endpoint
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.endpoint }}" ]; then
+            API="${{ github.event.inputs.endpoint }}"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            API="https://api.voiid.app"
+          else
+            API="https://api-dev.voiid.app"
+          fi
+          WS="wss://${API#https://}/ws"
+          echo "api=$API" >> "$GITHUB_OUTPUT"
+          echo "ws=$WS"   >> "$GITHUB_OUTPUT"
+          echo "Branch ${{ github.ref_name }} -> $API"
+
+      - name: Archive
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project apps/ios/Voiid/Voiid.xcodeproj \
+            -scheme Voiid \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Voiid.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            VOIID_API_BASE_URL='${{ steps.endpoint.outputs.api }}' \
+            VOIID_WS_URL='${{ steps.endpoint.outputs.ws }}'
+
+      # Reads the endpoint back out of the BUILT app rather than trusting that the
+      # build setting was applied. A wrong endpoint that reaches users is expensive
+      # and invisible; this check is neither.
+      - name: Verify the built app points where the branch says
+        run: |
+          set -euo pipefail
+          PLIST="$RUNNER_TEMP/Voiid.xcarchive/Products/Applications/Voiid.app/Info.plist"
+          BUILT=$(/usr/libexec/PlistBuddy -c "Print :VoiidApiBaseURL" "$PLIST")
+          echo "built with: $BUILT"
+          if [ "$BUILT" != "${{ steps.endpoint.outputs.api }}" ]; then
+            echo "::error::Expected ${{ steps.endpoint.outputs.api }}, got $BUILT"
+            exit 1
+          fi
+          if [ "${{ github.ref_name }}" = "main" ] && \
+             echo "$BUILT" | grep -q "api-dev"; then
+            echo "::error::A main build is pointing at the DEV backend."
+            exit 1
+          fi

@@ -1,0 +1,11 @@
+// Debug.xcconfig
+//
+// Endpoints for LOCAL DEVELOPMENT builds (Xcode ▶, and any build you run on a device
+// from this machine). Always the dev backend — a debug build should never be able to
+// reach production by accident.
+//
+// Release builds read Release.xcconfig instead, which carries no endpoint at all: CI
+// supplies it per branch. See Release.xcconfig for why.
+
+VOIID_API_BASE_URL = https://api-dev.voiid.app
+VOIID_WS_URL = wss://api-dev.voiid.app/ws

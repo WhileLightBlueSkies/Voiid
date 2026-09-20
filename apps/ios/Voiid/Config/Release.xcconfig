@@ -1,0 +1,28 @@
+// Release.xcconfig
+//
+// Endpoints for RELEASE builds (TestFlight, App Store, and any archive).
+//
+// ── WHY THESE ARE EMPTY ─────────────────────────────────────────────────────────
+// Deliberately blank. The value is supplied by whoever builds the release, keyed on
+// the BRANCH being built:
+//
+//     0.0.2 / dev / feature branches → https://api-dev.voiid.app
+//     main                           → https://api.voiid.app
+//
+// CI passes it (see .github/workflows/ios-release.yml). To archive by hand:
+//
+//     xcodebuild archive -scheme Voiid \
+//       VOIID_API_BASE_URL=https://api.voiid.app \
+//       VOIID_WS_URL=wss://api.voiid.app/ws
+//
+// Blank is the SAFE default, not an oversight. APIClient.endpoint() has a
+// `precondition` that refuses to launch a release build whose endpoint is missing or
+// points at a development host. So a release built without an explicit endpoint fails
+// loudly at launch, instead of silently shipping to the App Store pointed at the dev
+// backend — which is the failure that goes unnoticed, because the app works fine.
+//
+// This mirrors what Android already does: its release block calls
+// requireReleaseEndpoint() and fails the BUILD when the endpoint is unset.
+
+VOIID_API_BASE_URL =
+VOIID_WS_URL =
