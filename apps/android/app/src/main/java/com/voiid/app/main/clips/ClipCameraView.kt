@@ -20,6 +20,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.ViewPort
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -82,6 +84,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -92,6 +95,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.voiid.app.ui.components.LocalVoiidHaptics
@@ -132,6 +136,11 @@ fun ClipCameraView(
     onPickGallery: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    // Decode the filter art off the main thread, before the rail is tappable, so picking a
+    // filter never blocks a frame on a PNG decode.
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { ClipFaceAssets.preload(context) }
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     val haptics = LocalVoiidHaptics.current
     val density = LocalDensity.current
@@ -238,29 +247,47 @@ fun ClipCameraView(
         maxZoom = 1f
         faceDetector.isFrontCamera = lensFront
         previewView.post {
-            runCatching { faceDetector.previewTransform = previewView.outputTransform }
+            faceDetector.viewWidth = previewView.width.toFloat()
+            faceDetector.viewHeight = previewView.height.toFloat()
         }
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
             val provider = providerFuture.get()
-            val resSelector = ResolutionSelector.Builder()
+            // ImageAnalysis ONLY. Asking for a big analysis stream backfires twice over: the
+            // detector pays for pixels ML Kit does not use, and because Preview + VideoCapture
+            // + ImageAnalysis must resolve to a guaranteed stream combination, a greedy
+            // analysis stream pushes the OTHER two down. Measured on an iQOO I2221: a shared
+            // 1080x1920 CLOSEST_HIGHER selector produced analysis=3264x1836 and left the
+            // preview at 720x1280, upscaled ~1.75x onto a 1260x2800 view.
+            //
+            // 1280x720 is landscape because ResolutionStrategy matches in sensor orientation.
+            val analysisResSelector = ResolutionSelector.Builder()
                 .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
                 .setResolutionStrategy(
                     ResolutionStrategy(
-                        android.util.Size(1080, 1920),
-                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                        android.util.Size(1280, 720),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
                     )
                 )
                 .build()
 
+            // 16:9 to MATCH the analysis stream, but no ResolutionStrategy — pinning an exact
+            // size is what cost us the sharpness. The aspect ratios have to agree: the two
+            // streams otherwise cover different fields of view, and the analysis -> preview
+            // coordinate transform has no crop rect to reconcile them with, so every landmark
+            // lands offset. (Measured: preview 3:4 + analysis 16:9 put the sprites up-left.)
+            val previewResSelector = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                .build()
+
             val preview = Preview.Builder()
-                .setResolutionSelector(resSelector)
+                .setResolutionSelector(previewResSelector)
                 .build()
                 .also { it.setSurfaceProvider(previewView.surfaceProvider) }
             val selector = if (lensFront) CameraSelector.DEFAULT_FRONT_CAMERA
                            else CameraSelector.DEFAULT_BACK_CAMERA
             val imageAnalysis = ImageAnalysis.Builder()
-                .setResolutionSelector(resSelector)
+                .setResolutionSelector(analysisResSelector)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
@@ -275,13 +302,37 @@ fun ClipCameraView(
                 }
             runCatching {
                 provider.unbindAll()
-                camera = provider.bindToLifecycle(
-                    lifecycleOwner, selector, preview, videoCapture, imageAnalysis,
-                )
+
+                // The ViewPort is what makes ImageAnalysis coordinates mean anything on the
+                // preview. CoordinateTransform is only defined between use cases that share
+                // one: without it each use case carries an unrelated crop rect and the matrix
+                // it produces is garbage — which is exactly what we measured, a face box with
+                // its width and height transposed by 720/1280.
+                //
+                // 9:16 explicitly rather than previewView.viewPort, which would take the
+                // PreviewView's own 1260x2800 (0.45) aspect and crop the RECORDING to it.
+                // Recording stays 16:9; the preview keeps cropping it for display, which the
+                // PreviewView's own output transform already accounts for.
+                val viewPort = ViewPort.Builder(
+                    android.util.Rational(9, 16),
+                    preview.targetRotation,
+                ).setScaleType(ViewPort.FILL_CENTER).build()
+
+                val useCaseGroup = UseCaseGroup.Builder()
+                    .addUseCase(preview)
+                    .addUseCase(videoCapture)
+                    .addUseCase(imageAnalysis)
+                    .setViewPort(viewPort)
+                    .build()
+
+                camera = provider.bindToLifecycle(lifecycleOwner, selector, useCaseGroup)
                 previewView.post {
-                    runCatching { faceDetector.previewTransform = previewView.outputTransform }
+                    faceDetector.viewWidth = previewView.width.toFloat()
+                    faceDetector.viewHeight = previewView.height.toFloat()
                 }
-            }.onFailure { errorText = "Couldn't start the camera." }
+            }.onFailure {
+                errorText = "Couldn't start the camera."
+            }
         }, ContextCompat.getMainExecutor(context))
         onDispose {
             camera = null
@@ -425,6 +476,13 @@ fun ClipCameraView(
             factory = { previewView },
             modifier = Modifier
                 .fillMaxSize()
+                // The one authoritative source for the size landmarks are mapped into. It
+                // fires on layout, before any face is published, so the detector is never
+                // waiting on a Canvas that is itself waiting on a face.
+                .onSizeChanged {
+                    faceDetector.viewWidth = it.width.toFloat()
+                    faceDetector.viewHeight = it.height.toFloat()
+                }
                 // Taps first in the chain, drags second: pointer events reach the LAST
                 // pointerInput first, so the drag/pinch detector gets to consume and cancel a
                 // tap that turned into a swipe, rather than both firing.
@@ -521,10 +579,11 @@ fun ClipCameraView(
             val face = faceDetector.trackedFace
             if (face != null) {
                 Canvas(Modifier.fillMaxSize()) {
-                    val transform = previewView.outputTransform
-                    if (transform != null) {
-                        faceDetector.previewTransform = transform
-                    }
+                    // The canvas and the PreviewView are the same box; keeping the detector's
+                    // idea of the view size in step with what is actually drawn means the
+                    // mapping cannot drift after a resize or rotation.
+                    faceDetector.viewWidth = size.width
+                    faceDetector.viewHeight = size.height
                     with(ClipFaceRenderer) {
                         drawFaceEffect(
                             face = face,
@@ -535,6 +594,7 @@ fun ClipCameraView(
                             cameraSourceHeight = faceDetector.sourceHeight,
                         )
                     }
+
                 }
             }
         }

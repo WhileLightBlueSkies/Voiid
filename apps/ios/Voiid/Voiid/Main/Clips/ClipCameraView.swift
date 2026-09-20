@@ -943,6 +943,9 @@ final class ClipCameraController: NSObject, ObservableObject,
     // MARK: Lifecycle
 
     func start() {
+        // Decode the filter art before the rail is tappable, off the capture path, so
+        // choosing a filter never stalls a frame on a PNG decode.
+        DispatchQueue.global(qos: .utility).async { ClipFaceAssets.preload() }
         sessionQueue.async { [weak self] in
             guard let self else { return }
             // Re-entering the camera after a push to the editor only needs the session back.
