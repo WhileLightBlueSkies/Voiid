@@ -60,6 +60,102 @@ final class BackupManager: ObservableObject {
         }
     }
 
+    // MARK: Automatic backup schedule
+
+    /// When an automatic backup is allowed to run.
+    ///
+    /// Default is `.wifiOnly`. A backup carries the user's whole message history, and doing
+    /// that over mobile data without being asked spends money that is not ours to spend —
+    /// so the permissive option exists, but nobody lands on it by accident.
+    enum BackupNetwork: String, CaseIterable, Identifiable {
+        case wifiOnly
+        case wifiAndCellular
+        case manualOnly
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .wifiOnly:        return "Wi-Fi only"
+            case .wifiAndCellular: return "Wi-Fi and mobile data"
+            case .manualOnly:      return "Manual only"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .wifiOnly:
+                return "Backs up automatically, but only on Wi-Fi."
+            case .wifiAndCellular:
+                return "Backs up automatically on any connection. May use your data allowance."
+            case .manualOnly:
+                return "Never backs up on its own. You choose when, with Back up now."
+            }
+        }
+
+        var isAutomatic: Bool { self != .manualOnly }
+    }
+
+    /// How often an automatic backup runs.
+    enum BackupFrequency: String, CaseIterable, Identifiable {
+        case daily
+        case weekly
+
+        var id: String { rawValue }
+        var title: String { self == .daily ? "Daily" : "Weekly" }
+        var interval: TimeInterval { self == .daily ? 86_400 : 604_800 }
+    }
+
+    private static var networkKey: String { "voiid.backup.network.\(TokenStore.shared.userId ?? "signed-out")" }
+    private static var frequencyKey: String { "voiid.backup.frequency.\(TokenStore.shared.userId ?? "signed-out")" }
+    private static var includePhotosKey: String { "voiid.backup.includePhotos.\(TokenStore.shared.userId ?? "signed-out")" }
+
+    /// Bumped on any schedule change so SwiftUI redraws the settings rows.
+    @Published private var scheduleRevision = 0
+
+    var backupNetwork: BackupNetwork {
+        get {
+            BackupNetwork(rawValue: UserDefaults.standard.string(forKey: Self.networkKey) ?? "")
+                ?? .wifiOnly
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: Self.networkKey)
+            scheduleRevision += 1
+        }
+    }
+
+    var backupFrequency: BackupFrequency {
+        get {
+            BackupFrequency(rawValue: UserDefaults.standard.string(forKey: Self.frequencyKey) ?? "")
+                ?? .daily
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: Self.frequencyKey)
+            scheduleRevision += 1
+        }
+    }
+
+    /// Whether photo bytes ride along in the backup blob.
+    ///
+    /// Off by default, and video is deliberately NOT offered: a backup is a single sealed
+    /// blob uploaded in one go, and video would push it to hundreds of megabytes, which
+    /// fails often enough that it would make backup itself unreliable.
+    var includesPhotos: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.includePhotosKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.includePhotosKey)
+            scheduleRevision += 1
+        }
+    }
+
+    /// When the next automatic backup is due, or nil when backup is manual-only or has never
+    /// run. Derived rather than stored — a stored "next" date goes stale the moment the user
+    /// changes frequency or backs up by hand.
+    func nextBackupDate(after last: Date?) -> Date? {
+        guard backupNetwork.isAutomatic, let last else { return nil }
+        return last.addingTimeInterval(backupFrequency.interval)
+    }
+
     /// UserDefaults key for the set of user-enabled optional destinations. `.server` is
     /// implicit-on and never stored.
     private static var enabledKey: String { "voiid.backup.enabledDestinations.\(TokenStore.shared.userId ?? "signed-out")" }

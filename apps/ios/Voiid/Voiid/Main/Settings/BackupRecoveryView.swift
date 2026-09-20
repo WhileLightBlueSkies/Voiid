@@ -26,6 +26,7 @@ struct BackupRecoveryView: View {
     @State private var showSetup = false
     @State private var showPhrase = false
     @State private var showChangePin = false
+    @State private var schedulePicker: BackupSchedulePicker.Page?
 
     // iCloud destination for the SAME encrypted blob.
     @State private var destSnapshots: [BackupDestination: BackupSnapshot] = [:]
@@ -52,6 +53,7 @@ struct BackupRecoveryView: View {
                             actionRow(title: backingUp ? "Backing up…" : "Back up now",
                                       system: "arrow.up.circle", enabled: !backingUp) { backUpNow() }
                         }
+                        scheduleCard
                         destinationsCard
                         VoiidCardSection {
                             actionRow(title: "View recovery phrase", system: "key") { showPhrase = true }
@@ -92,6 +94,9 @@ struct BackupRecoveryView: View {
         }
         .sheet(isPresented: $showPhrase) { RecoveryPhraseSheet() }
         .sheet(isPresented: $showChangePin) { ChangePinSheet { flash("PIN changed") } }
+        .sheet(item: $schedulePicker) { page in
+            BackupSchedulePicker(page: page, manager: manager)
+        }
     }
 
     // MARK: Status card
@@ -111,6 +116,18 @@ struct BackupRecoveryView: View {
                             .font(.footnote)
                             .foregroundColor(VoiidColor.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
+
+                        // The question "is my history safe?" is really "when does this
+                        // happen again?", which a last-backup time alone never answers.
+                        if let next = BackupManager.shared.nextBackupDate(after: meta.updatedAtDate) {
+                            Text("Next backup \(Self.relative(next))")
+                                .font(.footnote)
+                                .foregroundColor(VoiidColor.textSecondary)
+                        } else if !BackupManager.shared.backupNetwork.isAutomatic {
+                            Text("Automatic backup is off")
+                                .font(.footnote)
+                                .foregroundColor(VoiidColor.textSecondary)
+                        }
                     } else if let statusError, !loadingStatus {
                         Text(statusError)
                             .font(.footnote)
@@ -131,6 +148,60 @@ struct BackupRecoveryView: View {
             .padding(.horizontal, VoiidSpacing.md)
             .padding(.vertical, 11)
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    // MARK: Schedule
+
+    /// When automatic backup runs, and what rides along in it.
+    private var scheduleCard: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+            VoiidCardSection(
+                "Backup schedule",
+                footer: manager.backupNetwork.isAutomatic
+                    ? "Backups use Wi-Fi unless you allow mobile data. Your chosen frequency is measured from the last successful backup."
+                    : "Automatic backup is off. You can still use Back up now whenever you need it."
+            ) {
+                VoiidSettingsRow(icon: "arrow.triangle.2.circlepath",
+                                 title: "Automatic backup",
+                                 detail: manager.backupNetwork.title,
+                                 action: { Haptics.tap(); schedulePicker = .network }) {
+                    VoiidChevron()
+                }
+
+                if manager.backupNetwork.isAutomatic {
+                    VoiidRowDivider()
+                    VoiidSettingsRow(icon: "calendar",
+                                     title: "How often",
+                                     detail: manager.backupFrequency.title,
+                                     action: { Haptics.tap(); schedulePicker = .frequency }) {
+                        VoiidChevron()
+                    }
+                }
+            }
+
+            VoiidCardSection(
+                "What's included",
+                footer: "Messages are always included. Photos make the backup much larger and "
+                      + "slower to upload. Videos are never included — they would make the "
+                      + "backup too large to finish reliably, and they stay recoverable from "
+                      + "the chat itself."
+            ) {
+                Toggle(isOn: Binding(
+                    get: { BackupManager.shared.includesPhotos },
+                    set: { BackupManager.shared.includesPhotos = $0; Haptics.selection() }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Include photos").foregroundColor(VoiidColor.textPrimary)
+                        Text("Off by default. Increases backup size.")
+                            .font(.footnote)
+                            .foregroundColor(VoiidColor.textSecondary)
+                    }
+                }
+                .tint(VoiidColor.primary)
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.vertical, 11)
+            }
         }
     }
 
@@ -274,6 +345,120 @@ struct BackupRecoveryView: View {
         guard let date else { return "just now" }
         let f = RelativeDateTimeFormatter(); f.unitsStyle = .full
         return f.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - Schedule choices
+
+private struct BackupSchedulePicker: View {
+    enum Page: String, Identifiable {
+        case network, frequency
+
+        var id: String { rawValue }
+        var title: String { self == .network ? "Automatic backup" : "How often" }
+        var explanation: String {
+            self == .network
+                ? "Choose which connection automatic backups can use."
+                : "Choose how often to back up your chats."
+        }
+    }
+
+    let page: Page
+    @ObservedObject var manager: BackupManager
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                    Text(page.explanation)
+                        .font(.subheadline)
+                        .foregroundStyle(VoiidColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 4)
+
+                    VoiidCardSection {
+                        switch page {
+                        case .network:
+                            ForEach(BackupManager.BackupNetwork.allCases) { option in
+                                choice(title: option.title, detail: networkDetail(option),
+                                       icon: networkIcon(option),
+                                       selected: manager.backupNetwork == option) {
+                                    manager.backupNetwork = option
+                                }
+                                if option != BackupManager.BackupNetwork.allCases.last {
+                                    VoiidRowDivider()
+                                }
+                            }
+                        case .frequency:
+                            ForEach(BackupManager.BackupFrequency.allCases) { option in
+                                choice(title: option.title,
+                                       detail: option == .daily ? "Every 24 hours" : "Every 7 days",
+                                       icon: option == .daily ? "sun.max" : "calendar",
+                                       selected: manager.backupFrequency == option) {
+                                    manager.backupFrequency = option
+                                }
+                                if option != BackupManager.BackupFrequency.allCases.last {
+                                    VoiidRowDivider()
+                                }
+                            }
+                        }
+                    }
+
+                    if page == .frequency {
+                        Text("Timing depends on your connection and when the app can run. You can always back up manually.")
+                            .font(.footnote)
+                            .foregroundStyle(VoiidColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 4)
+                    }
+                }
+                .padding(VoiidSpacing.md)
+            }
+            .background(VoiidColor.background)
+            .navigationTitle(page.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .fontDesign(.rounded)
+        .tint(VoiidColor.accent)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(28)
+    }
+
+    private func choice(title: String, detail: String, icon: String,
+                        selected: Bool, select: @escaping () -> Void) -> some View {
+        VoiidSettingsRow(icon: icon, title: title, detail: detail, action: {
+            if !selected { select(); Haptics.selection() }
+            dismiss()
+        }) {
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(selected ? VoiidColor.accent : VoiidColor.divider)
+                .accessibilityHidden(true)
+        }
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func networkIcon(_ network: BackupManager.BackupNetwork) -> String {
+        switch network {
+        case .wifiOnly: "wifi"
+        case .wifiAndCellular: "antenna.radiowaves.left.and.right"
+        case .manualOnly: "hand.tap"
+        }
+    }
+
+    private func networkDetail(_ network: BackupManager.BackupNetwork) -> String {
+        switch network {
+        case .wifiOnly: "Wait for Wi-Fi. Uses no mobile data."
+        case .wifiAndCellular: "Use either connection. Mobile data charges may apply."
+        case .manualOnly: "Only when you tap Back up now."
+        }
     }
 }
 
