@@ -1,11 +1,13 @@
 import type { Metadata } from 'next';
 import { Hero } from '../../components/Hero';
+import { Button, ButtonRow } from '../../components/Button';
+import { PagePhone } from '../../components/PagePhone';
 import { Section, Grid } from '../../components/Section';
 import { FeatureCard } from '../../components/FeatureCard';
 import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { CTA } from '../../components/CTA';
-import { PhoneMockup, PhoneAppBar } from '../../components/PhoneMockup';
+import { PhoneMockup } from '../../components/PhoneMockup';
 
 export const metadata: Metadata = {
   title: 'Clips',
@@ -39,9 +41,7 @@ export default function ClipsPage() {
         }
         badges={<E2EEBadge state="public" detail="Clips, profiles, likes and comments" />}
         aside={
-          <PhoneMockup hue="clips" tilt="right" label="The clips feed" decorative>
-            <PhoneAppBar title="Clips" subtitle="Explore" />
-          </PhoneMockup>
+          <PagePhone path={['clips']} label="The Voiid clips feed, interactive" caption="Live preview · open a clip" />
         }
       />
 
@@ -106,7 +106,16 @@ export default function ClipsPage() {
         hue="clips"
         title="What is encrypted and what is not"
         lede="The whole map, in one table."
-        actions={<></>}
+        actions={
+          <ButtonRow align="center">
+            <Button href="/privacy" size="lg">
+              What we can see
+            </Button>
+            <Button href="/#tour" variant="secondary" size="lg">
+              Try the app
+            </Button>
+          </ButtonRow>
+        }
         note={<>See the <a href="/privacy">privacy page</a>.</>}
       />
     </>

@@ -1,11 +1,13 @@
 import type { Metadata } from 'next';
 import { Hero } from '../../components/Hero';
+import { Button, ButtonRow } from '../../components/Button';
+import { PagePhone } from '../../components/PagePhone';
 import { Section, Grid } from '../../components/Section';
 import { FeatureCard } from '../../components/FeatureCard';
 import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { CTA } from '../../components/CTA';
-import { PhoneMockup, PhoneAppBar } from '../../components/PhoneMockup';
+import { PhoneMockup } from '../../components/PhoneMockup';
 
 export const metadata: Metadata = {
   title: 'Map',
@@ -41,9 +43,7 @@ export default function MapPage() {
         }
         badges={<E2EEBadge state="e2ee" detail="Positions and live shares" />}
         aside={
-          <PhoneMockup hue="map" tilt="left" label="The friends map" decorative>
-            <PhoneAppBar title="Map" subtitle="2 friends sharing" />
-          </PhoneMockup>
+          <PagePhone path={['map']} label="The Voiid friends map, interactive" caption="Live preview · tap a friend" />
         }
       />
 
@@ -102,7 +102,16 @@ export default function MapPage() {
         hue="map"
         title="The full picture"
         lede="Every surface, and what the server can see on each."
-        actions={<></>}
+        actions={
+          <ButtonRow align="center">
+            <Button href="/privacy" size="lg">
+              What we can see
+            </Button>
+            <Button href="/#tour" variant="secondary" size="lg">
+              Try the app
+            </Button>
+          </ButtonRow>
+        }
         note={<>See the <a href="/privacy">privacy page</a>.</>}
       />
     </>

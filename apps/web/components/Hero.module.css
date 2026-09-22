@@ -1,11 +1,31 @@
 .hero {
   position: relative;
-  /* `clip` rather than `hidden`: it contains the mesh without creating a scroll
+  /* `clip` rather than `hidden`: it contains the aurora without creating a scroll
    * container, so `position: sticky` still works for anything inside. */
   overflow: clip;
+  isolation: isolate;
   padding-block: clamp(var(--space-2xl), 8vw, var(--space-4xl))
-    clamp(var(--space-2xl), 6vw, var(--space-3xl));
-  border-block-end: 1px solid var(--color-divider);
+    clamp(var(--space-2xl), 7vw, var(--space-4xl));
+  /* NIGHT — the same ground as the homepage hero. Every page opens on it. */
+  background: radial-gradient(120% 90% at 70% 0%, #06201f 0%, #031214 62%);
+  color: #eefaf9;
+
+  /* The site's tokens are light-theme values. Re-pointing them here is what lets
+   * everything a page drops into its hero (buttons, badges, the lock motif) come
+   * out light-on-dark without a single per-page override. */
+  --color-text: #eefaf9;
+  --color-text-dim: rgba(222, 243, 241, 0.72);
+  --color-text-mute: rgba(222, 243, 241, 0.5);
+  --color-surface: rgba(255, 255, 255, 0.07);
+  --color-surface-2: rgba(255, 255, 255, 0.05);
+  --color-surface-3: rgba(255, 255, 255, 0.1);
+  --color-border: rgba(255, 255, 255, 0.14);
+  --color-border-strong: rgba(255, 255, 255, 0.26);
+  --color-divider: rgba(255, 255, 255, 0.1);
+  --color-primary-ink: #8ff5e4;
+  --color-accent-quiet: rgba(46, 197, 207, 0.14);
+  --shadow-xs: none;
+  --grid-line: rgba(255, 255, 255, 0.045);
 }
 
 /* The hero's ground runs UP BEHIND the floating header.
@@ -79,10 +99,9 @@
   gap: 0.5em;
   padding: 6px 14px;
   border-radius: var(--radius-pill);
-  border: 1px solid color-mix(in srgb, var(--hue) 22%, transparent);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-xs);
-  color: var(--hue);
+  border: 1px solid rgba(46, 197, 207, 0.28);
+  background: rgba(46, 197, 207, 0.1);
+  color: #8ff5e4;
   font-size: var(--text-micro);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wide);
@@ -92,9 +111,10 @@
 .center .eyebrow { align-self: center; }
 
 .title {
-  font-size: var(--text-display);
-  font-weight: var(--weight-bold);
-  line-height: 1.02;
+  font-size: clamp(2.6rem, 1.3rem + 4vw, 4.8rem);
+  font-weight: 800;
+  line-height: 1;
+  color: #eefaf9;
   /* Display type takes the hardest tracking on the scale — at 5rem, default
    * spacing reads as gappy. */
   letter-spacing: var(--tracking-display);
@@ -199,30 +219,46 @@
   position: absolute;
   border-radius: 50%;
   filter: blur(70px);
+  mix-blend-mode: screen;
+  animation: drift 18s ease-in-out infinite alternate;
 }
 
 .mesh1 {
-  width: 46rem;
-  height: 34rem;
-  inset-block-start: -14rem;
-  inset-inline-start: -12rem;
-  background: var(--mesh-1);
+  width: 44vw;
+  height: 44vw;
+  inset-block-start: -18%;
+  inset-inline-end: -6%;
+  background: radial-gradient(circle, rgba(19, 130, 140, 0.85), transparent 65%);
 }
 
 .mesh2 {
-  width: 38rem;
-  height: 30rem;
-  inset-block-start: 8%;
-  inset-inline-end: -14rem;
-  background: var(--mesh-2);
+  width: 34vw;
+  height: 34vw;
+  inset-block-end: -20%;
+  inset-inline-end: 18%;
+  background: radial-gradient(circle, rgba(94, 92, 230, 0.45), transparent 65%);
+  animation-duration: 23s;
+  animation-delay: -7s;
 }
 
 .mesh3 {
-  width: 32rem;
-  height: 26rem;
-  inset-block-end: -16rem;
-  inset-inline-start: 32%;
-  background: var(--mesh-3);
+  width: 30vw;
+  height: 30vw;
+  inset-block-start: 30%;
+  inset-inline-start: -10%;
+  background: radial-gradient(circle, rgba(46, 197, 207, 0.3), transparent 65%);
+  animation-duration: 27s;
+  animation-delay: -12s;
+}
+
+@keyframes drift {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-6%, 8%) scale(1.12); }
+  100% { transform: translate(5%, -4%) scale(0.95); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mesh1, .mesh2, .mesh3 { animation: none; }
 }
 
 /* A 64px hairline grid, faded out at the edges so it never terminates in a hard
@@ -243,8 +279,20 @@
  * are mostly off-canvas anyway, so shrink them and cut the blur radius. */
 @media (max-width: 640px) {
   .mesh1, .mesh2, .mesh3 { filter: blur(48px); }
-  .mesh1 { width: 26rem; height: 22rem; }
-  .mesh2 { width: 24rem; height: 20rem; }
+  .mesh1 { width: 26rem; height: 26rem; }
+  .mesh2 { width: 22rem; height: 22rem; }
   .mesh3 { display: none; }
   .grid { background-size: 40px 40px; }
+}
+
+/* On night, the primary is the homepage's mint pill: the brightest thing in the band. */
+.actions :global(.btn-primary) {
+  background: linear-gradient(180deg, #a4fbe9, #3fd2d6);
+  color: #03201f;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3), 0 10px 30px -8px rgba(46, 197, 207, 0.7);
+}
+.actions :global(.btn-primary:hover) { transform: translateY(-2px); }
+.actions :global(.btn-secondary) {
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
 }

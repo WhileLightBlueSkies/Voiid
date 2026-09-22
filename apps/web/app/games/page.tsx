@@ -1,11 +1,13 @@
 import type { Metadata } from 'next';
 import { Hero } from '../../components/Hero';
+import { Button, ButtonRow } from '../../components/Button';
+import { PagePhone } from '../../components/PagePhone';
 import { Section, Grid } from '../../components/Section';
 import { FeatureCard } from '../../components/FeatureCard';
 import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { CTA } from '../../components/CTA';
-import { PhoneMockup, PhoneAppBar } from '../../components/PhoneMockup';
+import { PhoneMockup } from '../../components/PhoneMockup';
 
 export const metadata: Metadata = {
   title: 'Games',
@@ -39,9 +41,7 @@ export default function GamesPage() {
         }
         badges={<E2EEBadge state="refereed" detail="Moves, scores and results" />}
         aside={
-          <PhoneMockup hue="games" tilt="left" label="A game invite in chat" decorative>
-            <PhoneAppBar title="Priyanshu" subtitle="Hand Cricket" />
-          </PhoneMockup>
+          <PagePhone path={['games', 'game_play']} label="A Hand Cricket match in Voiid, interactive" caption="Live preview · show your fingers" />
         }
       />
 
@@ -92,7 +92,16 @@ export default function GamesPage() {
         hue="games"
         title="Encrypted, and not"
         lede="Every surface in one place, with no hedging."
-        actions={<></>}
+        actions={
+          <ButtonRow align="center">
+            <Button href="/privacy" size="lg">
+              What we can see
+            </Button>
+            <Button href="/#tour" variant="secondary" size="lg">
+              Try the app
+            </Button>
+          </ButtonRow>
+        }
         note={<>See the <a href="/privacy">privacy page</a>.</>}
       />
     </>

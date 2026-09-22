@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import { Logomark } from '../../components/Logomark';
+import styles from './page.module.css';
 
 /*
  * CLAIMS CHECKED (README rule 2):
@@ -33,32 +35,34 @@ export const metadata: Metadata = {
 };
 
 export default function CommunityInvite() {
+  // A <section>, not a <main>: the root layout already provides the page's <main>.
   return (
-    <main
-      style={{
-        minHeight: '70vh',
-        display: 'grid',
-        placeItems: 'center',
-        padding: '48px 20px',
-        textAlign: 'center',
-      }}
-    >
-      <div style={{ maxWidth: 420, display: 'grid', gap: 16 }}>
-        <h1 style={{ margin: 0, fontSize: 28, lineHeight: 1.2 }}>Open this invite in Voiid</h1>
-        <p style={{ margin: 0, opacity: 0.75, lineHeight: 1.55 }}>
+    <section className={styles.invite} aria-labelledby="invite-title">
+      <div className={styles.aurora} aria-hidden="true">
+        <span />
+        <span />
+      </div>
+      <div className={styles.card}>
+        <span className={styles.mark} aria-hidden="true">
+          <span className={styles.ring} />
+          <Logomark size={40} idPrefix="invite" />
+        </span>
+        <p className={styles.kicker}>Community invite</p>
+        <h1 id="invite-title" className={styles.title}>
+          Open this invite in Voiid
+        </h1>
+        <p className={styles.lede}>
           You have a community invite. Install Voiid, then open this link again — it will take
           you straight to the community.
         </p>
-        <p style={{ margin: 0, fontSize: 14, opacity: 0.6, lineHeight: 1.55 }}>
+        <p className={styles.small}>
           Already have Voiid? Opening this link on your phone should launch the app. If it
           opened here instead, try it from your phone&rsquo;s browser.
         </p>
-        <p style={{ margin: '8px 0 0' }}>
-          <a href="/" style={{ fontSize: 14 }}>
-            What is Voiid?
-          </a>
-        </p>
+        <a href="/" className={styles.button}>
+          What is Voiid?
+        </a>
       </div>
-    </main>
+    </section>
   );
 }

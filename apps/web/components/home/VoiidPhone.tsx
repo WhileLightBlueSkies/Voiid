@@ -50,6 +50,8 @@ const ZOOMED: ScreenId[] = ['group_call', 'group_video', 'clip_player'];
 
 type Props = {
   initial?: ScreenId;
+  /** Open deep in the app with a back stack, e.g. ['chats', 'group_convo', 'group_call']. */
+  initialPath?: ScreenId[];
   /** Drive the phone from outside (the scroll story). A new `n` re-applies it. */
   jump?: PhoneJump;
   onScreen?: (id: ScreenId) => void;
@@ -69,10 +71,15 @@ function clock() {
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
-export function VoiidPhone({ initial = 'chats', jump, onScreen, coach = false, label = 'Voiid app preview', className }: Props) {
-  const [stack, setStack] = useState<Entry[]>([{ id: initial, via: 'fade' }]);
-  const [layers, setLayers] = useState<Layer[]>([{ key: 0, id: initial, role: 'idle', via: 'fade', reverse: false }]);
-  const [mapUnlocked, setMapUnlocked] = useState(false);
+export function VoiidPhone({ initial = 'chats', initialPath, jump, onScreen, coach = false, label = 'Voiid app preview', className }: Props) {
+  const start = initialPath?.length ? initialPath : [initial];
+  const [stack, setStack] = useState<Entry[]>(() =>
+    start.map((id, i) => ({ id, via: i === 0 ? 'fade' : ZOOMED.includes(id) ? 'zoom' : 'push' })),
+  );
+  const [layers, setLayers] = useState<Layer[]>([
+    { key: 0, id: start[start.length - 1], role: 'idle', via: 'fade', reverse: false },
+  ]);
+  const [mapUnlocked, setMapUnlocked] = useState(start.includes('map'));
   const [toast, setToast] = useState<{ text: string; n: number } | null>(null);
   const [flash, setFlash] = useState(0);
   const [likes, setLikes] = useState<number[]>([]);

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Hero } from '../../components/Hero';
+import { PagePhone } from '../../components/PagePhone';
 import { Section, Split } from '../../components/Section';
 import { MessageJourney } from '../../components/MessageJourney';
 import { ReachabilityDemo } from '../../components/ReachabilityDemo';
@@ -8,7 +9,7 @@ import { E2EEBadge } from '../../components/E2EEBadge';
 import { CTA } from '../../components/CTA';
 import { Button, ButtonRow } from '../../components/Button';
 import { Glyph } from '../../components/Glyph';
-import { PhoneMockup, PhoneAppBar, ChatBubble, PhoneAvatar } from '../../components/PhoneMockup';
+import { PhoneMockup } from '../../components/PhoneMockup';
 import styles from './page.module.css';
 
 export const metadata: Metadata = {
@@ -64,17 +65,7 @@ export default function MessagingPage() {
         }
         badges={<E2EEBadge state="e2ee" detail="Messages and groups" />}
         aside={
-          <PhoneMockup hue="chat" tilt="left" label="A one-to-one chat" decorative>
-            <PhoneAppBar
-              title="Priyanshu"
-              subtitle="End-to-end encrypted"
-              trailing={<Glyph name="call" size={16} />}
-            />
-            <ChatBubble>Did the build pass?</ChatBubble>
-            <ChatBubble side="sent">Green on both platforms.</ChatBubble>
-            <ChatBubble side="sent">Pushing now.</ChatBubble>
-            <ChatBubble>Legend. Testing the new build now</ChatBubble>
-          </PhoneMockup>
+          <PagePhone path={['chats', 'convo']} label="Voiid chat, interactive — type a message and send it" caption="Live preview · type and hit send" />
         }
       />
 
@@ -118,11 +109,7 @@ export default function MessagingPage() {
       <Section hue="chat" eyebrow="Groups" title="Groups that stay encrypted as they grow">
         <Split
           aside={
-            <PhoneMockup hue="chat" size="sm" tilt="right" label="A group conversation" decorative>
-              <PhoneAppBar title="Launch team" subtitle="9 members · encrypted" />
-              <ChatBubble>Ship it?</ChatBubble>
-              <ChatBubble side="sent">Ship it.</ChatBubble>
-            </PhoneMockup>
+            <PagePhone path={['chats', 'group_convo']} label="A Voiid group chat, interactive" size="md" tilt="right" />
           }
         >
           <div className={styles.proseFlow}>

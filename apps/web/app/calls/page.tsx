@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Hero } from '../../components/Hero';
+import { PagePhone } from '../../components/PagePhone';
 import { Section, Split } from '../../components/Section';
 import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
@@ -80,9 +81,7 @@ export default function CallsPage() {
         }
         badges={<E2EEBadge state="e2ee" detail="All call media · verified keying" />}
         aside={
-          <PhoneMockup hue="calls" tilt="right" label="An encrypted call" decorative>
-            <InCallScreen />
-          </PhoneMockup>
+          <PagePhone path={['chats', 'group_convo', 'group_call']} label="A Voiid group call, interactive" caption="Live preview · leave, then start video" />
         }
       />
 
@@ -169,9 +168,7 @@ export default function CallsPage() {
       >
         <Split
           aside={
-            <PhoneMockup hue="calls" size="sm" tilt="left" label="A group call" decorative>
-              <PhoneAppBar title="Launch team" subtitle="4 on the call" />
-            </PhoneMockup>
+            <PagePhone path={['chats', 'group_convo', 'group_video']} label="A Voiid group video call, interactive" size="md" tilt="left" />
           }
         >
           <div className={styles.prosePlus}>
