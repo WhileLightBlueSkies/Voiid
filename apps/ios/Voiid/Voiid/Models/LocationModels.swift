@@ -235,3 +235,26 @@ enum LocationRounding {
     /// user deliberately chose. Matches Android's PRESENCE_COORD_DECIMALS.
     static let mapDecimals = 6
 }
+
+/// The live participants drawn by a conversation map, independent of their platform.
+struct ConversationLocationParticipant: Identifiable, Equatable {
+    let id: String
+    let conversationId: String?
+    let userId: String
+    let latitude: Double
+    let longitude: Double
+    let state: ShareState
+    let fixedAt: Date?
+    let expiresAt: Date?
+    let accuracy: Double?
+
+    static func visible(_ candidates: [Self], conversationId: String?, selected: Self?) -> [Self] {
+        var result = candidates.filter {
+            conversationId != nil && $0.conversationId == conversationId && $0.state != .ended
+        }
+        // Keep the opened share's final position available without reviving ended peers.
+        if let selected, !result.contains(where: { $0.id == selected.id }) { result.append(selected) }
+        var seen = Set<String>()
+        return result.filter { seen.insert($0.id).inserted }.sorted { $0.id < $1.id }
+    }
+}

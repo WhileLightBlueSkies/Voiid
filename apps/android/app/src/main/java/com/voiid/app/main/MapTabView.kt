@@ -479,9 +479,7 @@ private fun MapCanvas(
                 // Tiles follow the RESOLVED theme (the in-app Light/Dark/System choice), not
                 // the system setting — otherwise picking Dark on a light phone leaves a white
                 // basemap under dark chrome.
-                mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(
-                    if (LocalVoiidDark.current) VOIID_MAP_STYLE_DARK else VOIID_MAP_STYLE_LIGHT,
-                ),
+                mapStyleOptions = rememberLocationMapStyle(),
                 // Your own blue dot — shown whenever we hold the permission, Ghost Mode or not.
                 isMyLocationEnabled = hasLocationPermission,
             ),
@@ -607,6 +605,13 @@ private fun NotSharingList(
 /** The first-open explainer (§8): exactly two choices, default is to appear to no one. */
 @Composable
 private fun MapExplainer(onBrowseOnly: () -> Unit, onChoose: () -> Unit) {
+    var step by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    val titles = listOf("You choose who sees you", "Share with specific people", "Stop sharing any time")
+    val descriptions = listOf(
+        "Ghost mode keeps you hidden. Browsing the map does not share your location.",
+        "Your location is end-to-end encrypted. Choose the people who can see you before sharing starts.",
+        "Switch to Ghost mode to stop sharing. Live locations can lose signal; check the update time before relying on a pin."
+    )
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().padding(28.dp),
         verticalArrangement = Arrangement.Center,
@@ -614,17 +619,20 @@ private fun MapExplainer(onBrowseOnly: () -> Unit, onChoose: () -> Unit) {
     ) {
         Icon(Icons.Default.LocationOn, null, tint = VoiidColor.primary, modifier = Modifier.size(48.dp))
         Spacer(Modifier.size(20.dp))
-        Text("The Map", style = VoiidFont.rounded(26, FontWeight.Bold), color = VoiidColor.textPrimary)
+        Text(titles[step], style = VoiidFont.rounded(26, FontWeight.Bold), color = VoiidColor.textPrimary)
         Spacer(Modifier.size(12.dp))
         Text(
-            "You appear to no one until you choose a scope — everyone you’ve chatted with, just your contacts, or only people you pick. Voiid’s servers know that a share exists and when it ends — they never know where you are. Your location is end-to-end encrypted.",
+            descriptions[step],
             style = VoiidFont.rounded(14),
             color = VoiidColor.textSecondary,
             modifier = Modifier.padding(horizontal = 8.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
         Spacer(Modifier.size(28.dp))
-        VoiidPrimaryButton(title = "Choose who can see me", modifier = Modifier.fillMaxWidth(), onClick = onChoose)
+        Text("${step + 1} of 3", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+        Spacer(Modifier.size(12.dp))
+        VoiidPrimaryButton(title = if (step < 2) "Next" else "Choose who can see me", modifier = Modifier.fillMaxWidth(),
+            onClick = { if (step < 2) step++ else onChoose() })
         Spacer(Modifier.size(12.dp))
         Box(
             Modifier

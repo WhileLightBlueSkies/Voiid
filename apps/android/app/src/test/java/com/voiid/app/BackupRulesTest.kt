@@ -50,6 +50,7 @@ class BackupRulesTest {
         // undecryptable ciphertext that crashes the app on launch — and is a data leak if it
         // ever were decryptable.
         "voiid_auth" to "session token",
+        "voiid_onboarding_completion" to "device-local recovery completion; must not survive reinstall or transfer",
         "voiid_e2e" to "E2E identity and Olm sessions",
         "voiid_chat" to "message plaintext",
         "voiid_recovery" to "the account backup master secret",

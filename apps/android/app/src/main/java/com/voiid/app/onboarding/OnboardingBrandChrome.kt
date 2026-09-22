@@ -426,31 +426,14 @@ fun OnboardingPrimaryButton(
             .fillMaxWidth()
             .height(62.dp)
             .alpha(if (enabled) 1f else 0.55f)
-            // The bloom, drawn behind the pill. Compose has no outer shadow with a colour, so
-            // this is two blurred capsules rather than an elevation value.
-            .drawBehind {
-                val r = size.height / 2f
-                listOf(0.42f to 22f, 0.22f to 44f).forEach { (a, blur) ->
-                    drawRoundRect(
-                        color = OnboardingBrand.lime.copy(alpha = a / 3f),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(r + blur / 2f),
-                        topLeft = Offset(-blur / 2f, -blur / 4f),
-                        size = Size(size.width + blur, size.height + blur / 2f),
-                    )
-                }
-            }
             .clip(CircleShape)
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color(0xFFD8FF45), OnboardingBrand.limeDeep),
-                ),
-            )
+            .background(OnboardingBrand.lime)
             .softClickable(enabled = enabled && !busy) { haptics.rigid(); onClick() },
         contentAlignment = Alignment.Center,
     ) {
         if (busy) {
             CircularProgressIndicator(
-                color = Color(0xFF0B0B0B),
+                color = Color.White,
                 modifier = Modifier.size(22.dp),
                 strokeWidth = 2.dp,
             )
@@ -463,15 +446,15 @@ fun OnboardingPrimaryButton(
                 Text(
                     title,
                     style = VoiidFont.rounded(18, FontWeight.SemiBold),
-                    // Black on lime — 16.59:1, the only correct label colour on this fill.
-                    color = Color(0xFF0B0B0B),
+                    // White on the fixed Tide fill in both themes.
+                    color = Color.White,
                     modifier = Modifier.weight(1f),
                     textAlign = TextAlign.Center,
                 )
                 Icon(
                     Icons.Default.ArrowForward,
                     contentDescription = null,
-                    tint = Color(0xFF0B0B0B),
+                    tint = Color.White,
                     modifier = Modifier.size(20.dp),
                 )
             }

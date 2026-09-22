@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -58,8 +59,18 @@ fun CountryPickerSheet(
     onSelect: (Country) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    androidx.compose.runtime.CompositionLocalProvider(com.voiid.app.ui.theme.LocalVoiidDark provides true) {
+        DarkCountryPickerSheet(selected, onSelect, onDismiss)
+    }
+}
+
+@Composable
+private fun DarkCountryPickerSheet(selected: Country, onSelect: (Country) -> Unit, onDismiss: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
-    val scope = rememberCoroutineScope()
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState(
+        initialFirstVisibleItemIndex = CountryStore.all.indexOfFirst { it.id == selected.id }.coerceAtLeast(0),
+    )
     var query by remember { mutableStateOf("") }
     val results = remember(query) {
         if (query.isBlank()) CountryStore.all
@@ -75,7 +86,15 @@ fun CountryPickerSheet(
         }
     }
 
+    androidx.compose.runtime.LaunchedEffect(query) {
+        listState.scrollToItem(if (query.isBlank()) CountryStore.all.indexOfFirst { it.id == selected.id }.coerceAtLeast(0) else 0)
+    }
+    androidx.compose.runtime.LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) focus.clearFocus()
+    }
+
     fun choose(c: Country) {
+        focus.clearFocus()
         haptics.selection()
         onSelect(c)
         onDismiss()
@@ -88,7 +107,7 @@ fun CountryPickerSheet(
         detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
         showHandle = false,
     ) {
-        Column(Modifier.fillMaxHeight(0.92f)) {
+        Column(Modifier.fillMaxHeight().background(VoiidColor.background).imePadding()) {
             // Header
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 24.dp, bottom = 16.dp),
@@ -127,8 +146,8 @@ fun CountryPickerSheet(
                     onValueChange = { query = it },
                     singleLine = true,
                     textStyle = VoiidFont.rounded(16).merge(TextStyle(color = VoiidColor.textPrimary)),
-                    cursorBrush = SolidColor(VoiidColor.primary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    cursorBrush = SolidColor(VoiidColor.accent),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, autoCorrectEnabled = false, capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None),
                     modifier = Modifier.weight(1f),
                     decorationBox = { inner ->
                         Box(contentAlignment = Alignment.CenterStart) {
@@ -161,7 +180,7 @@ fun CountryPickerSheet(
                     Text("No countries match \u201C$query\u201D", style = VoiidFont.rounded(15),
                         color = VoiidColor.textSecondary)
                 }
-            } else LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+            } else LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState) {
                 items(results, key = { it.id }) { c ->
                     Row(
                         modifier = Modifier
@@ -173,11 +192,10 @@ fun CountryPickerSheet(
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         Text(c.flag, fontSize = 24.sp)
-                        Text(c.name, style = VoiidFont.rounded(17), color = VoiidColor.textPrimary)
-                        Spacer(Modifier.weight(1f))
+                        Text(c.name, style = VoiidFont.rounded(17), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         Text(c.dialCode, style = VoiidFont.rounded(16), color = VoiidColor.textSecondary)
-                        if (c.id == selected.id) {
-                            Icon(Icons.Default.Check, null, tint = VoiidColor.primary, modifier = Modifier.height(18.dp))
+                        Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                            if (c.id == selected.id) Icon(Icons.Default.Check, "Selected", tint = VoiidColor.accent, modifier = Modifier.size(18.dp))
                         }
                     }
                     HorizontalDivider(

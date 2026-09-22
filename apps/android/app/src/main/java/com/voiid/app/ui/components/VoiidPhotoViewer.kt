@@ -1,6 +1,21 @@
 package com.voiid.app.ui.components
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.IconButton
+import com.voiid.app.ui.theme.VoiidColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -55,20 +70,29 @@ object VoiidPhotoViewerDefaults {
     const val DISMISS_FLING: Float = 1400f
 }
 
+data class VoiidPhoto(val id: String, val load: suspend () -> ImageBitmap?)
+
 @Composable
 fun VoiidPhotoViewer(
     title: String?,
     load: suspend () -> ImageBitmap?,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    photos: List<VoiidPhoto> = emptyList(),
+    initialIndex: Int = 0,
 ) {
     val reduceMotion = reduceMotionEnabled()
+    val entries = remember(photos) { photos.ifEmpty { listOf(VoiidPhoto("single", load)) } }
+    var current by remember { mutableStateOf(initialIndex.coerceIn(entries.indices)) }
+    var retry by remember { mutableStateOf(0) }
 
     var image by remember { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        val bmp = runCatching { load() }.getOrNull()
+    LaunchedEffect(current, retry) {
+        image = null
+        failed = false
+        val bmp = try { entries[current].load() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
         if (bmp != null) image = bmp else failed = true
     }
 
@@ -94,22 +118,34 @@ fun VoiidPhotoViewer(
             Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = (1f - kotlin.math.abs(dragY) / 1200f).coerceIn(0.35f, 1f)))
-                .pointerInput(image, reduceMotion) {
+                .pointerInput(image, current) {
                     // Transform first (pinch/pan); taps layered separately.
-                    detectTransformGestures { centroid, pan, zoom, _ ->
-                        if (image == null) return@detectTransformGestures
-                        if (zoom != 1f) {
-                            val newScale = (scale * zoom).coerceIn(1f, VoiidPhotoViewerDefaults.MAX_SCALE)
-                            // Zoom toward the pinch centroid.
-                            val centred = (centroid - offset)
-                            offset = offset + centred * (1f - newScale / scale.coerceAtLeast(0.001f)) * -1f
-                            scale = newScale
-                        } else if (scale > 1f) {
-                            offset += pan
-                        } else {
-                            // At rest scale, a downward drag dismisses; upward drag rubber-bands lightly.
-                            dragY = (dragY + pan.y).coerceAtLeast(-60f)
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var travel = Offset.Zero
+                        do {
+                            val event = awaitPointerEvent()
+                            val pan = event.calculatePan()
+                            val zoom = event.calculateZoom()
+                            travel += pan
+                            if (zoom != 1f || scale > 1f) {
+                                scale = (scale * zoom).coerceIn(1f, VoiidPhotoViewerDefaults.MAX_SCALE)
+                                val x = size.width * (scale - 1f) / 2f
+                                val y = size.height * (scale - 1f) / 2f
+                                offset = Offset((offset.x + pan.x).coerceIn(-x, x), (offset.y + pan.y).coerceIn(-y, y))
+                                event.changes.forEach { it.consume() }
+                            } else if (travel.getDistance() > viewConfiguration.touchSlop) {
+                                if (kotlin.math.abs(travel.y) > kotlin.math.abs(travel.x)) dragY += pan.y
+                                event.changes.forEach { it.consume() }
+                            }
+                        } while (event.changes.any { it.pressed })
+                        if (scale == 1f) {
+                            if (kotlin.math.abs(dragY) > size.height * VoiidPhotoViewerDefaults.DISMISS_TRAVEL_FRACTION) onClose()
+                            else if (kotlin.math.abs(travel.x) > size.width * 0.18f && kotlin.math.abs(travel.x) > kotlin.math.abs(travel.y)) {
+                                current = (current + if (travel.x < 0) 1 else -1).coerceIn(entries.indices)
+                            }
                         }
+                        dragY = 0f
                     }
                 }
                 .pointerInput(image, reduceMotion) {
@@ -141,25 +177,37 @@ fun VoiidPhotoViewer(
                             alpha = (1f - kotlin.math.abs(dragY) / 1600f).coerceIn(0.4f, 1f)
                         },
                 )
-                failed -> Icon(
-                    Icons.Default.Close, null,
-                    tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(44.dp),
-                )
+                failed -> TextButton(onClick = { retry++ }) { Text("Couldn’t load photo · Retry", color = Color.White) }
                 else -> CircularProgressIndicator(color = Color.White)
             }
 
+            if (entries.size > 1) {
+                Text("${current + 1} of ${entries.size}", color = Color.White,
+                    modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(20.dp))
+                LazyRow(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 16.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    itemsIndexed(entries, key = { _, entry -> entry.id }) { index, entry ->
+                        var thumbnail by remember(entry.id) { mutableStateOf<ImageBitmap?>(null) }
+                        LaunchedEffect(entry.id) {
+                            try { thumbnail = entry.load() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { }
+                        }
+                        Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp))
+                            .border(if (current == index) 2.dp else 0.dp, VoiidColor.primary, RoundedCornerShape(10.dp))
+                            .clickable { resetTransform(); dragY = 0f; current = index }) {
+                            thumbnail?.let { Image(it, "Photo ${index + 1}", Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+                        }
+                    }
+                }
+            }
+
             // Close affordance, top-trailing like iOS.
+            IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp)) {
             Icon(
                 Icons.Default.Close, "Close",
                 tint = Color.White,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 40.dp, end = 20.dp)
-                    .size(28.dp)
-                    .pointerInput(reduceMotion) {
-                        detectTapGestures { onClose() }
-                    },
+                modifier = Modifier.size(24.dp),
             )
+            }
         }
     }
 }

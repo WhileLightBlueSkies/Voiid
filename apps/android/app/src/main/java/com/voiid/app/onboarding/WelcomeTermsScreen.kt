@@ -5,6 +5,9 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -122,7 +125,7 @@ fun WelcomeTermsScreen(
                     accepted = it
                 },
             )
-            OnboardingKitButton(title = "Continue", enabled = accepted) {
+            OnboardingKitButton(title = "Continue", enabled = accepted, usesBrandGradient = true) {
                 recordConsent()
                 onContinue()
             }
@@ -258,8 +261,9 @@ private fun ConsentRow(
     Row(
         modifier
             .clip(RoundedCornerShape(12.dp))
-            .softClickable { onToggle(!accepted) }
-            .padding(vertical = 10.dp, horizontal = 4.dp),
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .toggleable(value = accepted, role = Role.Checkbox, onValueChange = onToggle),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -272,8 +276,8 @@ private fun ConsentRow(
                 withStyle(SpanStyle(color = OnboardingBrand.lime)) { append("Privacy Policy") }
                 append(".")
             },
-            style = VoiidFont.rounded(15),
-            color = VoiidColor.textPrimary,
+            style = VoiidFont.subhead,
+            color = VoiidBrand.text,
         )
     }
 }
@@ -299,7 +303,7 @@ private fun CheckboxMark(accepted: Boolean, reduceMotion: Boolean) {
     Box(
         Modifier
             .size(26.dp)
-            .border(2.dp, if (accepted) OnboardingBrand.lime else VoiidColor.fieldBorder, shape)
+            .border(2.dp, if (accepted) OnboardingBrand.lime else VoiidBrand.fieldEdge, shape)
             .background(if (accepted) OnboardingBrand.lime else androidx.compose.ui.graphics.Color.Transparent, shape),
         contentAlignment = Alignment.Center,
     ) {

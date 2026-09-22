@@ -83,6 +83,5 @@ struct MapOnboardingFlow: View {
         }
         // Committed dark for the whole stack, so a push between the two screens never flashes
         // a light-mode navigation bar behind them.
-        .preferredColorScheme(.dark)
     }
 }

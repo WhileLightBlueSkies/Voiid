@@ -131,7 +131,6 @@ struct MapPrivacyScreen: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
-        .preferredColorScheme(.dark)
         .onAppear {
             withAnimation(.easeOut(duration: 0.34)) { appeared = true }
         }
@@ -197,7 +196,7 @@ struct MapPrivacyScreen: View {
                 .frame(width: 30, height: 30)
                 .background(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(positive ? VoiidBrand.lime.opacity(0.14) : Color.white.opacity(0.05))
+                        .fill(positive ? VoiidBrand.lime.opacity(0.14) : VoiidBrand.row)
                 )
 
             VStack(alignment: .leading, spacing: 2) {

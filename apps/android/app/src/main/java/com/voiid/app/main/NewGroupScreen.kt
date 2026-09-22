@@ -115,21 +115,25 @@ fun NewGroupScreen(
             Spacer(Modifier.width(16.dp))
             Text("New group", style = VoiidFont.rounded(20, FontWeight.Bold), color = VoiidColor.textPrimary)
             Spacer(Modifier.weight(1f))
-            Text(
-                if (creating) "Creating…" else "Create",
-                style = VoiidFont.rounded(16, FontWeight.SemiBold),
-                color = if (canCreate) VoiidColor.primary else VoiidColor.textSecondary.copy(alpha = 0.5f),
-                modifier = Modifier.clickable(enabled = canCreate) {
-                    creating = true
-                    scope.launch {
-                        val conv = chat.createGroup(name.trim(), selected.toList())
-                        creating = false
-                        if (conv != null) onOpen(conv)
-                    }
-                },
-            )
+
         }
 
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("A space for your people", style = VoiidFont.rounded(25, FontWeight.Bold), color = VoiidColor.textPrimary)
+            Text("Choose a name and add the people you want to bring together.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+        }
+        if (selected.isNotEmpty()) {
+            androidx.compose.foundation.lazy.LazyRow(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(selected.toList(), key = { it }) { id ->
+                    val contact = matches.firstOrNull { it.userId == id }
+                    Column(Modifier.width(64.dp).clickable(enabled = !creating) { selected.remove(id) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                        ProfileAvatar(photoUrl = com.voiid.app.store.UserDirectory.photoUrl(id), name = contact?.displayName, size = 44.dp)
+                        Text(contact?.displayName ?: "Member", maxLines = 1, style = VoiidFont.rounded(11), color = VoiidColor.textPrimary)
+                        Text("Remove", style = VoiidFont.rounded(10), color = VoiidColor.accentInk)
+                    }
+                }
+            }
+        }
         // Group name field
         Box(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(50.dp)
@@ -160,6 +164,7 @@ fun NewGroupScreen(
             query.isBlank() || it.displayName.contains(query.trim(), ignoreCase = true)
         }
 
+        Box(Modifier.weight(1f)) {
         when {
             loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = VoiidColor.primary) }
             error != null -> Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
@@ -210,6 +215,23 @@ fun NewGroupScreen(
                     }
                 }
             }
+        }
+        }
+        Box(Modifier.fillMaxWidth().padding(20.dp).clip(RoundedCornerShape(28.dp))
+            .background(if (canCreate) VoiidColor.bubbleSent else VoiidColor.fieldFill)
+            .clickable(enabled = canCreate) {
+                creating = true
+                scope.launch {
+                    try {
+                        val conv = chat.createGroup(name.trim(), selected.toList())
+                        if (conv != null) onOpen(conv) else error = "Couldn’t create the group. Please try again."
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { error = "Couldn’t create the group. Please try again." }
+                    finally { creating = false }
+                }
+            }.padding(16.dp), Alignment.Center) {
+            Text(if (creating) "Creating…" else "Create group", style = VoiidFont.rounded(16, FontWeight.SemiBold),
+                color = if (canCreate) VoiidColor.textOnBubble else VoiidColor.textSecondary)
         }
     }
     if (atCapacity) {

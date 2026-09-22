@@ -60,11 +60,13 @@ enum LocationStore {
                      started_at, expires_at, ended_at, cadence_seconds, state)
                 VALUES (?, 'conversation', 'in', ?, ?, ?, ?, NULL, ?, 'live')
                 ON CONFLICT(id) DO UPDATE SET
-                    expires_at = excluded.expires_at,
+                    expires_at = MAX(location_shares.expires_at, excluded.expires_at),
                     peer_user_id = excluded.peer_user_id,
                     cadence_seconds = excluded.cadence_seconds,
-                    ended_at = NULL,
-                    state = 'live'
+                    conversation_id = COALESCE(location_shares.conversation_id, excluded.conversation_id)
+                WHERE location_shares.ended_at IS NULL
+                  AND location_shares.direction = 'in'
+                  AND location_shares.peer_user_id = excluded.peer_user_id
                 """, arguments: [id, conversationId, ownerUserId,
                                  nowSeconds(),
                                  secs(expiresAtMillis) ?? (nowSeconds() + 3600),
@@ -78,6 +80,13 @@ enum LocationStore {
                              arguments: [id, nowSeconds()]) ?? 0
         } ?? 0
         return count > 0
+    }
+
+    static func wasStoppedBeforeExpiry(_ id: String) -> Bool {
+        (db.read { database in
+            try Int.fetchOne(database, sql: "SELECT COUNT(*) FROM location_shares WHERE id = ? AND ended_at < expires_at",
+                             arguments: [id]) ?? 0
+        } ?? 0) > 0
     }
 
     /// Mark a share ended (explicit stop). Idempotent.

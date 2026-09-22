@@ -107,7 +107,6 @@ struct MapIntroScreen: View {
         .toolbar(.hidden, for: .navigationBar)
         // Committed dark: force the dark scheme so any system-drawn affordance inside this
         // screen (scroll bars, the keyboard-less controls) matches the ground it sits on.
-        .preferredColorScheme(.dark)
         .onAppear {
             // ease-out, 340ms: an entrance, and the first frame is the one being watched.
             withAnimation(.easeOut(duration: 0.34)) { appeared = true }

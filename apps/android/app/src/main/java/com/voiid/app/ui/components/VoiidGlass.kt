@@ -88,6 +88,8 @@ fun VoiidGlassSurface(
 fun Window.applyVoiidGlassBlur(blurRadiusDp: Int = 24) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
-        attributes.blurBehindRadius = (blurRadiusDp * context.resources.displayMetrics.density).toInt()
+        attributes = attributes.apply {
+            blurBehindRadius = (blurRadiusDp * context.resources.displayMetrics.density).toInt()
+        }
     }
 }

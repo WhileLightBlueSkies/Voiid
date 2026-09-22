@@ -14,7 +14,7 @@ import Combine
 
 @MainActor
 final class AppSession: ObservableObject {
-    enum Route { case onboarding, main }
+    enum Route { case onboarding, recovery, main }
     @Published var route: Route
     // Empty until the REAL profile loads (loadLocalProfile → refreshServerProfile). Never a
     // dummy "You / +91 …" placeholder that could flash on screen before the real data arrives.
@@ -99,7 +99,14 @@ final class AppSession: ObservableObject {
 
     init() {
         // Resume straight to the app if we already hold a valid session token.
-        route = AuthService.shared.isAuthenticated ? .main : .onboarding
+        let account = TokenStore.shared.userId ?? ""
+        let readyKey = "voiid.recovery.ready.\(account)"
+        // Recover completed restores from builds that only set readiness on UI dismissal.
+        let restored = BackupManager.shared.lastCompletedRestore != nil && BackupManager.shared.hasLocalSecret
+        if restored { UserDefaults.standard.set(true, forKey: readyKey) }
+        route = AuthService.shared.isAuthenticated
+            ? (UserDefaults.standard.bool(forKey: readyKey) ? .main : .recovery)
+            : .onboarding
         loadLocalProfile()
         // Show the REAL verified number, never DummyData's placeholder. Prefer the value
         // captured at OTP time; fall back to Firebase's persisted signed-in user (covers
@@ -237,6 +244,7 @@ final class AppSession: ObservableObject {
     /// Called at the end of onboarding once a real session token exists
     /// (onboarding logs in via AuthService before calling this).
     func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: "voiid.recovery.ready.\(TokenStore.shared.userId ?? "")")
         withAnimation(.easeInOut) { route = .main }
     }
 

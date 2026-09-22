@@ -133,7 +133,6 @@ struct SplashScreen: View {
         }
         // The status bar's glyphs have to read against near-black, and in light mode they would
         // be drawn dark on dark.
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -183,7 +182,7 @@ struct LogoMark: View {
             VoiidMark(size: markSize)
 
             BrandWordmark(size: OnboardingHeader.wordmarkSize,
-                          color: .white,
+                          color: VoiidBrand.text,
                           dotColor: VoiidBrand.lime)
         }
     }

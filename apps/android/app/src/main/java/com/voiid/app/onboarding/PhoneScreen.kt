@@ -30,6 +30,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -174,91 +177,61 @@ fun PhoneScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(OnboardingBrand.ground)) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.height(4.dp))
-            // No help destination exists on this screen yet, so the slot is left empty rather
-            // than wired to a no-op that looks broken when tapped.
-            OnboardingTopBar(onBack = onBack)
-
-            Column(
-                Modifier.weight(1f).verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-            OnboardingBrandHeader(appeared = appeared)
-
-            // The WORDMARK sits under the mark on this screen, which the first two do not have —
-            // the design gives phone entry the full lockup.
-            LogoMark(size = 130.dp)
-
-            Spacer(Modifier.height(6.dp))
-            OnboardingTitle(leading = "Enter your ", accented = "phone number")
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "We will send you a verification code\nto confirm your number.",
-                style = VoiidFont.rounded(17),
-                color = VoiidColor.textSecondary,
-                textAlign = TextAlign.Center,
+    Column(Modifier.fillMaxSize().background(VoiidBrand.ground).statusBarsPadding().imePadding()) {
+        Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.IconButton(onClick = { focus.clearFocus(); haptics.tap(); onBack() }) {
+                Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = "Back", tint = VoiidBrand.text, modifier = Modifier.size(28.dp))
+            }
+        }
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            OnboardingHeader(
+                title = OnboardingTitleSpec.Stacked("Enter your", "phone number"),
+                blurb = "We'll send you a verification code\nto confirm your number.",
             )
-
-            Spacer(Modifier.height(26.dp))
-
-            // Dial code and number in ONE pill, split by a hairline. One field rather than two:
-            // they are one value, and two separate pills invite the user to type the country
-            // code into the number half — which then fails validation for a reason the screen
-            // never explains.
+            Spacer(Modifier.height(24.dp))
             val borderColor by animateColorAsState(
-                if (focused) OnboardingBrand.lime.copy(alpha = 0.7f)
-                else Color.White.copy(alpha = 0.08f),
+                if (focused) VoiidBrand.lime
+                else VoiidBrand.fieldEdge,
                 tween(180), label = "phoneFieldBorder",
             )
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .height(72.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(OnboardingBrand.card)
-                    .border(if (focused) 1.5.dp else 1.dp, borderColor, RoundedCornerShape(18.dp)),
+                    .height(62.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(VoiidBrand.field)
+                    .border(if (focused) 1.5.dp else 1.dp, borderColor, RoundedCornerShape(16.dp)),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(
                     Modifier
-                        .padding(start = 8.dp)
-                        .height(56.dp)
+                        .height(62.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.04f))
-                        .softClickable { haptics.tap(); showPicker = true }
-                        .padding(horizontal = 14.dp),
+                        .softClickable { haptics.tap(); focus.clearFocus(); showPicker = true }
+                        .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(country.flag, fontSize = 22.sp)
-                    Text(country.dialCode, style = VoiidFont.rounded(17, FontWeight.SemiBold),
-                         color = VoiidColor.textPrimary)
+                    Text(country.dialCode, style = VoiidFont.rounded(17, FontWeight.Medium),
+                         color = VoiidBrand.text)
                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = null,
-                         tint = OnboardingBrand.lime, modifier = Modifier.size(18.dp))
+                         tint = VoiidBrand.textDim, modifier = Modifier.size(12.dp))
                 }
 
                 Box(
                     Modifier
-                        .padding(horizontal = 12.dp)
                         .width(1.dp)
-                        .height(40.dp)
-                        .background(OnboardingBrand.hairline),
+                        .height(34.dp)
+                        .background(VoiidBrand.hairline),
                 )
 
                 BasicTextField(
                     value = phone,
                     onValueChange = { raw ->
-                        phone = raw
+                        phone = normalisePhone(raw, country)
                         // Reaching the country's full length is the end of the task: the
                         // keyboard steps out of the way of Continue rather than sitting over
                         // it, and the soft press confirms the number is complete.
@@ -268,23 +241,20 @@ fun PhoneScreen(
                         }
                     },
                     singleLine = true,
-                    textStyle = TextStyle(
-                        color = VoiidColor.textPrimary,
-                        fontSize = 17.sp,
-                    ),
-                    cursorBrush = SolidColor(OnboardingBrand.lime),
+                    textStyle = VoiidFont.rounded(17, FontWeight.Medium).copy(color = VoiidBrand.text),
+                    cursorBrush = SolidColor(VoiidBrand.lime),
                     interactionSource = interaction,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Phone,
                         imeAction = ImeAction.Go,
                     ),
                     keyboardActions = KeyboardActions(onGo = { sendOtp() }),
-                    modifier = Modifier.weight(1f).padding(end = 16.dp)
+                    modifier = Modifier.weight(1f).padding(horizontal = 16.dp)
                         .focusRequester(fieldFocus),
                     decorationBox = { inner ->
                         if (phone.isEmpty()) {
-                            Text("Enter phone number", style = VoiidFont.rounded(17),
-                                 color = VoiidColor.placeholder)
+                            Text("Phone number", style = VoiidFont.rounded(17, FontWeight.Medium),
+                                 color = VoiidBrand.placeholder)
                         }
                         inner()
                     },
@@ -292,75 +262,28 @@ fun PhoneScreen(
             }
 
             errorText?.let {
-                Spacer(Modifier.height(10.dp))
                 Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error,
-                     textAlign = TextAlign.Center,
-                     modifier = Modifier.padding(horizontal = 24.dp))
+                    textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
             }
-
-            Spacer(Modifier.height(20.dp))
-
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Icon(Icons.Outlined.VerifiedUser, contentDescription = null,
-                     tint = OnboardingBrand.lime, modifier = Modifier.size(24.dp))
-                Column {
-                    Text("Your number is safe with us",
-                         style = VoiidFont.rounded(16, FontWeight.SemiBold),
-                         color = VoiidColor.textPrimary)
-                    Text("We never share your number with anyone.",
-                         style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-                }
-            }
-
-            Spacer(Modifier.height(18.dp))
-
-            OnboardingTrustStrip(
-                items = listOf(
-                    TrustItem("e2ee", Icons.Outlined.Lock, "End-to-end", "encrypted"),
-                    TrustItem("private", Icons.Outlined.Shield, "Private &", "secure"),
-                    TrustItem("nospam", Icons.Outlined.People, "No spam", "promises"),
-                    TrustItem("control", Icons.Outlined.CheckCircle, "You're in", "control"),
-                ),
-                modifier = Modifier.padding(horizontal = 20.dp),
-            )
-
-            Spacer(Modifier.height(16.dp))
-            }
-
-            Box(Modifier.padding(horizontal = 20.dp).fillMaxWidth()) {
-                OnboardingPrimaryButton(
-                    title = "Continue",
-                    busy = sending,
-                    // Dimmed while the number is too short to send.
-                    modifier = if (valid) Modifier else Modifier.alpha(0.45f),
-                ) { sendOtp() }
-            }
-
-            Spacer(Modifier.height(14.dp))
-
-            // Consent was already given on the welcome screen; this is a reminder, not a second
-            // gate. Kept as plain text because the documents are one step back in the flow and
-            // a link here would take the user out of a form they are mid-way through.
-            Text(
-                buildAnnotatedString {
-                    withStyle(SpanStyle(color = VoiidColor.textSecondary)) {
-                        append("By continuing, you agree to Voiid's ")
-                    }
-                    withStyle(SpanStyle(color = OnboardingBrand.lime)) { append("Terms of Service") }
-                    withStyle(SpanStyle(color = VoiidColor.textSecondary)) {
-                        append(" and acknowledge our ")
-                    }
-                    withStyle(SpanStyle(color = OnboardingBrand.lime)) { append("Privacy Policy") }
-                    withStyle(SpanStyle(color = VoiidColor.textSecondary)) { append(".") }
-                },
-                style = VoiidFont.rounded(13),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 24.dp),
-            )
+            Spacer(Modifier.height(24.dp))
+            PhonePromiseCard(Icons.Outlined.Lock, "Secure & private", "Your number is encrypted and always private.")
             Spacer(Modifier.height(10.dp))
+            PhonePromiseCard(Icons.Outlined.ChatBubbleOutline, "No spam. Ever.", "We never share your number with anyone.")
+            Spacer(Modifier.height(10.dp))
+            PhonePromiseCard(Icons.Outlined.PersonOutline, "Used only for you", "To verify your identity and keep your account secure.")
+            Spacer(Modifier.height(24.dp))
+        }
+        OnboardingFooter {
+            OnboardingKitButton(title = "Continue", enabled = valid && !sending, busy = sending, usesBrandGradient = true) {
+                focus.clearFocus()
+                sendOtp()
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Lock, null, tint = VoiidBrand.lime, modifier = Modifier.size(13.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("We'll send a verification code by SMS.\nMessage and data rates may apply.",
+                    style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim, textAlign = TextAlign.Center)
+            }
         }
     }
 
@@ -380,5 +303,24 @@ fun PhoneScreen(
             },
             onDismiss = { showPicker = false },
         )
+    }
+}
+
+@Composable
+private fun PhonePromiseCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, detail: String) {
+    val shape = RoundedCornerShape(16.dp)
+    Row(Modifier.fillMaxWidth().background(VoiidBrand.card, shape).border(1.dp, VoiidBrand.hairline, shape)
+        .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(46.dp).background(VoiidBrand.lime.copy(alpha = 0.1f), androidx.compose.foundation.shape.CircleShape),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = VoiidBrand.lime, modifier = Modifier.size(19.dp))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidBrand.text)
+            Text(detail, style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim)
+        }
+        Box(Modifier.width(1.dp).height(40.dp).background(VoiidBrand.hairline))
+        Icon(Icons.Outlined.VerifiedUser, null, tint = VoiidBrand.lime, modifier = Modifier.size(20.dp))
     }
 }

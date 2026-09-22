@@ -89,7 +89,6 @@ struct VerifiedScreen: View {
                 Spacer(minLength: 0)
             }
         }
-        .preferredColorScheme(.dark)
         .navigationBarBackButtonHidden(true)
         // The moment is over — there is nothing to go back TO, because the number is verified.
         .toolbar(.hidden, for: .navigationBar)

@@ -62,6 +62,10 @@ data class LocationLastFixRow(
 @Dao
 abstract class LocationDao {
 
+    @Query("SELECT * FROM location_shares WHERE kind = 'conversation'")
+    abstract fun allConversationShares(): List<LocationShareRow>
+
+
     @Query("SELECT * FROM location_shares WHERE ended_at IS NULL ORDER BY started_at DESC")
     abstract fun activeShares(): List<LocationShareRow>
 

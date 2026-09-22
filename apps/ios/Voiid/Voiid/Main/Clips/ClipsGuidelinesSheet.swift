@@ -58,7 +58,6 @@ struct ClipsGuidelinesSheet: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .tint(VoiidColor.primary)
     }
 

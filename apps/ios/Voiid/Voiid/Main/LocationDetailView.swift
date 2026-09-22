@@ -39,6 +39,7 @@ struct LocationDetailView: View {
     var conversationId: String?
     /// Accuracy carried by the message itself, for a static pin with no live fix stream.
     var accuracy: Double?
+    var hasInitialCoordinate: Bool
 
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var engine = LocationShareEngine.shared
@@ -53,7 +54,7 @@ struct LocationDetailView: View {
 
     init(coordinate: CLLocationCoordinate2D, label: String?, live: Bool,
          state: ShareState, shareId: String?, conversationId: String? = nil,
-         accuracy: Double? = nil) {
+         accuracy: Double? = nil, hasInitialCoordinate: Bool = true) {
         self.coordinate = coordinate
         self.label = label
         self.live = live
@@ -61,53 +62,46 @@ struct LocationDetailView: View {
         self.shareId = shareId
         self.conversationId = conversationId
         self.accuracy = accuracy
+        self.hasInitialCoordinate = hasInitialCoordinate
         _position = State(initialValue: .region(MKCoordinateRegion(
             center: coordinate, latitudinalMeters: 800, longitudinalMeters: 800)))
     }
 
-    /// One drawable sharer: who they are, where they are now, and how fresh that is.
-    private struct Sharer: Identifiable {
-        let id: String            // shareId
-        let userId: String
-        let coordinate: CLLocationCoordinate2D
-        let state: ShareState
-        let fixedAt: Date?
-        let expiresAt: Date?
-        /// Device-reported accuracy of this fix, in metres — drives the honesty line.
-        let accuracy: Double?
-    }
+    private typealias Sharer = ConversationLocationParticipant
 
-    /// Every still-running sharer in this conversation, newest fix each. Recomputed whenever
-    /// the engine's `version` ticks, which is what makes the pins move.
+    /// Combine incoming and outgoing shares from this chat, including my marker when I
+    /// opened someone else's bubble. Fixes from unrelated chats never enter this map.
     private var sharers: [Sharer] {
         guard live else { return [] }
-        guard let conversationId else { return primarySharer.map { [$0] } ?? [] }
-        let rows = LocationStore.activeInbound(conversationId: conversationId)
-        let all: [Sharer] = rows.compactMap { row -> Sharer? in
+        let rows = conversationId.map { LocationStore.activeInbound(conversationId: $0) } ?? []
+        let incoming = rows.compactMap { row -> Sharer? in
             guard let fix = engine.lastFix(shareId: row.shareId) else { return nil }
-            let s = engine.shareState(shareId: row.shareId, expiresAt: row.expiresAt, cadence: row.cadence)
-            guard s != .ended else { return nil }
-            return Sharer(id: row.shareId, userId: row.ownerUserId,
-                          coordinate: CLLocationCoordinate2D(latitude: fix.lat, longitude: fix.lon),
-                          state: s, fixedAt: fix.date, expiresAt: row.expiresAt,
-                          accuracy: fix.acc)
+            return Sharer(id: row.shareId, conversationId: conversationId, userId: row.ownerUserId,
+                          latitude: fix.lat, longitude: fix.lon,
+                          state: engine.shareState(shareId: row.shareId, expiresAt: row.expiresAt, cadence: row.cadence),
+                          fixedAt: fix.date, expiresAt: row.expiresAt, accuracy: fix.acc)
         }
-        // A share opened from MY OWN bubble is outbound and won't be in `activeInbound`; keep
-        // the fallback so the sheet is never empty.
-        if let primary = primarySharer, !all.contains(where: { $0.id == primary.id }) {
-            return all + [primary]
+        let outgoing = engine.outboundShares.compactMap { share -> Sharer? in
+            guard let fix = engine.lastFix(shareId: share.id) else { return nil }
+            return Sharer(id: share.id, conversationId: share.conversationId,
+                          userId: TokenStore.shared.userId ?? "", latitude: fix.lat, longitude: fix.lon,
+                          state: engine.shareState(shareId: share.id, expiresAt: share.expiresAt, cadence: share.cadenceSeconds),
+                          fixedAt: fix.date, expiresAt: share.expiresAt, accuracy: fix.acc)
         }
-        return all
+        return Sharer.visible(incoming + outgoing, conversationId: conversationId, selected: primarySharer)
     }
 
     /// The share this bubble opened — drives the header text and the coordinate readout.
     private var primarySharer: Sharer? {
         guard let shareId else { return nil }
         let fix = engine.lastFix(shareId: shareId)
+        guard hasInitialCoordinate || fix != nil else { return nil }
         return Sharer(
             id: shareId,
-            userId: "",
-            coordinate: fix.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } ?? coordinate,
+            conversationId: conversationId,
+            userId: LocationStore.lastFix(shareId: shareId)?.senderUserId ?? "",
+            latitude: fix?.lat ?? coordinate.latitude,
+            longitude: fix?.lon ?? coordinate.longitude,
             state: engine.shareState(shareId: shareId, expiresAt: nil, cadence: 15),
             fixedAt: fix?.date,
             expiresAt: engine.outboundShares.first(where: { $0.id == shareId })?.expiresAt
@@ -122,29 +116,52 @@ struct LocationDetailView: View {
 
     /// What the map is centred on: the live fix when we have one, else the message's own.
     private var focus: CLLocationCoordinate2D {
-        sharers.first(where: { $0.id == shareId })?.coordinate ?? sharers.first?.coordinate ?? coordinate
+        primarySharer?.coordinate ?? coordinate
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            map.ignoresSafeArea()
-            header
-            controls
+        NavigationStack {
+            ZStack(alignment: .top) {
+                map.ignoresSafeArea()
+                header
+                controls
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .tint(VoiidColor.textPrimary)
         }
         // No colour-scheme pin: Peacock tokens resolve per theme, and a sheet that
         // forced light would be the one bright rectangle in a dark app.
         .onReceive(ticker) { now = $0 }
         // Follow the sharer until the user takes the camera over. `focus` changes on every new
         // fix, so this is what makes the camera track a friend who is walking.
-        .onChange(of: focus.latitude) { _, _ in follow() }
-        .onChange(of: focus.longitude) { _, _ in follow() }
+        .onAppear { follow() }
+        .onChange(of: sharers) { _, _ in follow() }
     }
 
     private func follow() {
         guard live, !userPanned else { return }
+        let points = sharers.map { MKMapPoint($0.coordinate) }
         withAnimation(.easeInOut(duration: 0.8)) {
-            position = .region(MKCoordinateRegion(center: focus,
-                                                  latitudinalMeters: 800, longitudinalMeters: 800))
+            if points.count > 1 {
+                let bounds = points.reduce(MKMapRect.null) { rect, point in
+                    rect.union(MKMapRect(x: point.x, y: point.y, width: 1, height: 1))
+                }
+                let minimum = 800 * MKMapPointsPerMeterAtLatitude(focus.latitude)
+                let width = max(bounds.width * 1.5, minimum)
+                let height = max(bounds.height * 1.8, minimum)
+                position = .rect(MKMapRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2,
+                                          width: width, height: height))
+            } else {
+                position = .region(MKCoordinateRegion(center: focus,
+                                                      latitudinalMeters: 800, longitudinalMeters: 800))
+            }
         }
     }
 
@@ -197,18 +214,16 @@ struct LocationDetailView: View {
 
     private var header: some View {
         HStack(alignment: .top) {
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .bold)).foregroundColor(VoiidColor.textPrimary)
-                    .padding(10).background(VoiidColor.surfaceCard).clipShape(Circle())
-                    .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
-            }
             Spacer()
             if live {
                 VStack(alignment: .trailing, spacing: 3) {
                     HStack(spacing: 6) {
                         Circle().fill(stateColor).frame(width: 8, height: 8)
                         Text(stateLabel).font(VoiidFont.rounded(12, .semibold)).foregroundColor(VoiidColor.textPrimary)
+                    }
+                    if sharers.count > 1 {
+                        Text("\(sharers.filter { $0.state != .ended }.count) people sharing")
+                            .font(VoiidFont.rounded(11)).foregroundColor(VoiidColor.textSecondary)
                     }
                     // WhatsApp's "Live until …" — countdown to expiry + freshness of the fix.
                     if let sub = liveSubtitle {
@@ -259,6 +274,8 @@ struct LocationDetailView: View {
                 actionButton("Open in Maps", "map.fill") { open(directions: false) }
                 actionButton("Directions", "arrow.triangle.turn.up.right.circle.fill") { open(directions: true) }
             }
+            .disabled(live && primarySharer == nil)
+            .opacity(live && primarySharer == nil ? 0.5 : 1)
             .padding(.horizontal, VoiidSpacing.lg).padding(.bottom, VoiidSpacing.xl)
         }
     }
@@ -325,4 +342,8 @@ struct LocationDetailView: View {
         item.openInMaps(launchOptions: directions
             ? [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving] : nil)
     }
+}
+
+private extension ConversationLocationParticipant {
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
 }

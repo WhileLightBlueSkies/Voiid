@@ -29,6 +29,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,6 +69,9 @@ fun StoriesHomeView(
     onOpenContext: (Int) -> Unit,
     onCompose: () -> Unit,
 ) {
+    val session: com.voiid.app.model.AppSession = androidx.lifecycle.viewmodel.compose.viewModel()
+    var showArchive by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (showArchive) StoryArchiveScreen(onClose = { showArchive = false })
     val largeText = LocalDensity.current.fontScale >= 1.5f
     val newContexts = stories.othersContexts.filter { it.hasUnviewed }
     val seenContexts = stories.othersContexts.filter { !it.hasUnviewed }
@@ -82,10 +87,13 @@ fun StoriesHomeView(
         ) {
             item {
                 Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+                Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Moments", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary,
-                    modifier = Modifier.padding(vertical = 12.dp),
+                    modifier = Modifier.weight(1f).padding(vertical = 12.dp),
                 )
+                androidx.compose.material3.TextButton(onClick = { showArchive = true }) { Text("Archive", color = VoiidColor.accentInk) }
+                }
             }
 
             // "Your story"
@@ -93,7 +101,7 @@ fun StoriesHomeView(
                 val mine = stories.myContext
                 StoryRow(
                     name = "Your moment",
-                    photoUrl = mine?.photoUrl,
+                    photoUrl = session.profile.photoURL ?: mine?.photoUrl,
                     subtitle = when {
                         mine == null -> "Add to your moment"
                         mine.newest?.uploadState == StoryUploadState.UPLOADING -> "Posting…"

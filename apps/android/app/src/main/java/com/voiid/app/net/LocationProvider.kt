@@ -41,15 +41,19 @@ class LocationProvider(context: Context) {
      * SecurityException if permission is not actually held — the caller guarantees it is.
      */
     @SuppressLint("MissingPermission")
-    fun startLive(onFix: (Location) -> Unit) {
+    fun startLive(onError: () -> Unit = {}, onFix: (Location) -> Unit) {
         stop()
         val cb = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
-                result.lastLocation?.let(onFix)
+                result.lastLocation?.let { location ->
+                    if (isRecent(location)) recentFix = Location(location)
+                    onFix(location)
+                }
             }
         }
         callback = cb
         client.requestLocationUpdates(liveRequest(), cb, Looper.getMainLooper())
+            .addOnFailureListener { if (callback === cb) { stop(); onError() } }
     }
 
     /** One best-effort current fix (for the static pin). Never throws to the caller. */
@@ -69,6 +73,51 @@ class LocationProvider(context: Context) {
                 .addOnSuccessListener { onResult(it) }
                 .addOnFailureListener { onResult(null) }
         }.onFailure { onResult(null) }
+    }
+
+    /** Cancellable, bounded request independent of the continuous live callback. */
+    @SuppressLint("MissingPermission")
+    suspend fun freshFix(): Location? {
+        if (!LocationPermissions.hasForeground(appContext)) return null
+        recentFix?.takeIf { isRecent(it) }?.let { return Location(it) }
+        return kotlinx.coroutines.withTimeoutOrNull(15_000) {
+            kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+                val cancellation = com.google.android.gms.tasks.CancellationTokenSource()
+                continuation.invokeOnCancellation { cancellation.cancel() }
+                if (!LocationPermissions.hasForeground(appContext)) {
+                    continuation.resumeWith(Result.success(null))
+                } else runCatching {
+                    val request = com.google.android.gms.location.CurrentLocationRequest.Builder()
+                        .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                        .setMaxUpdateAgeMillis(15_000)
+                        .setDurationMillis(15_000)
+                        .build()
+                    client.getCurrentLocation(request, cancellation.token)
+                        .addOnSuccessListener { location ->
+                            val valid = location?.takeIf { isRecent(it) }
+                            valid?.let { recentFix = Location(it) }
+                            if (continuation.isActive) continuation.resumeWith(Result.success(valid))
+                        }
+                        .addOnFailureListener {
+                            if (continuation.isActive) continuation.resumeWith(Result.success(null))
+                        }
+                }.onFailure {
+                    if (continuation.isActive) continuation.resumeWith(Result.success(null))
+                }
+            }
+        }
+    }
+
+    companion object {
+        // Shared by the picker and live engine, but only for a strictly recent sensor fix.
+        // A manually selected map coordinate is never used to start a live share.
+        @Volatile private var recentFix: Location? = null
+        private fun isRecent(location: Location): Boolean {
+            val age = (android.os.SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000
+            return location.latitude.isFinite() && location.longitude.isFinite() &&
+                location.latitude in -90.0..90.0 && location.longitude in -180.0..180.0 &&
+                location.hasAccuracy() && location.accuracy.isFinite() && location.accuracy >= 0 && age in 0..15_000
+        }
     }
 
     fun stop() {

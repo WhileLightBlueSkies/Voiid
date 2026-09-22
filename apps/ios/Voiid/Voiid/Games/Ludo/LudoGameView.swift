@@ -46,7 +46,6 @@ struct LudoGameView: View {
 
             if showSetup { setup }
         }
-        .preferredColorScheme(.dark)
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
         .onAppear {
@@ -235,7 +234,7 @@ struct LudoGameView: View {
                 Text("ROLL")
                     .font(Theme.label(12))
                     .tracking(1.8)
-                    .foregroundStyle(Theme.ink)
+                    .foregroundStyle(Color(ludoHex: 0x0E1620))
                     .padding(.horizontal, 20)
                     .padding(.vertical, 13)
                     .background {
@@ -265,7 +264,7 @@ struct LudoGameView: View {
 
     private var setup: some View {
         ZStack {
-            Color(ludoHex: 0x080D13).opacity(0.86).ignoresSafeArea()
+            VoiidColor.background.opacity(0.96).ignoresSafeArea()
 
             VStack(spacing: 6) {
                 HStack {
@@ -375,7 +374,7 @@ struct SeatRail: View {
                         ForEach(0..<4, id: \.self) { pip in
                             Capsule()
                                 .fill(pip < game.state.homeCount(seat)
-                                      ? Theme.seat(seat) : Color(ludoHex: 0x2C3D51))
+                                      ? Theme.seat(seat) : VoiidColor.surfaceRaised)
                                 .frame(height: 4)
                         }
                     }

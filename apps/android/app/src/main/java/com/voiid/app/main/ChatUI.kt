@@ -1,5 +1,8 @@
 package com.voiid.app.main
 
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -64,6 +67,7 @@ import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import com.voiid.app.ui.components.applyVoiidGlassBlur
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -284,12 +288,26 @@ fun MessageBubble(
                         }
 
                         // Long-press reaction + actions popover
-                        androidx.compose.material3.DropdownMenu(
-                            expanded = showMenu, onDismissRequest = { showMenu = false },
-                            modifier = Modifier.width(324.dp),
-                            shape = RoundedCornerShape(20.dp), containerColor = VoiidColor.surfaceCard,
+                        if (showMenu) androidx.compose.ui.window.Dialog(
+                            onDismissRequest = { showMenu = false },
+                            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
                         ) {
+                            val view = androidx.compose.ui.platform.LocalView.current
+                            androidx.compose.runtime.DisposableEffect(view) {
+                                val window = (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
+                                window?.applyVoiidGlassBlur()
+                                onDispose { }
+                            }
+                            Column(Modifier.fillMaxWidth().padding(24.dp).widthIn(max = 340.dp)
+                                .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             ReactionActionMenu(
+                                preview = {
+                            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+                                .background(if (mine) VoiidColor.bubbleSent else VoiidColor.bubbleReceived).padding(14.dp)) {
+                                Text(if (message.deletedForEveryone) "Message deleted" else message.text.ifBlank { message.kind.name.lowercase().replaceFirstChar { it.uppercase() } },
+                                    maxLines = 4, style = VoiidFont.rounded(15), color = if (mine) VoiidColor.textOnBubble else VoiidColor.textPrimary)
+                            }
+                                },
                                 isMine = mine,
                                 canReact = !message.deletedForEveryone && message.status != MessageStatus.SENDING && message.status != MessageStatus.FAILED,
                                 onReact = { showMenu = false; onReact(it) },
@@ -301,6 +319,7 @@ fun MessageBubble(
                                 onDelete = { showMenu = false; onDelete() },
                                 onSelect = { showMenu = false; onSelect() },
                             )
+                            }
                         }
                     }
                     if (!message.deletedForEveryone && message.reactions.isNotEmpty()) {
@@ -409,10 +428,19 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
                     ChatVideoViewer(ref, onClose = { viewingFull = false })
                 } else if (viewingFull) {
                     val ctx = androidx.compose.ui.platform.LocalContext.current
+                    val photos = remember(message.id) {
+                        com.voiid.app.net.ChatEngine.get(ctx).messages(message.conversationId)
+                            .filter { !it.deletedForEveryone && it.media?.mime?.startsWith("image/") == true }
+                            .mapNotNull { item -> item.media?.let { media ->
+                                com.voiid.app.ui.components.VoiidPhoto(item.id) { loadMediaBitmap(ctx, media) }
+                            } }
+                    }
                     com.voiid.app.ui.components.VoiidPhotoViewer(
                         title = null,
                         onClose = { viewingFull = false },
                         load = { loadMediaBitmap(ctx, ref) },
+                        photos = photos,
+                        initialIndex = photos.indexOfFirst { it.id == message.id }.coerceAtLeast(0),
                     )
                 }
             } else {
@@ -636,13 +664,14 @@ private fun styledText(text: String, mine: Boolean) = buildAnnotatedString {
 
 @Composable
 private fun ReactionActionMenu(
+    preview: @Composable () -> Unit,
     isMine: Boolean, canReact: Boolean,
     onReact: (String) -> Unit, onMore: () -> Unit,
     onReply: () -> Unit, onForward: () -> Unit, onCopy: () -> Unit,
     onInfo: () -> Unit, onDelete: () -> Unit, onSelect: () -> Unit,
 ) {
     if (canReact) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        Row(Modifier.fillMaxWidth().clip(CircleShape).background(VoiidColor.surfaceCard).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically) {
             reactionSet.forEach { emoji ->
                 androidx.compose.material3.IconButton(onClick = { onReact(emoji) }, modifier = Modifier.weight(1f).height(44.dp)) {
@@ -653,14 +682,16 @@ private fun ReactionActionMenu(
                 Icon(Icons.Default.Add, "More reactions", tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
             }
         }
-        androidx.compose.material3.HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.5f))
     }
+    preview()
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(VoiidColor.surfaceCard)) {
     ChatActionItem("Reply", Icons.AutoMirrored.Filled.Reply, onReply)
     ChatActionItem("Forward", Icons.AutoMirrored.Filled.Forward, onForward)
     ChatActionItem("Copy", Icons.Default.ContentCopy, onCopy)
     if (isMine) ChatActionItem("Info", Icons.Default.Info, onInfo)
     ChatActionItem("Select", Icons.Default.CheckCircle, onSelect)
     ChatActionItem("Delete", Icons.Default.Delete, onDelete, destructive = true)
+    }
 }
 
 @Composable
@@ -668,7 +699,7 @@ private fun ChatActionItem(label: String, icon: ImageVector, onClick: () -> Unit
     val color = if (destructive) VoiidColor.error else VoiidColor.textPrimary
     androidx.compose.material3.DropdownMenuItem(
         text = { Text(label, style = VoiidFont.rounded(15), color = color) },
-        trailingIcon = { Icon(icon, null, tint = color, modifier = Modifier.size(20.dp)) },
+        leadingIcon = { Icon(icon, null, tint = color, modifier = Modifier.size(20.dp)) },
         onClick = onClick,
     )
 }

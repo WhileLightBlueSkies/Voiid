@@ -12,19 +12,19 @@ typealias LudoTheme = Theme
 enum Theme {
 
     // MARK: Surfaces
-    static let ink      = Color(ludoHex: 0x0E1620)
-    static let ink2     = Color(ludoHex: 0x16212E)
-    static let ink3     = Color(ludoHex: 0x1E2C3C)
-    static let hairline = Color(ludoHex: 0x263547)
+    static let ink      = VoiidColor.background
+    static let ink2     = VoiidColor.surfaceCard
+    static let ink3     = VoiidColor.surfaceRaised
+    static let hairline = VoiidColor.divider
 
     static let board   = Color(ludoHex: 0xF3E9D6)
     static let board2  = Color(ludoHex: 0xE8DAC0)
     static let line    = Color(ludoHex: 0xB9A484)
     static let brass   = Color(ludoHex: 0xC9A227)
     static let brassLo = Color(ludoHex: 0x8A6E15)
-    static let cream   = Color(ludoHex: 0xFFF8EA)
-    static let muted   = Color(ludoHex: 0x9DAFC2)
-    static let faint   = Color(ludoHex: 0x5C6E80)
+    static let cream   = VoiidColor.textPrimary
+    static let muted   = VoiidColor.textSecondary
+    static let faint   = VoiidColor.textSecondary
 
     // MARK: Seats
     static let seatColours: [Color] = [
@@ -39,7 +39,7 @@ enum Theme {
     // MARK: Background
     static var backdrop: some View {
         RadialGradient(
-            colors: [Color(ludoHex: 0x1B2836), ink, Color(ludoHex: 0x080D13)],
+            colors: [VoiidColor.surfaceRaised, ink, VoiidColor.background],
             center: .top, startRadius: 0, endRadius: 900
         )
         .ignoresSafeArea()

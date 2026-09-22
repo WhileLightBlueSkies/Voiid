@@ -115,7 +115,6 @@ struct SignupScreen: View {
             }
             .ignoresSafeArea(edges: .bottom)
         }
-        .preferredColorScheme(.dark)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .onChange(of: pickerItem) { _, item in

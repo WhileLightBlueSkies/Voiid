@@ -47,6 +47,7 @@ class LocationForegroundService : Service() {
 
         running = started
         if (!started) {
+            LocationShareEngine.stopAllFromSystem()
             runCatching { stopSelf() }
             return START_NOT_STICKY
         }
@@ -81,10 +82,8 @@ class LocationForegroundService : Service() {
 
         fun start(context: Context) {
             val i = Intent(context, LocationForegroundService::class.java)
-            runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
-                else context.startService(i)
-            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
+            else context.startService(i)
         }
 
         fun stop(context: Context) {

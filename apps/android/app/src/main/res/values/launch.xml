@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches iOS LaunchBackground in every appearance. -->
+    <color name="voiid_launch_background">#0B0B0B</color>
+    <style name="Theme.Voiid.Launch.Base" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@drawable/voiid_launch_background</item>
+        <item name="android:statusBarColor">@color/voiid_launch_background</item>
+        <item name="android:navigationBarColor">@color/voiid_launch_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+    <style name="Theme.Voiid.Launch" parent="Theme.Voiid.Launch.Base" />
+</resources>

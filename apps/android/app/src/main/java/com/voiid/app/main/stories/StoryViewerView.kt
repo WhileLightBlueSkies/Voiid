@@ -156,9 +156,12 @@ private fun ContextPage(
     var dragging by remember { mutableStateOf(false) }
 
     val story = context.stories.getOrNull(index) ?: return
+    val actionScope = rememberCoroutineScope()
+    var kept by remember(story.id) { mutableStateOf(false) }
 
     // A page retains a snapshot; observe deletion separately so a stale page cannot keep playing.
     val appContext = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(story.id) { kept = com.voiid.app.store.StoryLocalStore.isKept(appContext, story.id) }
     LaunchedEffect(story.id, active) {
         if (active) com.voiid.app.store.StoryLocalStore.observeStory(appContext, story.id).collect { current ->
             if (current == null || current.isExpired()) onClose()
@@ -327,6 +330,18 @@ private fun ContextPage(
                     )
                 }
                 if (story.isMine) {
+                    androidx.compose.material3.TextButton(enabled = !kept && !actionBusy, onClick = {
+                        actionBusy = true
+                        actionScope.launch {
+                            try {
+                                com.voiid.app.store.StoryLocalStore.keepMoment(appContext, story.id)
+                                localPath = com.voiid.app.store.StoryLocalStore.story(appContext, story.id)?.localPath
+                                kept = true
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                            catch (e: Exception) { actionError = e.message ?: "Couldn’t keep this moment." }
+                            finally { actionBusy = false }
+                        }
+                    }) { Text(if (kept) "Kept" else "Keep", color = Color.White, style = VoiidFont.rounded(12)) }
                     Spacer(Modifier.size(6.dp))
                     Icon(
                         Icons.Default.Delete, "Delete", tint = Color.White,

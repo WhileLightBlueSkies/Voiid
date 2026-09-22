@@ -39,6 +39,8 @@ final class AuthService {
     func loginWithFirebase(idToken: String) async throws -> Bool {
         let body = ["id_token": idToken]
         let res: AuthResponse = try await api.request("POST", "auth/firebase", body: body, auth: false)
+        UserDefaults.standard.removeObject(forKey: "voiid.restore.completed.\(res.user_id)")
+        UserDefaults.standard.set(!res.profile_complete, forKey: "voiid.recovery.ready.\(res.user_id)")
         tokens.jwt = res.token
         tokens.userId = res.user_id
         return res.profile_complete

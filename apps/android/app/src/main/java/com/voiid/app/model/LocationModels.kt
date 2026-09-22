@@ -124,6 +124,7 @@ data class LiveShareView(
     val lastFix: LocationFix?,
     /** A `live_stop` (or `loc_stop`) was received — hard ended regardless of the timer. */
     val endedExplicit: Boolean,
+    val stoppedBeforeExpiry: Boolean = false,
 ) {
     fun state(now: Long = System.currentTimeMillis()): ShareState = when {
         endedExplicit || now >= expiresAt -> ShareState.ENDED

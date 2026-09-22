@@ -139,6 +139,7 @@ fun ChatsHomeView(
     chat: ChatStore,
     onOpenConversation: (VConversation) -> Unit,
     onStartCall: (CallRequest) -> Unit,
+    onOpenSocialProfile: () -> Unit,
 ) {
     val reduceMotion = reduceMotionEnabled()
     val haptics = LocalVoiidHaptics.current
@@ -452,7 +453,25 @@ fun ChatsHomeView(
                 onSafetyNumber = {},
                 onHelp = { settingsNav.push("help") },
                 onChatSettings = { settingsNav.push("chatSettings") },
+                onAccountCentre = { settingsNav.push("accountCentre") },
+                onSocialProfile = { settingsNav.closeAll(); onOpenSocialProfile() },
             )
+            "accountCentre" -> BackupScaffold(title = "Account centre", onBack = settingsNav::pop) {
+                Text("Your profiles", style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
+                Spacer(Modifier.height(12.dp))
+                listOf("Chat profile" to "Your name, photo and username for messaging.",
+                    "Social profile" to "View and edit your public profile for Clips and Communities.").forEachIndexed { index, item ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)
+                        .clip(com.voiid.app.ui.theme.SquircleShape(18.dp)).background(VoiidColor.surfaceCard)
+                        .clickable {
+                            if (index == 0) settingsNav.push("editProfile")
+                            else { settingsNav.closeAll(); onOpenSocialProfile() }
+                        }.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(item.first, style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                        Text(item.second, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                    }
+                }
+            }
             "chatSettings" -> ChatSettingsScreen(onBack = settingsNav::pop)
             "editProfile" -> EditProfileScreen(session = session, onBack = settingsNav::pop)
             "shareProfile" -> ShareProfileScreen(session = session, onBack = settingsNav::pop)
@@ -1010,6 +1029,32 @@ private fun Header(
     onOpenCallLog: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
+    val context = LocalContext.current
+    Column {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            VoiidWordmark(fontSize = 25, color = VoiidColor.textPrimary, alpha = 1f)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = {
+                haptics.tap()
+                ChatLayoutPreference.set(context, if (ChatLayoutPreference.layout == ChatLayout.GRID) ChatLayout.LIST else ChatLayout.GRID)
+            }) {
+                Text(if (ChatLayoutPreference.layout == ChatLayout.GRID) "List" else "Grid",
+                    style = VoiidFont.rounded(12, FontWeight.Medium), color = VoiidColor.accentInk)
+            }
+            Row(
+                Modifier.clip(CircleShape).background(VoiidColor.bubbleSent)
+                    .clickable { haptics.tap(); onNewChat() }.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(Icons.Default.Create, null, Modifier.size(16.dp), tint = VoiidColor.textOnBubble)
+                Text("New chat", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textOnBubble)
+            }
+        }
     // Avatar - search - actions, on ONE row.
     //
     // The screen used to spend three stacked bands before the first chat: an avatar row, a
@@ -1114,6 +1159,7 @@ private fun Header(
             }
         }
     }
+    }
 }
 
 /** A 38dp tinted disc, matching the avatar's size so the row reads as one set of controls. */
@@ -1150,7 +1196,7 @@ private fun Tabs(selected: ChatTab, onSelect: (ChatTab) -> Unit) {
         val slot = maxWidth / 2
         val underlineX by animateDpAsState(
             targetValue = slot * selected.ordinal,
-            animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMedium),
+            animationSpec = spring(dampingRatio = 0.86f, stiffness = 450f),
             label = "underlineX",
         )
         Column {

@@ -133,6 +133,7 @@ fun VoiidSheet(
     showHandle: Boolean = false,
     dismissOnBack: Boolean = true,
     tapOutsideToDismiss: Boolean = true,
+    dismissOnDrag: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     require(detents.isNotEmpty()) { "VoiidSheet needs at least one detent" }
@@ -158,12 +159,18 @@ fun VoiidSheet(
                 dismissOnClickOutside = false,
             ),
         ) {
+            val view = androidx.compose.ui.platform.LocalView.current
+            androidx.compose.runtime.DisposableEffect(view) {
+                (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window?.applyVoiidGlassBlur()
+                onDispose { }
+            }
             SheetBody(
                 detents = detents,
                 initialDetentIndex = initialDetentIndex,
                 showHandle = showHandle,
                 tapOutsideToDismiss = tapOutsideToDismiss,
                 dismissOnBack = dismissOnBack,
+                dismissOnDrag = dismissOnDrag,
                 hiding = hiding,
                 onRequestHide = { hiding = true },
                 onHidden = {
@@ -184,6 +191,7 @@ private fun SheetBody(
     showHandle: Boolean,
     tapOutsideToDismiss: Boolean,
     dismissOnBack: Boolean,
+    dismissOnDrag: Boolean,
     hiding: Boolean,
     onRequestHide: () -> Unit,
     onHidden: () -> Unit,
@@ -306,8 +314,8 @@ private fun SheetBody(
         val current = rawTranslate
         val flungDown = velocityY > (VoiidSheetTokens.DISMISS_FLING_VELOCITY * density.density)
         val overdrag = current - maxAnchor
-        if (overdrag > largestH * VoiidSheetTokens.DISMISS_EXCESS_FRACTION ||
-            (flungDown && overdrag > 0f)
+        if (dismissOnDrag && (overdrag > largestH * VoiidSheetTokens.DISMISS_EXCESS_FRACTION ||
+            (flungDown && overdrag > 0f))
         ) {
             onRequestHide()
             return

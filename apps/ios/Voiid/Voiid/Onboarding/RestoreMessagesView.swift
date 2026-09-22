@@ -69,9 +69,11 @@ struct RestoreMessagesView: View {
     /// also the safer one: a user who cannot unlock never sees a list of their own backups.
     private enum Credential: Equatable { case pin(String), phrase(String) }
     @State private var credential: Credential?
+    @State private var unlockedSecret: Data?
 
     /// Which restore stage is running. Drives the list on the third page.
     @State private var stageIndex = 0
+    @State private var confirmSkip = false
 
     var body: some View {
         ZStack {
@@ -82,26 +84,30 @@ struct RestoreMessagesView: View {
                                         errorText: errorText,
                                         busy: busy,
                                         onSubmit: { unlock(.pin($0)) },
-                                        onRecoveryPhrase: { errorText = nil; step = .phrase },
-                                        onSkip: onFinish)
+                                        onRecoveryPhrase: { guard !busy else { return }; errorText = nil; step = .phrase },
+                                        onSkip: { guard !busy else { return }; confirmSkip = true })
             case .phrase:    PhrasePage(errorText: errorText,
                                         busy: busy,
                                         onSubmit: { unlock(.phrase($0)) },
-                                        onBack: { errorText = nil; step = .unlock })
+                                        onBack: { guard !busy else { return }; errorText = nil; step = .unlock })
             case .choose:    ChoosePage(candidates: candidates,
                                         selected: $source,
                                         errorText: errorText,
+                                        onRefresh: { Task { await loadCandidates() } },
                                         onRestore: { begin() },
-                                        onSetUpAsNew: onFinish)
+                                        onSetUpAsNew: { confirmSkip = true })
             case .restoring: RestoringPage(stageIndex: stageIndex,
                                            source: source,
                                            errorText: errorText,
                                            onRetry: { begin() },
-                                           onSkip: onFinish)
+                                           onSkip: { guard !busy else { return }; confirmSkip = true })
             }
         }
-        .interactiveDismissDisabled(busy)
-        .preferredColorScheme(.dark)
+        .confirmationDialog("Continue without restoring?", isPresented: $confirmSkip, titleVisibility: .visible) {
+            Button("Continue without restoring") { onFinish() }
+            Button("Cancel", role: .cancel) { }
+        } message: { Text("Previous chats will not be restored on this device. Your saved backups stay in their current locations.") }
+        .interactiveDismissDisabled(true)
         .task { await loadCandidates() }
     }
 
@@ -110,31 +116,40 @@ struct RestoreMessagesView: View {
     private func loadCandidates() async {
         let found = await BackupManager.shared.restoreCandidates()
         candidates = found
-        source = found.first?.destination ?? .server   // newest by default
+        source = BackupManager.shared.pendingRestoreSource.flatMap { saved in found.contains(where: { $0.destination == saved }) ? saved : nil } ?? found.first?.destination ?? .server   // newest by default
     }
 
     // MARK: Actions
 
-    /// Hold the credential and move on.
-    ///
-    /// NOTHING IS VERIFIED HERE. The PIN is only proven correct by the unwrap inside
-    /// `BackupManager.restoreWithPin`, which happens on the restoring page — so a wrong PIN
-    /// surfaces there rather than being checked twice against two different notions of
-    /// "correct". When only one backup exists the choose page has nothing to ask, so it is
-    /// skipped rather than shown with a single row and no decision.
+    /// Verify the PIN before allowing backup selection.
     private func unlock(_ c: Credential) {
-        credential = c
+        guard !busy else { return }
+        busy = true
+        credential = nil
+        unlockedSecret = nil
         errorText = nil
-        if candidates.count > 1 {
-            step = .choose
-        } else {
-            begin()
+        Task {
+            defer { busy = false }
+            do {
+                switch c {
+                case .pin(let pin):
+                    unlockedSecret = try await BackupManager.shared.unlockBackupPin(pin)
+                case .phrase(let phrase):
+                    do { unlockedSecret = try phraseToMasterSecret(phrase: phrase.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                    catch { throw BackupRestoreError.invalidPhrase }
+                }
+                credential = c
+                step = .choose
+            } catch {
+                errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                Haptics.error()
+            }
         }
     }
 
     private func begin() {
         guard !busy else { return }
-        guard let credential else { step = .unlock; return }
+        guard credential != nil else { step = .unlock; return }
         busy = true
         errorText = nil
         stageIndex = 0
@@ -147,12 +162,10 @@ struct RestoreMessagesView: View {
                 // decrypt are inside this one call, so the index advances around it rather than
                 // pretending to track its internals.
                 stageIndex = 1
-                switch credential {
-                case .pin(let pin):
-                    try await BackupManager.shared.restoreWithPin(pin, from: source)
-                case .phrase(let phrase):
-                    try await BackupManager.shared.restoreWithPhrase(phrase, from: source)
-                }
+                guard let secret = unlockedSecret else { step = .unlock; return }
+                try await BackupManager.shared.restore(with: secret, from: source) { stageIndex = $0 }
+                unlockedSecret = nil
+                self.credential = nil
                 stageIndex = RestoreStage.all.count      // every stage complete
                 Haptics.success()
                 // A beat on the completed list, so the last stage is legible rather than
@@ -201,8 +214,7 @@ private struct UnlockPage: View {
     private var isComplete: Bool { PinRules.valid(pin) }
 
     var body: some View {
-        ZStack {
-            ScrollView {
+        ScrollView {
                 VStack(spacing: 0) {
                     // No wordmark above: the title's accent half IS "Voiid", so the header
                     // would print the brand twice a few points apart at two different sizes.
@@ -234,21 +246,21 @@ private struct UnlockPage: View {
                         .padding(.top, VoiidSpacing.lg)
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
-                .padding(.bottom, 190)
+                .padding(.bottom, VoiidSpacing.lg)
             }
             .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             .onTapGesture { focused = false }
 
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 OnboardingFooter {
-                    OnboardingKitButton(title: busy ? "Restoring…" : "Continue",
+                    OnboardingKitButton(title: busy ? "Verifying…" : "Continue",
                                         enabled: isComplete && !busy) {
                         focused = false
                         onSubmit(pin)
                     }
 
-                    Button("Set up as new instead") {
+                    Button("Continue without restoring") {
                         Haptics.tap()
                         onSkip()
                     }
@@ -257,8 +269,6 @@ private struct UnlockPage: View {
                     .buttonStyle(PressableButtonStyle())
                 }
             }
-            .ignoresSafeArea(edges: .bottom)
-        }
         .task {
             try? await Task.sleep(for: .milliseconds(350))
             focused = true
@@ -271,69 +281,15 @@ private struct UnlockPage: View {
             Image(systemName: "arrow.clockwise.icloud")
                 .font(.system(size: 17, weight: .medium))
                 .foregroundColor(VoiidBrand.lime)
-            Text("Backup from \(BackupRecoveryView.relative(meta.updatedAtDate)) · \(BackupRecoveryView.size(meta.size_bytes))")
+            Text(meta.size_bytes > 0 ? "Backup from \(BackupRecoveryView.relative(meta.updatedAtDate)) · \(BackupRecoveryView.size(meta.size_bytes))" : "Choose a backup location after entering your PIN.")
                 .font(VoiidFont.rounded(14))
                 .foregroundColor(VoiidBrand.textDim)
         }
         .frame(maxWidth: .infinity)
     }
 
-    /// Six boxes over one hidden field, like the OTP screen — but MASKED and with no autofill.
     private var pinBoxes: some View {
-        ZStack {
-            TextField("", text: $pin)
-                .keyboardType(.numberPad)
-                // Deliberately NOT `.oneTimeCode`: a PIN never arrives by SMS, so offering to
-                // fill it from a message would be offering to fill it from an attacker's.
-                .textContentType(.password)
-                .focused($focused)
-                .opacity(0.01)
-                .onChange(of: pin) { _, new in
-                    let filtered = String(new.filter { $0 >= "0" && $0 <= "9" }.prefix(pinLength))
-                    if filtered != new { pin = filtered; return }
-                    if !filtered.isEmpty && filtered.count < pinLength { Haptics.selection() }
-                    if filtered.count == pinLength { focused = false; Haptics.soft() }
-                }
-
-            HStack(spacing: 10) {
-                ForEach(0..<pinLength, id: \.self) { index in box(at: index) }
-            }
-            .allowsHitTesting(false)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { focused = true }
-        .accessibilityElement()
-        .accessibilityLabel("Voiid PIN")
-        .accessibilityValue("\(pin.count) of \(pinLength) digits entered")
-    }
-
-    private func box(at index: Int) -> some View {
-        let filled = index < pin.count
-        let isCursor = focused && index == min(pin.count, pinLength - 1)
-
-        return RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(VoiidBrand.field)
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(isCursor ? VoiidBrand.lime : VoiidBrand.fieldEdge,
-                            lineWidth: isCursor ? 2 : 1)
-            )
-            .frame(height: 62)
-            .overlay {
-                if filled {
-                    // MASKED — a dot, never the digit. See the file header.
-                    Circle()
-                        .fill(VoiidBrand.text)
-                        .frame(width: 12, height: 12)
-                } else {
-                    Rectangle()
-                        .fill(VoiidBrand.textDim.opacity(0.5))
-                        .frame(width: 18, height: 2)
-                        .offset(y: 12)
-                }
-            }
-            .animation(.easeOut(duration: 0.15), value: isCursor)
-            .animation(.easeOut(duration: 0.15), value: filled)
+        PinField(placeholder: "PIN", text: $pin, externalFocus: $focused)
     }
 
     private var privacyNote: some View {
@@ -409,6 +365,7 @@ private struct ChoosePage: View {
     let candidates: [(destination: BackupDestination, snapshot: BackupSnapshot)]
     @Binding var selected: BackupDestination
     let errorText: String?
+    let onRefresh: () -> Void
     let onRestore: () -> Void
     let onSetUpAsNew: () -> Void
 
@@ -424,13 +381,12 @@ private struct ChoosePage: View {
         ZStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    OnboardingHeader(
-                        title: .stacked("Identity", accent: "confirmed"),
-                        blurb: "Choose which backup to restore on this device."
-                    )
-
-                    confirmedMark
-                        .padding(.top, VoiidSpacing.md)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Restore your chats").font(VoiidFont.rounded(28, .bold)).foregroundColor(VoiidBrand.text)
+                        Text("Choose the backup you want to use.").font(VoiidFont.subhead).foregroundColor(VoiidBrand.textDim)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 20)
 
                     // An empty list is reachable in principle — `fetchBackupMeta` found a
                     // server backup, then `restoreCandidates` came back with nothing because
@@ -461,12 +417,10 @@ private struct ChoosePage: View {
                             .padding(.top, VoiidSpacing.sm)
                     }
 
-                    RestoreNoteCard(
-                        icon: "clock.arrow.circlepath",
-                        title: "Restore the newest one",
-                        detail: "Anything created after the backup you choose will not be on this device."
-                    )
-                    .padding(.top, VoiidSpacing.lg)
+                    Button("Check again", action: onRefresh)
+                        .font(VoiidFont.rounded(14)).padding(.top, 16)
+                    Label("Your backup stays encrypted.", systemImage: "lock")
+                        .font(VoiidFont.rounded(13)).foregroundColor(VoiidBrand.textDim).padding(.top, 20)
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.bottom, 190)
@@ -482,7 +436,7 @@ private struct ChoosePage: View {
 
                     // DESTRUCTIVE, and deliberately not styled like the other control: no fill,
                     // no chevron, nothing promising more. It discards the backup for this device.
-                    Button("Set up as new instead") {
+                    Button("Continue without restoring") {
                         Haptics.tap()
                         onSetUpAsNew()
                     }
@@ -592,7 +546,7 @@ struct RestoreStage: Identifiable, Hashable {
         .init(id: "download", title: "Downloading",             icon: "arrow.down.circle"),
         .init(id: "decrypt",  title: "Decrypting on device",    icon: "lock.open"),
         .init(id: "merge",    title: "Restoring your chats",    icon: "bubble.left.and.bubble.right"),
-        .init(id: "keys",     title: "Re-establishing keys",    icon: "checkmark.shield"),
+        .init(id: "keys",     title: "Saving recovery key",    icon: "checkmark.shield"),
     ]
 }
 
@@ -606,61 +560,73 @@ private struct RestoringPage: View {
 
     private var failed: Bool { errorText != nil }
 
+    private var complete: Bool { stageIndex >= RestoreStage.all.count }
+    private var currentTitle: String {
+        if failed { return "Restore paused" }
+        if complete { return "Your chats are ready" }
+        return RestoreStage.all[max(0, min(stageIndex, RestoreStage.all.count - 1))].title
+    }
+
     var body: some View {
-        ZStack {
-            ScrollView {
-                VStack(spacing: 0) {
-                    // Same as the unlock page: the title already says Voiid.
-                    OnboardingHeader(
-                        title: .stacked("Restoring your", accent: "Voiid"),
-                        blurb: "Keep the app open. This can take a few minutes on a large backup.",
-                        showsWordmark: false
-                    )
-
-                    Text(source.title)
-                        .font(VoiidFont.rounded(14))
-                        .foregroundColor(VoiidBrand.textDim)
-                        .padding(.top, 2)
-
-                    stageList
-                        .padding(.top, VoiidSpacing.lg)
-
-                    if let errorText {
-                        Text(errorText)
-                            .font(VoiidFont.rounded(13))
-                            .foregroundColor(VoiidColor.error)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, VoiidSpacing.md)
-                    }
-
-                    RestoreNoteCard(
-                        icon: "lock.shield",
-                        title: "Decrypted on this device",
-                        detail: "Your backup is unlocked here with your PIN. Voiid's servers never see the contents."
-                    )
-                    .padding(.top, VoiidSpacing.lg)
-                }
-                .padding(.horizontal, VoiidSpacing.lg)
-                .padding(.bottom, failed ? 190 : VoiidSpacing.xxl)
-            }
-            .scrollIndicators(.hidden)
-
-            if failed {
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    OnboardingFooter {
-                        OnboardingKitButton(title: "Try again", enabled: true, action: onRetry)
-                        Button("Skip for now") {
-                            Haptics.tap()
-                            onSkip()
-                        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(complete ? "Restore complete" : "Restoring chats")
+                        .font(VoiidFont.rounded(28, .bold))
+                        .foregroundColor(VoiidBrand.text)
+                    Text("From \(source.title)")
                         .font(VoiidFont.rounded(15))
                         .foregroundColor(VoiidBrand.textDim)
-                        .buttonStyle(PressableButtonStyle())
-                    }
                 }
-                .ignoresSafeArea(edges: .bottom)
+                .padding(.top, 24)
+
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack(spacing: 14) {
+                        Image(systemName: failed ? "exclamationmark.arrow.triangle.2.circlepath" : complete ? "checkmark" : "arrow.down")
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundColor(VoiidBrand.lime)
+                            .frame(width: 56, height: 56)
+                            .background(VoiidBrand.lime.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(currentTitle).font(VoiidFont.rounded(17, .semibold)).foregroundColor(VoiidBrand.text)
+                            Text(complete ? "Everything is saved on this device." : failed ? "Your saved backup is safe." : "Keep Voiid open while we finish.")
+                                .font(VoiidFont.rounded(13)).foregroundColor(VoiidBrand.textDim)
+                        }
+                    }
+                    HStack(spacing: 6) {
+                        ForEach(0..<RestoreStage.all.count, id: \.self) { index in
+                            Capsule().fill(index < stageIndex ? VoiidBrand.lime : index == stageIndex && !failed ? VoiidBrand.lime.opacity(0.4) : VoiidBrand.hairline)
+                                .frame(height: 4)
+                        }
+                    }
+                    Text(complete ? "All steps complete" : "Step \(min(stageIndex + 1, RestoreStage.all.count)) of \(RestoreStage.all.count)")
+                        .font(VoiidFont.rounded(12, .medium)).foregroundColor(VoiidBrand.textDim)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(VoiidBrand.card, in: RoundedRectangle(cornerRadius: 24))
+
+                stageList
+                if let errorText {
+                    Text(errorText).font(VoiidFont.rounded(14)).foregroundColor(VoiidColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Label("Your chats stay end-to-end encrypted.", systemImage: "lock.shield")
+                    .font(VoiidFont.rounded(12)).foregroundColor(VoiidBrand.textDim)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
+        }
+        .scrollIndicators(.hidden)
+        .background(VoiidBrand.ground.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if failed {
+                OnboardingFooter {
+                    OnboardingKitButton(title: "Try again", cornerRadius: 16, action: onRetry)
+                    Button("Restore later", action: onSkip)
+                        .font(VoiidFont.rounded(15)).foregroundColor(VoiidBrand.textDim)
+                }
             }
         }
     }
@@ -689,7 +655,7 @@ private struct RestoringPage: View {
         return HStack(spacing: VoiidSpacing.md) {
             ZStack {
                 Circle()
-                    .fill(done || active ? VoiidBrand.lime.opacity(0.10) : Color.white.opacity(0.04))
+                    .fill(done || active ? VoiidBrand.lime.opacity(0.10) : VoiidBrand.row)
                     .frame(width: 40, height: 40)
 
                 if done {
@@ -712,7 +678,7 @@ private struct RestoringPage: View {
                     .font(VoiidFont.rounded(15, .semibold))
                     .foregroundColor(done || active ? VoiidBrand.text
                                                     : VoiidBrand.textDim)
-                Text(done ? "Completed" : (active ? "In progress" : "Waiting"))
+                Text(done ? "Completed" : (failed && index == stageIndex ? "Needs attention" : active ? "In progress" : "Next"))
                     .font(VoiidFont.rounded(12.5))
                     .foregroundColor(VoiidBrand.textDim)
             }
@@ -769,3 +735,32 @@ private struct RestoreNoteCard: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+#if DEBUG
+/// Review the production layout without starting a restore or changing user data.
+struct RestoreDesignPreview: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var selection = 1
+    var body: some View {
+        NavigationStack {
+            RestoringPage(stageIndex: selection == 6 ? 1 : selection, source: .iCloud,
+                          errorText: selection == 6 ? "Couldn’t download your backup. Check your connection and try again." : nil,
+                          onRetry: { selection = 1 }, onSkip: { dismiss() })
+                .navigationTitle("Design preview")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu("State") {
+                            Button("Downloading") { selection = 1 }
+                            Button("Restoring") { selection = 3 }
+                            Button("Complete") { selection = 5 }
+                            Button("Error") { selection = 6 }
+                        }
+                    }
+                }
+        }
+        .tint(VoiidBrand.lime)
+    }
+}
+#endif

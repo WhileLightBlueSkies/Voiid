@@ -144,7 +144,7 @@ private fun HelpSection(
     val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
 
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
@@ -155,9 +155,9 @@ private fun HelpSection(
         )
         Column(
             Modifier.fillMaxWidth()
-                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                 .background(VoiidColor.surfaceCard)
-                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+                .border(1.dp, VoiidColor.divider, com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -234,7 +234,7 @@ private fun ChatPrefGroup(
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
@@ -245,9 +245,9 @@ private fun ChatPrefGroup(
         )
         Column(
             Modifier.fillMaxWidth()
-                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                 .background(VoiidColor.surfaceCard)
-                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg)),
+                .border(1.dp, VoiidColor.divider, com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg)),
             content = content,
         )
         if (footer != null) {

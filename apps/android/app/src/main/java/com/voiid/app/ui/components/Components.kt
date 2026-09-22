@@ -171,11 +171,11 @@ fun VoiidPrimaryButton(
             .height(64.dp)
             .alpha(if (enabled) 1f else 0.5f)
             .clip(RoundedCornerShape(VoiidRadius.lg))
-            .background(VoiidColor.primary)
+            .background(VoiidColor.bubbleSent)
             .softClickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(title, style = VoiidFont.headline, color = VoiidColor.textOnPrimary)
+        Text(title, style = VoiidFont.headline, color = VoiidColor.textOnBubble)
     }
 }
 

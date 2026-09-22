@@ -37,6 +37,12 @@
 		<string>remote-notification</string>
 		<string>location</string>
 	</array>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array><string>UIInterfaceOrientationPortrait</string></array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array><string>UIInterfaceOrientationPortrait</string></array>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

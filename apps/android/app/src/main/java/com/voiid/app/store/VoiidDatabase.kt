@@ -41,7 +41,7 @@ import androidx.room.Transaction
         // AFTER location so two concurrent table-adding features don't both own "1 -> 2".
         StoryRow::class, StoryAudienceRow::class, StoryViewRow::class,
     ],
-    version = 6,
+    version = 7,
     // EXPORTED (A04). Room writes schemas/<db>/<version>.json at build time, and it is the only
     // record of what actually shipped. Without it a migration can only be checked against the
     // current code's idea of the old schema — which is the one thing guaranteed to agree with
@@ -88,7 +88,7 @@ abstract class VoiidDatabase : RoomDatabase() {
                     // (see MIGRATION_1_2). The fallback stays only as the last-resort guard for
                     // a genuinely corrupt file.
                     .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                        MIGRATION_5_6)
+                        MIGRATION_5_6, MIGRATION_6_7)
                     // NO DESTRUCTIVE FALLBACK (A04).
                     //
                     // It used to be here, next to a comment that already described exactly why

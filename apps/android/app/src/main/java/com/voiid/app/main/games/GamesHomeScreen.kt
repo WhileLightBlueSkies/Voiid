@@ -95,6 +95,7 @@ fun GamesHomeScreen(
     onAcceptInvite: (GamesService.PendingInvite) -> Unit = {},
 ) {
     val context = LocalContext.current
+    var category by remember { mutableStateOf("All") }
     val service = remember { GamesService(ApiClient(TokenStore.get(context))) }
 
     var games by remember { mutableStateOf<List<GamesService.CatalogGame>>(emptyList()) }
@@ -248,13 +249,20 @@ fun GamesHomeScreen(
                 color = VoiidColor.textPrimary,
             )
 
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("All", "Board", "Arcade").forEach { label ->
+                    androidx.compose.material3.FilterChip(selected = category == label, onClick = { category = label }, label = {
+                        Text(label, style = VoiidFont.rounded(13), color = VoiidColor.textPrimary)
+                    })
+                }
+            }
             // Ludo Card
-            HeroGameCard(
+            if (category != "Arcade") HeroGameCard(
                 title = "Ludo",
                 pitch = "Roll a six to leave home. First to get all four in wins.",
                 players = "1–4",
                 duration = "10–20 min",
-                bestScore = "12 wins",
+                artwork = com.voiid.app.R.drawable.game_ludo_home,
                 icon = Icons.Default.Casino,
                 gradient = Brush.linearGradient(
                     listOf(Color(0xFF13828C), Color(0xFF68B8BD))
@@ -267,12 +275,12 @@ fun GamesHomeScreen(
             )
 
             // Snake Card
-            HeroGameCard(
+            if (category != "Board") HeroGameCard(
                 title = "Snake Arena",
                 pitch = "Eat, grow, and cut off anyone bigger than you.",
                 players = "You + 11 bots",
                 duration = "3–8 min",
-                bestScore = "1,840",
+                artwork = com.voiid.app.R.drawable.game_snake_home,
                 icon = Icons.Default.Gesture,
                 gradient = Brush.linearGradient(
                     listOf(Color(0xFF2FA36B), Color(0xFFE8A72E))
@@ -330,7 +338,7 @@ private fun HeroGameCard(
     pitch: String,
     players: String,
     duration: String,
-    bestScore: String,
+    artwork: Int,
     icon: ImageVector,
     gradient: Brush,
     onClick: () -> Unit,
@@ -346,21 +354,14 @@ private fun HeroGameCard(
             Modifier
                 .fillMaxWidth()
                 .height(148.dp)
-                .background(gradient)
-                .padding(VoiidSpacing.md),
+                .background(gradient),
         ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = Color.White.copy(alpha = 0.16f),
-                modifier = Modifier
-                    .size(120.dp)
-                    .align(Alignment.BottomEnd)
-                    .offset(x = 16.dp, y = 16.dp),
-            )
+            androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(artwork), null,
+                modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f)))))
 
             Column(
-                Modifier.align(Alignment.BottomStart),
+                Modifier.align(Alignment.BottomStart).padding(VoiidSpacing.md),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
@@ -385,7 +386,6 @@ private fun HeroGameCard(
         ) {
             MetaChip(Icons.Outlined.People, players)
             MetaChip(Icons.Outlined.Schedule, duration)
-            MetaChip(Icons.Outlined.EmojiEvents, bestScore)
 
             Spacer(Modifier.weight(1f))
 

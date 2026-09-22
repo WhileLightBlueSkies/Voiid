@@ -171,14 +171,14 @@ struct SnakeArenaView: View {
     /// itself. Bots still respawn on a timer; a human decides.
     private func deathPanel(mass: Int, deaths: Int, canRespawn: Bool) -> some View {
         ZStack {
-            Color.black.opacity(0.8).ignoresSafeArea()
+            VoiidColor.background.opacity(0.98).ignoresSafeArea()
 
             VStack(spacing: 0) {
                 Text("You died")
                     .font(.system(size: 30, weight: .black))
                 Text("Length \(mass)  -  Deaths \(deaths)")
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(VoiidColor.textPrimary.opacity(0.6))
                     .padding(.top, 6)
 
                 Button {
@@ -188,12 +188,12 @@ struct SnakeArenaView: View {
                         .font(.system(size: 15, weight: .black))
                         .foregroundStyle(canRespawn
                             ? Color(red: 0.03, green: 0.02, blue: 0.06)
-                            : .white.opacity(0.5))
+                            : VoiidColor.textSecondary)
                         .padding(.horizontal, 42)
                         .padding(.vertical, 14)
                         .background(canRespawn
                             ? Color(red: 0.13, green: 0.88, blue: 0.94)
-                            : Color.white.opacity(0.15),
+                            : VoiidColor.surfaceRaised,
                             in: RoundedRectangle(cornerRadius: 14))
                 }
                 .disabled(!canRespawn)
@@ -205,14 +205,14 @@ struct SnakeArenaView: View {
                 } label: {
                     Text("Quit")
                         .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.9))
+                        .foregroundStyle(VoiidColor.textPrimary.opacity(0.9))
                         .padding(.horizontal, 50)
                         .padding(.vertical, 13)
-                        .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                        .background(VoiidColor.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
                 }
                 .padding(.top, 12)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(VoiidColor.textPrimary)
         }
     }
 

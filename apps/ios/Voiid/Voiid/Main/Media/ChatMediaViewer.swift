@@ -74,8 +74,8 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
     private var pages: [MediaPageView] = []
     private var chromeVisible = true
 
-    private let topBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
-    private let footer = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+    private let topBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
+    private let footer = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
     private let captionLabel = UILabel()
     private let countLabel = UILabel()
     private let actions = UIStackView()
@@ -103,7 +103,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.047, alpha: 1)
+        view.backgroundColor = UIColor(VoiidColor.background)
         view.tintColor = UIColor(VoiidColor.accentInk)
 
         pager.isPagingEnabled = true
@@ -132,7 +132,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         if items.isEmpty {
             let empty = UILabel()
             empty.text = "No media available"
-            empty.textColor = .white
+            empty.textColor = UIColor(VoiidColor.textPrimary)
             empty.font = .voiidRounded(ofSize: 17)
             empty.textAlignment = .center
             empty.frame = view.bounds
@@ -279,7 +279,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         return true
     }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    override var preferredStatusBarStyle: UIStatusBarStyle { .default }
     override var prefersStatusBarHidden: Bool { !chromeVisible }
 
     // MARK: Chrome
@@ -290,13 +290,13 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
             panel.clipsToBounds = true
             if UIAccessibility.isReduceTransparencyEnabled {
                 panel.effect = nil
-                panel.backgroundColor = UIColor(white: 0.10, alpha: 1)
+                panel.backgroundColor = UIColor(VoiidColor.surfaceCard)
             }
             view.addSubview(panel)
         }
         let close = UIButton(type: .system)
         close.setImage(UIImage(systemName: "xmark"), for: .normal)
-        close.tintColor = .white
+        close.tintColor = UIColor(VoiidColor.textPrimary)
         close.accessibilityLabel = "Close gallery"
         close.addAction(UIAction { [weak self] _ in self?.onClose() }, for: .touchUpInside)
         close.frame = CGRect(x: 4, y: 10, width: 44, height: 44)
@@ -304,8 +304,8 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
 
         titleLabel.font = UIFontMetrics(forTextStyle: .headline).scaledFont(for: .voiidRounded(ofSize: 16, weight: .semibold), maximumPointSize: 22)
         subtitleLabel.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: .voiidRounded(ofSize: 12), maximumPointSize: 16)
-        titleLabel.textColor = .white
-        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.72)
+        titleLabel.textColor = UIColor(VoiidColor.textPrimary)
+        subtitleLabel.textColor = UIColor(VoiidColor.textSecondary)
         titleLabel.adjustsFontForContentSizeCategory = true
         subtitleLabel.adjustsFontForContentSizeCategory = true
         let stack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
@@ -314,7 +314,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         stack.translatesAutoresizingMaskIntoConstraints = false
         topBar.contentView.addSubview(stack)
         countLabel.font = .voiidRounded(ofSize: 12, weight: .medium)
-        countLabel.textColor = UIColor.white.withAlphaComponent(0.72)
+        countLabel.textColor = UIColor(VoiidColor.textSecondary)
         countLabel.translatesAutoresizingMaskIntoConstraints = false
         countLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         topBar.contentView.addSubview(countLabel)
@@ -327,7 +327,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         ])
         captionLabel.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .voiidRounded(ofSize: 14), maximumPointSize: 22)
         captionLabel.adjustsFontForContentSizeCategory = true
-        captionLabel.textColor = .white
+        captionLabel.textColor = UIColor(VoiidColor.textPrimary)
         captionLabel.numberOfLines = 2
         captionLabel.isUserInteractionEnabled = true
         captionLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(showCaption)))
@@ -347,7 +347,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
             configuration.image = UIImage(systemName: symbol)
             configuration.imagePlacement = .top
             configuration.imagePadding = 5
-            configuration.baseForegroundColor = .white
+            configuration.baseForegroundColor = UIColor(VoiidColor.textPrimary)
             configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
                 var result = attributes
                 result.font = UIFont.voiidRounded(ofSize: 11, weight: .medium)
@@ -610,13 +610,13 @@ final class MediaPageView: UIScrollView {
         imageView.isUserInteractionEnabled = true
         addSubview(imageView)
 
-        spinner.color = .white
+        spinner.color = UIColor(VoiidColor.textPrimary)
         addSubview(spinner)
         var retry = UIButton.Configuration.tinted()
         retry.title = "Couldn’t load media · Retry"
         retry.image = UIImage(systemName: "arrow.clockwise")
         retry.imagePadding = 8
-        retry.baseForegroundColor = .white
+        retry.baseForegroundColor = UIColor(VoiidColor.textPrimary)
         retry.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
             var result = attributes
             result.font = UIFont.voiidRounded(ofSize: 14, weight: .medium)
@@ -791,7 +791,7 @@ private final class ThumbCell: UICollectionViewCell {
         super.init(frame: frame)
         contentView.clipsToBounds = true
         contentView.layer.cornerRadius = 6
-        contentView.backgroundColor = UIColor.white.withAlphaComponent(0.12)
+        contentView.backgroundColor = UIColor(VoiidColor.surfaceRaised)
 
         imageView.contentMode = .scaleAspectFill
         imageView.clipsToBounds = true

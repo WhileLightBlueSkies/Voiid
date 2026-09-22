@@ -117,6 +117,8 @@ fun SettingsScreen(
     onSafetyNumber: () -> Unit,
     onHelp: () -> Unit,
     onChatSettings: () -> Unit,
+    onAccountCentre: () -> Unit,
+    onSocialProfile: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
@@ -130,10 +132,10 @@ fun SettingsScreen(
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            VoiidCircleBack(onBack = onClose)
-            Spacer(Modifier.width(8.dp))
-            Text("Settings", style = VoiidFont.rounded(20, FontWeight.Bold), color = VoiidColor.textPrimary)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.width(56.dp))
+            Text("Settings", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            androidx.compose.material3.TextButton(onClick = onClose) { Text("Done", color = VoiidColor.accentInk) }
         }
 
         Column(
@@ -145,12 +147,8 @@ fun SettingsScreen(
             Row(
                 Modifier.fillMaxWidth()
                     .spotlightTarget("settings_profile_card", shape = SpotlightShapeType.ROUNDED_RECT, cornerRadius = 24.dp, padding = 4.dp)
-                    .clip(RoundedCornerShape(VoiidRadius.lg))
+                    .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                     .background(VoiidColor.surfaceCard)
-                    .softClickable {
-                        haptics.tap()
-                        onEditProfile()
-                    }
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -158,7 +156,7 @@ fun SettingsScreen(
                 ProfileAvatar(
                     photoUrl = session.profile.photoURL,
                     name = session.profile.fullName,
-                    size = 64.dp,
+                    size = 84.dp,
                     placeholderFill = VoiidColor.surfaceCard,
                 )
                 Column(
@@ -187,24 +185,23 @@ fun SettingsScreen(
                             maxLines = 1,
                         )
                     }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.TextButton(onClick = onEditProfile) { Text("Edit profile", style = VoiidFont.rounded(12), color = VoiidColor.accentInk) }
+                        androidx.compose.material3.IconButton(onClick = onMyQrCode) { Icon(Icons.Default.QrCode, "My QR code", tint = VoiidColor.accentInk) }
+                    }
                 }
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = "Edit profile",
-                    tint = VoiidColor.placeholder,
-                    modifier = Modifier.size(20.dp),
-                )
+
             }
 
             // ---- quick actions + encryption banner (iOS parity)
             //
             // The three things people come to Settings to DO, lifted out of the list so they
             // are one tap rather than a scan-and-push. Same trio and same order as iOS.
-            QuickActions(
-                onEditProfile = onEditProfile,
-                onShareProfile = onShareProfile,
-                onMyQrCode = onMyQrCode,
-            )
+            SettingsGroup("Share") {
+                SettingsRow(Icons.Default.Person, "Account centre", "Chat and social profiles") { onAccountCentre() }
+                SettingsDivider()
+                SettingsRow(Icons.Default.Share, "Share profile", "Send your profile link") { onShareProfile() }
+            }
 
             EncryptionBanner(onClick = onSafetyNumber)
 
@@ -222,8 +219,8 @@ fun SettingsScreen(
                 // iOS's own `.account` route is an unwired placeholder for the parts that
                 // have no endpoint yet (changing a phone number, adding an email), so this
                 // points at the screen that works instead of porting the placeholder.
-                SettingsRow(Icons.Default.Person, "Account",
-                    "Name, username, photo") { onEditProfile() }
+                SettingsRow(Icons.Default.Person, "Social profile",
+                    "View and edit your public profile") { onSocialProfile() }
                 SettingsDivider()
                 SettingsRow(Icons.Default.Lock, "Privacy & security",
                     "Visibility, blocked contacts, app lock") { onPrivacy() }
@@ -284,7 +281,7 @@ fun SettingsScreen(
 
             // ---- danger
             Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.lg))
+                Modifier.fillMaxWidth().clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                     .background(VoiidColor.surfaceCard),
             ) {
                 // NOT immediate: logging out wipes this device's messages and keys, so it is
@@ -374,9 +371,9 @@ private fun QuickActions(
 ) {
     Row(
         Modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
             .background(VoiidColor.surfaceCard)
-            .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+            .border(1.dp, VoiidColor.divider, com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
             .padding(vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -432,9 +429,9 @@ private fun EncryptionBanner(onClick: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
     Row(
         Modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
             .background(VoiidColor.accent.copy(alpha = 0.06f))
-            .border(1.dp, VoiidColor.accent.copy(alpha = 0.30f), RoundedCornerShape(VoiidRadius.lg))
+            .border(1.dp, VoiidColor.accent.copy(alpha = 0.30f), com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
             .softClickable { haptics.tap(); onClick() }
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -483,9 +480,9 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
         )
         Column(
             Modifier.fillMaxWidth()
-                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                 .background(VoiidColor.surfaceCard)
-                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg)),
+                .border(1.dp, VoiidColor.divider, com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg)),
             content = content,
         )
     }
