@@ -51,7 +51,14 @@ struct PrivacySettingsView: View {
                             detail: "Last seen, photo, about and status") {
                     privacyPage("Profile & presence") {
                         visibilitySection
-                        statusSection
+                        // `statusSection` is deliberately not shown yet. Availability
+                        // ("Free to play", "Do not disturb") only means something once there
+                        // is someone to be available TO — that is games multiplayer, which
+                        // is not built. Offering the control now would let someone set a
+                        // status that nothing reads and nobody sees.
+                        //
+                        // The section itself is kept, not deleted: it works, and this is a
+                        // one-line restore when multiplayer lands.
                         onlineSection
                     }
                     .task(id: scenePhase) {
