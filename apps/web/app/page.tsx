@@ -1,414 +1,286 @@
 import type { Metadata } from 'next';
-import type { ReactNode } from 'react';
-import { Hero } from '../components/Hero';
-import { Section } from '../components/Section';
-import { SurfaceTour, type Surface } from '../components/SurfaceTour';
-import { CTA } from '../components/CTA';
-import { Button, ButtonRow } from '../components/Button';
-import { E2EEBadge } from '../components/E2EEBadge';
-import { Callout } from '../components/Callout';
-import { Glyph, type GlyphName } from '../components/Glyph';
-import {
-  PhoneMockup,
-  PhoneAppBar,
-  ChatBubble,
-  PhoneAvatar,
-} from '../components/PhoneMockup';
-import { InteractivePhoneHero } from '../components/InteractivePhoneHero';
-import type { DomainHue } from '../lib/hues';
-import styles from './page.module.css';
+import Link from 'next/link';
+import { Glyph } from '../components/Glyph';
+import { Reveal } from '../components/Reveal';
+import { HeroPhone } from '../components/home/HeroPhone';
+import { Story } from '../components/home/Story';
+import { SealDemo } from '../components/home/SealDemo';
+import styles from '../components/home/Home.module.css';
 
 export const metadata: Metadata = {
   // The layout template appends "— Voiid"; the home title stands alone.
   title: 'Voiid — one encrypted app for chat, calls, the map, clips and games',
   description:
-    'Messages, calls, location shares and moments are end-to-end encrypted — we hold ' +
+    'Messages, calls, location shares and moments are end-to-end encrypted, and we hold ' +
     'no key. Clips and games are public, and we say so. Built in India, for the world.',
 };
 
 /*
- * EVERY CLAIM ON THIS PAGE IS CHECKED AGAINST THE SCHEMA. In particular:
- *   - E2EE surfaces: messages (006/013), calls (014), location shares (018),
- *     moments/stories (017).
- *   - NOT E2EE, deliberately: clips + creator profiles (022, 029) and game state
- *     (024). Both migration headers explain why, and both say the server can read.
- *   - The games catalogue is exactly four: 024 seeds tictactoe + rps, 025 seeds
- *     cricket, 026 seeds snake. Do not add a fifth here before it is seeded there.
- *   - There are no store links yet, so this page does not pretend there are.
+ * EVERY CLAIM ON THIS PAGE IS CHECKED AGAINST THE SCHEMA:
+ *   - E2EE: messages (006/013), calls (014), location shares (018), moments (017).
+ *   - NOT E2EE, deliberately: clips + creator profiles (022, 029), game state (024).
+ *   - No store links yet, so the download band says "coming soon", not a fake link.
+ * The phone is the iOS DESIGN build (Voiid-Ui), so it shows surfaces that are still
+ * being built; the copy labels those "in the design build".
  */
 
-const SURFACES: Surface[] = [
-  {
-    href: '/messaging',
-    index: '01',
-    title: 'Chats nobody else can open',
-    body:
-      'One-to-one and group messages, sealed on your device for each recipient device. ' +
-      'You decide who can reach you before a stranger can start a conversation at all.',
-    hue: 'chat',
-    stance: <E2EEBadge state="e2ee" />,
-    cta: 'How messaging works',
-    proof: (
-      <PhoneMockup hue="chat" size="md" tilt="left" label="A one-to-one chat" decorative>
-        <PhoneAppBar
-          title="Aditi"
-          subtitle="End-to-end encrypted"
-          trailing={<Glyph name="call" size={16} />}
-        />
-        <ChatBubble side="received">Landed. Sharing my location for the next hour?</ChatBubble>
-        <ChatBubble side="sent" meta="19:04">Please do — I&rsquo;ll start walking over.</ChatBubble>
-        <ChatBubble side="received">Shared. It stops on its own at 20:04.</ChatBubble>
-      </PhoneMockup>
-    ),
-  },
-  {
-    href: '/calls',
-    index: '02',
-    title: 'Calls we route but never hear',
-    body:
-      'Voice and video, one to one or as a group, encrypted frame by frame. We keep the ' +
-      'log — who called whom, and for how long — because a missed call has to be a record ' +
-      'of something. We never keep the call.',
-    hue: 'calls',
-    stance: <E2EEBadge state="e2ee" />,
-    cta: 'How calls work',
-    proof: (
-      <PhoneMockup hue="calls" size="md" tilt="right" label="An encrypted call" decorative>
-        <PhoneAppBar title="Nehal" subtitle="Encrypted · 04:12" />
-        {/* Matches CallScreens.swift: name 24 bold, status 14 with tabular
-            digits, then the keying badge — which reads "End-to-end encrypted ·
-            verified" and is textSecondary on a surfaceCard capsule, NOT green.
-            A security indicator that can only ever say something good is
-            decoration; this one has four states and green is not the default. */}
-        <div className={styles.callProof}>
-          <span className={styles.callName}>Nehal</span>
-          <span className={styles.callStatus}>04:12</span>
-          <span className={styles.callBadge}>
-            <Glyph name="lock" size={11} />
-            End-to-end encrypted · verified
-          </span>
-          <span className={styles.callControls} aria-hidden="true">
-            <span className={styles.ctl}><Glyph name="device" size={13} /></span>
-            <span className={styles.ctl}><Glyph name="eye-off" size={13} /></span>
-            <span className={`${styles.ctl} ${styles.ctlEnd}`}><Glyph name="call" size={13} /></span>
-          </span>
-        </div>
-      </PhoneMockup>
-    ),
-  },
-  {
-    href: '/map',
-    index: '03',
-    title: 'A map that forgets on schedule',
-    body:
-      'See the friends who chose to share with you, at the precision they picked, for as ' +
-      'long as they said. Every share carries its own expiry — you do not have to remember ' +
-      'to turn it off.',
-    hue: 'map',
-    stance: <E2EEBadge state="e2ee" />,
-    cta: 'How the map works',
-    proof: (
-      <PhoneMockup hue="map" size="md" tilt="left" label="Live location sharing" decorative>
-        <PhoneAppBar title="Map" subtitle="2 friends sharing" />
-        {/* Matches Map/MapHeader.swift: the always-visible answer to "can
-            anyone see me?" is a 11pt line in accentInk beside the title, with a
-            38pt ghost-toggle circle on surfaceCard at the trailing edge. */}
-        <div className={styles.mapProof}>
-          <span className={styles.mapStatus}>
-            <Glyph name="broadcast" size={9} />
-            Visible · 2 friends sharing
-          </span>
-          <span className={styles.mapPin} />
-          <span className={styles.mapGhost} aria-hidden="true">
-            <Glyph name="eye-off" size={14} />
-          </span>
-        </div>
-      </PhoneMockup>
-    ),
-  },
-  {
-    href: '/clips',
-    index: '04',
-    title: 'Clips, and we say they are public',
-    body:
-      'Short public video, creator profiles and follows. Public means public: the server ' +
-      'stores the video and the caption in the clear and counts every view. You cannot ' +
-      'encrypt a broadcast to an audience that has not signed up yet.',
-    hue: 'clips',
-    stance: <E2EEBadge state="public" />,
-    cta: 'What clips are, exactly',
-    proof: (
-      <PhoneMockup hue="clips" size="md" tilt="right" label="A public clip" decorative>
-        <PhoneAppBar title="Clips" subtitle="Public" />
-        {/* Matches Clips/ClipsFeedView.swift: a segmented Explore/Following
-            capsule (max 280pt, filled primary on the selected half) above a
-            3-column grid of 9:16 tiles with 2pt gutters. The old mockup showed
-            one portrait frame, which is the FULLSCREEN player, not the feed. */}
-        <div className={styles.clipProof}>
-          <span className={styles.clipScope} aria-hidden="true">
-            <span className={styles.clipScopeOn}>Explore</span>
-            <span className={styles.clipScopeOff}>Following</span>
-          </span>
-          <span className={styles.clipGrid} aria-hidden="true">
-            {Array.from({ length: 6 }, (_, i) => (
-              <span key={i} className={styles.clipTile} />
-            ))}
-          </span>
-        </div>
-      </PhoneMockup>
-    ),
-  },
-  {
-    href: '/games',
-    index: '05',
-    title: 'Games with a referee that sees',
-    body:
-      'Tic Tac Toe, Rock Paper Scissors, Snake and Hand Cricket, played inside a chat. ' +
-      'The server referees, so it reads the moves — otherwise a modified client could ' +
-      'claim any move it liked. The invite travelled encrypted like any other message.',
-    hue: 'games',
-    stance: <E2EEBadge state="refereed" />,
-    cta: 'See the catalogue',
-    proof: (
-      <PhoneMockup hue="games" size="md" tilt="left" label="A game inside a chat" decorative>
-        <PhoneAppBar title="Priyanshu" subtitle="Playing Hand Cricket" />
-        <ChatBubble side="received">Rematch?</ChatBubble>
-        {/* Matches GameInviteBubble in ChatDetailView.swift: a game invite is a
-            CARD, not a text bubble — 16:9 artwork panel over a "GAME INVITE"
-            label in primary at 10pt bold, then the game name at 16pt bold. */}
-        <div className={styles.gameCard} aria-hidden="true">
-          <span className={styles.gameArt}>
-            <Glyph name="games" size={26} />
-          </span>
-          <span className={styles.gameBody}>
-            <span className={styles.gameKicker}>Game invite</span>
-            <span className={styles.gameName}>Hand Cricket</span>
-          </span>
-        </div>
-      </PhoneMockup>
-    ),
-  },
-];
+const MARQUEE = ['Chats', 'Group calls', 'Live map', 'Moments', 'Communities', 'Hand Cricket', 'Clips', 'Ghost Mode', 'Voiid AI', 'Voice notes'];
+
+const GALLERY_A = ['chats', 'group_video', 'map', 'moments', 'game_play', 'community_detail'];
+const GALLERY_B = ['clips', 'ai_chat', 'convo', 'games', 'map_privacy', 'group_call'];
 
 const ENCRYPTED = [
-  'The text of every message, one to one and in groups',
-  'Photos, videos, voice notes and files you send in a chat',
+  'Every message, one-to-one and in groups',
+  'Photos, videos, voice notes and files in a chat',
   'Voice and video calls, including group calls',
-  'Live location and the pins you drop into a conversation',
+  'Live location and the pins you drop',
   'Moments you post to a chosen audience',
 ];
+const READABLE = [
+  'Clips: the video, caption and thumbnail',
+  'Creator profiles, follows, likes and comments',
+  'Game moves and scores while a match runs',
+  'Who messaged or called whom, and when',
+];
 
-const NOT_ENCRYPTED = [
-  'Clips — the video, the caption, the thumbnail',
-  'Creator profiles, follows, likes and comments on clips',
-  'Game moves, scores and results while a match is running',
-  'Who messaged whom and when, and who called whom and when',
+const STACK = [
+  { name: 'vodozemac', role: 'Double Ratchet · 1:1' },
+  { name: 'OpenMLS', role: 'RFC 9420 · groups' },
+  { name: 'X-Wing', role: 'ML-KEM-768 · post-quantum' },
+  { name: 'AES-256-GCM', role: 'media & files' },
 ];
 
 export default function HomePage() {
   return (
-    <>
-      <Hero
-        hue="chat"
-        eyebrow="Built in India · for the world"
-        title="One app for chat, calls, the map, clips and games."
-        lede={
-          <>
-            Your messages, calls, location shares and moments are end-to-end encrypted —
-            we hold no key and cannot read them, even if we wanted to. Clips and games
-            are public by design, and we say so on the tin rather than in a footnote.
-          </>
-        }
-        badges={
-          <>
-            <E2EEBadge state="e2ee" size="md" label="Messages · Calls · Map · Moments" />
-            <E2EEBadge state="public" size="md" label="Clips · Games" />
-          </>
-        }
-        actions={
-          <ButtonRow>
-            <Button href="/messaging" size="lg">
-              Explore Voiid
-            </Button>
-            <Button href="/privacy" variant="secondary" size="lg">
-              See what we can&rsquo;t see
-            </Button>
-          </ButtonRow>
-        }
-        /*
-         * The hero leads with the PRODUCT, not with a paragraph.
-         *
-         * This page used to open on centred text alone and hold its only phone
-         * back until the fourth section. Every comparable site — WhatsApp,
-         * Arattai, Signal — shows the app in the first screen, because a
-         * messaging app's strongest argument is what a conversation looks like.
-         * The mockup below is the same one the honesty section used; it has
-         * simply been moved to where it does the most work.
-         */
-        aside={<InteractivePhoneHero />}
-      />
+    <div className={styles.page}>
+      {/* ---- hero -------------------------------------------------------- */}
+      <section className={styles.hero} aria-labelledby="hero-title">
+        <div className={styles.aurora} aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <div className={styles.heroGrid} aria-hidden="true" />
 
-      {/*
-        The tour has NO section header.
+        <div className={styles.heroInner}>
+          <div className={styles.heroCopy}>
+            <p className={styles.eyebrow}>
+              <span className={styles.eyebrowDot} aria-hidden="true" />
+              Built in India · for the world
+            </p>
+            <h1 id="hero-title" className={styles.heroTitle}>
+              <span className={styles.line}>Everything you share.</span>
+              <span className={`${styles.line} ${styles.shine}`}>Nothing we can read.</span>
+            </h1>
+            <p className={styles.heroLede}>
+              Chats, calls, a live map, moments, clips and games in one app. The private parts
+              are end-to-end encrypted and we hold no key. The public parts are labelled public.
+            </p>
+            <div className={styles.heroActions}>
+              <a href="#tour" className={styles.btnPrimary}>
+                Take the tour
+                <Glyph name="arrow-right" size={15} />
+              </a>
+              <a href="#download" className={styles.btnGhost}>
+                Get Voiid
+              </a>
+            </div>
+            <dl className={styles.heroStats}>
+              <div>
+                <dt>4</dt>
+                <dd>surfaces sealed end to end</dd>
+              </div>
+              <div>
+                <dt>0</dt>
+                <dd>keys we hold to your chats</dd>
+              </div>
+              <div>
+                <dt>1</dt>
+                <dd>app instead of five</dd>
+              </div>
+            </dl>
+          </div>
 
-        It used to open with eyebrow → h2 → lede, like every other band on the
-        page. That preamble is what made the redesign still read as the old page:
-        swapping a section's contents changes nothing if the page's skeleton is
-        still label / headline / paragraph / content, five times down.
-
-        Split Studio's first band IS the entry. The surfaces announce themselves.
-      */}
-      <section id="features" aria-label="The five surfaces" className={styles.tourBand}>
-        <SurfaceTour surfaces={SURFACES} />
+          <HeroPhone />
+        </div>
       </section>
 
-      {/* ---- encryption teaser: what's underneath ----------------------------- */}
-      <Section
-        id="under-the-hood"
-        hue="privacy"
-        eyebrow="Under the hood"
-        title="Built on named cryptography — not vibes."
-        lede={
-          <>
-            One Rust core compiled into every platform. The ratchets and group protocol
-            are public standards; the custom glue is small, centralised, and written
-            down on its own page.
-          </>
-        }
-      >
-        <div className={styles.stackRow}>
-          {[
-            { name: 'vodozemac', role: 'Double Ratchet · 1:1 chats' },
-            { name: 'OpenMLS', role: 'RFC 9420 · groups' },
-            { name: 'X-Wing', role: 'ML-KEM-768 · post-quantum' },
-            { name: 'AES-256-GCM', role: 'media & attachments' },
-          ].map((t) => (
-            <div key={t.name} className={styles.stackChip}>
-              <span className={styles.stackName}>{t.name}</span>
-              <span className={styles.stackRole}>{t.role}</span>
+      {/* ---- marquee ----------------------------------------------------- */}
+      <div className={styles.marquee} aria-hidden="true">
+        <div className={styles.marqueeTrack}>
+          {[...MARQUEE, ...MARQUEE].map((word, i) => (
+            <span key={i} className={styles.marqueeItem}>
+              {word}
+              <i className={styles.marqueeStar}>✦</i>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* ---- the tour ---------------------------------------------------- */}
+      <section id="tour" className={styles.tour} aria-labelledby="tour-title">
+        <Reveal className={styles.sectionHead}>
+          <p className={styles.kicker}>The tour</p>
+          <h2 id="tour-title" className={styles.h2}>
+            One app. <span className={styles.muted}>Seven places to be.</span>
+          </h2>
+          <p className={styles.lede}>
+            Scroll, and the phone follows. Every button you see works, so tap your way in and
+            out the way you would in the app.
+          </p>
+        </Reveal>
+        <Story />
+      </section>
+
+      {/* ---- sealed ------------------------------------------------------ */}
+      <section className={styles.sealed} aria-labelledby="sealed-title">
+        <div className={styles.sealedGlow} aria-hidden="true" />
+        <Reveal className={styles.sectionHead}>
+          <p className={`${styles.kicker} ${styles.kickerDark}`}>How it stays private</p>
+          <h2 id="sealed-title" className={`${styles.h2} ${styles.onDark}`}>
+            Sealed here. Opened there. <span className={styles.shine}>Noise in between.</span>
+          </h2>
+          <p className={`${styles.lede} ${styles.onDarkDim}`}>
+            Your phone locks each message with the recipient&rsquo;s key before it leaves.
+            Our servers pass it along without being able to open it. This is what they see.
+          </p>
+        </Reveal>
+
+        <Reveal delay={120}>
+          <SealDemo />
+        </Reveal>
+
+        <Reveal delay={200} className={styles.stack}>
+          {STACK.map((s) => (
+            <div key={s.name} className={styles.stackChip}>
+              <b>{s.name}</b>
+              <small>{s.role}</small>
+            </div>
+          ))}
+          <Link href="/encryption" className={styles.stackLink}>
+            Every primitive we use <Glyph name="arrow-right" size={13} />
+          </Link>
+        </Reveal>
+      </section>
+
+      {/* ---- the line ---------------------------------------------------- */}
+      <section className={styles.line2} aria-labelledby="line-title">
+        <Reveal className={styles.sectionHead}>
+          <p className={styles.kicker}>No fine print</p>
+          <h2 id="line-title" className={styles.h2}>
+            &ldquo;Private&rdquo; on every screen tells you nothing.{' '}
+            <span className={styles.muted}>So here&rsquo;s the line.</span>
+          </h2>
+        </Reveal>
+        <div className={styles.ledger}>
+          <Reveal className={`${styles.ledgerCard} ${styles.ledgerSealed}`}>
+            <span className={styles.ledgerIcon}><Glyph name="lock" size={20} /></span>
+            <h3>We can&rsquo;t read</h3>
+            <ul>
+              {ENCRYPTED.map((t) => (
+                <li key={t}>
+                  <Glyph name="check" size={15} />
+                  {t}
+                </li>
+              ))}
+            </ul>
+          </Reveal>
+          <Reveal delay={120} className={`${styles.ledgerCard} ${styles.ledgerOpen}`}>
+            <span className={styles.ledgerIcon}><Glyph name="broadcast" size={20} /></span>
+            <h3>We can read</h3>
+            <ul>
+              {READABLE.map((t) => (
+                <li key={t}>
+                  <Glyph name="eye-off" size={15} />
+                  {t}
+                </li>
+              ))}
+            </ul>
+            <p className={styles.ledgerNote}>
+              A broadcast can&rsquo;t be encrypted to an audience that hasn&rsquo;t signed up yet, and
+              a referee has to see the moves. <Link href="/privacy">Read the privacy page</Link>
+            </p>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* ---- gallery ----------------------------------------------------- */}
+      <section className={styles.gallery} aria-labelledby="gallery-title">
+        <Reveal className={styles.sectionHead}>
+          <p className={styles.kicker}>Screens</p>
+          <h2 id="gallery-title" className={styles.h2}>
+            Designed down to <span className={styles.muted}>the last pixel.</span>
+          </h2>
+        </Reveal>
+        <div className={styles.galleryRows} aria-hidden="true">
+          {[GALLERY_A, GALLERY_B].map((row, r) => (
+            <div key={r} className={styles.galleryRow} data-reverse={r === 1 ? 'true' : undefined}>
+              <div className={styles.galleryTrack}>
+                {[...row, ...row].map((id, i) => (
+                  <figure key={i} className={styles.galleryShot}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`/app/${id}.webp`} alt="" loading="lazy" decoding="async" width={603} height={1311} />
+                  </figure>
+                ))}
+              </div>
             </div>
           ))}
         </div>
-        <ButtonRow className={styles.stackActions}>
-          <Button href="/encryption" variant="ghost">
-            See every primitive we use
-          </Button>
-        </ButtonRow>
-      </Section>
+      </section>
 
-      {/* ---- the honesty section: the actual differentiator ------------------ */}
-      <Section
-        id="what-we-see"
-        tone="raised"
-        hue="chat"
-        /*
-          No eyebrow, no lede. This band is the page's THESIS, and the two
-          sections around it are teasers — dressing all three in the same
-          label/headline/paragraph furniture is what made the page read as one
-          repeating rhythm regardless of what the sections said. A thesis states
-          itself; it does not need a category label above it.
-        */
-        title={
-          <>
-            An app that says &ldquo;private&rdquo; on every screen is telling you
-            nothing. So here is the line.
-          </>
-        }
-        className={styles.thesis}
-      >
-        <>
-          <div className={styles.ledger}>
-            <div className={styles.ledgerCol}>
-              <h3 className={styles.ledgerHead}>
-                <span className={styles.ledgerIconOk} aria-hidden="true">
-                  <Glyph name="lock" size={16} />
-                </span>
-                We cannot read
-              </h3>
-              <ul className={styles.ledgerList}>
-                {ENCRYPTED.map((item) => (
-                  <li key={item}>
-                    <Glyph name="check" size={15} className={styles.tick} />
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <div className={styles.ledgerCol}>
-              <h3 className={styles.ledgerHead}>
-                <span className={styles.ledgerIconOpen} aria-hidden="true">
-                  <Glyph name="broadcast" size={16} />
-                </span>
-                We can read
-              </h3>
-              <ul className={[styles.ledgerList, styles.ledgerListOpen].join(' ')}>
-                {NOT_ENCRYPTED.map((item) => (
-                  <li key={item}>
-                    <Glyph name="eye-off" size={15} className={styles.tickOpen} />
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-
-          <Callout title="Why the second list exists at all.">
-            <p>
-              A clip has no recipient list at the moment you post it — anyone may find
-              it later, including people who have not joined yet — and a server that
-              cannot read a row cannot count a view. A game needs a referee, and a
-              referee that cannot see the moves is not one. Both are scoped exceptions
-              we chose on purpose. Neither one touches your messages.
-            </p>
-          </Callout>
-
-          <ButtonRow className={styles.ledgerActions}>
-            <Button href="/privacy" variant="ghost">
-              Read the full architecture
-            </Button>
-          </ButtonRow>
-        </>
-      </Section>
-
-      {/* ---- built in India -------------------------------------------------- */}
-      <Section id="origin" hue="map" width="narrow" align="center">
-        <div className={styles.origin}>
-          <span className={styles.originGlyph} aria-hidden="true">
-            <Glyph name="globe" size={26} />
-          </span>
-          <h2 className={styles.originTitle}>Built in India, for the world.</h2>
-          <p className={styles.originBody}>
-            Voiid is designed and built in India, under Indian law, by a team that uses
-            it every day. It is not an Indian version of something else — the encryption,
-            the map, the clips and the games are one codebase, shipping to everyone at
-            the same time.
-          </p>
+      {/* ---- download ---------------------------------------------------- */}
+      <section id="download" className={styles.download} aria-labelledby="download-title">
+        <div className={styles.aurora} aria-hidden="true">
+          <span />
+          <span />
+          <span />
         </div>
-      </Section>
-
-      {/* ---- close ----------------------------------------------------------- */}
-      <CTA
-        hue="chat"
-        title="Nothing to sign up for on this page."
-        lede={
-          <>
-            There is no form here, no newsletter and no tracker — this site collects
-            nothing. When there is something to download, the link will appear here.
-          </>
-        }
-        actions={
-          <ButtonRow align="center">
-            <Button href="/privacy" size="lg">
-              Read the privacy architecture
-            </Button>
-            <Button href="/messaging" variant="secondary" size="lg">
-              Tour the features
-            </Button>
-          </ButtonRow>
-        }
-        note="iOS and Android builds are still in testing. App Store and Play links will appear here, and nowhere else on this site, once they exist."
-      />
-    </>
+        <div className={styles.downloadInner}>
+          <Reveal className={styles.downloadCopy}>
+            <p className={`${styles.kicker} ${styles.kickerDark}`}>Coming soon</p>
+            <h2 id="download-title" className={`${styles.h2} ${styles.onDark} ${styles.downloadTitle}`}>
+              Your people. <span className={styles.shine}>Your keys.</span>
+            </h2>
+            <p className={`${styles.lede} ${styles.onDarkDim}`}>
+              Voiid is on its way to the App Store and Google Play. The links will go here, and
+              only here, the day they&rsquo;re real.
+            </p>
+            <div className={styles.stores}>
+              <span className={styles.store} aria-disabled="true">
+                <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+                  <path fill="currentColor" d="M16.4 12.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.4-.9-1.7 0-3.3 1-4.2 2.6-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8 1.6 0 2 .8 3.4.8 1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9-.1 0-2.7-1-2.7-4.1zM13.9 5c.7-.9 1.2-2 1-3.2-1 0-2.3.7-3 1.6-.7.8-1.2 2-1.1 3.1 1.2.1 2.3-.6 3.1-1.5z" />
+                </svg>
+                <span>
+                  <small>Soon on the</small>
+                  App Store
+                </span>
+              </span>
+              <span className={styles.store} aria-disabled="true">
+                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                  <path fill="#34d399" d="M3.6 2.3l10.3 10.3-10.3 10.1c-.4-.2-.6-.6-.6-1.1V3.4c0-.5.2-.9.6-1.1z" />
+                  <path fill="#60a5fa" d="M17.3 9.2l-3.4 3.4 3.4 3.3 3.9-2.2c1.1-.6 1.1-1.7 0-2.3z" />
+                  <path fill="#fbbf24" d="M13.9 12.6l3.4-3.4L5.1 2.2c-.5-.3-1-.3-1.5.1z" />
+                  <path fill="#f87171" d="M13.9 12.6L3.6 22.7c.5.3 1 .3 1.5 0l12.2-6.8z" />
+                </svg>
+                <span>
+                  <small>Soon on</small>
+                  Google Play
+                </span>
+              </span>
+            </div>
+          </Reveal>
+          <Reveal delay={150} className={styles.downloadArt}>
+            <div className={styles.fan} aria-hidden="true">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/app/map.webp" alt="" loading="lazy" />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/app/chats.webp" alt="" loading="lazy" />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/app/games.webp" alt="" loading="lazy" />
+            </div>
+          </Reveal>
+        </div>
+      </section>
+    </div>
   );
 }

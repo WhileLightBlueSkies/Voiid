@@ -397,6 +397,9 @@
     flex-basis: 100%;
     display: grid;
     grid-template-rows: 0fr;
+    /* The 0fr row is 0px tall but its item still lays out at full height, so without
+     * this the "collapsed" links paint over whatever is under the header. */
+    overflow: hidden;
     transition: grid-template-rows var(--dur-base) var(--ease-out);
   }
 
