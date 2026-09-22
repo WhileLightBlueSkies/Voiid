@@ -94,7 +94,10 @@ struct LocationDetailView: View {
         }
         // A share opened from MY OWN bubble is outbound and won't be in `activeInbound`; keep
         // the fallback so the sheet is never empty.
-        return all.isEmpty ? (primarySharer.map { [$0] } ?? []) : all
+        if let primary = primarySharer, !all.contains(where: { $0.id == primary.id }) {
+            return all + [primary]
+        }
+        return all
     }
 
     /// The share this bubble opened — drives the header text and the coordinate readout.
@@ -105,10 +108,16 @@ struct LocationDetailView: View {
             id: shareId,
             userId: "",
             coordinate: fix.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } ?? coordinate,
-            state: state,
+            state: engine.shareState(shareId: shareId, expiresAt: nil, cadence: 15),
             fixedAt: fix?.date,
-            expiresAt: nil,
+            expiresAt: engine.outboundShares.first(where: { $0.id == shareId })?.expiresAt
+                ?? LocationStore.activeInboundAll().first(where: { $0.shareId == shareId })?.expiresAt,
             accuracy: fix?.acc ?? accuracy)
+    }
+
+    private var displayedState: ShareState {
+        guard live, let shareId else { return state }
+        return engine.shareState(shareId: shareId, expiresAt: nil, cadence: 15)
     }
 
     /// What the map is centred on: the live fix when we have one, else the message's own.
@@ -179,10 +188,10 @@ struct LocationDetailView: View {
     }
 
     private var staticPin: some View {
-        Image(systemName: state == .ended ? "mappin.slash.circle.fill"
+        Image(systemName: displayedState == .ended ? "mappin.slash.circle.fill"
                         : (live ? "location.circle.fill" : "mappin.circle.fill"))
             .font(.system(size: 34))
-            .foregroundColor(state == .stale ? VoiidColor.textSecondary : VoiidColor.error)
+            .foregroundColor(displayedState == .stale ? VoiidColor.textSecondary : VoiidColor.error)
             .shadow(radius: 2)
     }
 
@@ -267,12 +276,12 @@ struct LocationDetailView: View {
     /// "ends in 43m · updated 4s ago" — recomputed each tick of `now`.
     private var liveSubtitle: String? {
         guard live else { return nil }
-        if state == .ended { return nil }
+        if displayedState == .ended { return nil }
         var parts: [String] = []
         if let expires = sharers.first(where: { $0.id == shareId })?.expiresAt, expires > now {
             parts.append("ends in \(Self.duration(expires.timeIntervalSince(now)))")
         }
-        if state == .stale {
+        if displayedState == .stale {
             parts.append("may have lost signal")
         } else if let fixedAt = sharers.first(where: { $0.id == shareId })?.fixedAt
                     ?? primarySharer?.fixedAt {
@@ -299,12 +308,12 @@ struct LocationDetailView: View {
     }
 
     private var stateColor: Color {
-        switch state { case .live: return VoiidColor.success
+        switch displayedState { case .live: return VoiidColor.success
                        case .stale: return VoiidColor.warning
                        case .ended: return VoiidColor.textSecondary }
     }
     private var stateLabel: String {
-        switch state { case .live: return "Live"; case .stale: return "May have lost signal"; case .ended: return "Ended" }
+        switch displayedState { case .live: return "Live"; case .stale: return "May have lost signal"; case .ended: return "Ended" }
     }
 
     /// System handoff — no in-app routing. Opens Apple Maps at the coordinate.

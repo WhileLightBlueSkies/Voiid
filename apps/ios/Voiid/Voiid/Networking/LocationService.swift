@@ -87,6 +87,11 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// Request a single best-available fix for a pin. Calls back with nil on timeout /
     /// failure so the caller can surface "couldn't get your location" rather than hang.
     func requestOneShot(timeout seconds: TimeInterval = 10, _ completion: @escaping (CLLocation?) -> Void) {
+        cancelOneShot()
+        guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else {
+            completion(nil)
+            return
+        }
         oneShot = completion
         bestOneShot = nil
         manager.desiredAccuracy = kCLLocationAccuracyBest
@@ -101,6 +106,12 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             guard !Task.isCancelled else { return }
             await MainActor.run { self?.fireOneShot(nil) }
         }
+    }
+
+    func cancelOneShot() {
+        guard oneShot != nil else { return }
+        bestOneShot = nil
+        fireOneShot(nil)
     }
 
     /// The most accurate fix seen during the current one-shot window, so a timeout can still
@@ -163,7 +174,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             let age = -loc.timestamp.timeIntervalSinceNow
             let accuracy = loc.horizontalAccuracy
 
-            if accuracy > 0, age < 15 {
+            if accuracy >= 0, age >= -5, age < 15, CLLocationCoordinate2DIsValid(loc.coordinate) {
                 if bestOneShot == nil || accuracy < (bestOneShot?.horizontalAccuracy ?? .greatestFiniteMagnitude) {
                     bestOneShot = loc
                 }
@@ -181,6 +192,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         // A one-shot must not wait for its full timeout on a hard failure.
+        if (error as? CLError)?.code == .locationUnknown { return }
         if oneShot != nil { fireOneShot(nil) }
     }
 

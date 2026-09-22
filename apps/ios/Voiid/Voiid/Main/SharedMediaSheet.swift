@@ -30,11 +30,11 @@ struct SharedMediaSheet: View {
         ChatEngine.shared.messages(conversationId: conversationId)
             .compactMap { $0.media }.reversed()
     }
-    private var photos: [MediaRef] { mediaRefs.filter { $0.mime.hasPrefix("image/") } }
-    private var videos: [MediaRef] { mediaRefs.filter { $0.mime.hasPrefix("video/") } }
-    private var voice: [MediaRef]  { mediaRefs.filter { $0.mime.hasPrefix("audio/") } }
+    private var photos: [MediaRef] { mediaRefs.filter { $0.filename == nil && $0.mime.hasPrefix("image/") } }
+    private var videos: [MediaRef] { mediaRefs.filter { $0.filename == nil && $0.mime.hasPrefix("video/") } }
+    private var voice: [MediaRef]  { mediaRefs.filter { $0.filename == nil && $0.mime.hasPrefix("audio/") } }
     private var docs: [MediaRef]   { mediaRefs.filter {
-        !$0.mime.hasPrefix("image/") && !$0.mime.hasPrefix("video/") && !$0.mime.hasPrefix("audio/") } }
+         $0.filename != nil || (!$0.mime.hasPrefix("image/") && !$0.mime.hasPrefix("video/") && !$0.mime.hasPrefix("audio/")) } }
 
     var body: some View {
         NavigationStack {
@@ -56,7 +56,15 @@ struct SharedMediaSheet: View {
                         case .photos: mediaGrid(photos, isVideo: false)
                         case .videos: mediaGrid(videos, isVideo: true)
                         case .voice:  refList(voice, icon: "mic.fill", label: "Voice message")
-                        case .docs:   refList(docs, icon: "doc.fill", label: "Document")
+                        case .docs:
+                            if docs.isEmpty { emptyState("No documents yet") }
+                            else {
+                                LazyVStack(alignment: .leading, spacing: 16) {
+                                    ForEach(docs, id: \.mediaUrl) { ref in
+                                        ChatDocumentBubble(ref: ref, name: ref.filename ?? "Document")
+                                    }
+                                }.padding()
+                            }
                         }
                     }
                     .transition(.opacity)
@@ -69,8 +77,11 @@ struct SharedMediaSheet: View {
         }
         .presentationDetents([.large])
         .fullScreenCover(item: $selectedMedia) { selection in
-            ChatMediaViewer(chatId: conversationId, startMessageId: selection.id)
-                .environmentObject(chat)
+            ChatMediaViewer(chatId: conversationId, startMessageId: selection.id) { messageId in
+                dismiss()
+                NotificationMessageRouter.shared.open(conversationId: conversationId, messageId: messageId)
+            }
+            .environmentObject(chat)
         }
     }
 

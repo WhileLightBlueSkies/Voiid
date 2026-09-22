@@ -72,6 +72,14 @@ enum LocationStore {
         }
     }
 
+    static func isEnded(_ id: String) -> Bool {
+        let count = db.read { database in
+            try Int.fetchOne(database, sql: "SELECT COUNT(*) FROM location_shares WHERE id = ? AND (ended_at IS NOT NULL OR expires_at <= ?)",
+                             arguments: [id, nowSeconds()]) ?? 0
+        } ?? 0
+        return count > 0
+    }
+
     /// Mark a share ended (explicit stop). Idempotent.
     static func end(id: String) {
         db.write { database in

@@ -149,6 +149,12 @@ struct LocationFix: Codable, Equatable {
 
     var date: Date { Date(timeIntervalSince1970: timestampMillis / 1000) }
 
+    var isValid: Bool {
+        lat.isFinite && lon.isFinite && (-90...90).contains(lat) && (-180...180).contains(lon)
+            && timestampMillis.isFinite && timestampMillis > 0 && seq >= 0
+            && (acc == nil || (acc!.isFinite && acc! >= 0))
+    }
+
     /// Build the fix envelope for the wire (`k == .fix`).
     func envelope() -> LocationEnvelope {
         LocationEnvelope(vloc: 1, k: .fix, s: shareId, t: timestampMillis,

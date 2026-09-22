@@ -44,6 +44,7 @@ struct MediaRef: Codable, Equatable, Hashable {
     let key: String           // base64 media key
     let nonce: String         // base64 nonce
     let sha256: String        // ciphertext integrity hash
+    var filename: String? = nil // Document name, carried only inside the encrypted envelope
 }
 
 /// A story reply's ratchet plaintext (§5.2). Sent as a normal 1:1 message with
@@ -525,7 +526,7 @@ final class ChatEngine {
     /// plaintext as a JSON envelope — so the key stays end-to-end. `caption` is
     /// optional text shown alongside the media.
     @discardableResult
-    func sendMedia(_ data: Data, mime: String, caption: String = "",
+    func sendMedia(_ data: Data, mime: String, caption: String = "", filename: String? = nil,
                    conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
         // Bracket logging so a failure is attributable in the console: if "start" prints but
         // "uploaded" does not, it failed at encrypt or R2 upload; if both print but nothing
@@ -544,7 +545,7 @@ final class ChatEngine {
         #endif
         let ref = MediaRef(mediaUrl: key, mime: mime,
                            key: enc.mediaKey.key, nonce: enc.mediaKey.nonce,
-                           sha256: enc.mediaKey.ciphertextSha256)
+                           sha256: enc.mediaKey.ciphertextSha256, filename: filename)
         // 3. The E2EE message plaintext is a media envelope (key never leaves E2E). The
         //    SAME envelope is encrypted per target device (fan-out); every device's copy
         //    references the one shared R2 blob via `key`, so the media key stays E2E.
@@ -1913,7 +1914,7 @@ final class ChatEngine {
 
     /// The plaintext we encrypt for a media message: the media reference + an
     /// optional caption. A marker field disambiguates it from a plain text body.
-    private struct MediaEnvelope: Codable {
+    struct MediaEnvelope: Codable {
         let v: Int                // envelope version
         let media: MediaRef
         let caption: String

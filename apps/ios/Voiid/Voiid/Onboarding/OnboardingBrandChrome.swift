@@ -376,13 +376,13 @@ struct OnboardingPrimaryButton: View {
                         .font(.system(size: 17, weight: .semibold))
                 }
             }
-            // Black on lime — 16.59:1, and the only correct label colour on this fill.
+            // White text on the brand teal action fill.
             .foregroundColor(VoiidColor.textOnAccent)
             .padding(.horizontal, 26)
             .frame(height: 62)
             .background(
                 Capsule().fill(
-                    LinearGradient(colors: [Color(hex: 0xD8FF45), Color(hex: 0xB4EC00)],
+                    LinearGradient(colors: [VoiidColor.accent, VoiidColor.accentPressed],
                                    startPoint: .top, endPoint: .bottom)
                 )
             )

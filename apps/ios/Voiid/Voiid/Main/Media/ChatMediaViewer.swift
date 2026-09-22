@@ -28,6 +28,8 @@
 import SwiftUI
 import UIKit
 import AVKit
+import Photos
+import UniformTypeIdentifiers
 
 // MARK: - SwiftUI entry point
 
@@ -47,14 +49,20 @@ struct ChatMediaViewer: UIViewControllerRepresentable {
         return vc
     }
 
-    func updateUIViewController(_ vc: MediaViewerController, context: Context) {}
+    func updateUIViewController(_ vc: MediaViewerController, context: Context) {
+        vc.updateItems(ChatMediaStore.items(chatId: chatId, from: chat))
+    }
+
+    static func dismantleUIViewController(_ vc: MediaViewerController, coordinator: ()) {
+        vc.shutdown()
+    }
 }
 
 // MARK: - The viewer
 
 final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate {
 
-    private let items: [ChatMediaItem]
+    private var items: [ChatMediaItem]
     private var index: Int
 
     var onClose: () -> Void = {}
@@ -66,7 +74,15 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
     private var pages: [MediaPageView] = []
     private var chromeVisible = true
 
-    private let topBar = UIView()
+    private let topBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+    private let footer = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+    private let captionLabel = UILabel()
+    private let countLabel = UILabel()
+    private let actions = UIStackView()
+    private var actionButtons: [UIButton] = []
+    private var exporting = false
+    private var backgroundObserver: NSObjectProtocol?
+    private var emptyLabel: UILabel?
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
 
@@ -74,8 +90,8 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
     /// the pager. A collection view rather than a scroll view of tiles, so cells are reused
     /// and a chat with a thousand photos costs the same as one with ten.
     private var strip: UICollectionView!
-    private static let thumbSide: CGFloat = 50
-    private static let stripHeight: CGFloat = 74
+    private static let thumbSide: CGFloat = 48
+    private static let stripHeight: CGFloat = 66
 
     init(items: [ChatMediaItem], startId: String) {
         self.items = items
@@ -87,7 +103,8 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
+        view.backgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.047, alpha: 1)
+        view.tintColor = UIColor(VoiidColor.accentInk)
 
         pager.isPagingEnabled = true
         pager.showsHorizontalScrollIndicator = false
@@ -102,16 +119,28 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         pager.addGestureRecognizer(dismissPan)
         pager.panGestureRecognizer.require(toFail: dismissPan)
 
-        for (i, item) in items.enumerated() {
-            // Only the opened page pays the synchronous cache read — see MediaPageView.init.
-            let page = MediaPageView(item: item, eager: i == index)
-            page.onSingleTap = { [weak self] in self?.toggleChrome() }
-            pager.addSubview(page)
-            pages.append(page)
+        buildPages()
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.pages.forEach { $0.pause() } }
         }
 
         buildChrome()
         buildStrip()
+        updateChromeText()
+        if items.isEmpty {
+            let empty = UILabel()
+            empty.text = "No media available"
+            empty.textColor = .white
+            empty.font = .voiidRounded(ofSize: 17)
+            empty.textAlignment = .center
+            empty.frame = view.bounds
+            empty.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            pager.addSubview(empty)
+            emptyLabel = empty
+            actionButtons.forEach { $0.isEnabled = false }
+        }
         // UIKit scroll views do not inherit the SwiftUI app's scroll-edge style.
         if #available(iOS 26.0, *) {
             pager.topEdgeEffect.style = .soft
@@ -120,6 +149,52 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
                 page.topEdgeEffect.style = .soft
             }
         }
+    }
+
+    private func buildPages() {
+        for (i, item) in items.enumerated() {
+            // Only the opened page pays the synchronous cache read — see MediaPageView.init.
+            let page = MediaPageView(item: item, eager: i == index)
+            page.onSingleTap = { [weak self] in self?.toggleChrome() }
+            pager.addSubview(page)
+            if let player = page.playerController {
+                addChild(player)
+                page.installPlayer()
+                player.didMove(toParent: self)
+            }
+            pages.append(page)
+        }
+
+    }
+
+    func shutdown() {
+        pages.forEach { $0.unload() }
+        if let backgroundObserver { NotificationCenter.default.removeObserver(backgroundObserver) }
+        backgroundObserver = nil
+    }
+
+    func updateItems(_ updated: [ChatMediaItem]) {
+        guard items != updated else { return }
+        let selectedID = items.indices.contains(index) ? items[index].id : nil
+        items = updated
+        index = selectedID.flatMap { id in updated.firstIndex { $0.id == id } } ?? max(0, min(index, updated.count - 1))
+        guard isViewLoaded else { return }
+        for page in pages {
+            page.unload()
+            page.playerController?.willMove(toParent: nil)
+            page.removeFromSuperview()
+            page.playerController?.removeFromParent()
+        }
+        pages.removeAll()
+        emptyLabel?.removeFromSuperview()
+        emptyLabel = nil
+        guard !items.isEmpty else { onClose(); return }
+        buildPages()
+        strip.reloadData()
+        updateChromeText()
+        view.setNeedsLayout()
+        preload(around: index)
+        highlightStrip(animated: false)
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -145,7 +220,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         case .changed:
             pager.transform = CGAffineTransform(translationX: 0, y: distance)
             topBar.alpha = (chromeVisible ? 1 : 0) * (1 - progress)
-            strip.alpha = (chromeVisible ? 1 : 0) * (1 - progress)
+            footer.alpha = (chromeVisible ? 1 : 0) * (1 - progress)
         case .ended, .cancelled, .failed:
             if gesture.state == .ended && (distance > 120 || (distance > 24 && gesture.velocity(in: view).y > 850)) {
                 onClose()
@@ -154,7 +229,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
                                delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
                     self.pager.transform = .identity
                     self.topBar.alpha = self.chromeVisible ? 1 : 0
-                    self.strip.alpha = self.chromeVisible ? 1 : 0
+                    self.footer.alpha = self.chromeVisible ? 1 : 0
                 }
             }
         default: break
@@ -178,6 +253,12 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         }
         layoutChrome()
         layoutStrip()
+        for page in pages {
+            page.mediaInsets = chromeVisible
+                ? UIEdgeInsets(top: topBar.frame.maxY + 8, left: 0,
+                               bottom: view.bounds.height - footer.frame.minY + 8, right: 0)
+                : .zero
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -188,66 +269,201 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         highlightStrip(animated: false)
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        pages.forEach { $0.pause() }
+    }
+
+    override func accessibilityPerformEscape() -> Bool {
+        onClose()
+        return true
+    }
+
+    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
     override var prefersStatusBarHidden: Bool { !chromeVisible }
 
     // MARK: Chrome
 
     private func buildChrome() {
-        topBar.backgroundColor = UIColor.black.withAlphaComponent(0.45)
-        view.addSubview(topBar)
+        for panel in [topBar, footer] {
+            panel.layer.cornerRadius = 22
+            panel.clipsToBounds = true
+            if UIAccessibility.isReduceTransparencyEnabled {
+                panel.effect = nil
+                panel.backgroundColor = UIColor(white: 0.10, alpha: 1)
+            }
+            view.addSubview(panel)
+        }
+        let close = UIButton(type: .system)
+        close.setImage(UIImage(systemName: "xmark"), for: .normal)
+        close.tintColor = .white
+        close.accessibilityLabel = "Close gallery"
+        close.addAction(UIAction { [weak self] _ in self?.onClose() }, for: .touchUpInside)
+        close.frame = CGRect(x: 4, y: 10, width: 44, height: 44)
+        topBar.contentView.addSubview(close)
 
-        let back = UIButton(type: .system)
-        back.setImage(UIImage(systemName: "chevron.left",
-                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 17,
-                                                                             weight: .semibold)),
-                      for: .normal)
-        back.tintColor = .white
-        back.addAction(UIAction { [weak self] _ in self?.onClose() }, for: .touchUpInside)
-        back.translatesAutoresizingMaskIntoConstraints = false
-        topBar.addSubview(back)
-
-        titleLabel.font = .voiidRounded(ofSize: 16, weight: .semibold)
+        titleLabel.font = UIFontMetrics(forTextStyle: .headline).scaledFont(for: .voiidRounded(ofSize: 16, weight: .semibold), maximumPointSize: 22)
+        subtitleLabel.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: .voiidRounded(ofSize: 12), maximumPointSize: 16)
         titleLabel.textColor = .white
-        subtitleLabel.font = .voiidRounded(ofSize: 12)
-        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.75)
-
+        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.72)
+        titleLabel.adjustsFontForContentSizeCategory = true
+        subtitleLabel.adjustsFontForContentSizeCategory = true
         let stack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
         stack.axis = .vertical
-        stack.spacing = 1
+        stack.spacing = 3
         stack.translatesAutoresizingMaskIntoConstraints = false
-        topBar.addSubview(stack)
-
+        topBar.contentView.addSubview(stack)
+        countLabel.font = .voiidRounded(ofSize: 12, weight: .medium)
+        countLabel.textColor = UIColor.white.withAlphaComponent(0.72)
+        countLabel.translatesAutoresizingMaskIntoConstraints = false
+        countLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        topBar.contentView.addSubview(countLabel)
         NSLayoutConstraint.activate([
-            back.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 8),
-            back.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -10),
-            back.widthAnchor.constraint(equalToConstant: 44),
-            back.heightAnchor.constraint(equalToConstant: 44),
-            stack.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 4),
-            stack.centerYAnchor.constraint(equalTo: back.centerYAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: topBar.trailingAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: topBar.contentView.leadingAnchor, constant: 52),
+            stack.centerYAnchor.constraint(equalTo: topBar.contentView.centerYAnchor),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: countLabel.leadingAnchor, constant: -12),
+            countLabel.trailingAnchor.constraint(equalTo: topBar.contentView.trailingAnchor, constant: -16),
+            countLabel.centerYAnchor.constraint(equalTo: stack.centerYAnchor),
         ])
+        captionLabel.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .voiidRounded(ofSize: 14), maximumPointSize: 22)
+        captionLabel.adjustsFontForContentSizeCategory = true
+        captionLabel.textColor = .white
+        captionLabel.numberOfLines = 2
+        captionLabel.isUserInteractionEnabled = true
+        captionLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(showCaption)))
+        captionLabel.accessibilityTraits = .button
+        captionLabel.accessibilityHint = "Show full caption"
+        footer.contentView.addSubview(captionLabel)
+        actions.axis = .horizontal
+        actions.distribution = .fillEqually
+        footer.contentView.addSubview(actions)
+        for (title, symbol, handler) in [
+            ("Share", "square.and.arrow.up", { [weak self] in self?.export(save: false) }),
+            ("Save", "arrow.down.to.line", { [weak self] in self?.export(save: true) }),
+            ("Show in chat", "bubble.left", { [weak self] in self?.jumpToCurrent() })
+        ] {
+            var configuration = UIButton.Configuration.plain()
+            configuration.title = title
+            configuration.image = UIImage(systemName: symbol)
+            configuration.imagePlacement = .top
+            configuration.imagePadding = 5
+            configuration.baseForegroundColor = .white
+            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+                var result = attributes
+                result.font = UIFont.voiidRounded(ofSize: 11, weight: .medium)
+                return result
+            }
+            let button = UIButton(configuration: configuration, primaryAction: UIAction { _ in handler() })
+            button.accessibilityLabel = title
+            actions.addArrangedSubview(button)
+            actionButtons.append(button)
+        }
     }
 
     private func layoutChrome() {
-        let top = view.safeAreaInsets.top
         let insets = view.safeAreaInsets
-        topBar.frame = CGRect(x: insets.left, y: 0,
-                              width: max(0, view.bounds.width - insets.left - insets.right), height: top + 54)
+        let width = min(600, view.bounds.width - insets.left - insets.right - 24)
+        topBar.frame = CGRect(x: (view.bounds.width - width) / 2, y: insets.top + 6, width: width, height: 64)
+        let compact = view.bounds.height < 500
+        strip?.isHidden = items.count < 2 || compact
+        let captionHeight: CGFloat = !compact && captionLabel.text?.isEmpty == false
+            ? min(64, captionLabel.sizeThatFits(CGSize(width: width - 32, height: 80)).height) + 16 : 0
+        let stripHeight: CGFloat = items.count > 1 && !compact ? Self.stripHeight : 0
+        let height = captionHeight + stripHeight + 62
+        footer.frame = CGRect(x: (view.bounds.width - width) / 2,
+                              y: view.bounds.height - insets.bottom - height - 8, width: width, height: height)
+        captionLabel.frame = CGRect(x: 16, y: 8, width: width - 32, height: max(0, captionHeight - 16))
+        captionLabel.isHidden = captionHeight == 0
+        actions.frame = CGRect(x: 8, y: height - 62, width: width - 16, height: 56)
     }
 
     private func updateChromeText() {
         guard items.indices.contains(index) else { return }
         let item = items[index]
         titleLabel.text = item.displayName
-        subtitleLabel.text = VoiidDate.relative(item.sentAt)
+        subtitleLabel.text = item.sentAt.formatted(date: .abbreviated, time: .shortened)
+        countLabel.text = "\(index + 1) of \(items.count)"
+        captionLabel.text = item.caption
+        pages.enumerated().forEach { if $0.offset != index { $0.element.pause() } }
+        view.setNeedsLayout()
+    }
+
+    @objc private func showCaption() {
+        guard let caption = items.indices.contains(index) ? items[index].caption : nil else { return }
+        showNotice("Caption", caption)
+    }
+
+    private func jumpToCurrent() {
+        guard items.indices.contains(index) else { return }
+        onJump(items[index].id)
+    }
+
+    private func showNotice(_ title: String, _ message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func export(save: Bool) {
+        guard !exporting, items.indices.contains(index) else { return }
+        let item = items[index]
+        let account = TokenStore.shared.userId
+        exporting = true
+        actionButtons.forEach { $0.isEnabled = false }
+        let button = actionButtons[save ? 1 : 0]
+        button.configuration?.showsActivityIndicator = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.exporting = false
+                self.actionButtons.forEach { $0.isEnabled = true }
+                button.configuration?.showsActivityIndicator = false
+            }
+            do {
+                let data: Data
+                if let cached = MediaCache.shared.data(item.ref.mediaUrl) { data = cached }
+                else { data = try await ChatEngine.shared.fetchMedia(item.ref) }
+                guard account == TokenStore.shared.userId, self.view.window != nil else { return }
+                MediaCache.shared.setData(data, item.ref.mediaUrl)
+                guard let base = MediaCache.shared.fileURL(item.ref.mediaUrl) else { throw CocoaError(.fileWriteUnknown) }
+                let ext = UTType(mimeType: item.ref.mime)?.preferredFilenameExtension ?? (item.type == .video ? "mp4" : "jpg")
+                let url = base.appendingPathExtension(ext)
+                try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                if save {
+                    let permission = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+                    guard account == TokenStore.shared.userId, self.view.window != nil else { return }
+                    guard permission == .authorized || permission == .limited else {
+                        self.showNotice("Photo access needed", "Allow Voiid to add photos in Settings, or use Share to save this file elsewhere.")
+                        return
+                    }
+                    try await PHPhotoLibrary.shared().performChanges {
+                        let request = PHAssetCreationRequest.forAsset()
+                        request.addResource(with: item.type == .video ? .video : .photo, fileURL: url, options: nil)
+                    }
+                    guard account == TokenStore.shared.userId, self.view.window != nil else { return }
+                    self.showNotice("Saved", "Added to your photo library.")
+                } else {
+                    let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                    sheet.popoverPresentationController?.sourceView = button
+                    sheet.popoverPresentationController?.sourceRect = button.bounds
+                    self.present(sheet, animated: true)
+                }
+            } catch {
+                guard account == TokenStore.shared.userId, self.view.window != nil else { return }
+                self.showNotice(save ? "Couldn’t save media" : "Couldn’t share media", "Please try again. Check your connection if this item hasn’t downloaded yet.")
+            }
+        }
     }
 
     private func toggleChrome() {
         chromeVisible.toggle()
-        UIView.animate(withDuration: 0.2) {
+        topBar.accessibilityElementsHidden = !chromeVisible
+        footer.accessibilityElementsHidden = !chromeVisible
+        UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : 0.2) {
             self.topBar.alpha = self.chromeVisible ? 1 : 0
-            self.strip.alpha = self.chromeVisible ? 1 : 0
+            self.footer.alpha = self.chromeVisible ? 1 : 0
             self.setNeedsStatusBarAppearanceUpdate()
+            self.view.setNeedsLayout()
         }
     }
 
@@ -258,7 +474,7 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         layout.minimumLineSpacing = 6
 
         strip = UICollectionView(frame: .zero, collectionViewLayout: layout)
-        strip.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        strip.backgroundColor = .clear
         strip.showsHorizontalScrollIndicator = false
         strip.dataSource = self
         strip.delegate = self
@@ -266,20 +482,14 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         // The strip is pointless with one item — a single thumbnail of the photo already
         // filling the screen.
         strip.isHidden = items.count < 2
-        view.addSubview(strip)
+        footer.contentView.addSubview(strip)
     }
 
     private func layoutStrip() {
-        let bottom = view.safeAreaInsets.bottom
-        let height = Self.stripHeight + bottom
-        let insets = view.safeAreaInsets
-        strip.frame = CGRect(x: insets.left, y: view.bounds.height - height,
-                             width: max(0, view.bounds.width - insets.left - insets.right), height: height)
-        // Half a screen either side, so the FIRST and LAST thumbnails can sit centred like
-        // every other one rather than jamming against the edge.
-        let sideInset = max(0, (view.bounds.width - Self.thumbSide) / 2)
-        strip.contentInset = UIEdgeInsets(top: 12, left: sideInset,
-                                          bottom: 12 + bottom, right: sideInset)
+        let captionHeight = captionLabel.isHidden ? 0 : captionLabel.frame.maxY + 8
+        strip.frame = CGRect(x: 0, y: captionHeight, width: footer.bounds.width, height: Self.stripHeight)
+        let sideInset = max(0, (footer.bounds.width - Self.thumbSide) / 2)
+        strip.contentInset = UIEdgeInsets(top: 9, left: sideInset, bottom: 9, right: sideInset)
     }
 
     /// Centre the current thumbnail and refresh which one reads as active.
@@ -302,8 +512,9 @@ final class MediaViewerController: UIViewController, UIGestureRecognizerDelegate
         // ±2, not ±1: a fast swipe can cross two pages before the previous one settles, and
         // a cached read costs a dictionary lookup or one small disk read. The bound still
         // matters — this is what stops a chat with 500 photos decoding all of them.
-        for j in (i - 2)...(i + 2) where pages.indices.contains(j) {
-            pages[j].load()
+        for (j, page) in pages.enumerated() {
+            if abs(j - i) <= 2 { page.load() }
+            else { page.unload() }
         }
     }
 }
@@ -364,6 +575,12 @@ final class MediaPageView: UIScrollView {
     private let spinner = UIActivityIndicatorView(style: .large)
     /// Set in `init` when the cache answers, so `load()` knows there is nothing to fetch.
     private var loaded = false
+    private var loadTask: Task<Void, Never>?
+    private let retryButton = UIButton(type: .system)
+    let playerController: AVPlayerViewController?
+    var mediaInsets: UIEdgeInsets = .zero {
+        didSet { if oldValue != mediaInsets { setNeedsLayout() } }
+    }
 
     var onSingleTap: () -> Void = {}
 
@@ -375,10 +592,11 @@ final class MediaPageView: UIScrollView {
     /// fifty disk reads before anything is drawn.
     init(item: ChatMediaItem, eager: Bool = false) {
         self.item = item
+        self.playerController = item.type == .video ? AVPlayerViewController() : nil
         super.init(frame: .zero)
 
         minimumZoomScale = 1
-        maximumZoomScale = 4
+        maximumZoomScale = item.type == .video ? 1 : 4
         showsHorizontalScrollIndicator = false
         showsVerticalScrollIndicator = false
         contentInsetAdjustmentBehavior = .never
@@ -394,6 +612,22 @@ final class MediaPageView: UIScrollView {
 
         spinner.color = .white
         addSubview(spinner)
+        var retry = UIButton.Configuration.tinted()
+        retry.title = "Couldn’t load media · Retry"
+        retry.image = UIImage(systemName: "arrow.clockwise")
+        retry.imagePadding = 8
+        retry.baseForegroundColor = .white
+        retry.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var result = attributes
+            result.font = UIFont.voiidRounded(ofSize: 14, weight: .medium)
+            return result
+        }
+        retryButton.configuration = retry
+        retryButton.isHidden = true
+        retryButton.addAction(UIAction { [weak self] _ in self?.load() }, for: .touchUpInside)
+        addSubview(retryButton)
+        imageView.accessibilityLabel = item.caption ?? "Photo from \(item.displayName)"
+        imageView.isAccessibilityElement = true
 
         // ── CACHED BYTES ARE SHOWN SYNCHRONOUSLY, DURING INIT ────────────────────
         //
@@ -404,13 +638,14 @@ final class MediaPageView: UIScrollView {
         //
         // `MediaCache.image` reads memory, then disk, so this covers a cold launch too.
         // Only a genuine miss falls through to the async path and the spinner.
-        if eager, let cached = MediaCache.shared.image(item.ref.mediaUrl) {
+        if eager, item.type == .image, let cached = MediaCache.shared.image(item.ref.mediaUrl) {
             imageView.image = cached
             loaded = true
         } else {
             spinner.startAnimating()
         }
 
+        guard item.type == .image else { return }
         let double = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
         double.numberOfTapsRequired = 2
         addGestureRecognizer(double)
@@ -424,48 +659,82 @@ final class MediaPageView: UIScrollView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        spinner.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let visible = bounds.inset(by: mediaInsets)
+        spinner.center = CGPoint(x: visible.midX, y: visible.midY)
+        retryButton.frame = CGRect(x: 20, y: visible.midY - 26, width: max(0, bounds.width - 40), height: 52)
+        playerController?.view.frame = visible
         // Only while at rest: resizing a zoomed image would throw the user's zoom away on
         // every layout pass.
         if zoomScale <= 1.01 {
-            imageView.frame = bounds
+            imageView.frame = visible
             contentSize = bounds.size
             contentInset = .zero
         }
     }
 
-    /// Idempotent — the pager calls this for the current page and its neighbours, and a page
-    /// may be a neighbour more than once.
+    func installPlayer() {
+        guard let playerController else { return }
+        insertSubview(playerController.view, belowSubview: spinner)
+        playerController.view.isHidden = true
+        playerController.view.backgroundColor = .clear
+        playerController.showsPlaybackControls = true
+    }
+
+    func pause() { playerController?.player?.pause() }
+
+    func unload() {
+        loadTask?.cancel()
+        loadTask = nil
+        pause()
+        playerController?.player = nil
+        playerController?.view.isHidden = true
+        imageView.image = nil
+        setZoomScale(1, animated: false)
+        loaded = false
+    }
+
     func load() {
         guard !loaded else { return }
-
-        // THE CACHE FIRST, SYNCHRONOUSLY — for every page, not just the opened one.
-        //
-        // The cache check used to live here, and when the eager path was added to `init` it
-        // was removed from this function entirely. That left NEIGHBOURS with no cache read
-        // at all: every image except the one you opened went to the network, even though
-        // the chat bubble had already decoded it to disk. That is why the first photo
-        // appeared instantly and the rest did not.
-        //
-        // `MediaCache.image` reads memory then disk, so this is the same fast path the
-        // opened page takes — it simply has to apply to all of them.
-        if let cached = MediaCache.shared.image(item.ref.mediaUrl) {
+        retryButton.isHidden = true
+        if item.type == .image, let cached = MediaCache.shared.image(item.ref.mediaUrl) {
             loaded = true
             show(cached)
             return
         }
-
         loaded = true
-        Task { @MainActor in
-            guard let data = try? await ChatEngine.shared.fetchMedia(item.ref),
-                  let image = UIImage(data: data) else {
-                loaded = false          // let a later swipe retry
+        spinner.startAnimating()
+        let account = TokenStore.shared.userId
+        loadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let data: Data
+                if let cached = MediaCache.shared.data(item.ref.mediaUrl) { data = cached }
+                else { data = try await ChatEngine.shared.fetchMedia(item.ref) }
+                try Task.checkCancellation()
+                guard account == TokenStore.shared.userId else { return }
+                MediaCache.shared.setData(data, item.ref.mediaUrl)
+                if item.type == .video {
+                    guard let base = MediaCache.shared.fileURL(item.ref.mediaUrl) else { throw CocoaError(.fileWriteUnknown) }
+                    let ext = UTType(mimeType: item.ref.mime)?.preferredFilenameExtension ?? "mp4"
+                    let url = base.appendingPathExtension(ext)
+                    try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                    let asset = AVURLAsset(url: url)
+                    guard try await asset.load(.isPlayable) else { throw CocoaError(.fileReadCorruptFile) }
+                    try Task.checkCancellation()
+                    guard account == TokenStore.shared.userId else { return }
+                    playerController?.player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+                    playerController?.view.isHidden = false
+                    spinner.stopAnimating()
+                } else {
+                    guard let image = MediaCache.shared.image(item.ref.mediaUrl) else { throw CocoaError(.fileReadCorruptFile) }
+                    show(image)
+                }
+            } catch {
+                guard !Task.isCancelled, account == TokenStore.shared.userId else { return }
+                loaded = false
                 spinner.stopAnimating()
-                return
+                retryButton.isHidden = false
             }
-            MediaCache.shared.setData(data, item.ref.mediaUrl)
-            MediaCache.shared.set(image, item.ref.mediaUrl)
-            show(image)
         }
     }
 
@@ -479,14 +748,14 @@ final class MediaPageView: UIScrollView {
 
     @objc private func handleDoubleTap(_ g: UITapGestureRecognizer) {
         if zoomScale > 1.01 {
-            setZoomScale(1, animated: true)
+            setZoomScale(1, animated: !UIAccessibility.isReduceMotionEnabled)
         } else {
             // Zoom TO THE TAP: double-tapping a face should bring that face closer, which is
             // the whole reason to tap a particular spot.
             let point = g.location(in: imageView)
             let side = bounds.width / 2.5
             zoom(to: CGRect(x: point.x - side / 2, y: point.y - side / 2,
-                            width: side, height: side), animated: true)
+                            width: side, height: side), animated: !UIAccessibility.isReduceMotionEnabled)
         }
     }
 }
@@ -538,7 +807,7 @@ private final class ThumbCell: UICollectionViewCell {
         outgoingBar.backgroundColor = UIColor(VoiidColor.accent)
         contentView.addSubview(outgoingBar)
 
-        contentView.layer.borderColor = UIColor.white.cgColor
+        contentView.layer.borderColor = UIColor(VoiidColor.accentInk).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -554,6 +823,9 @@ private final class ThumbCell: UICollectionViewCell {
     }
 
     func configure(with item: ChatMediaItem) {
+        accessibilityLabel = "\(item.type == .video ? "Video" : "Photo") from \(item.displayName)"
+        isAccessibilityElement = true
+        accessibilityTraits = .button
         itemId = item.id
         imageView.image = nil
         videoMark.text = item.type == .video ? (item.durationLabel ?? "▶") : nil
@@ -570,10 +842,11 @@ private final class ThumbCell: UICollectionViewCell {
     }
 
     func setActive(_ active: Bool, animated: Bool) {
+        accessibilityTraits = active ? [.button, .selected] : .button
         let apply = {
             self.contentView.layer.borderWidth = active ? 2 : 0
             self.transform = active ? CGAffineTransform(scaleX: 1.12, y: 1.12) : .identity
         }
-        animated ? UIView.animate(withDuration: 0.2, animations: apply) : apply()
+        animated && !UIAccessibility.isReduceMotionEnabled ? UIView.animate(withDuration: 0.2, animations: apply) : apply()
     }
 }

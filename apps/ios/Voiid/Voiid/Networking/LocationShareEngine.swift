@@ -38,12 +38,15 @@ final class LocationShareEngine: ObservableObject {
     /// Bumped on any inbound change (new fix, stop) so location bubbles recompute.
     @Published private(set) var version: Int = 0
 
+    @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    @Published private(set) var isReducedAccuracy = false
+    @Published private(set) var lastError: String?
     private let api = LocationAPI()
     private let service = LocationService()
 
     /// Per-active-share emit context: who receives, over which transport, at what cadence,
     /// and the next seq. `isGroup`/`conversationId` are needed to route the DURABLE stop.
-    private struct Emit {
+    private struct Emit: Codable {
         let recipientIds: [String]
         let cadenceSeconds: Int
         let isGroup: Bool
@@ -62,6 +65,17 @@ final class LocationShareEngine: ObservableObject {
     private var configured = false
 
     private init() {
+        authorizationStatus = service.authorizationStatus
+        isReducedAccuracy = service.isReducedAccuracy
+        service.onAuthChange = { [weak self] status, reduced in
+            Task { @MainActor in
+                guard let self else { return }
+                self.authorizationStatus = status
+                self.isReducedAccuracy = reduced
+                if status == .denied || status == .restricted { await self.stopAll() }
+                else if self.configured && (status == .authorizedAlways || status == .authorizedWhenInUse) { self.resumeOutboundIfNeeded() }
+            }
+        }
         // LocationService delivers on the main run loop; hop onto the MainActor explicitly
         // so the isolation is never in question.
         service.onFix = { [weak self] loc in Task { @MainActor in self?.handleOutboundFix(loc) } }
@@ -87,7 +101,7 @@ final class LocationShareEngine: ObservableObject {
     /// (not the single `onLocationUpdate` closure) so this and the Map surface can BOTH
     /// consume every frame without starving each other — each drops share_ids it doesn't own.
     func configure() {
-        guard !configured else { reloadFromStore(); return }
+        guard !configured else { reloadFromStore(); resumeOutboundIfNeeded(); Task { await flushPendingStops() }; return }
         configured = true
         NotificationCenter.default.addObserver(forName: .voiidLocationRelayUpdate, object: nil,
                                                queue: .main) { [weak self] note in
@@ -104,6 +118,7 @@ final class LocationShareEngine: ObservableObject {
         }
         reloadFromStore()
         resumeOutboundIfNeeded()
+        Task { await flushPendingStops() }
         ticker = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -115,6 +130,7 @@ final class LocationShareEngine: ObservableObject {
     /// after the app was relaunched mid-share. Without this the banner would show "sharing"
     /// while nothing actually streamed.
     private func resumeOutboundIfNeeded() {
+        guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else { return }
         var resumedAny = false
         for share in LocationStore.activeOutbound() where emitting[share.id] == nil {
             let targets = LocationStore.targets(shareId: share.id)
@@ -126,7 +142,7 @@ final class LocationShareEngine: ObservableObject {
             // ever showed up for an offline recipient.)
             emitting[share.id] = Emit(recipientIds: targets, cadenceSeconds: share.cadenceSeconds,
                                       isGroup: share.isGroup, conversationId: share.conversationId,
-                                      seq: Int(Date().timeIntervalSince1970))
+                                      seq: max(Int(Date().timeIntervalSince1970 * 1000), LocationStore.lastFix(shareId: share.id)?.fix.seq ?? 0))
             resumedAny = true
         }
         if resumedAny { service.startLive() }
@@ -135,14 +151,14 @@ final class LocationShareEngine: ObservableObject {
     private func wipe() {
         for id in Array(emitting.keys) { emitting[id] = nil }
         service.stopUpdating()
+        service.cancelOneShot()
+        lastOutboundFixAt = nil
         outboundShares = []
         stopped.removeAll(); inboundSeq.removeAll()
     }
 
     // MARK: - Authorization (in-context, at the moment of first share)
 
-    var authorizationStatus: CLAuthorizationStatus { service.authorizationStatus }
-    var isReducedAccuracy: Bool { service.isReducedAccuracy }
     func requestWhenInUse() { service.requestWhenInUse() }
     func requestAlways() { service.requestAlways() }
 
@@ -163,8 +179,12 @@ final class LocationShareEngine: ObservableObject {
     func sendPin(conversationId: String, isGroup: Bool, peerUserId: String?,
                  label: String?, coordinate: CLLocationCoordinate2D? = nil,
                  completion: @escaping (Bool) -> Void) {
+        lastError = nil
+        let account = TokenStore.shared.userId
         if let coordinate {
+            guard CLLocationCoordinate2DIsValid(coordinate) else { completion(false); return }
             Task { @MainActor in
+                guard account != nil, TokenStore.shared.userId == account else { completion(false); return }
                 let env = LocationEnvelope(
                     vloc: 1, k: .pin, s: nil, t: Date().timeIntervalSince1970 * 1000,
                     lat: LocationRounding.round(coordinate.latitude, decimals: LocationRounding.liveDecimals),
@@ -180,7 +200,7 @@ final class LocationShareEngine: ObservableObject {
 
         service.requestOneShot { [weak self] loc in
             Task { @MainActor in
-                guard let self, let loc else { completion(false); return }
+                guard let self, let loc, account != nil, TokenStore.shared.userId == account else { completion(false); return }
                 let env = LocationEnvelope(
                     vloc: 1, k: .pin, s: nil, t: Date().timeIntervalSince1970 * 1000,
                     lat: LocationRounding.round(loc.coordinate.latitude, decimals: LocationRounding.liveDecimals),
@@ -202,13 +222,28 @@ final class LocationShareEngine: ObservableObject {
     @discardableResult
     func startLiveShare(conversationId: String, isGroup: Bool, peerUserId: String?,
                         recipientIds: [String], duration: ShareDuration) async -> String? {
-        let targets = recipientIds.filter { !$0.isEmpty }
-        guard !targets.isEmpty else { return nil }
+        configure()
+        lastError = nil
+        let account = TokenStore.shared.userId
+        let targets = Array(Set(recipientIds.filter { !$0.isEmpty }))
+        guard account != nil, !targets.isEmpty,
+              authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else {
+            lastError = "Allow location access before starting a live share."
+            return nil
+        }
+        let initialFix: CLLocation? = await withCheckedContinuation { continuation in
+            service.requestOneShot { continuation.resume(returning: $0) }
+        }
+        guard let initialFix, TokenStore.shared.userId == account else {
+            lastError = "Couldn’t find your location. Try Locate me before starting a live share."
+            return nil
+        }
         do {
             // 1. Server session — the only place membership is validated + abuse limited.
             let created = try await api.createShare(conversationId: conversationId,
                                                     targetUserIds: targets,
                                                     durationSeconds: duration.seconds)
+            guard TokenStore.shared.userId == account else { return nil }
             let shareId = created.share_id
             let expiresAt = parseISO(created.expires_at) ?? Date().addingTimeInterval(TimeInterval(duration.seconds))
 
@@ -222,23 +257,37 @@ final class LocationShareEngine: ObservableObject {
                 vloc: 1, k: .live_start, s: shareId, t: Date().timeIntervalSince1970 * 1000,
                 expiresAt: expiresAt.timeIntervalSince1970 * 1000,
                 key: shareKey.base64EncodedString(), cadence: liveCadence)
-            _ = await sendControl(startEnv, conversationId: conversationId,
-                                  isGroup: isGroup, peerUserId: peerUserId)
+            let delivered = await sendControl(startEnv, conversationId: conversationId,
+                                              isGroup: isGroup, peerUserId: peerUserId)
+            guard TokenStore.shared.userId == account else { return nil }
+            guard delivered else {
+                // Retire even an ambiguous send: a recipient may have received the start
+                // before the HTTP response failed. Persist the stop for reconnect/relaunch.
+                enqueueStop(shareId, context: Emit(recipientIds: targets, cadenceSeconds: liveCadence,
+                    isGroup: isGroup, conversationId: conversationId, seq: 0))
+                LocationKeyStore.shared.deleteKey(shareId: shareId)
+                Task { await flushPendingStops() }
+                lastError = "Couldn’t deliver the live-share invitation. Nothing is being shared. Please try again."
+                return nil
+            }
 
             // 4. Local bookkeeping + start the stream.
             LocationStore.upsertOutbound(id: shareId, conversationId: conversationId, isGroup: isGroup,
                                          expiresAtMillis: expiresAt.timeIntervalSince1970 * 1000,
                                          cadenceSeconds: liveCadence, targets: targets)
-            // Seed the sequence from epoch seconds so it stays monotonic even across an app
+            // Seed the sequence from epoch milliseconds so it stays monotonic even across an app
             // restart mid-share (a recipient drops any fix whose seq isn't strictly greater).
             emitting[shareId] = Emit(recipientIds: targets, cadenceSeconds: liveCadence,
                                      isGroup: isGroup, conversationId: conversationId,
-                                     seq: Int(Date().timeIntervalSince1970))
+                                     seq: Int(Date().timeIntervalSince1970 * 1000))
             stopped.remove(shareId)
             service.startLive()
             reloadFromStore()
+            lastOutboundFixAt = nil
+            handleOutboundFix(initialFix)
             return shareId
         } catch {
+            lastError = "Couldn’t start live sharing. Check your connection and try again."
             NSLog("[VOIID] live share start FAILED conv=\(conversationId): \(error)")
             return nil
         }
@@ -248,43 +297,92 @@ final class LocationShareEngine: ObservableObject {
     /// offline recipient), server DELETE, then tear down the key + local state. Every step
     /// is best-effort except the local teardown — the recipient's expiresAt is the actual
     /// guarantee, so a failed network step never leaves a share un-stoppable.
-    func stopLiveShare(_ shareId: String) async {
-        let ctx = emitting[shareId]
-        let recipients = ctx?.recipientIds ?? LocationStore.targets(shareId: shareId)
-        // (a) instant stop on live sockets.
-        if !recipients.isEmpty {
-            WebSocketClient.shared.sendLocationStop(shareId: shareId, recipientIds: recipients)
-        }
-        // (b) durable stop so an offline recipient still hides the marker — routed over the
-        // same transport the share used.
-        if let ctx {
-            let stopEnv = LocationEnvelope(vloc: 1, k: .live_stop, s: shareId,
-                                           t: Date().timeIntervalSince1970 * 1000)
-            _ = await sendControl(stopEnv, conversationId: ctx.conversationId, isGroup: ctx.isGroup,
-                                  peerUserId: ctx.isGroup ? nil : ctx.recipientIds.first)
-        }
-        // (c) server DELETE + local teardown.
-        try? await api.endShare(shareId)
-        emitting[shareId] = nil
-        stopped.insert(shareId)
-        LocationKeyStore.shared.deleteKey(shareId: shareId)
-        LocationStore.end(id: shareId)
-        if emitting.isEmpty { service.stopUpdating() }
-        reloadFromStore()
-        version &+= 1
+    private var flushingStops = false
+    private var pendingStopsKey: String { "voiid.location.pending-stops.\(TokenStore.shared.userId ?? "signed-out")" }
+
+    private func pendingStops(_ key: String) -> [String: Emit] {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [:] }
+        return (try? JSONDecoder().decode([String: Emit].self, from: data)) ?? [:]
     }
 
-    /// End every outbound share (the kill switch / sign-out).
+    private func enqueueStop(_ id: String, context: Emit) {
+        var pending = pendingStops(pendingStopsKey)
+        pending[id] = context
+        if let data = try? JSONEncoder().encode(pending) { UserDefaults.standard.set(data, forKey: pendingStopsKey) }
+    }
+
+    private func flushPendingStops() async {
+        guard !flushingStops, let account = TokenStore.shared.userId else { return }
+        flushingStops = true
+        defer { flushingStops = false }
+        let key = pendingStopsKey
+        for (id, context) in pendingStops(key) {
+            guard TokenStore.shared.userId == account else { return }
+            let envelope = LocationEnvelope(vloc: 1, k: .live_stop, s: id, t: Date().timeIntervalSince1970 * 1000)
+            let delivered = await sendControl(envelope, conversationId: context.conversationId,
+                isGroup: context.isGroup, peerUserId: context.isGroup ? nil : context.recipientIds.first)
+            guard TokenStore.shared.userId == account else { return }
+            do {
+                try await api.endShare(id)
+                guard TokenStore.shared.userId == account, delivered else { continue }
+                var pending = pendingStops(key)
+                pending[id] = nil
+                if let data = try? JSONEncoder().encode(pending) { UserDefaults.standard.set(data, forKey: key) }
+            } catch { /* Retried by the ticker/foreground, without resuming the local stream. */ }
+        }
+    }
+
+    func stopLiveShare(_ shareId: String) async {
+        let share = outboundShares.first { $0.id == shareId }
+        let recipients = emitting[shareId]?.recipientIds ?? LocationStore.targets(shareId: shareId)
+        let context = emitting[shareId] ?? share.map {
+            Emit(recipientIds: recipients, cadenceSeconds: $0.cadenceSeconds, isGroup: $0.isGroup,
+                 conversationId: $0.conversationId, seq: 0)
+        }
+        if let context { enqueueStop(shareId, context: context) }
+        // Stop locally BEFORE any network await. A slow/offline server must never
+        // keep transmitting after the person taps Stop.
+        emitting[shareId] = nil
+        stopped.insert(shareId)
+        LocationStore.end(id: shareId)
+        LocationKeyStore.shared.deleteKey(shareId: shareId)
+        if emitting.isEmpty { service.stopUpdating(); lastOutboundFixAt = nil }
+        reloadFromStore()
+        version &+= 1
+        if !recipients.isEmpty { WebSocketClient.shared.sendLocationStop(shareId: shareId, recipientIds: recipients) }
+        await flushPendingStops()
+    }
+
     func stopAll() async {
-        for id in Array(emitting.keys) { await stopLiveShare(id) }
+        // Schedule every teardown before awaiting the first network operation.
+        let ids = Set(outboundShares.map(\.id)).union(emitting.keys)
+        await withTaskGroup(of: Void.self) { group in
+            for id in ids { group.addTask { await self.stopLiveShare(id) } }
+        }
     }
 
     /// Extend an owned share.
     func extendLiveShare(_ shareId: String, duration: ShareDuration) async {
-        guard let res = try? await api.extendShare(shareId, durationSeconds: duration.seconds) else { return }
-        let expires = parseISO(res.expires_at) ?? Date().addingTimeInterval(TimeInterval(duration.seconds))
-        LocationStore.extend(id: shareId, expiresAtMillis: expires.timeIntervalSince1970 * 1000)
-        reloadFromStore()
+        guard let context = emitting[shareId], let key = LocationKeyStore.shared.key(shareId: shareId) else { return }
+        let account = TokenStore.shared.userId
+        lastError = nil
+        do {
+            let response = try await api.extendShare(shareId, durationSeconds: duration.seconds)
+            guard TokenStore.shared.userId == account, emitting[shareId] != nil else { return }
+            let expires = parseISO(response.expires_at) ?? Date().addingTimeInterval(TimeInterval(duration.seconds))
+            let envelope = LocationEnvelope(vloc: 1, k: .live_start, s: shareId,
+                t: Date().timeIntervalSince1970 * 1000, expiresAt: expires.timeIntervalSince1970 * 1000,
+                key: key.base64EncodedString(), cadence: context.cadenceSeconds)
+            let delivered = await sendControl(envelope, conversationId: context.conversationId,
+                isGroup: context.isGroup, peerUserId: context.isGroup ? nil : context.recipientIds.first)
+            guard TokenStore.shared.userId == account, emitting[shareId] != nil else { return }
+            guard delivered else {
+                lastError = "Couldn’t deliver the new sharing time. Your original timer is still active."
+                return
+            }
+            LocationStore.extend(id: shareId, expiresAtMillis: expires.timeIntervalSince1970 * 1000)
+            reloadFromStore()
+        } catch { lastError = "Couldn’t extend live sharing. Please try again." }
     }
 
     // MARK: - Outbound fix stream (P3)
@@ -293,8 +391,12 @@ final class LocationShareEngine: ObservableObject {
 
     private func handleOutboundFix(_ loc: CLLocation) {
         let now = Date()
+        for share in outboundShares where share.expiresAt <= now {
+            Task { await stopLiveShare(share.id) }
+        }
         let age = now.timeIntervalSince(loc.timestamp)
-        guard loc.horizontalAccuracy >= 0, age >= 0, age <= 60 else { return }
+        guard loc.horizontalAccuracy >= 0, age >= -5, age <= 60,
+              CLLocationCoordinate2DIsValid(loc.coordinate), !emitting.isEmpty else { return }
         // Core Location may deliver faster than the live-share network cadence.
         if let lastOutboundFixAt, now.timeIntervalSince(lastOutboundFixAt) < 15 { return }
         lastOutboundFixAt = now
@@ -317,21 +419,25 @@ final class LocationShareEngine: ObservableObject {
                                                       ciphertext: ct.base64EncodedString())
             LocationStore.saveFix(fix, senderUserId: me)
         }
+        version &+= 1
     }
 
     // MARK: - Inbound fix stream (P3)
 
     private func handleInboundFix(shareId: String, fromUserId: String, ciphertextB64: String) {
-        // CLIENT-SIDE authorization (docs/LOCATION.md §9): the WS process cannot verify the
-        // recipient list, so a frame for a share we don't hold is dropped. Its payload is
-        // encrypted under a key we don't have anyway — this is the real authorization.
+        // Check the held share, authenticated sender and encrypted envelope identity as
+        // well as the server's audience authorization. A share key alone is not identity.
         guard LocationStore.hasActiveInbound(shareId: shareId),
               let key = LocationKeyStore.shared.key(shareId: shareId),
               let ct = Data(base64Encoded: ciphertextB64),
               let plain = try? decryptBackup(secret: key, blob: ct),
-              let fix = LocationFix.from(plaintext: String(decoding: plain, as: UTF8.self)) else { return }
+              let fix = LocationFix.from(plaintext: String(decoding: plain, as: UTF8.self)),
+              fix.shareId == shareId, fix.isValid,
+              fix.timestampMillis <= (Date().timeIntervalSince1970 + 10) * 1000,
+              LocationStore.activeInboundAll().contains(where: { $0.shareId == shareId && $0.ownerUserId == fromUserId }) else { return }
         // Drop an out-of-order relay frame rather than rendering a jump backwards.
-        if let last = inboundSeq[shareId], fix.seq <= last { return }
+        let last = inboundSeq[shareId] ?? LocationStore.lastFix(shareId: shareId)?.fix.seq
+        if let last, fix.seq <= last { return }
         inboundSeq[shareId] = fix.seq
         LocationStore.saveFix(fix, senderUserId: fromUserId)
         version &+= 1
@@ -350,8 +456,11 @@ final class LocationShareEngine: ObservableObject {
         guard emitting[shareId] != nil || stopped.contains(shareId)
                 || LocationStore.hasActiveInbound(shareId: shareId) else { return }
         stopped.insert(shareId)
+        emitting[shareId] = nil
         LocationStore.end(id: shareId)
         LocationKeyStore.shared.deleteKey(shareId: shareId)
+        if emitting.isEmpty { service.stopUpdating() }
+        reloadFromStore()
         version &+= 1
     }
 
@@ -360,7 +469,7 @@ final class LocationShareEngine: ObservableObject {
     /// The recipient-visible state of a share. An explicit stop OR `now >= expiresAt`
     /// means ENDED; a fix older than 2×cadence + 30 s (but still before expiry) is STALE.
     func shareState(shareId: String, expiresAt: Date?, cadence: Int) -> ShareState {
-        if stopped.contains(shareId) { return .ended }
+        if stopped.contains(shareId) || LocationStore.isEnded(shareId) { return .ended }
         if let expiresAt, Date() >= expiresAt { return .ended }
         if let (_, _, fixedAt) = LocationStore.lastFix(shareId: shareId) {
             let liveWindow = TimeInterval(2 * cadence + 30)
@@ -395,12 +504,16 @@ final class LocationShareEngine: ObservableObject {
     func markStopped(_ shareId: String) {
         guard !stopped.contains(shareId) else { return }
         stopped.insert(shareId)
+        emitting[shareId] = nil
+        if emitting.isEmpty { service.stopUpdating() }
+        reloadFromStore()
         version &+= 1
     }
 
     // MARK: - Expiry ticker
 
     private func tick() {
+        Task { await flushPendingStops() }
         // Stop emitting anything whose timer has elapsed — the primary guarantee. Both
         // sides also hide the marker at expiresAt with no network at all.
         let now = Date()
@@ -443,7 +556,12 @@ final class LocationShareEngine: ObservableObject {
     /// Live-share cadence (seconds). 10–15 s with a 25 m distance filter (docs/LOCATION.md §5).
     private let liveCadence = 15
 
-    private func parseISO(_ s: String?) -> Date? { s.flatMap { ISO8601DateFormatter().date(from: $0) } }
+    private func parseISO(_ s: String?) -> Date? {
+        guard let s else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+    }
 }
 
 extension Notification.Name {

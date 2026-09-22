@@ -343,6 +343,7 @@ struct VoiidApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .tint(VoiidColor.accentInk)
                 .voiidForceUpdateGate()   // /config on launch + blocking update screen on 426
                 // Inherited by every tab, navigation destination, and presented sheet.
                 .softTopEdgeEffect()

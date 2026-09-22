@@ -496,7 +496,7 @@ final class ChatStore: ObservableObject {
                 guard let last = ChatEngine.shared.messages(conversationId: id).last else { continue }
                 sawMessages = true
                 let preview = !last.text.isEmpty ? last.text
-                    : (last.media.map { $0.mime.hasPrefix("audio/") ? "Voice message" : "Photo" } ?? "")
+                    : (last.media.map { $0.filename ?? ($0.mime.hasPrefix("audio/") ? "Voice message" : ($0.mime.hasPrefix("image/") || $0.mime.hasPrefix("video/") ? "Photo" : "Document")) } ?? "")
                 if !preview.isEmpty {
                     LocalStore.updatePreview(conversationId: id, preview: preview, at: last.createdAt)
                     wrote += 1
@@ -780,7 +780,7 @@ final class ChatStore: ObservableObject {
             } else { locRef = nil }
             let kind: MessageKind
             if locRef != nil { kind = .location }
-            else { kind = d.media.map { $0.mime.hasPrefix("audio/") ? .voice : .image } ?? .text }
+            else { kind = d.media.map { $0.filename != nil ? .document : ($0.mime.hasPrefix("audio/") ? .voice : ($0.mime.hasPrefix("image/") || $0.mime.hasPrefix("video/") ? .image : .document)) } ?? .text }
             // Mine: sending (offline) / sent / delivered / read — from the PERSISTED
             // delivery status so it never regresses on rebuild. Inbound: shown as read.
             let status: MessageStatus
@@ -865,10 +865,10 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    /// Send a media (image/voice) message: encrypt the blob on-device, upload the
-    /// ciphertext to R2, and pack the key into the E2EE message (direct chats only).
-    func sendMedia(_ data: Data, mime: String, caption: String = "", to conversationId: String) {
-        let kind: MessageKind = mime.hasPrefix("audio/") ? .voice : .image
+    /// Encrypt attachment bytes, upload the ciphertext, and carry the key and optional
+    /// document filename inside the direct or group encrypted message.
+    func sendMedia(_ data: Data, mime: String, caption: String = "", filename: String? = nil, to conversationId: String) {
+        let kind: MessageKind = filename != nil ? .document : (mime.hasPrefix("audio/") ? .voice : (mime.hasPrefix("image/") || mime.hasPrefix("video/") ? .image : .document))
         let tempId = UUID().uuidString
         let msg = VMessage(id: tempId, conversationId: conversationId, senderId: "me",
                            kind: kind, text: caption, createdAt: .now, status: .sending, isMine: true)
@@ -877,7 +877,9 @@ final class ChatStore: ObservableObject {
         messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
         bumpPreview(conversationId, preview: previewFor(kind))
 
-        guard let conv = directConversations.first(where: { $0.id == conversationId }) else {
+        let conv = directConversations.first(where: { $0.id == conversationId })
+        let isGroup = encryptedGroupConversations.contains(where: { $0.id == conversationId })
+        guard conv != nil || isGroup else {
             pendingMediaMessages[tempId]?.status = .failed
             refresh(conversationId)
             mediaSendError = "Media sending isn’t available in this conversation."
@@ -885,10 +887,16 @@ final class ChatStore: ObservableObject {
         }
         Task {
             do {
-                let peer = try await peerUserId(for: conv)
                 guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
-                _ = try await ChatEngine.shared.sendMedia(data, mime: mime, caption: caption,
-                                                          conversationId: conversationId, peerUserId: peer)
+                if isGroup {
+                    try await GroupEngine.shared.sendGroupMedia(data, mime: mime, filename: filename,
+                                                               caption: caption, conversationId: conversationId)
+                } else if let conv {
+                    let peer = try await peerUserId(for: conv)
+                    guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
+                    _ = try await ChatEngine.shared.sendMedia(data, mime: mime, caption: caption, filename: filename,
+                                                              conversationId: conversationId, peerUserId: peer)
+                }
                 guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
                 pendingMediaMessages[tempId] = nil
                 removeMessage(tempId, in: conversationId)

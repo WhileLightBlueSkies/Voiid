@@ -407,6 +407,22 @@ final class GroupEngine {
         try await withGroupState { try await sendGroupMessageLocked(conversationId: conversationId, text: text) }
     }
 
+    #if !NSE_EXTENSION
+    func sendGroupMedia(_ data: Data, mime: String, filename: String?, caption: String,
+                        conversationId: String) async throws {
+        let account = TokenStore.shared.userId
+        let encrypted = try encryptMedia(plaintext: data)
+        let key = try await MediaService.shared.upload(body: encrypted.ciphertext, mime: mime)
+        guard TokenStore.shared.userId == account else { throw APIError.notAuthenticated }
+        MediaCache.shared.setData(data, key)
+        let ref = MediaRef(mediaUrl: key, mime: mime, key: encrypted.mediaKey.key,
+                           nonce: encrypted.mediaKey.nonce, sha256: encrypted.mediaKey.ciphertextSha256,
+                           filename: filename)
+        let envelope = try JSONEncoder().encode(ChatEngine.MediaEnvelope(media: ref, caption: caption))
+        try await sendGroupMessage(conversationId: conversationId, text: String(decoding: envelope, as: UTF8.self))
+    }
+    #endif
+
     private func sendGroupMessageLocked(conversationId: String, text: String) async throws {
         guard let m = ensureMember() else { throw APIError.notAuthenticated }
         do {
@@ -431,14 +447,15 @@ final class GroupEngine {
             // A location envelope rides the MLS text plaintext; decode it back so the
             // sender sees the pin/live bubble immediately (docs/LOCATION.md §4).
             let loc = LocationWire.decode(text, fromUserId: TokenStore.shared.userId ?? "")
+            let media = Self.mediaEnvelope(text)
             // Silent control (live_rekey) → no echo bubble. Plain text or a rendered location
             // kind → echo it so the sender sees their own pin/live bubble immediately.
             if loc?.renders != false {
                 let echo = DecryptedMessage(id: res.message_id,
                                             senderId: TokenStore.shared.userId ?? "me",
-                                            text: loc?.text ?? text,
+                                            text: media?.caption ?? loc?.text ?? text,
                                             createdAt: res.created_at.map(parseDate) ?? Date(),
-                                            isMine: true, locationJSON: loc?.json, deliveryStatus: "sent")
+                                            isMine: true, media: media?.media, locationJSON: loc?.json, deliveryStatus: "sent")
                 ChatEngine.shared.ingestGroupMessage(echo, conversationId: conversationId)
             }
             NSLog("[VOIID] MLS sent id=\(res.message_id) conv=\(conversationId) devices=\(messages.count)")
@@ -446,6 +463,12 @@ final class GroupEngine {
             NSLog("[VOIID] MLS send FAILED conv=\(conversationId): \(error)")
             throw error
         }
+    }
+
+    private static func mediaEnvelope(_ text: String) -> ChatEngine.MediaEnvelope? {
+        guard let envelope = try? JSONDecoder().decode(ChatEngine.MediaEnvelope.self, from: Data(text.utf8)),
+              !envelope.media.mediaUrl.isEmpty else { return nil }
+        return envelope
     }
 
     // MARK: - Sync (control events THEN app messages)
@@ -610,6 +633,7 @@ final class GroupEngine {
                 // Location control (live_start/stop/rekey) carried over MLS: LocationWire
                 // captures its key + strips it, and renders a clean bubble instead of raw JSON.
                 let loc = LocationWire.decode(text, fromUserId: msg.sender_id)
+                let media = Self.mediaEnvelope(text)
                 let decrypted: DecryptedMessage
                 if loc?.renders == false {
                     // Silent control (live_rekey) — keep it seen but hidden, never an empty bubble.
@@ -618,9 +642,9 @@ final class GroupEngine {
                                                  isMine: false, control: true)
                 } else {
                     decrypted = DecryptedMessage(id: msg.id, senderId: msg.sender_id,
-                                                 text: loc?.text ?? text,
+                                                 text: media?.caption ?? loc?.text ?? text,
                                                  createdAt: parseDate(msg.created_at),
-                                                 isMine: false, locationJSON: loc?.json)
+                                                 isMine: false, media: media?.media, locationJSON: loc?.json)
                 }
                 ChatEngine.shared.ingestGroupMessage(decrypted, conversationId: conversationId)
             } catch {

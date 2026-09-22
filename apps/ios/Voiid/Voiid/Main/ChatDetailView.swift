@@ -17,6 +17,52 @@ import UIKit
 import CryptoKit
 import AVFoundation
 import AVKit
+import UniformTypeIdentifiers
+import QuickLook
+
+/// Short messages stay inline; wrapped messages have a compact, trailing footer.
+/// Using Layout keeps cell measurement and placement in agreement without state updates.
+private struct MessageTextMetadataLayout: Layout {
+    let hasLineBreak: Bool
+    private let inlineGap: CGFloat = 8
+    private let footerGap: CGFloat = 2
+
+    private struct Measurement {
+        let size: CGSize
+        let body: CGSize
+        let metadata: CGSize
+        let inline: Bool
+    }
+
+    private func measure(_ proposal: ProposedViewSize, _ subviews: Subviews) -> Measurement {
+        let bodyIdeal = subviews[0].sizeThatFits(.unspecified)
+        let metadata = subviews[1].sizeThatFits(.unspecified)
+        let inlineWidth = bodyIdeal.width + inlineGap + metadata.width
+        let available = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? inlineWidth
+        if !hasLineBreak && inlineWidth <= available {
+            return Measurement(size: CGSize(width: inlineWidth, height: max(bodyIdeal.height, metadata.height)),
+                               body: bodyIdeal, metadata: metadata, inline: true)
+        }
+        let width = max(metadata.width, min(available, bodyIdeal.width))
+        let body = subviews[0].sizeThatFits(ProposedViewSize(width: width, height: nil))
+        return Measurement(size: CGSize(width: width, height: body.height + footerGap + metadata.height),
+                           body: body, metadata: metadata, inline: false)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        measure(proposal, subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let measurement = measure(proposal, subviews)
+        let bodyY = measurement.inline ? bounds.maxY - measurement.body.height : bounds.minY
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: bodyY), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: measurement.body.width, height: measurement.body.height))
+        subviews[1].place(at: CGPoint(x: bounds.maxX - measurement.metadata.width,
+                                     y: bounds.maxY - measurement.metadata.height), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: measurement.metadata.width, height: measurement.metadata.height))
+    }
+}
 
 struct ChatDetailView: View {
     let conversation: VConversation
@@ -30,6 +76,8 @@ struct ChatDetailView: View {
 
     @State private var draft = ""
     @State private var transcriptNearBottom = true
+    @State private var transcriptPosition = ScrollPosition(edge: .bottom)
+    @State private var initialBottomAnchor = true
     @State private var photoItem: PhotosPickerItem?
     /// The message whose media opened the gallery. An id, not a decoded UIImage: the
     /// viewer pages through the whole conversation, so it needs to know WHERE it started,
@@ -40,13 +88,13 @@ struct ChatDetailView: View {
     /// Briefly marks the message a jump landed on.
     @State private var highlightedId: String?
     @ObservedObject private var notificationRouter = NotificationMessageRouter.shared
-    @State private var notificationPositioned = false
     @State private var showInfo = false       // group info / contact profile
     @State private var showSafetyNumber = false
     @State private var showAttach = false     // attach menu (photo / poll)
     @State private var showPollCompose = false
     @State private var showLocationCompose = false   // location share compose sheet
-    @State private var showLudoSetup = false
+    @State private var pickDocument = false
+    @State private var importingDocument = false
     @State private var pickPhoto = false
     /// Live capture, distinct from `pickPhoto` (the photo LIBRARY). The camera button was
     /// wired to the library, so tapping it opened the picker rather than the camera.
@@ -204,19 +252,9 @@ struct ChatDetailView: View {
                 conversationTitle: conversation.title,
                 isGroup: conversation.type == .group,
                 audienceCount: conversation.type == .group ? max(1, conversation.memberCount - 1) : 1,
-                onSendPin: { label, coord in sendLocationPin(label: label, coordinate: coord) },
-                onStartLive: { duration in startLiveShare(duration: duration) })
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $showLudoSetup) {
-            LudoChatSetupView(
-                hasHumanPeer: conversation.type != .self,
-                availablePeers: conversation.type == .group
-                    ? max(1, conversation.memberCount - 1) : 1
-            ) { mode, difficulty in
-                startLudo(mode: mode, difficulty: difficulty)
-            }
-            .presentationDetents([.medium])
+                onSendPin: { label, coord in await sendLocationPin(label: label, coordinate: coord) },
+                onStartLive: { duration in await startLiveShare(duration: duration) })
+            .presentationDetents([.large])
         }
         .alert("Reaction not sent", isPresented: Binding(
             get: { chat.reactionError != nil },
@@ -368,39 +406,40 @@ struct ChatDetailView: View {
 
     /// Send a static pin. The engine captures one fix and sends the E2EE envelope; the
     /// echo appears in this chat, so we refresh once the send returns.
-    private func sendLocationPin(label: String?, coordinate: CLLocationCoordinate2D? = nil) {
-        Task {
-            let peer = isGroupChat ? nil : await resolvePeer()
-            guard isGroupChat || peer != nil else { return }
+    private func sendLocationPin(label: String?, coordinate: CLLocationCoordinate2D? = nil) async -> Bool {
+        let account = TokenStore.shared.userId
+        let peer = isGroupChat ? nil : await resolvePeer()
+        guard TokenStore.shared.userId == account, isGroupChat || peer != nil else { return false }
+        let success: Bool = await withCheckedContinuation { continuation in
             LocationShareEngine.shared.sendPin(conversationId: conversation.id, isGroup: isGroupChat,
-                                               peerUserId: peer, label: label,
-                                               coordinate: coordinate) { _ in
-                Task { @MainActor in chat.openConversation(conversation) }
+                                               peerUserId: peer, label: label, coordinate: coordinate) {
+                continuation.resume(returning: $0)
             }
         }
+        guard TokenStore.shared.userId == account else { return false }
+        if success { chat.openConversation(conversation) }
+        return success
     }
 
-    /// Start a time-bounded live share. The audience for the WS fix stream is the peer
-    /// (1:1) or every OTHER group member (resolved from the server member list).
-    private func startLiveShare(duration: ShareDuration) {
-        Task {
-            let me = TokenStore.shared.userId
-            let recipients: [String]
-            let peer: String?
-            if isGroupChat {
-                peer = nil
-                recipients = ((try? await ChatService.shared.members(conversationId: conversation.id)) ?? [])
-                    .map { $0.userId }.filter { $0 != me }
-            } else {
-                peer = await resolvePeer()
-                recipients = peer.map { [$0] } ?? []
-            }
-            guard !recipients.isEmpty else { return }
-            _ = await LocationShareEngine.shared.startLiveShare(
-                conversationId: conversation.id, isGroup: isGroupChat, peerUserId: peer,
-                recipientIds: recipients, duration: duration)
-            chat.openConversation(conversation)
+    private func startLiveShare(duration: ShareDuration) async -> Bool {
+        let me = TokenStore.shared.userId
+        let recipients: [String]
+        let peer: String?
+        if isGroupChat {
+            peer = nil
+            guard let members = try? await ChatService.shared.members(conversationId: conversation.id) else { return false }
+            recipients = members.map { $0.userId }.filter { $0 != me }
+        } else {
+            peer = await resolvePeer()
+            recipients = peer.map { [$0] } ?? []
         }
+        guard TokenStore.shared.userId == me, !recipients.isEmpty else { return false }
+        let share = await LocationShareEngine.shared.startLiveShare(
+            conversationId: conversation.id, isGroup: isGroupChat, peerUserId: peer,
+            recipientIds: recipients, duration: duration)
+        guard TokenStore.shared.userId == me else { return false }
+        if share != nil { chat.openConversation(conversation) }
+        return share != nil
     }
 
     // MARK: header
@@ -605,6 +644,21 @@ struct ChatDetailView: View {
                 .padding(.bottom, VoiidSpacing.md)
             }
             .softTopEdgeEffect()
+            .scrollPosition($transcriptPosition)
+            .onScrollPhaseChange { _, phase in
+                if phase == .tracking || phase == .interacting { initialBottomAnchor = false }
+            }
+            .onScrollGeometryChange(for: CGSize.self) { geometry in
+                geometry.contentSize
+            } action: { _, _ in
+                // Initial cached rows, call history, and network rows arrive separately.
+                // Keep the initial bottom anchor through those layout passes, until the
+                // reader takes control or explicitly jumps to a particular message.
+                guard initialBottomAnchor,
+                      notificationRouter.pendingMessage?.conversationId != conversation.id,
+                      jumpTargetId == nil else { return }
+                transcriptPosition.scrollTo(edge: .bottom)
+            }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 120
             } action: { _, nearBottom in
@@ -622,7 +676,7 @@ struct ChatDetailView: View {
                 guard let target = notificationRouter.pendingMessage,
                       target.conversationId == conversation.id, let messageId = target.messageId,
                       chat.messages(for: conversation.id).contains(where: { $0.id == messageId }) else { return }
-                notificationPositioned = true
+                initialBottomAnchor = false
                 await Task.yield()
                 guard !Task.isCancelled, notificationRouter.pendingMessage == target else { return }
                 proxy.scrollTo(messageId, anchor: .center)
@@ -635,34 +689,47 @@ struct ChatDetailView: View {
                 guard !Task.isCancelled, highlightedId == id else { return }
                 highlightedId = nil
             }
-            .onChange(of: chat.messages(for: conversation.id).count) { old, new in
-                guard !notificationPositioned, notificationRouter.pendingMessage?.conversationId != conversation.id else { return }
-                // The FIRST load is not an arrival — it is the transcript appearing. Landing
-                // on it without animation is what makes a chat open AT the newest message
-                // rather than at the top and then visibly scrolling down.
-                //
-                // `onAppear` alone could not do this: it fires before the cached messages
-                // are in the store, so `lastID` was still empty and the scroll targeted
-                // nothing. That is why opening a chat sat at the top.
-                if old == 0 {
-                    proxy.scrollTo(lastID, anchor: .bottom)
-                } else if new > old && (transcriptNearBottom || chat.messages(for: conversation.id).last?.isMine == true) {
-                    // A real new message DOES animate — the movement is what tells you
-                    // something arrived.
-                    withAnimation { proxy.scrollTo(lastID, anchor: .bottom) }
+            .task(id: lastID) {
+                guard !lastID.isEmpty,
+                      notificationRouter.pendingMessage?.conversationId != conversation.id,
+                      jumpTargetId == nil else { return }
+                let initiallyAnchored = initialBottomAnchor
+                let sentByMe = chat.messages(for: conversation.id).last?.isMine == true
+                let shouldFollow = initiallyAnchored || transcriptNearBottom || sentByMe
+                guard shouldFollow else { return }
+                // Let the new rows enter the layout before moving to the scroll edge.
+                // The edge remains valid even when lazy rows change their measured height.
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                guard initialBottomAnchor || transcriptNearBottom || sentByMe else { return }
+                transcriptPosition.scrollTo(edge: .bottom)
+            }
+            .onChange(of: chat.typingConversations.contains(conversation.id)) { _, isTyping in
+                guard isTyping, transcriptNearBottom,
+                      notificationRouter.pendingMessage?.conversationId != conversation.id,
+                      jumpTargetId == nil else { return }
+                transcriptPosition.scrollTo(edge: .bottom)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if !transcriptNearBottom && !lastID.isEmpty {
+                    Button {
+                        Haptics.tap()
+                        initialBottomAnchor = false
+                        transcriptPosition.scrollTo(edge: .bottom)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(VoiidFont.rounded(17, .semibold))
+                            .foregroundStyle(VoiidColor.textPrimary)
+                            .frame(width: 44, height: 44)
+                            .background(VoiidColor.surfaceCard, in: Circle())
+                            .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Scroll to latest message")
+                    .accessibilityIdentifier("chat.scrollToBottom")
+                    .padding(16)
                 }
-            }
-            .onChange(of: chat.typingConversations) { _, _ in
-                guard transcriptNearBottom, chat.typingConversations.contains(conversation.id) else { return }
-                guard !notificationPositioned, notificationRouter.pendingMessage?.conversationId != conversation.id else { return }
-                withAnimation { proxy.scrollTo("typing", anchor: .bottom) }
-            }
-            .onAppear {
-                guard notificationRouter.pendingMessage?.conversationId != conversation.id else { return }
-                // Covers the case where messages were ALREADY in the store when the view
-                // appeared (reopening a chat you just left), which the count change above
-                // will not fire for.
-                proxy.scrollTo(lastID, anchor: .bottom)
             }
             // JUMP TO MESSAGE, from the media viewer.
             //
@@ -670,6 +737,7 @@ struct ChatDetailView: View {
             // still on screen and lands you at the bottom instead.
             .onChange(of: jumpTargetId) { _, id in
                 guard let id else { return }
+                initialBottomAnchor = false
                 Task {
                     try? await Task.sleep(for: .milliseconds(320))
                     withAnimation(.easeOut(duration: 0.3)) {
@@ -690,7 +758,7 @@ struct ChatDetailView: View {
             .scrollDismissesKeyboard(.interactively)
             // Lands AT THE BOTTOM on first layout rather than laying out at the top and
             // then visibly scrolling down to the newest message.
-            .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
         }
     }
 
@@ -976,11 +1044,12 @@ struct ChatDetailView: View {
     }
 
     private var attachButton: some View {
-        // Attach — photo / location / poll.
+        // Attach photos, files, locations, and group polls.
         Menu {
             Button { pickPhoto = true } label: { Label("Photo", systemImage: "photo") }
             Button { showLocationCompose = true } label: { Label("Location", systemImage: "location") }
-            Button { showLudoSetup = true } label: { Label("Games · Ludo", systemImage: "gamecontroller") }
+            Button { pickDocument = true } label: { Label("Document", systemImage: "doc") }
+                .disabled(importingDocument)
             if conversation.type == .group {
                 Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
             }
@@ -1000,6 +1069,30 @@ struct ChatDetailView: View {
                 .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
         }
         .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
+        .tint(VoiidColor.accentInk)
+        .fileImporter(isPresented: $pickDocument, allowedContentTypes: [.item]) { result in
+            switch result {
+            case .success(let url):
+                importingDocument = true
+                let account = TokenStore.shared.userId
+                Task {
+                    defer { importingDocument = false }
+                    do {
+                        let document = try await Task.detached(priority: .userInitiated) {
+                            try ChatDocumentFile.read(url)
+                        }.value
+                        guard TokenStore.shared.userId == account else { return }
+                        chat.sendMedia(document.data, mime: document.mime, caption: document.name,
+                                       filename: document.name, to: conversation.id)
+                    } catch {
+                        guard TokenStore.shared.userId == account else { return }
+                        chat.mediaSendError = error.localizedDescription
+                    }
+                }
+            case .failure(let error):
+                if (error as NSError).code != NSUserCancelledError { chat.mediaSendError = error.localizedDescription }
+            }
+        }
         .fullScreenCover(isPresented: $showCamera) {
             // `selfieMode: false` — rear camera and no forced square crop. The defaults are
             // tuned for a profile photo; a chat photo is usually of what is in front of you,
@@ -1022,43 +1115,6 @@ struct ChatDetailView: View {
                 }
                 photoItem = nil
             }
-        }
-    }
-
-    private func startLudo(mode: LudoChatMode, difficulty: String) {
-        Task {
-            let candidates: [String]
-            if conversation.type == .group {
-                candidates = groupMembers.filter { !$0.isYou }.map(\.id)
-            } else if conversation.type == .direct {
-                if let peer = conversation.peerUserId {
-                    candidates = [peer]
-                } else {
-                    let resolved = try? await ChatService.shared.resolvePeer(
-                        conversationId: conversation.id)
-                    candidates = resolved?.peerUserId.map { [$0] } ?? []
-                }
-            } else {
-                candidates = []
-            }
-            let opponents: [String]
-            let bots: Int
-            switch mode {
-            case .duelHuman: opponents = Array(candidates.prefix(1)); bots = 0
-            case .duelBot: opponents = []; bots = 1
-            case .four: opponents = Array(candidates.prefix(3)); bots = 3 - opponents.count
-            }
-            guard let id = await GamesEngine.shared.createLudoFromChat(
-                conversationId: conversation.id, opponentIds: opponents,
-                bots: bots, difficulty: difficulty) else { return }
-            if !opponents.isEmpty {
-                chat.send(GameInvite.encode(slug: "ludo", matchId: id, meta: .init(
-                    game: "Ludo", from: "", level: bots > 0 ? difficulty.capitalized : "",
-                    format: mode == .four ? "4 players" : "1 vs 1",
-                    sentAt: GameInvite.nowMs())), to: conversation.id)
-            }
-            NotificationCenter.default.post(name: .voiidOpenGameMatch, object: nil,
-                userInfo: ["match_id": id, "slug": "ludo"])
         }
     }
 
@@ -1634,11 +1690,10 @@ struct MessageBubble: View {
             .accessibilityIdentifier("message.\(message.id).bubble")
     }
 
-    // Match the preview's single layout: wrap the body while keeping metadata
-    // anchored at the bottom. Switching layouts during hosting-controller sizing
-    // can otherwise measure an inline row and render a taller stacked row.
+    // Measure and place with the same layout so transcript cells include the footer
+    // in their height. Wrapped text gets the full bubble width, not a metadata column.
     private var textWithMeta: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        MessageTextMetadataLayout(hasLineBreak: message.text.contains(where: \.isNewline)) {
             styledText(message.text)
                 .fixedSize(horizontal: false, vertical: true)
             metaRow
@@ -1795,6 +1850,9 @@ struct MessageBubble: View {
                     .frame(width: 260, height: 220)
                     .overlay(ProgressView())
             }
+        case .document:
+            ChatDocumentBubble(ref: message.mediaRef, name: message.text, isMine: message.isMine,
+                               isSending: message.status == .sending)
         case .voice:
             AsyncVoiceNote(ref: message.mediaRef, label: message.text,
                            onOwnBubble: message.isMine,
@@ -2095,6 +2153,121 @@ struct BubbleShape: Shape {
 /// survives app restarts and renders WITHOUT the network — the WhatsApp behaviour (a photo
 /// you've seen once, or one you sent, shows instantly and offline). The plaintext bytes are
 /// what's cached, so the render path never re-downloads or re-decrypts after the first time.
+/// File-provider reads happen away from the main actor and retain security-scoped access.
+nonisolated struct ChatDocumentFile: Sendable {
+    let data: Data
+    let name: String
+    let mime: String
+    static let maximumBytes = 50 * 1024 * 1024
+
+    enum ImportError: LocalizedError {
+        case tooLarge, notAFile
+        var errorDescription: String? {
+            switch self {
+            case .tooLarge: "Choose a document smaller than 50 MB."
+            case .notAFile: "Choose a file, rather than a folder."
+            }
+        }
+    }
+
+    static func safeName(_ name: String, mime: String) -> String {
+        let leaf = name.replacingOccurrences(of: "\\", with: "/").components(separatedBy: "/").last ?? ""
+        let cleaned = String(leaf.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleaned.isEmpty && cleaned != "." && cleaned != ".." { return String(cleaned.prefix(180)) }
+        let ext = UTType(mimeType: mime)?.preferredFilenameExtension ?? "bin"
+        return "Document.\(ext)"
+    }
+
+    static func read(_ url: URL) throws -> ChatDocumentFile {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        var coordinationError: NSError?
+        var result: Result<ChatDocumentFile, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { readable in
+            result = Result {
+                let values = try readable.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentTypeKey])
+                guard values.isRegularFile == true else { throw ImportError.notAFile }
+                guard (values.fileSize ?? 0) <= maximumBytes else { throw ImportError.tooLarge }
+                let handle = try FileHandle(forReadingFrom: readable)
+                defer { try? handle.close() }
+                let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+                guard data.count <= maximumBytes else { throw ImportError.tooLarge }
+                let mime = values.contentType?.preferredMIMEType ?? "application/octet-stream"
+                return ChatDocumentFile(data: data, name: safeName(url.lastPathComponent, mime: mime), mime: mime)
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw ImportError.notAFile }
+        return try result.get()
+    }
+}
+
+struct ChatDocumentBubble: View {
+    let ref: MediaRef?
+    let name: String
+    var isMine = false
+    var isSending = false
+    @State private var loading = false
+    @State private var previewURL: URL?
+    @State private var error: String?
+
+    private var title: String { ref?.filename ?? (name.isEmpty ? "Document" : name) }
+    private var ink: Color { isMine ? VoiidColor.textOnBubble : VoiidColor.textPrimary }
+
+    var body: some View {
+        Button {
+            guard let ref, !loading else { return }
+            loading = true
+            let account = TokenStore.shared.userId
+            Task {
+                defer { loading = false }
+                do {
+                    let data: Data
+                    if let cached = MediaCache.shared.data(ref.mediaUrl) { data = cached }
+                    else { data = try await ChatEngine.shared.fetchMedia(ref) }
+                    guard TokenStore.shared.userId == account else { return }
+                    MediaCache.shared.setData(data, ref.mediaUrl)
+                    guard let base = MediaCache.shared.fileURL(ref.mediaUrl) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                    // Kept inside the account's media cache, which sign-out clears.
+                    let directory = base.appendingPathExtension("document")
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    let url = directory.appendingPathComponent(ChatDocumentFile.safeName(title, mime: ref.mime))
+                    try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                    previewURL = url
+                } catch {
+                    guard TokenStore.shared.userId == account else { return }
+                    self.error = "Couldn’t open this document. Please try again."
+                }
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.fill")
+                    .font(VoiidFont.rounded(24, .regular))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(VoiidFont.rounded(15, .semibold)).lineLimit(2)
+                    Text(isSending ? "Sending…" : (ref == nil ? "Not sent" : "Tap to open"))
+                        .font(VoiidFont.rounded(11, .regular)).opacity(0.75)
+                }
+                if loading || isSending { ProgressView().tint(ink) }
+                else { Image(systemName: "arrow.down.doc").font(VoiidFont.rounded(15, .regular)) }
+            }
+            .foregroundStyle(ink)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(ref == nil || loading)
+        .accessibilityLabel("Open document, \(title)")
+        .quickLookPreview($previewURL)
+        .alert("Document unavailable", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+    }
+}
+
 @MainActor final class MediaCache {
     static let shared = MediaCache()
     private var images: [String: UIImage] = [:]

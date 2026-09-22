@@ -71,7 +71,7 @@ enum ChatMediaStore {
     @MainActor
     static func items(chatId: String, from chat: ChatStore) -> [ChatMediaItem] {
         chat.messages(for: chatId).compactMap { m -> ChatMediaItem? in
-            guard let ref = m.mediaRef else { return nil }
+            guard let ref = m.mediaRef, ref.filename == nil else { return nil }
             let kind: ChatMediaItem.Kind
             if ref.mime.hasPrefix("image/") { kind = .image }
             else if ref.mime.hasPrefix("video/") { kind = .video }
