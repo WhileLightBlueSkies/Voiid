@@ -399,34 +399,8 @@ struct ClipCameraView: View {
     /// in black and white is a legitimate combination — so one shared rail would force a
     /// choice the pipeline does not actually impose.
     private var faceRail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: VoiidSpacing.sm) {
-                ForEach(ClipFaceEffect.allCases) { e in
-                    let on = cam.faceEffect == e
-                    Button {
-                        Haptics.selection()
-                        cam.faceEffect = e
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: e.symbol).font(.system(size: 13, weight: .semibold))
-                            Text(e.label).font(VoiidFont.rounded(13, .semibold))
-                        }
-                        .foregroundColor(on ? .black : .white)
-                        .padding(.horizontal, VoiidSpacing.md)
-                        .frame(minHeight: 38)
-                        .background(on ? Color.white : Color.black.opacity(0.35))
-                        .clipShape(Capsule())
-                        .padding(.vertical, 3)   // 44pt of target around a 38pt pill
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(SoftPressStyle())
-                    .accessibilityAddTraits(on ? [.isSelected] : [])
-                }
-            }
-            .padding(.horizontal, VoiidSpacing.md)
-        }
-        .frame(height: 44)
-        .padding(.bottom, VoiidSpacing.xs)
+        FaceLensRail(selection: $cam.faceEffect)
+            .padding(.bottom, VoiidSpacing.xs)
     }
 
     private var filterRail: some View {
@@ -710,7 +684,7 @@ struct ClipCameraView: View {
 /// The gesture recognisers live in the UIView rather than in SwiftUI because focus needs the
 /// exact aspect-fill geometry (which only the view knows) and because a single/double tap
 /// pair resolves cleanly with `require(toFail:)`.
-private struct ClipCameraPreview: UIViewRepresentable {
+struct ClipCameraPreview: UIViewRepresentable {
     let renderer: ClipCameraRenderer
     let onZoom: (CGFloat, Bool) -> Void
     /// Normalised (0…1) point inside the VISIBLE video, y down.
@@ -940,6 +914,31 @@ final class ClipCameraController: NSObject, ObservableObject,
     private var recordBudget: Double = 0
     private var lastPublishedLive: Double = -1
 
+    /// False for photo-only cameras (chat, profile photo): no mic input, so iOS does not
+    /// light the orange recording dot for a camera that can never record sound. Set
+    /// BEFORE `start()`.
+    var wantsAudio = true
+
+    /// Which lens the session opens on. A profile photo is a selfie; everything else starts
+    /// on the back camera. Ignored once the session is configured — use `flip()` after that.
+    func setInitialPosition(_ p: AVCaptureDevice.Position) {
+        guard !configured else { return }
+        position = p
+    }
+
+    /// Guarded by `filterLock`. Filled by `captureStill`, consumed by the next video frame.
+    private var pendingStill: ((UIImage?) -> Void)?
+
+    /// A still of exactly what the viewfinder shows — face filter and colour look included.
+    ///
+    /// Taken from the video stream rather than an AVCapturePhotoOutput: the photo output
+    /// never sees the face effect, which is composited per frame here, so a photo from it
+    /// would come back without the ears the person was looking at when they tapped.
+    func captureStill(_ completion: @escaping (UIImage?) -> Void) {
+        Haptics.tap()
+        filterLock.lock(); pendingStill = completion; filterLock.unlock()
+    }
+
     // MARK: Lifecycle
 
     func start() {
@@ -956,7 +955,7 @@ final class ClipCameraController: NSObject, ObservableObject,
             self.configured = true
             self.session.beginConfiguration()
             self.attachCamera(position: self.position)
-            self.attachMicrophone()
+            if self.wantsAudio { self.attachMicrophone() }
             // 1080p explicitly, not `.high`: the export ladder's top rung is 1080p and a
             // 720p source would silently skip it. Asked AFTER the inputs are attached,
             // because a preset is only answerable against the devices in the session.
@@ -973,8 +972,10 @@ final class ClipCameraController: NSObject, ObservableObject,
             self.videoOut.setSampleBufferDelegate(self, queue: self.videoQueue)
             if self.session.canAddOutput(self.videoOut) { self.session.addOutput(self.videoOut) }
 
-            self.audioOut.setSampleBufferDelegate(self, queue: self.audioQueue)
-            if self.session.canAddOutput(self.audioOut) { self.session.addOutput(self.audioOut) }
+            if self.wantsAudio {
+                self.audioOut.setSampleBufferDelegate(self, queue: self.audioQueue)
+                if self.session.canAddOutput(self.audioOut) { self.session.addOutput(self.audioOut) }
+            }
 
             self.session.commitConfiguration()
             self.applyConnectionGeometry()
@@ -1462,6 +1463,15 @@ final class ClipCameraController: NSObject, ObservableObject,
                                                      faces: faceDetector.latest)
                 }
                 renderer.submit(preview)
+
+                filterLock.lock()
+                let still = pendingStill
+                pendingStill = nil
+                filterLock.unlock()
+                if let still {
+                    let cg = writerCIContext.createCGImage(preview, from: preview.extent)
+                    DispatchQueue.main.async { still(cg.map { UIImage(cgImage: $0) }) }
+                }
             }
             writerQueue.async { [weak self] in self?.appendVideo(sampleBuffer) }
         } else if output === audioOut {

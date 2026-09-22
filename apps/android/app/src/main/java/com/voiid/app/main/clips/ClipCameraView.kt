@@ -575,29 +575,7 @@ fun ClipCameraView(
                 },
         )
 
-        if (faceEffect != ClipFaceEffect.NONE) {
-            val face = faceDetector.trackedFace
-            if (face != null) {
-                Canvas(Modifier.fillMaxSize()) {
-                    // The canvas and the PreviewView are the same box; keeping the detector's
-                    // idea of the view size in step with what is actually drawn means the
-                    // mapping cannot drift after a resize or rotation.
-                    faceDetector.viewWidth = size.width
-                    faceDetector.viewHeight = size.height
-                    with(ClipFaceRenderer) {
-                        drawFaceEffect(
-                            face = face,
-                            effect = faceEffect,
-                            previewWidth = size.width,
-                            previewHeight = size.height,
-                            cameraSourceWidth = faceDetector.sourceWidth,
-                            cameraSourceHeight = faceDetector.sourceHeight,
-                        )
-                    }
-
-                }
-            }
-        }
+        com.voiid.app.main.camera.FaceFilterOverlay(faceDetector, faceEffect)
 
         focusPoint?.let { point ->
             val ringPx = with(density) { 72.dp.toPx() }
@@ -736,54 +714,16 @@ fun ClipCameraView(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // Face filter selector rail
-            LazyRow(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                items(ClipFaceEffect.entries) { effect ->
-                    val selected = effect == faceEffect
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(VoiidRadius.pill))
-                            .background(
-                                if (selected) Color.White else Color.Black.copy(alpha = 0.40f)
-                            )
-                            .border(
-                                width = if (selected) 0.dp else 1.dp,
-                                color = Color.White.copy(alpha = 0.15f),
-                                shape = RoundedCornerShape(VoiidRadius.pill),
-                            )
-                            .alpha(if (isRecording) 0.4f else 1f)
-                            .softClickable(scale = 0.92f, enabled = !isRecording) {
-                                haptics.tap()
-                                faceEffect = effect
-                                faceDetector.activeEffect = effect
-                                if (effect == ClipFaceEffect.NONE) {
-                                    faceDetector.reset()
-                                }
-                            }
-                            .padding(horizontal = 12.dp, vertical = 7.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            Text(
-                                effect.icon,
-                                style = VoiidFont.rounded(14),
-                            )
-                            Text(
-                                effect.label,
-                                style = VoiidFont.rounded(12, if (selected) FontWeight.Bold else FontWeight.Medium),
-                                color = if (selected) Color.Black else Color.White,
-                            )
-                        }
-                    }
-                }
-            }
+            // Face filter selector — the rail every Voiid camera shares.
+            com.voiid.app.main.camera.FaceLensRail(
+                selected = faceEffect,
+                enabled = !isRecording,
+                onSelect = { effect ->
+                    faceEffect = effect
+                    faceDetector.activeEffect = effect
+                    if (effect == ClipFaceEffect.NONE) faceDetector.reset()
+                },
+            )
 
             // Camera Zoom Rail (0.6x, 1x, 2x, 3x)
             if (zoomPresets.size > 1) {

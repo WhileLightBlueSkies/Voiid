@@ -164,21 +164,12 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
         }
     }
 
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-        if (bitmap == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val bytes = withContext(Dispatchers.IO) {
-                java.io.ByteArrayOutputStream().use { out ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
-                    out.toByteArray()
-                }
-            }
-            uploadPhotoBytes(bytes)
-        }
-    }
+    // The Voiid camera — front lens, square crop, face filters — instead of the bare
+    // system thumbnail intent (TakePicturePreview hands back a ~200px bitmap).
+    var showCamera by remember { mutableStateOf(false) }
 
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) camera.launch(null) else error = "Camera permission needed to take a photo."
+        if (granted) showCamera = true else error = "Camera permission needed to take a photo."
     }
 
     // Debounced live username availability check (400ms, matching iOS EditProfileView.swift)
@@ -377,6 +368,14 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
         }
+    }
+
+    if (showCamera) {
+        com.voiid.app.main.camera.VoiidPhotoCameraDialog(
+            selfie = true,
+            onPhoto = { bytes -> uploadPhotoBytes(bytes) },
+            onDismiss = { showCamera = false },
+        )
     }
 
     if (confirmDelete) {

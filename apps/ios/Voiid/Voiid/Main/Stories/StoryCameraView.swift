@@ -2,17 +2,18 @@
 //  StoryCameraView.swift
 //  Voiid
 //
-//  In-app camera for story capture, built from scratch (the app had NO AVCaptureSession
-//  anywhere). NSCameraUsageDescription / mic permission are already declared and requested
-//  at onboarding, so there is no new permission plumbing here.
+//  The in-app camera for everything that is not the clips recorder: stories, chat photos
+//  and the profile photo. It runs on the clips camera engine (ClipCameraController), so
+//  the face filters people use in clips are here too — a puppy-ear selfie in a chat is the
+//  same puppy ears, tracked the same way, as in a clip.
 //
-//  Photo → JPEG Data; video → a temp .mov file URL (tap to snap, press-and-hold to record).
-//  The composer applies the size/re-encode caps (§8.2) before posting.
+//  Photo → JPEG Data taken from the processed frame (so the filter is IN the photo);
+//  video → a temp .mp4 with the face filter burned in at capture (tap to snap,
+//  press-and-hold to record). The composer applies the size/re-encode caps (§8.2).
 //
-//  Shared by stories (30s, photo or video) and clips (90s, VIDEO ONLY) via `mode` — see
-//  CameraMode. Clips previously reused the story defaults verbatim, which silently capped a
-//  90s clip at 30s and let a shutter TAP produce a photo the clip composer could only
-//  discard (its `guard let videoURL else { return }` made that look like a dead button).
+//  `mode` decides what a presentation may produce — see CameraMode. Clips previously
+//  reused the story defaults verbatim, which silently capped a 90s clip at 30s and let a
+//  shutter TAP produce a photo the clip composer could only discard.
 //
 
 import Combine
@@ -25,9 +26,15 @@ struct CameraMode {
     /// When true the shutter TAP starts/stops recording and photo capture is unreachable —
     /// the only sensible behaviour when the caller cannot use a photo at all.
     var videoOnly: Bool
+    /// Stills only: no hold-to-record and no microphone.
+    var photoOnly: Bool = false
+    /// Open on the front camera and crop the still square — a profile photo.
+    var selfie: Bool = false
 
     static let story = CameraMode(maxSeconds: 30, videoOnly: false)
     static let clip = CameraMode(maxSeconds: 90, videoOnly: true)
+    static let chatPhoto = CameraMode(maxSeconds: 0, videoOnly: false, photoOnly: true)
+    static let profilePhoto = CameraMode(maxSeconds: 0, videoOnly: false, photoOnly: true, selfie: true)
 }
 
 struct StoryCameraView: View {
@@ -35,248 +42,179 @@ struct StoryCameraView: View {
     var mode: CameraMode = .story
     var onCapture: (_ photo: Data?, _ videoURL: URL?) -> Void
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var cam = CameraController()
+    @StateObject private var cam = ClipCameraController()
+    @State private var capturing = false
+    @State private var showFilters = true
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            CameraPreview(session: cam.session).ignoresSafeArea()
+            ClipCameraPreview(renderer: cam.renderer,
+                              onZoom: { cam.zoom(scale: $0, began: $1) },
+                              onFocus: { cam.focus(atNormalizedViewPoint: $0) },
+                              onFlip: { if !cam.isRecording { Haptics.tap(); cam.flip() } })
+                .ignoresSafeArea()
 
-            VStack {
-                HStack {
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark").font(.system(size: 20, weight: .semibold)).foregroundColor(.white).padding(12)
-                    }
-                    Spacer()
-                    Button { cam.flip() } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath.camera").font(.system(size: 20)).foregroundColor(.white).padding(12)
-                    }
-                }
-                .padding(.top, 44).padding(.horizontal, VoiidSpacing.sm)
+            if mode.selfie { selfieGuide }
+
+            VStack(spacing: 0) {
+                topBar
                 Spacer()
                 if cam.isRecording {
-                    // Elapsed AND the cap, so a 90s clip does not stop at what looks like an
+                    // Elapsed AND the cap, so a recording does not stop at what looks like an
                     // arbitrary moment with no warning it was coming.
                     Text(String(format: "%02d:%02d / %02d:%02d",
-                                cam.recordSeconds / 60, cam.recordSeconds % 60,
+                                Int(cam.liveSeconds) / 60, Int(cam.liveSeconds) % 60,
                                 mode.maxSeconds / 60, mode.maxSeconds % 60))
                         .font(VoiidFont.headline).foregroundColor(.white)
                         .padding(.horizontal, VoiidSpacing.md).padding(.vertical, 6)
                         .background(VoiidColor.error).clipShape(Capsule())
+                        .padding(.bottom, VoiidSpacing.sm)
+                }
+                if showFilters && !cam.isRecording {
+                    FaceLensRail(selection: $cam.faceEffect)
+                        .padding(.bottom, VoiidSpacing.sm)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 shutter
-                    .padding(.bottom, 48)
+                    .padding(.bottom, 40)
             }
         }
+        .statusBarHidden()
         .onAppear {
-            cam.maxSeconds = mode.maxSeconds
+            cam.maxSeconds = Double(mode.maxSeconds)
+            cam.wantsAudio = !mode.photoOnly
+            if mode.selfie { cam.setInitialPosition(.front) }
             cam.start()
         }
         .onDisappear { cam.stop() }
-        .onChange(of: cam.captured) { _, out in
-            guard let out else { return }
-            onCapture(out.photo, out.video); dismiss()
+        .onChange(of: cam.takes) { _, takes in
+            // One take is the whole recording here — there is no multi-take editor behind
+            // this camera, so the first finished take is handed straight on.
+            guard let take = takes.last else { return }
+            cam.forgetTakes()
+            onCapture(nil, take.url)
+            dismiss()
         }
         .alert(
-            "Recording failed",
+            "Camera problem",
             isPresented: Binding(
-                get: { cam.recordingError != nil },
-                set: { if !$0 { cam.recordingError = nil } }
+                get: { cam.errorText != nil },
+                set: { if !$0 { cam.errorText = nil } }
             )
         ) {
-            Button("OK", role: .cancel) { cam.recordingError = nil }
+            Button("OK", role: .cancel) { cam.errorText = nil }
         } message: {
-            Text(cam.recordingError ?? "")
+            Text(cam.errorText ?? "")
         }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            circleButton("xmark", label: "Close") { dismiss() }
+            Spacer()
+            circleButton(showFilters ? "face.smiling.inverse" : "face.smiling",
+                         label: showFilters ? "Hide filters" : "Show filters",
+                         active: showFilters) {
+                Haptics.selection()
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { showFilters.toggle() }
+            }
+            if cam.hasTorch {
+                circleButton(cam.torchOn ? "bolt.fill" : "bolt.slash",
+                             label: "Flash", active: cam.torchOn) {
+                    Haptics.tap(); cam.toggleTorch()
+                }
+            }
+            circleButton("arrow.triangle.2.circlepath.camera", label: "Flip camera") {
+                guard !cam.isRecording else { return }
+                Haptics.tap(); cam.flip()
+            }
+        }
+        .padding(.top, 8)
+        .padding(.horizontal, VoiidSpacing.md)
+    }
+
+    private func circleButton(_ systemName: String, label: String, active: Bool = false,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(active ? .black : .white)
+                .frame(width: 44, height: 44)
+                .background(active ? Color.white : Color.black.opacity(0.35))
+                .clipShape(Circle())
+        }
+        .buttonStyle(SoftPressStyle())
+        .accessibilityLabel(label)
+    }
+
+    /// A soft circle so a profile photo is framed where the avatar crop will land.
+    private var selfieGuide: some View {
+        GeometryReader { geo in
+            let d = min(geo.size.width, geo.size.height) * 0.78
+            Circle()
+                .strokeBorder(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+                .frame(width: d, height: d)
+                .position(x: geo.size.width / 2, y: geo.size.height * 0.42)
+        }
+        .allowsHitTesting(false)
     }
 
     private var shutter: some View {
         Circle()
             .stroke(.white, lineWidth: 4)
-            .frame(width: 76, height: 76)
+            .frame(width: 78, height: 78)
             .overlay(Circle().fill(cam.isRecording ? VoiidColor.error : .white)
-                .frame(width: cam.isRecording ? 34 : 62, height: cam.isRecording ? 34 : 62))
+                .frame(width: cam.isRecording ? 34 : 64, height: cam.isRecording ? 34 : 64)
+                .clipShape(RoundedRectangle(cornerRadius: cam.isRecording ? 8 : 32)))
+            .scaleEffect(capturing ? 0.9 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: capturing)
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: cam.isRecording)
+            .contentShape(Circle())
             .onTapGesture {
-                // In video-only mode a tap TOGGLES recording. Press-and-hold still works for
-                // people who expect the story gesture, but tap-to-start is what a 90s clip
-                // actually needs — nobody holds a finger down for a minute and a half.
+                // In video-only mode a tap TOGGLES recording: nobody holds a finger down for
+                // a minute and a half.
                 if mode.videoOnly {
                     if cam.isRecording { cam.stopRecording() } else { cam.startRecording() }
-                } else {
-                    cam.capturePhoto()
+                } else if !cam.isRecording {
+                    snap()
                 }
             }
             .onLongPressGesture(minimumDuration: 0.3, pressing: { pressing in
                 // Hold-to-record, but never let the release of a tap-to-start recording stop
                 // it immediately: in video-only mode the tap already owns the toggle.
+                guard !mode.photoOnly else { return }
                 if pressing {
                     if !cam.isRecording { cam.startRecording() }
                 } else if !mode.videoOnly {
                     cam.stopRecording()
                 }
             }, perform: {})
+            .accessibilityLabel(mode.photoOnly ? "Take photo" : "Shutter")
     }
-}
 
-// MARK: - Preview layer
-
-private struct CameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession
-    func makeUIView(context: Context) -> PreviewView {
-        let v = PreviewView(); v.videoPreviewLayer.session = session
-        v.videoPreviewLayer.videoGravity = .resizeAspectFill
-        return v
-    }
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
-
-    final class PreviewView: UIView {
-        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
-        var videoPreviewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
-    }
-}
-
-// MARK: - Capture controller
-
-/// NOT @MainActor: AVCaptureSession configuration and start/stop run on a private serial
-/// queue (isolating them to the main actor would freeze the UI and is Apple-discouraged).
-/// The @Published UI state is always mutated back on the main queue.
-private final class CameraController: NSObject, ObservableObject,
-                                      AVCapturePhotoCaptureDelegate, AVCaptureFileOutputRecordingDelegate {
-    struct Output: Equatable { var photo: Data?; var video: URL? }
-
-    let session = AVCaptureSession()
-    private let photoOut = AVCapturePhotoOutput()
-    private let movieOut = AVCaptureMovieFileOutput()
-    private var input: AVCaptureDeviceInput?
-    private var position: AVCaptureDevice.Position = .back
-    private let queue = DispatchQueue(label: "voiid.story.camera")
-
-    @Published var isRecording = false
-    @Published var recordSeconds = 0
-    @Published var captured: Output?
-    private var timer: Timer?
-
-    func start() {
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.session.beginConfiguration()
-            self.session.sessionPreset = .high
-            self.configureInput(position: self.position)
-            if self.session.canAddOutput(self.photoOut) { self.session.addOutput(self.photoOut) }
-            if self.session.canAddOutput(self.movieOut) { self.session.addOutput(self.movieOut) }
-            self.session.commitConfiguration()
-            self.session.startRunning()
+    private func snap() {
+        guard !capturing else { return }
+        capturing = true
+        let square = mode.selfie
+        cam.captureStill { image in
+            capturing = false
+            guard var image else { return }
+            if square { image = Self.squareCrop(image) }
+            guard let data = image.jpegData(compressionQuality: 0.88) else { return }
+            onCapture(data, nil)
+            dismiss()
         }
     }
 
-    /// Tearing the session down while the movie file is still being finalized truncates or
-    /// loses the recording, and AVFoundation reports that as a delegate `error` the old code
-    /// silently swallowed — the "recorded a clip, got nothing back" bug. If a recording is
-    /// still in flight, stop it and let the delegate tear the session down once the file is
-    /// safely closed.
-    func stop() {
-        if isRecording {
-            pendingStopAfterFinish = true
-            stopRecording()
-            return
-        }
-        queue.async { [weak self] in self?.session.stopRunning() }
+    /// Centre-square crop biased toward the top, where the selfie guide sits.
+    private static func squareCrop(_ image: UIImage) -> UIImage {
+        guard let cg = image.cgImage else { return image }
+        let w = cg.width, h = cg.height, side = min(w, h)
+        let x = (w - side) / 2
+        let y = max(0, min(h - side, Int(Double(h) * 0.42) - side / 2))
+        guard let cropped = cg.cropping(to: CGRect(x: x, y: y, width: side, height: side))
+        else { return image }
+        return UIImage(cgImage: cropped)
     }
-
-    private var pendingStopAfterFinish = false
-
-    private func configureInput(position: AVCaptureDevice.Position) {
-        if let input { session.removeInput(input) }
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
-              let newInput = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(newInput) else { return }
-        session.addInput(newInput)
-        input = newInput
-        // Add the mic once, for video recording with sound.
-        if session.inputs.count < 2, let mic = AVCaptureDevice.default(for: .audio),
-           let micInput = try? AVCaptureDeviceInput(device: mic), session.canAddInput(micInput) {
-            session.addInput(micInput)
-        }
-    }
-
-    func flip() {
-        position = (position == .back) ? .front : .back
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.session.beginConfiguration()
-            self.configureInput(position: self.position)
-            self.session.commitConfiguration()
-        }
-    }
-
-    func capturePhoto() {
-        Haptics.tap()
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.photoOut.capturePhoto(with: AVCapturePhotoSettings(), delegate: self)
-        }
-    }
-
-    /// Hard cap in seconds, supplied by the presenting view's CameraMode (30 story / 90 clip).
-    /// A hardcoded 30 here silently truncated every clip recorded past half a minute.
-    var maxSeconds: Int = 30
-
-    func startRecording() {
-        guard !isRecording else { return }
-        Haptics.rigid()
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("story_\(UUID().uuidString).mov")
-        isRecording = true; recordSeconds = 0
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.recordSeconds += 1
-            if self.recordSeconds >= self.maxSeconds { self.stopRecording() }   // §8.2 hard cap
-        }
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.movieOut.startRecording(to: url, recordingDelegate: self)
-        }
-    }
-
-    func stopRecording() {
-        guard isRecording else { return }
-        isRecording = false; timer?.invalidate(); timer = nil
-        queue.async { [weak self] in self?.movieOut.stopRecording() }
-    }
-
-    // MARK: Delegates (called off the main queue → hop back to main for @Published)
-
-    func photoOutput(_ output: AVCapturePhotoOutput,
-                     didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        let data = photo.fileDataRepresentation()
-        DispatchQueue.main.async { self.captured = Output(photo: data, video: nil) }
-    }
-
-    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
-                    from connections: [AVCaptureConnection], error: Error?) {
-        // AVFoundation sets AVErrorRecordingSuccessfullyFinished on a recording that was cut
-        // short but whose file IS complete and playable (hitting the duration cap, or the
-        // session stopping). Treating every non-nil error as failure threw those away.
-        let salvageable = (error as NSError?)
-            .map { ($0.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool) == true }
-            ?? false
-        let usable = error == nil || salvageable
-
-        DispatchQueue.main.async {
-            if usable {
-                self.captured = Output(photo: nil, video: outputFileURL)
-            } else {
-                // Surface it. A dropped recording with no message is indistinguishable from
-                // a broken shutter button.
-                self.recordingError = (error as NSError?)?.localizedDescription
-                    ?? "The recording could not be saved."
-                try? FileManager.default.removeItem(at: outputFileURL)
-            }
-            if self.pendingStopAfterFinish {
-                self.pendingStopAfterFinish = false
-                self.queue.async { [weak self] in self?.session.stopRunning() }
-            }
-        }
-    }
-
-    @Published var recordingError: String?
 }

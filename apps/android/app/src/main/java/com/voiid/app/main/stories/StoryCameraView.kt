@@ -7,6 +7,12 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.ViewPort
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import android.view.OrientationEventListener
@@ -43,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -61,6 +68,22 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.voiid.app.main.camera.FaceFilterOverlay
+import com.voiid.app.main.camera.FaceLensRail
+import com.voiid.app.main.camera.captureFilteredStill
+import com.voiid.app.main.clips.ClipFaceAssets
+import com.voiid.app.main.clips.ClipFaceDetector
+import com.voiid.app.main.clips.ClipFaceEffect
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.alpha
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.concurrent.Executors
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -77,12 +100,19 @@ import java.io.File
  *    [maxSeconds], with an elapsed/cap timer so stopping never reads arbitrary; release stops early.
  *  - Recorded at H.264 720p via [QualitySelector], matching the iOS export target and keeping a
  *    full take well inside the upload caps without a re-encode pass.
+ *  - Face filters (the clips set, same rail) on every presentation. A photo taken with a filter
+ *    on comes from the preview frame with the sprites baked in (see captureFilteredStill), so
+ *    what was on screen is what gets sent. Video records the clean stream — same as clips.
+ *  - [photoOnly] (chat, profile photo) drops hold-to-record and the mic; [selfie] opens on the
+ *    front lens and crops the still square around a framing guide.
  *  - Capture failures are USER-VISIBLE alerts, never only logcat.
  *  - A denied CAMERA permission shows recovery actions instead of an unexplained black preview.
  */
 @Composable
 fun StoryCameraView(
     maxSeconds: Int = 30,
+    photoOnly: Boolean = false,
+    selfie: Boolean = false,
     onCaptured: (photo: ByteArray?, videoUri: Uri?) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -90,7 +120,15 @@ fun StoryCameraView(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    var lensFront by remember { mutableStateOf(false) }
+    var lensFront by remember { mutableStateOf(selfie) }
+    var faceEffect by remember { mutableStateOf(ClipFaceEffect.NONE) }
+    var showFilters by remember { mutableStateOf(true) }
+    val faceDetector = remember { ClipFaceDetector() }
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    val effectOn = faceEffect != ClipFaceEffect.NONE
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { ClipFaceAssets.preload(context) }
+    }
     val imageCapture = remember {
         ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build()
     }
@@ -102,7 +140,13 @@ fun StoryCameraView(
             .build()
     }
     val videoCapture = remember { VideoCapture.Builder(recorder).build() }
-    val previewView = remember { PreviewView(context) }
+    // COMPATIBLE (TextureView) so the preview has a readable bitmap for filtered stills.
+    val previewView = remember {
+        PreviewView(context).apply {
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+    }
 
     // Track the physical camera orientation even when the activity stays portrait-locked.
     DisposableEffect(imageCapture, videoCapture) {
@@ -177,16 +221,61 @@ fun StoryCameraView(
         if (isRecording) activeRecording?.stop()
     }
 
-    DisposableEffect(lensFront, cameraGranted) {
+    // Rebound when the lens flips AND when a filter is switched on or off: with a filter the
+    // camera needs a face-analysis stream, without one it needs full-resolution ImageCapture,
+    // and asking for both plus video is past the stream combinations many phones guarantee.
+    DisposableEffect(lensFront, cameraGranted, effectOn) {
+        faceDetector.isFrontCamera = lensFront
         if (cameraGranted) {
             val providerFuture = ProcessCameraProvider.getInstance(context)
             providerFuture.addListener({
                 val provider = providerFuture.get()
-                val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                // 16:9 on both streams so the analysis and preview cover the same field of
+                // view — otherwise every landmark lands offset (see ClipCameraView).
+                val ratio = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                    .build()
+                val analysisRes = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            android.util.Size(1280, 720),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                        )
+                    )
+                    .build()
+                val preview = Preview.Builder().setResolutionSelector(ratio).build()
+                    .also { it.setSurfaceProvider(previewView.surfaceProvider) }
                 val selector = if (lensFront) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+                val group = UseCaseGroup.Builder().addUseCase(preview)
+                if (effectOn) {
+                    val analysis = ImageAnalysis.Builder()
+                        .setResolutionSelector(analysisRes)
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                        .build()
+                        .also { a ->
+                            a.setAnalyzer(analysisExecutor) { proxy ->
+                                if (faceDetector.activeEffect != ClipFaceEffect.NONE) faceDetector.analyze(proxy)
+                                else proxy.close()
+                            }
+                        }
+                    group.addUseCase(analysis)
+                } else {
+                    group.addUseCase(imageCapture)
+                }
+                if (!photoOnly) group.addUseCase(videoCapture)
+                group.setViewPort(
+                    ViewPort.Builder(android.util.Rational(9, 16), preview.targetRotation)
+                        .setScaleType(ViewPort.FILL_CENTER).build()
+                )
                 runCatching {
                     provider.unbindAll()
-                    provider.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture, videoCapture)
+                    provider.bindToLifecycle(lifecycleOwner, selector, group.build())
+                    previewView.post {
+                        faceDetector.viewWidth = previewView.width.toFloat()
+                        faceDetector.viewHeight = previewView.height.toFloat()
+                    }
                 }.onFailure { recordingError = "Couldn't start the camera." }
             }, ContextCompat.getMainExecutor(context))
         }
@@ -196,55 +285,104 @@ fun StoryCameraView(
         }
     }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { analysisExecutor.shutdown() }
+            runCatching { faceDetector.close() }
+        }
+    }
+
+    fun takePhoto() {
+        // Filtered stills and the square selfie come from the preview frame; a plain photo
+        // keeps ImageCapture's full sensor resolution.
+        if (effectOn || selfie) {
+            val bytes = runCatching {
+                captureFilteredStill(previewView, faceDetector, faceEffect, squareCrop = selfie)
+            }.getOrNull()
+            if (bytes != null) onCaptured(bytes, null) else recordingError = "Couldn't take that photo."
+        } else {
+            capturePhoto(context, imageCapture) { bytes ->
+                if (bytes != null) onCaptured(bytes, null)
+                else recordingError = "Couldn't take that photo."
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (cameraGranted) {
             AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+            FaceFilterOverlay(faceDetector, faceEffect)
 
-            Box(
-                Modifier.align(Alignment.TopStart).padding(16.dp).size(40.dp).clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.35f)).softClickable(scale = 0.9f) { onClose() },
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-
-            Box(
-                Modifier.align(Alignment.TopEnd).padding(16.dp).size(40.dp).clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.35f)).softClickable(scale = 0.9f) { lensFront = !lensFront },
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.Cameraswitch, "Flip", tint = Color.White) }
-
-            if (isRecording) {
-                Text(
-                    "%02d:%02d / %02d:%02d".format(recordSeconds / 60, recordSeconds % 60, maxSeconds / 60, maxSeconds % 60),
-                    style = VoiidFont.rounded(15, FontWeight.SemiBold),
-                    color = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(bottom = 120.dp)
-                        .clip(CircleShape)
-                        .background(VoiidColor.error)
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
+            if (selfie) {
+                Box(
+                    Modifier.align(Alignment.TopCenter).padding(top = 150.dp)
+                        .size(300.dp).clip(CircleShape)
+                        .border(2.dp, Color.White.copy(alpha = 0.55f), CircleShape),
                 )
             }
 
-            Box(
-                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 32.dp)
-                    .size(76.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.25f)),
-                contentAlignment = Alignment.Center,
+            Row(
+                Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                TopCircle(onClick = onClose) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                Spacer(Modifier.weight(1f))
+                TopCircle(active = showFilters, onClick = { showFilters = !showFilters }) {
+                    Icon(
+                        Icons.Default.Face,
+                        if (showFilters) "Hide filters" else "Show filters",
+                        tint = if (showFilters) Color.Black else Color.White,
+                    )
+                }
+                TopCircle(onClick = { if (!isRecording) lensFront = !lensFront }) {
+                    Icon(Icons.Default.Cameraswitch, "Flip", tint = Color.White)
+                }
+            }
+
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding()
+                    .padding(bottom = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                if (isRecording) {
+                    Text(
+                        "%02d:%02d / %02d:%02d".format(recordSeconds / 60, recordSeconds % 60, maxSeconds / 60, maxSeconds % 60),
+                        style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                        color = Color.White,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(VoiidColor.error)
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                    )
+                } else if (showFilters) {
+                    FaceLensRail(
+                        selected = faceEffect,
+                        onSelect = { effect ->
+                            faceEffect = effect
+                            faceDetector.activeEffect = effect
+                            if (effect == ClipFaceEffect.NONE) faceDetector.reset()
+                        },
+                    )
+                }
                 Box(
-                    Modifier.size(if (isRecording) 34.dp else 60.dp).clip(CircleShape)
-                        .background(if (isRecording) VoiidColor.error else Color.White)
-                        .shutterGestures(
-                            onTapPhoto = {
-                                capturePhoto(context, imageCapture) { bytes ->
-                                    if (bytes != null) onCaptured(bytes, null)
-                                    else recordingError = "Couldn't take that photo."
-                                }
-                            },
-                            onHoldStart = { startRecording() },
-                            onHoldEnd = { stopRecording() },
-                        ),
-                )
+                    Modifier.size(78.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.25f))
+                        .border(4.dp, Color.White, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier.size(if (isRecording) 34.dp else 62.dp).clip(CircleShape)
+                            .background(if (isRecording) VoiidColor.error else Color.White)
+                            .shutterGestures(
+                                holdEnabled = !photoOnly,
+                                onTapPhoto = { if (!isRecording) takePhoto() },
+                                onHoldStart = { startRecording() },
+                                onHoldEnd = { stopRecording() },
+                            ),
+                    )
+                }
             }
         } else {
             PermissionDeniedRecovery(
@@ -295,10 +433,11 @@ private fun capturePhoto(context: Context, imageCapture: ImageCapture, onResult:
 private const val HOLD_THRESHOLD_MS = 300L
 
 private fun Modifier.shutterGestures(
+    holdEnabled: Boolean = true,
     onTapPhoto: () -> Unit,
     onHoldStart: () -> Unit,
     onHoldEnd: () -> Unit,
-): Modifier = pointerInput(Unit) {
+): Modifier = pointerInput(holdEnabled) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         val beganAt = System.currentTimeMillis()
@@ -306,7 +445,7 @@ private fun Modifier.shutterGestures(
         while (true) {
             val event = awaitPointerEvent()
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            if (!recording && change.pressed && System.currentTimeMillis() - beganAt >= HOLD_THRESHOLD_MS) {
+            if (holdEnabled && !recording && change.pressed && System.currentTimeMillis() - beganAt >= HOLD_THRESHOLD_MS) {
                 recording = true
                 onHoldStart()
             }
@@ -354,4 +493,14 @@ private fun PermissionDeniedRecovery(onRequest: () -> Unit, onClose: () -> Unit)
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         )
     }
+}
+
+@Composable
+private fun TopCircle(active: Boolean = false, onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(
+        Modifier.size(44.dp).clip(CircleShape)
+            .background(if (active) Color.White else Color.Black.copy(alpha = 0.35f))
+            .softClickable(scale = 0.9f) { onClick() },
+        contentAlignment = Alignment.Center,
+    ) { content() }
 }

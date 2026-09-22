@@ -1094,18 +1094,24 @@ struct ChatDetailView: View {
             }
         }
         .fullScreenCover(isPresented: $showCamera) {
-            // `selfieMode: false` — rear camera and no forced square crop. The defaults are
-            // tuned for a profile photo; a chat photo is usually of what is in front of you,
-            // and cropping it square discards the framing the sender chose.
-            CameraPicker(onCapture: { image in
-                // Re-encoded rather than sent raw: a capture is a full-resolution HEIC/JPEG
-                // that can run to several MB, and the media path is the same encrypt-and-
-                // upload one every other image takes. 0.85 keeps it visually lossless at a
-                // fraction of the bytes.
-                guard let data = image.jpegData(compressionQuality: 0.85) else { return }
-                chat.sendMedia(data, mime: "image/jpeg", to: conversation.id)
-            }, selfieMode: false)
-            .ignoresSafeArea()
+            // The Voiid camera (face filters included) on a device with one; the system
+            // picker only where there is no camera at all (simulator), since it falls back
+            // to the library there instead of opening a black screen.
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                StoryCameraView(mode: .chatPhoto) { photo, _ in
+                    // The still is already a 0.88 JPEG of the processed frame — no HEIC,
+                    // no multi-MB original — so it goes straight to the media path every
+                    // other image takes.
+                    guard let photo else { return }
+                    chat.sendMedia(photo, mime: "image/jpeg", to: conversation.id)
+                }
+            } else {
+                CameraPicker(onCapture: { image in
+                    guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+                    chat.sendMedia(data, mime: "image/jpeg", to: conversation.id)
+                }, selfieMode: false)
+                .ignoresSafeArea()
+            }
         }
         .onChange(of: photoItem) { _, item in
             Task {

@@ -297,10 +297,12 @@ struct EditProfileView: View {
             Button("Cancel", role: .cancel) {}
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker { image in
+            // The Voiid camera, so a profile photo can wear the same face filters as a
+            // story. Front lens and a square crop, like the system picker it replaces.
+            StoryCameraView(mode: .profilePhoto) { photo, _ in
+                guard let photo, let image = UIImage(data: photo) else { return }
                 Task { await uploadCaptured(image) }
             }
-            .ignoresSafeArea()
         }
         .photosPicker(isPresented: $showLibrary, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { _, item in

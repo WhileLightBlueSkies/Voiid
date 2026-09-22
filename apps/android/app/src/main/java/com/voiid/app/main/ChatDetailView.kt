@@ -221,17 +221,9 @@ fun ChatDetailView(
             sendPickedMedia(uri, file)
         } else file?.delete()
     }
-    fun openCamera() {
-        try {
-            val directory = java.io.File(context.cacheDir, "chat-camera").apply { mkdirs() }
-            val file = java.io.File.createTempFile("photo-", ".jpg", directory)
-            cameraPath = file.path
-            takePhoto.launch(androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.chatmedia", file))
-        } catch (_: Exception) {
-            cameraPath?.let { java.io.File(it).delete() }; cameraPath = null
-            chat.actionError = "Couldn’t open the camera. Please try again."
-        }
-    }
+    // The Voiid camera (face filters included) rather than the system camera intent.
+    var showVoiidCamera by remember { mutableStateOf(false) }
+    fun openCamera() { showVoiidCamera = true }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) openCamera() else chat.actionError = "Allow camera access in Settings to take a photo."
     }
@@ -666,6 +658,12 @@ fun ChatDetailView(
     }
     if (showPollCompose) {
         PollComposeSheet(onSend = { q, opts -> chat.sendPoll(q, opts, conversation.id) }, onDismiss = { showPollCompose = false })
+    }
+    if (showVoiidCamera) {
+        com.voiid.app.main.camera.VoiidPhotoCameraDialog(
+            onPhoto = { bytes -> chat.sendMedia(bytes, "image/jpeg", conversationId = conversation.id) },
+            onDismiss = { showVoiidCamera = false },
+        )
     }
     if (showLocation) {
         LocationComposeSheet(conv = conversation, onDismiss = { showLocation = false })
