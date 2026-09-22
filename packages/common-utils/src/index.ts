@@ -4,5 +4,6 @@
 export * from './crypto';
 export * from './databaseTls';
 export * from './poolBudget';
+export * from './sessionCache';
 
 export * from './callGrant';

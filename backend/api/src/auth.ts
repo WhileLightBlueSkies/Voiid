@@ -5,6 +5,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { query } from './db';
 import { redis } from './redis';
 import { companionAllows } from './webCompanion';
+import { SESSION_STATE_TTL_SECONDS } from '@voiid/common-utils';
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-only-change-me';
 const JWT_EXPIRY = process.env.JWT_EXPIRY ?? '30d';
@@ -163,7 +164,6 @@ export async function revokeAccountSessions(user_id: string): Promise<void> {
  * is about the triple. A key on `sid` alone would let a token that reuses a known session
  * id under a different subject read a '1' written for the real owner.
  */
-const SESSION_STATE_TTL_SECONDS = 10;
 const sessionKey = (sid: string, userId: string, deviceId: string) =>
   `auth:session:${sid}:${userId}:${deviceId}`;
 

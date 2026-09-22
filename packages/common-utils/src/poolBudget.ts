@@ -63,9 +63,13 @@ const DEFAULTS: Record<PoolService, Defaults> = {
          'legitimately slower than a request, hence the longer statement budget',
   },
   websocket: {
-    max: 2, acquireMs: 2_000, statementMs: 5_000, env: 'VOIID_WS_POOL_MAX',
+    max: 4, acquireMs: 2_000, statementMs: 5_000, env: 'VOIID_WS_POOL_MAX',
     why: 'one indexed lookup per socket connect (S03) and nothing else. A socket that cannot ' +
-         'verify its session quickly should be told to retry, not queued',
+         'verify its session quickly should be told to retry, not queued. Two was sized for ' +
+         'that steady state and met a different one: a reconnect storm arrives as thousands ' +
+         'of connects at once, and each is a cache MISS by definition — the session was last ' +
+         'seen by a process that is gone. Four keeps the intent (the relay is not a database ' +
+         'client) while surviving the burst that follows a restart',
   },
 };
 

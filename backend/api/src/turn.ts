@@ -60,17 +60,50 @@ export function coturnCredentials(
 // self-hosted coturn scheme when its env is present. Returns null on ANY failure
 // (unconfigured, non-2xx, malformed body, network error) so the caller falls back
 // instead of 500ing.
-export async function cloudflareIceServers(): Promise<IceServer[] | null> {
-  const keyId = process.env.VOIID_TURN_CLOUDFLARE_KEY_ID;
-  const token = process.env.VOIID_TURN_CLOUDFLARE_API_TOKEN;
-  if (!keyId || !token) return null;
+//
+// ── WHY THIS IS CACHED ────────────────────────────────────────────────────────────
+//
+// A Cloudflare credential is NOT user-scoped: unlike the coturn scheme below, nothing about
+// the caller goes into it, so one credential is the correct answer for everybody holding it.
+// Minting a fresh one per request therefore bought nothing and cost the thing you least want
+// on a call-setup path — a synchronous round trip to a third party. Every call placed by
+// every user waited on rtc.live.cloudflare.com, so their rate limit was our call-setup
+// failure and their latency was our time-to-ring.
+//
+// ── WHY HALF THE TTL ──────────────────────────────────────────────────────────────
+//
+// A credential handed out near its expiry is worse than no cache at all: the TURN allocation
+// it opened is refreshed by the client with that same credential, so an expiry mid-call drops
+// a relayed call that was working. Refreshing at the halfway mark means every credential
+// issued has at least half its TTL left — 30 minutes on the 1h default — which outlives any
+// plausible call. It also means the refresh happens long before anything depends on it, so a
+// Cloudflare outage is absorbed rather than passed through.
+interface CloudflareLease {
+  servers: IceServer[];
+  /** Epoch ms after which this lease must not be handed out any more. */
+  refreshAfter: number;
+  /** The key it was minted with: a rotation must not be served from the old key's cache. */
+  keyId: string;
+}
+let cfLease: CloudflareLease | null = null;
+/** The in-flight mint, shared so N concurrent cold-cache callers make ONE request, not N. */
+let cfPending: Promise<IceServer[] | null> | null = null;
+
+/** Drop the cached Cloudflare lease. For tests, and for a credential rotation at runtime. */
+export function resetCloudflareIceCache(): void {
+  cfLease = null;
+  cfPending = null;
+}
+
+async function mintCloudflareIceServers(keyId: string, token: string): Promise<IceServer[] | null> {
+  const ttl = turnTtlSeconds();
   try {
     const resp = await fetch(
       `https://rtc.live.cloudflare.com/v1/turn/keys/${keyId}/credentials/generate`,
       {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ ttl: turnTtlSeconds() }),
+        body: JSON.stringify({ ttl }),
       }
     );
     if (!resp.ok) {
@@ -84,11 +117,36 @@ export async function cloudflareIceServers(): Promise<IceServer[] | null> {
     const ice = body?.iceServers;
     if (!ice?.urls) return null;
     const urls = Array.isArray(ice.urls) ? ice.urls : [ice.urls];
-    return [{ urls, username: ice.username, credential: ice.credential }];
+    const servers = [{ urls, username: ice.username, credential: ice.credential }];
+    cfLease = { servers, refreshAfter: Date.now() + (ttl * 1000) / 2, keyId };
+    return servers;
   } catch (e) {
     console.warn('[calls] cloudflare TURN request error:', (e as Error).message);
     return null;
   }
+}
+
+export async function cloudflareIceServers(): Promise<IceServer[] | null> {
+  const keyId = process.env.VOIID_TURN_CLOUDFLARE_KEY_ID;
+  const token = process.env.VOIID_TURN_CLOUDFLARE_API_TOKEN;
+  if (!keyId || !token) return null;
+
+  const lease = cfLease;
+  if (lease && lease.keyId === keyId && Date.now() < lease.refreshAfter) return lease.servers;
+
+  // Collapse a thundering herd onto one request. Without this, a cold cache under load — a
+  // restart, or the moment a lease ages out — sends one Cloudflare call per concurrent caller.
+  if (!cfPending) {
+    cfPending = mintCloudflareIceServers(keyId, token).finally(() => { cfPending = null; });
+  }
+  const minted = await cfPending;
+  if (minted) return minted;
+
+  // The mint failed. A credential we already hold is still valid for the rest of its TTL — we
+  // refresh at the halfway mark precisely so this case has something to fall back on. Serving
+  // it beats demoting a working deployment to coturn or STUN over one bad request.
+  if (lease && lease.keyId === keyId) return lease.servers;
+  return null;
 }
 
 /**

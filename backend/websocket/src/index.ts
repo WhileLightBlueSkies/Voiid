@@ -3,6 +3,7 @@ import { callDiagnostic } from './callDiagnostics';
 import { callKeyCopies, callKeyDeliveryFrames, CALL_DEVICE_CLAIM_SCRIPT } from './callSignaling';
 import { randomUUID } from 'node:crypto';
 import { boundedSend, PRESENCE_SCRIPT, FRAME_BUDGET_SCRIPT } from './transport';
+import { HEARTBEAT_INTERVAL_MS, LEASE_TTL_MS, REAUTH_INTERVAL_MS } from './cadence';
 import { callGrantAllows, callGrantNeedsDeviceClaim } from '@voiid/common-utils';
 // VOIID WebSocket relay (Phase 0 realtime flow, Section 10).
 // Connect with JWT -> SUBSCRIBE channel:user:{id} -> in-memory socket_map.
@@ -465,13 +466,18 @@ wss.on('connection', async (ws, req) => {
   const leaseId = randomUUID();
   const lease = (action: string) => presence.eval(PRESENCE_SCRIPT, 3,
     `user:${userId}:leases`, `user:${userId}:online`, `user:${userId}:last_seen`,
-    leaseId, action, 60_000, MAX_SOCKETS_PER_USER);
+    leaseId, action, LEASE_TTL_MS, MAX_SOCKETS_PER_USER);
   try {
     if (await lease('add') !== 1) { ws.close(4429, 'too many connections'); ws.resume(); return; }
   } catch { ws.close(4503, 'service unavailable'); ws.resume(); return; }
   if (ws.readyState !== WebSocket.OPEN) { await lease('remove').catch(() => {}); return; }
   let alive = true;
   let checking = false;
+  // Re-authorization rides its own clock, not the ping's. See REAUTH_INTERVAL_MS: liveness is
+  // a local ping/pong and the lease renewal is one Redis eval, but an authorization can reach
+  // Postgres, and doing all three on one 20s timer made every idle socket a recurring database
+  // client.
+  let authorizedAt = Date.now();
   ws.on('pong', () => { alive = true; });
   const heartbeat = setInterval(async () => {
     if (checking) return;
@@ -480,12 +486,15 @@ wss.on('connection', async (ws, req) => {
     ws.ping();
     checking = true;
     try {
-      const current = await authorizeConnection(token);
-      if (!current.ok || ws.readyState !== WebSocket.OPEN) { ws.terminate(); return; }
+      if (Date.now() - authorizedAt >= REAUTH_INTERVAL_MS) {
+        const current = await authorizeConnection(token);
+        if (!current.ok || ws.readyState !== WebSocket.OPEN) { ws.terminate(); return; }
+        authorizedAt = Date.now();
+      }
       if (await lease('renew') !== 1) ws.terminate();
     } catch { ws.terminate(); }
     finally { checking = false; }
-  }, 20_000);
+  }, HEARTBEAT_INTERVAL_MS);
   const expire = setTimeout(() => ws.terminate(), Math.min(2_147_483_647, Math.max(1, auth.expiresAt - Date.now())));
   ws.once('close', () => {
     clearInterval(heartbeat);

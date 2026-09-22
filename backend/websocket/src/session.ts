@@ -14,13 +14,19 @@
 // the durable record, which lives in Postgres.
 //
 // So the cost is paid deliberately and kept small: the pool is created lazily on the first
-// socket, capped at a couple of connections, and read ONLY here — one indexed primary-key
-// lookup per connect, never per frame. Redis stays in front as a 10-second cache, so the
-// steady state is unchanged and the database is consulted on cache misses and revocations.
-// Connection budget matters because staging and production are Supabase; two is a rounding
-// error against its pooler, and the queries are simple enough for transaction-mode pooling.
+// socket, capped at a handful of connections, and read ONLY here — one indexed primary-key
+// lookup per connect, never per frame. Redis stays in front as a cache, so the steady state
+// is unchanged and the database is consulted on cache misses and revocations.
+// Connection budget matters because staging and production are Supabase; a handful is a
+// rounding error against its pooler, and the queries are simple enough for transaction-mode
+// pooling.
+//
+// "NEVER PER FRAME" WAS TRUE AND STILL LET THE DATABASE ONTO THE HOT PATH. The re-check on
+// each open socket ran on the 20s ping timer while this cache expired in 10s, so it missed
+// every time and every live socket became a recurring client of this pool. The interval and
+// the TTL are now sized against each other in cadence.ts and common-utils/sessionCache.ts.
 import { Pool } from 'pg';
-import { resolveDatabaseSsl, describeDatabaseTls, poolBudget, describePoolBudget } from '@voiid/common-utils';
+import { resolveDatabaseSsl, describeDatabaseTls, poolBudget, describePoolBudget, SESSION_STATE_TTL_SECONDS } from '@voiid/common-utils';
 import jwt from 'jsonwebtoken';
 
 /** Close codes. 4401/4403 mean stop; 4503 means the answer is unknown — retry. */
@@ -72,9 +78,10 @@ export function useSessionCache(client: SessionCache): void {
   cache = client;
 }
 
-// Same TTL and same reasoning as the API's session cache: short enough that a revoke on
-// another process lands quickly, long enough that the database stays off the hot path.
-const SESSION_STATE_TTL_SECONDS = 10;
+// The TTL is shared with the API rather than restated here: both services write the SAME
+// Redis key, so a private copy on either side is a drift waiting to happen. See
+// packages/common-utils/src/sessionCache.ts for why the value is what it is, and why it must
+// outlive VOIID_WS_REAUTH_MS.
 
 /** Mirrors backend/api/src/auth.ts. Both services must agree on the migration deadline. */
 function sessionCutoffPassed(): boolean {
