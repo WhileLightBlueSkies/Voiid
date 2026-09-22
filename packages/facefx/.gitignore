@@ -1,2 +1,11 @@
 dist/
 art/atlas-sizes.json
+
+# build/ here is SOURCE, not output: validate.mjs, schema.mjs, test-validate.mjs and the two
+# Python builders are hand-written, and package.json's validate/pack/test scripts all invoke
+# them. The root .gitignore excludes `build/` anywhere in the tree, which is right for compiled
+# output and wrong for this directory — it silently kept the scripts out of every clone, so
+# `npm test -w @voiid/facefx` failed for everyone but the author. A negation is needed on the
+# DIRECTORY, not on the files inside it: git does not descend into an excluded directory, so
+# re-including its contents alone would not work.
+!build/
