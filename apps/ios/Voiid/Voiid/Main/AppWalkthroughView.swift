@@ -96,10 +96,18 @@ struct AppWalkthroughView: View {
             let screenHeight = geo.size.height
             let myOrigin = geo.frame(in: .global).origin
             let targetInfo = rawTargetInfo?.offsetBy(dx: -myOrigin.x, dy: -myOrigin.y)
+            // THE SCRIM HAS A DIFFERENT ORIGIN FROM EVERYTHING ELSE HERE. It ignores the safe
+            // area, so its drawing space starts under the status bar, while `targetInfo` is in
+            // this reader's space, which starts BELOW it. Using `targetInfo` for the hole drew
+            // it higher than the ring and the control it points at, by the top inset. The hole
+            // gets the target in the scrim's own space instead.
+            let insets = geo.safeAreaInsets
+            let cutoutInfo = rawTargetInfo?.offsetBy(dx: -(myOrigin.x - insets.leading),
+                                                     dy: -(myOrigin.y - insets.top))
 
             ZStack {
                 // 1. Scrim with cutout punched hole
-                SpotlightCutoutShape(target: targetInfo)
+                SpotlightCutoutShape(target: cutoutInfo)
                     .fill(Color.black.opacity(reduceTransparency ? 0.76 : 0.68), style: FillStyle(eoFill: true))
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
