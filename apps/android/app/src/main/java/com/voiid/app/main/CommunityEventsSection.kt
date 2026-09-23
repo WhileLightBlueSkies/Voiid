@@ -54,7 +54,7 @@ fun CommunityEventsSection(communityId: String, modifier: Modifier = Modifier, i
     var showTickets by remember(communityId) { mutableStateOf(false) }
     var managing by remember(communityId) { mutableStateOf<EventService.Event?>(null) }
     var refresh by remember(communityId) { mutableStateOf(0) }
-    if(showCreate) EventEditorDialog(communityId=communityId,onDismiss={showCreate=false},onSaved={showCreate=false;refresh++})
+    if(showCreate) EventEditorDialog(communityId=communityId,isOwner=isOwner,onDismiss={showCreate=false},onSaved={showCreate=false;refresh++})
     if (showTickets) EventTicketWallet { showTickets = false }
     managing?.let { e -> EventManagerDialog(e, isManager || e.can_manage, canAssign = isManager, onDismiss = { managing = null }, onChanged = { refresh++ }) }
     val ctx = LocalContext.current

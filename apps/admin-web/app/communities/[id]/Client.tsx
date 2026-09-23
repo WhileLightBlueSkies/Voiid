@@ -14,12 +14,12 @@ import { AreaChart, MultiLineChart } from '../../../components/Chart';
 import { Users2, MessageSquare, ShieldAlert, UserPlus } from 'lucide-react';
 import OfficialControls from './OfficialControls';
 import ModeratorPanel from './ModeratorPanel';
+import TagsPanel from './TagsPanel';
 import FinancePanel from './FinancePanel';
-import PaymentsDemo from './PaymentsDemo';
 
 type Detail = {
   community: {
-    official_key: string | null; posting_policy: string;
+    official_key: string | null; posting_policy: string; institution_name: string | null;
     id: string; handle: string; name: string; description: string | null;
     category: string | null; discoverable: boolean; join_policy: string;
     member_count: number; max_members: number | null; members_can_invite: boolean;
@@ -274,11 +274,16 @@ function Body({ me, id }: { me: Me; id: string }) {
             )}
           </Card>
 
-          {me.role === 'admin' && <><PaymentsDemo /><FinancePanel id={id} /></>}
+          {me.role === 'admin' && <FinancePanel id={id} />}
           {d.community.official_key && me.role === 'admin' && <OfficialControls id={id} community={d.community} members={d.members} reload={async () => { await load(); await loadPosts(); }} />}
-          {/* Same gate as OfficialControls: the backend restricts these routes to the three
-              official_key communities anyway, so the UI simply does not offer them elsewhere. */}
-          {d.community.official_key && me.role === 'admin' && <ModeratorPanel id={id} members={d.members} reload={async () => { await load(); await loadPosts(); }} />}
+          {/* Voiid posts and names moderators in official communities and in ones with the
+              moderator tag switched on (institutions) — the same rule as postableCommunity()
+              on the server, which refuses everywhere else regardless. */}
+          {(d.community.official_key || ents.some(e => e.capability === 'moderator_badge' && e.live)) && me.role === 'admin' &&
+            <ModeratorPanel id={id} members={d.members} reload={async () => { await load(); await loadPosts(); }} />}
+          {me.role === 'admin' &&
+            <TagsPanel id={id} institutionName={d.community.institution_name} members={d.members}
+                       reload={async () => { await load(); await loadEnts(); }} />}
           <Card className="mb-5">
             <div className="border-b border-border px-4 py-3">
               <h2 className="text-sm font-semibold">Paid capabilities</h2>

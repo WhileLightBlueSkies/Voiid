@@ -22,9 +22,11 @@ struct CommunityAdminPanel: View {
     var communityCard: CommunityService.CommunityCard? = nil
     var onSettingsSaved: (CommunityService.CommunityCard) -> Void = { _ in }
     private enum Destination: String, Identifiable {
-        case earnings, settings
+        case earnings, settings, createEvent, invite, verify
         var id: String { rawValue }
     }
+    /// The owner's own host verification, for the "sell tickets" card. Nil until loaded.
+    @State private var kyc: KycService.Verification?
     @State private var destination: Destination?
 
     @Environment(\.dismiss) private var dismiss
@@ -78,6 +80,7 @@ struct CommunityAdminPanel: View {
                     .padding(.bottom, VoiidSpacing.xl)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .softScrollEdge([.top, .bottom])
 
                 if loading && stats == nil {
                     ProgressView().tint(VoiidColor.accent)
@@ -98,6 +101,12 @@ struct CommunityAdminPanel: View {
                 case .earnings: CommunityEarningsView(communityId: communityId)
                 case .settings:
                     if let communityCard { CommunitySettingsView(card: communityCard, onSaved: onSettingsSaved) }
+                case .createEvent:
+                    EventCreateFlow(communityId: communityId, isOwner: isOwner) { _ in }
+                case .invite:
+                    if let communityCard { CommunityInviteView(card: communityCard) }
+                case .verify:
+                    HostVerificationView()
                 }
             }
             // A write failure interrupts, because the host believes it happened.
@@ -166,35 +175,41 @@ struct CommunityAdminPanel: View {
 
     // ── Overview ─────────────────────────────────────────────────────────────────
 
+    /// ONE SCREEN A HOST CAN READ IN A GLANCE, top to bottom by urgency:
+    /// what is waiting on them, the four things they do most, the one setup step that unlocks
+    /// money (owners only, until done), the numbers, and then everything else one tap deeper.
+    /// The old overview led with a name card and a list of doors; a host had to open each door
+    /// to learn whether anything needed them.
     private var overview: some View {
         VStack(spacing: VoiidSpacing.md) {
-            card {
-                Text(communityName)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                Text("Your community, in one place.")
-                    .font(.system(size: 13))
-                    .foregroundColor(VoiidColor.textSecondary)
-            }
+            needsYou
 
-            card {
-                NavigationLink {
-                    ScrollView { CommunityEventsSection(communityId: communityId, isHost: true, isOwner: isOwner, managementContext: true).padding(20) }
-                        .background(VoiidColor.background).navigationTitle("Events").navigationBarTitleDisplayMode(.inline)
-                } label: { adminEntry("Events", "Create, manage and check in guests", "calendar") }
-                Divider()
-                NavigationLink {
-                    CommunityInsightsView(communityId: communityId)
-                } label: { adminEntry("Insights", "Community activity and event status", "chart.bar") }
-                if isOwner {
-                    Divider()
-                    Button { destination = .earnings } label: { adminEntry("Earnings", "Sales, commission and your share", "banknote") }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: VoiidSpacing.sm),
+                                GridItem(.flexible(), spacing: VoiidSpacing.sm)],
+                      spacing: VoiidSpacing.sm) {
+                quickAction("Create event", "calendar.badge.plus") { destination = .createEvent }
+                if communityCard != nil {
+                    quickAction("Invite people", "person.badge.plus") { destination = .invite }
+                }
+                quickAction("Review queue", "tray.full") {
+                    withAnimation(.easeOut(duration: 0.2)) { section = .queue }
                 }
                 if communityCard != nil {
-                    Divider()
-                    Button { destination = .settings } label: { adminEntry("Community settings", "Profile, discovery and joining", "gearshape") }
+                    quickAction("Settings", "gearshape") { destination = .settings }
                 }
-            }.buttonStyle(.plain)
+            }
+
+            if isOwner, let kyc, !kyc.isVerified, kyc.available != false {
+                Button { Haptics.tap(); destination = .verify } label: {
+                    card {
+                        adminEntry(kyc.isInReview ? "Verification in review" : "Get verified to sell tickets",
+                                   kyc.isInReview ? "Voiid is checking your details. Paid events unlock when it\u{2019}s approved."
+                                                  : "Verify your PAN and bank account once to charge for events.",
+                                   "checkmark.seal")
+                    }
+                }
+                .buttonStyle(.plain)
+            }
 
             if let e = statsError {
                 card { errorNote(e) }
@@ -204,13 +219,94 @@ struct CommunityAdminPanel: View {
                           spacing: VoiidSpacing.md) {
                     statTile("Members", s.memberCount, "person.2.fill")
                     statTile("Posts", s.postCount, "text.bubble.fill")
-                    statTile("Requests", s.pending_members ?? 0, "hand.raised.fill",
-                             alert: (s.pending_members ?? 0) > 0)
-                    statTile("Reports", s.open_reports ?? 0, "flag.fill",
-                             alert: (s.open_reports ?? 0) > 0)
+                }
+            }
+
+            sectionTitle("More")
+            card {
+                NavigationLink {
+                    ScrollView { CommunityEventsSection(communityId: communityId, isHost: true, isOwner: isOwner, managementContext: true).padding(20) }
+                        .background(VoiidColor.background).navigationTitle("Events").navigationBarTitleDisplayMode(.inline)
+                } label: { adminEntry("Events", "Manage events and check in guests", "calendar") }
+                Divider()
+                NavigationLink {
+                    CommunityInsightsView(communityId: communityId)
+                } label: { adminEntry("Insights", "Community activity and event status", "chart.bar") }
+                if isOwner {
+                    Divider()
+                    Button { destination = .earnings } label: { adminEntry("Earnings", "Sales, commission and your share", "banknote") }
+                }
+            }.buttonStyle(.plain)
+        }
+        .task(id: isOwner) {
+            if isOwner { kyc = try? await KycService.shared.me() }
+        }
+    }
+
+    /// What is waiting, as one sentence with one button. Requests and reports are the only
+    /// things a community needs from its host in real time; everything else can wait.
+    @ViewBuilder
+    private var needsYou: some View {
+        let requests = stats?.pending_members ?? 0
+        let reports = stats?.open_reports ?? 0
+        if stats != nil {
+            if requests + reports > 0 {
+                Button {
+                    Haptics.tap()
+                    withAnimation(.easeOut(duration: 0.2)) { section = .queue }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "bell.badge.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(VoiidColor.warning)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Needs you").font(.headline).foregroundStyle(VoiidColor.textPrimary)
+                            Text([requests > 0 ? "\(requests) join request\(requests == 1 ? "" : "s")" : nil,
+                                  reports > 0 ? "\(reports) report\(reports == 1 ? "" : "s")" : nil]
+                                    .compactMap { $0 }.joined(separator: " · "))
+                                .font(.subheadline).foregroundStyle(VoiidColor.textSecondary)
+                        }
+                        Spacer()
+                        Text("Review").font(.subheadline.weight(.semibold)).foregroundStyle(VoiidColor.accentInk)
+                    }
+                    .padding(VoiidSpacing.md)
+                    .background(VoiidColor.surfaceCard)
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                        .stroke(VoiidColor.warning.opacity(0.45), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            } else {
+                card {
+                    Label("All caught up \u{2014} no requests or reports waiting.", systemImage: "checkmark.circle.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(VoiidColor.textSecondary)
                 }
             }
         }
+    }
+
+    private func quickAction(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(VoiidColor.accentInk)
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(VoiidColor.accentTint))
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(VoiidColor.textPrimary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(VoiidSpacing.md)
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        }
+        .buttonStyle(PressableButtonStyle())
     }
 
     private func adminEntry(_ title: String, _ detail: String, _ icon: String) -> some View {

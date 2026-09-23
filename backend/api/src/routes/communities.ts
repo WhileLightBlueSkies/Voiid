@@ -172,6 +172,8 @@ type CommunityRow = {
   members_can_invite: boolean;
   official_key: string | null;
   posting_policy: string;
+  // 087. Written only by the admin panel; null for every ordinary community.
+  institution_name?: string | null;
 };
 
 /**
@@ -191,6 +193,9 @@ async function publicCard(row: CommunityRow) {
   return {
     id: row.id,
     official: row.official_key != null,
+    // 087. The name a VERIFIED institution community carries ("IIT Bombay"). Set only from the
+    // admin panel, so the apps may draw a verified mark beside it; a host cannot type one in.
+    institution_name: row.institution_name ?? null,
     posting_policy: row.posting_policy,
     handle: row.handle,
     name: row.name,
@@ -221,7 +226,8 @@ async function publicCard(row: CommunityRow) {
 
 const COMMUNITY_COLUMNS = `id, owner_id, handle, name, description, avatar_r2_key,
                            discoverable, join_policy, member_count, max_members,
-                           suspended_at, created_at, category, members_can_invite, official_key, posting_policy`;
+                           suspended_at, created_at, category, members_can_invite, official_key, posting_policy,
+                           institution_name`;
 
 /**
  * Resolve a community by uuid OR by handle, in one probe either way.
@@ -467,28 +473,41 @@ router.post(
   rateLimit({ max: 10, windowSeconds: 3600, bucket: 'community-create' }),
   asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
-    const body = req.body ?? {};
+    const r = await createCommunity(user_id, req.body);
+    res.status(r.status).json(r.body);
+  })
+);
+
+/**
+ * Create a community owned by `user_id` — the whole of `POST /communities`, as a function so the
+ * admin panel can create an institution community FOR its owner through exactly the same
+ * path (routes/admin.ts). One implementation means an institution community gets the same
+ * channels, roster row and handle checks as one a host made in the app.
+ */
+export async function createCommunity(user_id: string, body: any): Promise<{ status: number; body: any }> {
+  const reply = (status: number, payload: any) => ({ status, body: payload });
+  body = body ?? {};
 
     const id = String(body.id ?? '');
     if (!UUID_RE.test(id)) {
-      return res.status(400).json({ error: 'id (a client-generated uuid) is required' });
+      return reply(400, { error: 'id (a client-generated uuid) is required' });
     }
     const handle = String(body.handle ?? '').trim().toLowerCase();
     if (!HANDLE_RE.test(handle)) {
-      return res.status(400).json({
+      return reply(400, {
         error: 'handle must be 3-20 chars, start with a letter, and use only a-z, 0-9 and _',
       });
     }
     const name = trimmed(body.name, MAX_NAME);
-    if (!name) return res.status(400).json({ error: 'name is required' });
+    if (!name) return reply(400, { error: 'name is required' });
 
     const description = trimmed(body.description, MAX_DESCRIPTION);
     const avatarKey = trimmed(body.avatar_r2_key, 400);
-    if (avatarKey && !avatarKey.startsWith(`media/${user_id}/`)) return res.status(403).json({ error: 'upload a community image from this account first' });
+    if (avatarKey && !avatarKey.startsWith(`media/${user_id}/`)) return reply(403, { error: 'upload a community image from this account first' });
     const discoverable = body.discoverable === true;
     const joinPolicy = String(body.join_policy ?? 'open');
     if (!['open', 'approval', 'invite_only'].includes(joinPolicy)) {
-      return res.status(400).json({ error: "join_policy must be open, approval or invite_only" });
+      return reply(400, { error: "join_policy must be open, approval or invite_only" });
     }
     const announcementName = trimmed(body.announcement_channel_name, MAX_CHANNEL_NAME) ?? 'Announcements';
     const generalName = trimmed(body.general_channel_name, MAX_CHANNEL_NAME) ?? 'General';
@@ -535,9 +554,9 @@ router.post(
           await query<CommunityRow>(`select ${COMMUNITY_COLUMNS} from communities where id = $1`, [id])
         )[0];
         if (!existing || existing.owner_id !== user_id) {
-          return res.status(409).json({ error: 'that community id is already taken' });
+          return reply(409, { error: 'that community id is already taken' });
         }
-        return res.json({
+        return reply(200, {
           community: await publicCard(existing),
           // The caller is the owner here (checked above), so they are a manager.
           channels: await channelsOf(id, user_id, true),
@@ -627,7 +646,7 @@ router.post(
       const fresh = (
         await query<CommunityRow>(`select ${COMMUNITY_COLUMNS} from communities where id = $1`, [id])
       )[0];
-      return res.status(201).json({
+      return reply(201, {
         community: await publicCard(fresh ?? created),
         // Just created by this caller, so they are the owner and a manager.
         channels: await channelsOf(id, user_id, true),
@@ -639,14 +658,13 @@ router.post(
       // trigger from 029/030 that keeps @acme from meaning both a person and a space. The
       // user-facing truth is the same in both cases.
       if (isUniqueViolation(e)) {
-        return res.status(409).json({ error: 'that handle is already taken' });
+        return reply(409, { error: 'that handle is already taken' });
       }
       throw e;
     } finally {
       client.release();
     }
-  })
-);
+}
 
 // ═════════════════════════════════════════════════════════════════════════════════
 // DISCOVERY  (declare every literal one-segment route ABOVE `GET /:handle`)
@@ -2005,8 +2023,18 @@ async function readGate(idOrHandle: string, userId: string): Promise<ReadGate> {
 // did, so someone who limited their photo to contacts still had it shown to every member of
 // every community they posted in. `social_profiles.avatar_r2_key` is the avatar they chose
 // to publish, on a profile that is public by definition.
+// The moderator tag (087) is read HERE, at render time, never stamped onto the post: revoking
+// it from the admin panel takes it off every past post at once. It shows only while the author
+// is still an active member — someone who left no longer speaks for the community.
 const AUTHOR_JOIN = `left join users u on u.id = p.author_id
-       left join social_profiles sp on sp.user_id = p.author_id`;
+       left join social_profiles sp on sp.user_id = p.author_id
+       left join lateral (
+         select b.badge from community_member_badges b
+           join community_members m on m.community_id = b.community_id and m.user_id = b.user_id
+          where b.community_id = p.community_id and b.user_id = p.author_id
+            and b.revoked_at is null and m.state = 'active' and m.left_at is null
+          order by b.granted_at limit 1
+       ) mb on true`;
 
 /**
  * Shape a post for the wire.
@@ -2071,6 +2099,9 @@ function postShape(r: any) {
     // on an absent key. `=== true` rather than a passthrough so a missing column reads as
     // false: a badge that appears because of a null is worse than one that never appears.
     author_is_official: r.author_is_official === true,
+    // 087. A Voiid-granted tag, e.g. "community_moderator"; null for everyone else. The apps
+    // draw a label for the words they know and nothing for one they do not.
+    author_badge: typeof r.author_badge === 'string' ? r.author_badge : null,
     body: r.body,
     media_url: r.media_url ?? null,
     like_count: r.like_count ?? 0,
@@ -2230,7 +2261,7 @@ router.get(
               p.created_at, p.edited_at, p.channel_id, p.view_count,
               to_char(p.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at,
               u.full_name as author_name, u.username as author_username,
-              sp.avatar_r2_key as author_photo_url, u.is_official as author_is_official,
+              sp.avatar_r2_key as author_photo_url, u.is_official as author_is_official, mb.badge as author_badge,
               (l.user_id is not null) as liked_by_me
          from community_posts p
          ${AUTHOR_JOIN}
@@ -2327,11 +2358,12 @@ router.post(
          insert into community_posts (community_id, author_id, body, media_url, channel_id)
               select $1, $2, $3, $4, destination
                 from unnest($5::uuid[]) as d(destination)
-           returning id, author_id, body, media_url, like_count, comment_count,
+           returning id, community_id, author_id, body, media_url, like_count, comment_count,
                      created_at, edited_at, channel_id, view_count
        )
        select p.*, u.full_name as author_name, u.username as author_username,
-                sp.avatar_r2_key as author_photo_url, u.is_official as author_is_official
+                sp.avatar_r2_key as author_photo_url, u.is_official as author_is_official,
+                mb.badge as author_badge
          from inserted p
          ${AUTHOR_JOIN}`,
       [communityId, user_id, body, mediaUrl, channelIds]
@@ -2671,7 +2703,7 @@ router.post(
         `with inserted as (
            insert into community_announcements (community_id, author_id, title, body)
                 values ($1, $2, $3, $4)
-             returning id, author_id, title, body, pinned_at, created_at
+             returning id, community_id, author_id, title, body, pinned_at, created_at
          )
          select p.*, u.full_name as author_name, u.username as author_username,
                   sp.avatar_r2_key as author_photo_url

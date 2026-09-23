@@ -35,6 +35,17 @@ export interface CheckoutRequest {
   description: string;
   /** Opaque to the provider; comes back on the webhook so an event can be traced to an order. */
   notes: Record<string, string>;
+  /**
+   * The buyer, for providers that require one (Cashfree needs an id and a phone). `id` is our
+   * user id — opaque to the provider. A provider that does not need it ignores it.
+   */
+  customer?: { id: string; phone?: string };
+  /**
+   * Settle-at-source splits: this much of `amountMinor` goes straight to each vendor (a
+   * verified host's payout account); the remainder settles to Voiid. Ignored by a provider
+   * without split settlement, in which case the whole amount settles to Voiid.
+   */
+  splits?: { vendorId: string; amountMinor: number }[];
 }
 
 /**

@@ -41,8 +41,10 @@ import blockRoutes from './routes/blocks';
 import dpdpRoutes from './routes/dpdp';
 import eventRoutes from './routes/events';
 import paymentRoutes from './routes/payments';
+import kycRoutes from './routes/kyc';
 import { register as registerPaymentProvider } from './payments/provider';
 import { razorpayFromEnv } from './payments/razorpay';
+import { cashfreeFromEnv } from './payments/cashfree';
 import tournamentRoutes from './routes/tournaments';
 import communityRoutes from './routes/communities';
 import communityHostThreadRoutes from './routes/communityHostThreads';
@@ -100,6 +102,13 @@ app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProx
   if (razorpay) {
     registerPaymentProvider(razorpay);
     console.log('[payments] razorpay registered');
+  }
+  // Which one CHARGES is VOIID_PAYMENT_PROVIDER. Both may be registered, so webhooks for
+  // orders opened under the other provider still verify and settle after a switch.
+  const cashfree = cashfreeFromEnv();
+  if (cashfree) {
+    registerPaymentProvider(cashfree);
+    console.log(`[payments] cashfree registered (${cashfree.env})`);
   }
 }
 
@@ -265,6 +274,8 @@ api.use('/dpdp', dpdpRoutes);
 // would produce '/events/communities/:id/events'.
 api.use(tournamentRoutes);
 api.use(eventRoutes);
+// Host KYC for paid events. Paths carry their own '/kyc' prefix, like eventRoutes.
+api.use(kycRoutes);
 // Games: match lifecycle only — the catalog, creating/joining a match, history. MOVES DO
 // NOT COME THROUGH HERE; they ride the WebSocket relay to backend/games, which referees
 // them (see the header of routes/games.ts for why the move path is deliberately absent).

@@ -16,7 +16,7 @@ import { api, clearToken, getToken, ApiError } from '../lib/api';
 import {
   LayoutDashboard, BarChart3, Flag, Film, Users2, CalendarDays, Gamepad2,
   BellRing, UserCog, FileText, Landmark, ScrollText, LogOut,
-  Bell, Menu, Search, ShieldCheck, X, PanelLeftClose, PanelLeftOpen,
+  Bell, Menu, Search, ShieldCheck, X, PanelLeftClose, PanelLeftOpen, BadgeCheck,
 } from 'lucide-react';
 import { BrandMark } from './Brand';
 import type { LucideIcon } from 'lucide-react';
@@ -54,6 +54,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: 'Operations',
     items: [
       { href: '/events', label: 'Events & revenue', icon: CalendarDays },
+      { href: '/kyc', label: 'Host verification', icon: BadgeCheck },
       { href: '/games', label: 'Games', icon: Gamepad2, adminOnly: true },
       { href: '/push', label: 'Push', icon: BellRing, adminOnly: true },
       { href: '/users', label: 'Users & devices', icon: UserCog, adminOnly: true },
@@ -217,7 +218,7 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
                     <n.icon
                       size={17}
                       strokeWidth={active ? 2.2 : 1.9}
-                      className={active ? 'text-[var(--lime)]' : 'text-[var(--text-mute)] group-hover:text-[var(--text)]'}
+                      className={active ? 'text-white' : 'text-[var(--text-mute)] group-hover:text-[var(--text)]'}
                     />
                     <span className={`flex-1 whitespace-nowrap ${collapsed ? 'lg:hidden' : ''}`}>{n.label}</span>
                     {/* A standing mark on the surfaces where a mistake is a legal problem.
@@ -236,7 +237,7 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
 
         {/* The privacy promise, stated where every operator sees it every day: this console
             administers containers, never content. */}
-        <div className={`mt-4 rounded-[20px] bg-[var(--lime-soft)] p-4 [@media(max-height:940px)]:hidden ${collapsed ? 'lg:hidden' : ''}`}>
+        <div className={`mt-4 rounded-[20px] bg-[var(--tide-soft)] p-4 [@media(max-height:940px)]:hidden ${collapsed ? 'lg:hidden' : ''}`}>
           <div className="flex items-center gap-2 text-tiny font-semibold text-[var(--text)]">
             <ShieldCheck size={15} className="text-[var(--accent-ink)]" />
             End-to-end encrypted
@@ -314,7 +315,7 @@ function Avatar({ me, size }: { me: Me; size: number }) {
   return (
     <span
       className="grid shrink-0 place-items-center rounded-full font-bold text-[var(--text)]"
-      style={{ width: size, height: size, background: 'var(--lime)', fontSize: size * 0.4 }}
+      style={{ width: size, height: size, background: 'var(--tide-light)', fontSize: size * 0.4 }}
     >
       {(me.name || me.email).charAt(0).toUpperCase()}
     </span>

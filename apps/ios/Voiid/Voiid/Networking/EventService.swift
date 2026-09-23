@@ -78,8 +78,8 @@ final class EventService {
     enum OrderOutcome {
         /// Settled. A ticket exists now.
         case ticketed
-        /// Money is owed. Present `checkout`, then poll — the ticket appears when Razorpay's
-        /// webhook reaches the server, NOT when the sheet closes.
+        /// Money is owed. Present `checkout`, then poll — the ticket appears when the payment
+        /// provider's signed webhook reaches the server, NOT when the sheet closes.
         case needsPayment(orderId: String, checkout: Checkout)
     }
 
@@ -87,13 +87,23 @@ final class EventService {
     ///
     /// Decoded into named fields rather than a dictionary because these are what the SDK
     /// requires, and a typo in a dictionary key is a runtime failure at the till.
+    ///
+    /// Two shapes, told apart by `provider`. Cashfree sends `checkout_url` — a page on our API
+    /// that loads Cashfree's hosted checkout — and nothing secret. Razorpay (no `provider` key)
+    /// sends what its SDK needs. Optional throughout so either decodes; the view checks that
+    /// the fields its provider needs are present before opening anything.
     struct Checkout: Decodable, Equatable {
-        let key: String
-        let order_id: String
+        let provider: String?
+        let checkout_url: String?
+        let order_ref: String?
+        let key: String?
+        let order_id: String?
         let amount: Int
         let currency: String
         let name: String?
         let description: String?
+
+        var isCashfree: Bool { provider == "cashfree" }
     }
 
     /// Place an order for one ticket.
@@ -167,8 +177,10 @@ extension EventService {
         var location_text: String?
         /// Nil means unlimited. The server requires a positive whole number when present.
         var capacity: Int?
-        let price_minor: Int = 0
-        let currency: String = "INR"
+        /// Paise. 0 is a free event. Above 0 needs the community OWNER to be a verified host
+        /// (routes/kyc.ts) — the server answers 403 `kyc_required` otherwise.
+        var price_minor: Int = 0
+        var currency: String = "INR"
         /// True creates the event already `published`; false leaves it a `draft`, which only
         /// organisers can see.
         var publish: Bool

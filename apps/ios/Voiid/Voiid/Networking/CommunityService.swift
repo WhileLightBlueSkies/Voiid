@@ -119,6 +119,10 @@ final class CommunityService {
         /// from the fact that a link resolved; a forwarded link resolves for everyone.
         var membership_role: String?
         let official: Bool?
+        /// The verified institution this community belongs to ("IIT Bombay"), set only from the
+        /// Voiid admin panel (087) — a host cannot type one in, so the mark beside it means
+        /// something. Nil for every ordinary community.
+        let institution_name: String?
         let posting_policy: String?
         var can_post: Bool?
         var membership_state: String?
@@ -703,6 +707,10 @@ final class CommunityService {
         /// something the server vouches for rather than a display name anyone can copy.
         /// Optional because older builds of the API did not send it.
         var author_is_official: Bool?
+        /// A tag Voiid granted this author in this community (087), e.g. "community_moderator".
+        /// Read at render time on the server, so a revoked tag disappears from past posts too.
+        /// Unknown words draw nothing — see `CommunityAuthorTag`.
+        var author_badge: String?
         /// The only field the server cannot omit — a post with no body cannot exist
         /// (community_posts_body_len). Defaulted anyway; see the note above.
         var body: String?

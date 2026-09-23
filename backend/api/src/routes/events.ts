@@ -39,6 +39,29 @@ import { rateLimit } from '../security';
 import { asyncHandler } from '../util';
 import { communityAccess } from '../communityRoles';
 import { activeProvider, providerByName, FREE_PROVIDER } from '../payments/provider';
+import { hostIsVerified, hostVendorId } from './kyc';
+
+/**
+ * Why a priced event cannot be set up in this community, or null when it can.
+ *
+ * TWO GATES, both server-side. No provider: 501, the server cannot take money at all. Host not
+ * verified: 403 `kyc_required` — ticket revenue is paid out to the community OWNER's verified
+ * bank account (Easy Split), so the owner must have passed KYC (routes/kyc.ts). Managers can
+ * create events, but it is the owner's identity that money follows.
+ */
+async function pricedEventRefusal(communityId: string): Promise<{ status: number; body: object } | null> {
+  if (!activeProvider()) {
+    return { status: 501, body: { error: 'paid events are not available yet — set a price of 0 to take free RSVPs' } };
+  }
+  const owner = (await query<{ owner_id: string }>(`select owner_id from communities where id = $1`, [communityId]))[0];
+  if (!owner || !(await hostIsVerified(owner.owner_id))) {
+    return {
+      status: 403,
+      body: { error: 'The community owner needs to verify their identity before selling tickets.', code: 'kyc_required' },
+    };
+  }
+  return null;
+}
 import { reconcileUnmatched } from '../payments/inbox';
 import {
   newTicketNonce,
@@ -214,10 +237,9 @@ router.post(
     // simply cannot take money yet. Creating a priced event that silently admitted everyone for
     // free would be far worse than this refusal, and creating one that could not be paid for
     // would leave the organiser with a broken listing they could not diagnose.
-    if (price > 0 && !activeProvider()) {
-      return res.status(501).json({
-        error: 'paid events are not available yet — set a price of 0 to take free RSVPs',
-      });
+    if (price > 0) {
+      const refusal = await pricedEventRefusal(communityId);
+      if (refusal) return res.status(refusal.status).json(refusal.body);
     }
 
     const rows = await query<EventRow>(
@@ -410,8 +432,9 @@ router.patch(
       if (!Number.isInteger(price) || price < 0) {
         return res.status(400).json({ error: 'price_minor must be a whole number of minor units' });
       }
-      if (price > 0 && !activeProvider()) {
-        return res.status(501).json({ error: 'paid events are not available yet' });
+      if (price > 0) {
+        const refusal = await pricedEventRefusal(opened.event.community_id);
+        if (refusal) return res.status(refusal.status).json(refusal.body);
       }
       push('price_minor', price);
     }
@@ -569,6 +592,21 @@ router.post(
       // handler will not find an order for that reference and will record the delivery as
       // unplaced (032's payment_webhook_events.order_id is nullable for exactly this).
       const orderId = randomUUID();
+
+      // SPLIT AT SOURCE. The host's share settles straight to the owner's verified payout
+      // account, computed with the SAME formula the commission trigger (067) snapshots onto
+      // the order, so what Cashfree pays out and what the ledger says always agree. Without a
+      // vendor (a provider with no split support, or an owner verified before one existed)
+      // everything settles to Voiid and the order still records the host's share.
+      const payout = (await query<{ owner_id: string; event_commission_bps: number; phone_number: string | null }>(
+        `select c.owner_id, c.event_commission_bps,
+                (select phone_number from users where id = $2) as phone_number
+           from communities c where c.id = $1`,
+        [event.community_id, userId]
+      ))[0];
+      const vendorId = payout ? await hostVendorId(payout.owner_id) : null;
+      const hostShare = payout ? amount - Math.floor((amount * payout.event_commission_bps) / 10000) : 0;
+
       const handle = await provider.createCheckout({
         orderId,
         amountMinor: amount,
@@ -577,6 +615,8 @@ router.post(
         // by third parties, so nothing from inside the app goes into this string.
         description: event.title,
         notes: { order_id: orderId, event_id: event.id },
+        customer: { id: userId, phone: payout?.phone_number ?? undefined },
+        splits: vendorId && hostShare > 0 ? [{ vendorId, amountMinor: hostShare }] : undefined,
       });
 
       try {

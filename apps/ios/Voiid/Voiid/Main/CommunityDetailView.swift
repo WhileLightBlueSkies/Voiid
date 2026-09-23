@@ -200,6 +200,8 @@ struct CommunityDetailView: View {
                 }
             }
 
+            InstitutionMark(name: c.institution_name)
+
             HStack(spacing: 6) {
                 Image(systemName: "person.2.fill").font(.system(size: 11))
                 Text("\(c.members) member\(c.members == 1 ? "" : "s")")

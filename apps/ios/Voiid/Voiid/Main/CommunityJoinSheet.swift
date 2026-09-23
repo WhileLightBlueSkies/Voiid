@@ -118,6 +118,7 @@ struct CommunityJoinSheet: View {
                 .font(.system(.title2, design: .rounded, weight: .bold))
                 .foregroundStyle(VoiidColor.textPrimary)
                 .multilineTextAlignment(.center)
+            InstitutionMark(name: card.institution_name)
             if card.official == true {
                 Label("Official", systemImage: "checkmark.seal.fill")
                     .font(.system(.caption, design: .rounded, weight: .semibold))

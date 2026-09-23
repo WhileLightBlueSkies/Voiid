@@ -308,6 +308,8 @@ struct CommunityCardRow: View {
                         }
                     }
 
+                    InstitutionMark(name: card.institution_name, compact: true)
+
                     HStack(spacing: 5) {
                         // From the shared option list, so `approval` gets its own mark
                         // rather than being drawn with the padlock that means "no way in".

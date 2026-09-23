@@ -102,7 +102,7 @@ struct CommunityEventsSection: View {
         }
         .sheet(item: $checkingIn) { e in EventCheckInView(eventId: e.id, eventTitle: e.title) {} }
         .sheet(isPresented: $creating) {
-            EventCreateFlow(communityId: communityId) { _ in
+            EventCreateFlow(communityId: communityId, isOwner: isOwner) { _ in
                 Task { await load() }
             }
         }

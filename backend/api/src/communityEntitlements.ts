@@ -17,7 +17,7 @@ import { query } from './db';
  * The column is free text so adding one needs no migration, but the CHECK here is exhaustive
  * on purpose: an unrecognised name must never grant anything. Fail closed, always.
  */
-export const CAPABILITIES = ['ecommerce'] as const;
+export const CAPABILITIES = ['ecommerce', 'moderator_badge'] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 export function isCapability(v: unknown): v is Capability {

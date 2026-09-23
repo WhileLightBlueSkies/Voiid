@@ -28,13 +28,13 @@ import { communityFinance, setCommunityCommission, validCommission } from '../co
 // is a new privileged endpoint nobody remembered to gate, and a missing middleware in a
 // route definition is visible in review in a way a missing branch is not.
 import { Router } from 'express';
-import { dispatchOfficialCommunityAction } from './communities';
+import { createCommunity, dispatchOfficialCommunityAction } from './communities';
 import { officialCommunityActionAllowed } from '../officialCommunityActions';
 import { asyncHandler } from '../util';
 import { sendAdminBroadcast } from '../push';
 import type { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { pool, query } from '../db';
 import { presignGet, deleteObject, r2Configured } from '../r2';
 import { clientIp } from '../security';
@@ -1501,7 +1501,7 @@ router.get('/communities', requireAdmin, asyncHandler(async (req, res) => {
   // community gets, a rule, and an invite or a second member. Derived, never stored, so it
   // cannot disagree with what the host sees.
   const rows = await query<any>(
-    `select c.id, c.handle, c.name, c.description, c.category,
+    `select c.id, c.handle, c.name, c.description, c.category, c.institution_name,
             c.discoverable, c.join_policy, c.member_count, c.max_members, c.official_key, c.posting_policy,
             c.suspended_at, c.created_at, c.owner_id,
             u.full_name as owner_name, u.username as owner_username,
@@ -1601,7 +1601,7 @@ router.get('/communities/:id', requireAdmin, asyncHandler(async (req, res) => {
   }
 
   const rows = await query<any>(
-    `select c.id, c.handle, c.name, c.description, c.category,
+    `select c.id, c.handle, c.name, c.description, c.category, c.institution_name,
             c.discoverable, c.join_policy, c.member_count, c.max_members, c.official_key, c.posting_policy,
             c.suspended_at, c.created_at, c.owner_id, c.members_can_invite,
             u.full_name as owner_name, u.username as owner_username
@@ -1746,7 +1746,27 @@ async function officialCommunity(id: string) {
   return rows[0] ?? null;
 }
 
-// POST /admin/communities/:id/moderator-post   { body, scheduled_at? }
+/**
+ * A community Voiid may post into as Voiid Moderator: an official one, or one that holds the
+ * `moderator_badge` entitlement (087) — the tag is the grant of "Voiid speaks here" too.
+ */
+async function postableCommunity(id: string) {
+  const rows = await query<{ id: string; name: string; official_key: string | null }>(
+    `select c.id, c.name, c.official_key from communities c
+      where c.id = $1 and c.suspended_at is null
+        and (c.official_key in ('jobs', 'feedback', 'updates')
+             or exists (select 1 from community_entitlements e
+                         where e.community_id = c.id and e.capability = 'moderator_badge'
+                           and e.revoked_at is null
+                           and (e.expires_at is null or e.expires_at > now())))`,
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+// POST /admin/communities/:id/moderator-post   { body, scheduled_at?, channel_id? }
+//
+// `channel_id` null or absent posts to Home; a Space id posts into that Space's feed (079).
 router.post('/communities/:id/moderator-post', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = String(req.params.id);
@@ -1761,18 +1781,27 @@ router.post('/communities/:id/moderator-post', requireAdmin, requireRole('admin'
     return res.status(400).json({ error: 'scheduled_at must be an ISO timestamp' });
   }
 
-  const community = await officialCommunity(id);
-  if (!community) return res.status(404).json({ error: 'not an official community' });
+  const community = await postableCommunity(id);
+  if (!community) return res.status(404).json({ error: 'Voiid can post only in official communities and ones with the moderator tag switched on' });
 
-  const rows = await query<{ id: string; created_at: string; scheduled_at: string | null }>(
-    `insert into community_posts (community_id, author_id, body, scheduled_at)
-     values ($1, $2::uuid, $3, $4::timestamptz)
-     returning id, created_at, scheduled_at`,
-    [id, VOIID_MODERATOR_ID, body, scheduledAt]
+  const channelId = req.body?.channel_id ? String(req.body.channel_id) : null;
+  if (channelId) {
+    if (!/^[0-9a-f-]{36}$/i.test(channelId)) return res.status(400).json({ error: 'channel_id must be a uuid' });
+    // The Space must belong to THIS community, or the post would surface in someone else's.
+    const owned = await query(`select 1 from community_channels where conversation_id = $1 and community_id = $2`,
+                              [channelId, id]);
+    if (!owned[0]) return res.status(404).json({ error: 'that Space is not in this community' });
+  }
+
+  const rows = await query<{ id: string; created_at: string; scheduled_at: string | null; channel_id: string | null }>(
+    `insert into community_posts (community_id, author_id, body, scheduled_at, channel_id)
+     values ($1, $2::uuid, $3, $4::timestamptz, $5::uuid)
+     returning id, created_at, scheduled_at, channel_id`,
+    [id, VOIID_MODERATOR_ID, body, scheduledAt, channelId]
   );
 
   await audit(a.adminId, 'community.moderator_post', 'community', id,
-              { official_key: community.official_key, post_id: rows[0].id,
+              { official_key: community.official_key, post_id: rows[0].id, channel_id: channelId,
                 scheduled_at: scheduledAt, length: body.length });
   res.json({ ok: true, post: rows[0] });
 }));
@@ -1782,14 +1811,17 @@ router.post('/communities/:id/moderator-post', requireAdmin, requireRole('admin'
 router.get('/communities/:id/moderator-posts', requireAdmin, asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'community id must be a uuid' });
-  if (!(await officialCommunity(id))) return res.status(404).json({ error: 'not an official community' });
+  if (!(await postableCommunity(id))) return res.status(404).json({ error: 'Voiid cannot post in this community' });
 
   const rows = await query<any>(
-    `select id, body, created_at, scheduled_at, removed_at,
-            (scheduled_at is not null and scheduled_at > now()) as pending
-       from community_posts
-      where community_id = $1 and author_id = $2::uuid
-      order by coalesce(scheduled_at, created_at) desc
+    `select p.id, p.body, p.created_at, p.scheduled_at, p.removed_at, p.channel_id,
+            ch.name as channel_name,
+            (p.scheduled_at is not null and p.scheduled_at > now()) as pending
+       from community_posts p
+       left join community_channels cc on cc.conversation_id = p.channel_id
+       left join conversations ch on ch.id = cc.conversation_id
+      where p.community_id = $1 and p.author_id = $2::uuid
+      order by coalesce(p.scheduled_at, p.created_at) desc
       limit 100`,
     [id, VOIID_MODERATOR_ID]
   );
@@ -1806,7 +1838,7 @@ router.delete('/communities/:id/moderator-post/:postId', requireAdmin, requireRo
   if (!/^[0-9a-f-]{36}$/i.test(id) || !/^[0-9a-f-]{36}$/i.test(postId)) {
     return res.status(400).json({ error: 'ids must be uuids' });
   }
-  if (!(await officialCommunity(id))) return res.status(404).json({ error: 'not an official community' });
+  if (!(await postableCommunity(id))) return res.status(404).json({ error: 'Voiid cannot post in this community' });
 
   const rows = await query<{ id: string }>(
     `update community_posts set removed_at = now()
@@ -1840,8 +1872,10 @@ router.post('/communities/:id/moderators', requireAdmin, requireRole('admin'), a
     return res.status(400).json({ error: "role must be 'admin' or 'member'" });
   }
 
-  const community = await officialCommunity(id);
-  if (!community) return res.status(404).json({ error: 'not an official community' });
+  // Official communities, and ones Voiid runs moderators for (the moderator_badge grant —
+  // institutions). A host's own community is theirs to staff from the app.
+  const community = await postableCommunity(id);
+  if (!community) return res.status(404).json({ error: 'Voiid manages moderators only in official and institution communities' });
 
   // Membership first: a role on someone who is not in the community would be invisible and
   // would silently start applying if they ever joined.
@@ -1960,8 +1994,18 @@ router.post('/communities/:id/entitlements/:cap/revoke',
   );
   if (!r[0]) return res.status(409).json({ error: 'not granted, or already revoked' });
 
+  // The tag is only as good as the grant behind it: switching the capability off takes every
+  // tag in the community off with it, so no post keeps a label the community can no longer give.
+  let badgesRevoked = 0;
+  if (capability === 'moderator_badge') {
+    const gone = await query(
+      `update community_member_badges set revoked_at = now(), revoked_by = $2
+        where community_id = $1 and revoked_at is null returning id`, [id, a.adminId]);
+    badgesRevoked = gone.length;
+  }
+
   await audit(a.adminId, 'community.entitlement_revoked', 'community', id,
-              { capability, note });
+              { capability, note, badges_revoked: badgesRevoked });
   res.json({ ok: true });
 }));
 
@@ -2530,6 +2574,269 @@ router.post('/push/send', requireAdmin, requireRole('admin'), asyncHandler(async
 
   const result = await sendAdminBroadcast(devices, copy.title, copy.text);
   res.json({ ok: true, ...result });
+}));
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// INSTITUTIONS, MODERATOR TAGS AND HOST KYC (087)
+// ═════════════════════════════════════════════════════════════════════════════════
+
+const UUID_RE_ADMIN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// GET /admin/communities/:id/spaces — the Space picker for Voiid Moderator posts.
+router.get('/communities/:id/spaces', requireAdmin, asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (!UUID_RE_ADMIN.test(id)) return res.status(400).json({ error: 'community id must be a uuid' });
+  const rows = await query<any>(
+    `select cc.conversation_id as id, c.name, cc.kind, cc.position
+       from community_channels cc join conversations c on c.id = cc.conversation_id
+      where cc.community_id = $1 order by cc.position, c.name`, [id]);
+  res.json({ spaces: rows });
+}));
+
+// POST /admin/communities  { owner, handle, name, description?, category?, join_policy?,
+//                            discoverable?, institution_name?, moderator_tag? }
+//
+// Create a community FOR someone — an institution, usually — through the same function the
+// app's create route uses (communities.ts createCommunity), so it gets the same channels,
+// roster row and handle checks. `owner` is a user id or an @username; the owner is the account
+// that then runs it from the app. `institution_name` marks it verified; `moderator_tag` switches
+// on the moderator_badge capability in the same step, since that is what institutions are for.
+router.post('/communities', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const b = req.body ?? {};
+  const ownerRef = String(b.owner ?? '').trim().replace(/^@/, '');
+  if (!ownerRef) return res.status(400).json({ error: 'owner is required (a user id or @username)' });
+  const owner = (await query<{ id: string; username: string | null }>(
+    UUID_RE_ADMIN.test(ownerRef)
+      ? `select id, username from users where id = $1`
+      : `select id, username from users where lower(username) = lower($1)`,
+    [ownerRef]))[0];
+  if (!owner) return res.status(404).json({ error: 'no Voiid account with that id or username' });
+
+  const institution = typeof b.institution_name === 'string' ? b.institution_name.trim() : '';
+  if (institution && (institution.length < 2 || institution.length > 120)) {
+    return res.status(400).json({ error: 'institution_name must be 2 to 120 characters' });
+  }
+
+  const created = await createCommunity(owner.id, {
+    id: randomUUID(),
+    handle: b.handle, name: b.name, description: b.description,
+    category: b.category, join_policy: b.join_policy ?? 'open',
+    discoverable: b.discoverable !== false,
+  });
+  if (created.status !== 201) return res.status(created.status).json(created.body);
+  const community = created.body.community;
+
+  if (institution) {
+    await query(`update communities set institution_name = $2 where id = $1`, [community.id, institution]);
+    community.institution_name = institution;
+  }
+  if (b.moderator_tag === true || institution) {
+    await query(
+      `insert into community_entitlements (community_id, capability, granted_by, note)
+       values ($1, 'moderator_badge', $2, $3) on conflict do nothing`,
+      [community.id, a.adminId, institution ? `Institution community: ${institution}` : 'Created by Voiid with moderator tags']);
+  }
+  await audit(a.adminId, 'community.created_for_owner', 'community', community.id,
+              { owner_id: owner.id, handle: community.handle, institution_name: institution || null });
+  res.status(201).json({ community });
+}));
+
+// PATCH /admin/communities/:id/institution  { institution_name: string | null }
+router.patch('/communities/:id/institution', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  if (!UUID_RE_ADMIN.test(id)) return res.status(400).json({ error: 'community id must be a uuid' });
+  const raw = req.body?.institution_name;
+  const value = raw == null ? null : String(raw).trim();
+  if (value !== null && (value.length < 2 || value.length > 120)) {
+    return res.status(400).json({ error: 'institution_name must be 2 to 120 characters, or null' });
+  }
+  const r = await query(`update communities set institution_name = $2 where id = $1 returning id`, [id, value]);
+  if (!r[0]) return res.status(404).json({ error: 'community not found' });
+  await audit(a.adminId, value ? 'community.institution_set' : 'community.institution_cleared',
+              'community', id, { institution_name: value });
+  res.json({ ok: true, institution_name: value });
+}));
+
+/** Tags are allowed in official communities and ones holding the moderator_badge grant. */
+async function canCarryTags(communityId: string): Promise<boolean> {
+  const rows = await query(
+    `select 1 from communities c
+      where c.id = $1
+        and (c.official_key is not null
+             or exists (select 1 from community_entitlements e
+                         where e.community_id = c.id and e.capability = 'moderator_badge'
+                           and e.revoked_at is null
+                           and (e.expires_at is null or e.expires_at > now())))`, [communityId]);
+  return rows.length > 0;
+}
+
+// GET /admin/communities/:id/badges — who wears a tag here, history included.
+router.get('/communities/:id/badges', requireAdmin, asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (!UUID_RE_ADMIN.test(id)) return res.status(400).json({ error: 'community id must be a uuid' });
+  const rows = await query<any>(
+    `select b.id, b.user_id, b.badge, b.note, b.granted_at, b.revoked_at,
+            u.full_name, u.username, m.role, m.state,
+            ga.email as granted_by_email
+       from community_member_badges b
+       join users u on u.id = b.user_id
+       left join community_members m on m.community_id = b.community_id and m.user_id = b.user_id
+       left join admin_users ga on ga.id = b.granted_by
+      where b.community_id = $1
+      order by (b.revoked_at is null) desc, b.granted_at desc`, [id]);
+  res.json({ badges: rows, allowed: await canCarryTags(id) });
+}));
+
+// POST /admin/communities/:id/badges  { user_id, badge?, note, make_admin? }
+//
+// Puts the tag on a member's posts. `make_admin` also gives them admin rights in the community
+// in the same step — the usual intent when an institution names its moderators.
+router.post('/communities/:id/badges', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const userId = String(req.body?.user_id ?? '');
+  const badge = String(req.body?.badge ?? 'community_moderator');
+  const note = String(req.body?.note ?? '').trim();
+  if (!UUID_RE_ADMIN.test(id) || !UUID_RE_ADMIN.test(userId)) return res.status(400).json({ error: 'ids must be uuids' });
+  if (badge !== 'community_moderator') return res.status(400).json({ error: 'unknown tag' });
+  if (!note) return res.status(400).json({ error: 'a reason is required' });
+  if (!(await canCarryTags(id))) {
+    return res.status(409).json({ error: 'Switch on the moderator tag for this community first.', code: 'capability_required' });
+  }
+  const member = (await query<{ role: string }>(
+    `select role from community_members where community_id = $1 and user_id = $2
+        and state = 'active' and left_at is null`, [id, userId]))[0];
+  if (!member) return res.status(409).json({ error: 'That person is not an active member of this community.' });
+
+  const inserted = await query<any>(
+    `insert into community_member_badges (community_id, user_id, badge, granted_by, note)
+     values ($1, $2, $3, $4, $5)
+     on conflict (community_id, user_id, badge) where revoked_at is null do nothing
+     returning id`, [id, userId, badge, a.adminId, note]);
+  if (!inserted[0]) return res.status(409).json({ error: 'They already have this tag.' });
+
+  const madeAdmin = req.body?.make_admin === true && member.role === 'member';
+  if (madeAdmin) {
+    await query(`update community_members set role = 'admin' where community_id = $1 and user_id = $2 and role = 'member'`,
+                [id, userId]);
+  }
+  await audit(a.adminId, 'community.badge_granted', 'community', id,
+              { user_id: userId, badge, note, made_admin: madeAdmin });
+  res.status(201).json({ ok: true, badge: inserted[0] });
+}));
+
+// POST /admin/communities/:id/badges/:badgeId/revoke  { note }
+router.post('/communities/:id/badges/:badgeId/revoke', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const badgeId = String(req.params.badgeId);
+  const note = String(req.body?.note ?? '').trim();
+  if (!UUID_RE_ADMIN.test(id) || !UUID_RE_ADMIN.test(badgeId)) return res.status(400).json({ error: 'ids must be uuids' });
+  if (!note) return res.status(400).json({ error: 'a reason is required' });
+  const r = await query<any>(
+    `update community_member_badges set revoked_at = now(), revoked_by = $3,
+            note = note || E'\n\nRevoked: ' || $4
+      where id = $1 and community_id = $2 and revoked_at is null returning user_id, badge`,
+    [badgeId, id, a.adminId, note]);
+  if (!r[0]) return res.status(409).json({ error: 'not found, or already revoked' });
+  await audit(a.adminId, 'community.badge_revoked', 'community', id, { ...r[0], note });
+  res.json({ ok: true });
+}));
+
+// ── Host KYC review ─────────────────────────────────────────────────────────────
+
+// GET /admin/kyc?status=pending_review|verified|rejected|draft|all
+router.get('/kyc', requireAdmin, asyncHandler(async (req, res) => {
+  const status = String(req.query.status ?? 'pending_review');
+  const filter = ['pending_review', 'verified', 'rejected', 'draft'].includes(status) ? status : null;
+  const rows = await query<any>(
+    `select h.user_id, h.status, h.legal_name, h.pan_last4, h.pan_registered_name, h.pan_name_match,
+            h.bank_last4, h.ifsc, h.bank_name, h.name_at_bank, h.bank_name_match,
+            h.cashfree_vendor_id, h.vendor_status, h.submitted_at, h.reviewed_at, h.rejection_reason,
+            u.full_name, u.username,
+            (select count(*)::int from kyc_documents d
+              where d.user_id = h.user_id and d.confirmed_at is not null and d.deleted_at is null) as document_count,
+            (select count(*)::int from communities c where c.owner_id = h.user_id) as communities_owned
+       from host_verifications h join users u on u.id = h.user_id
+      ${filter ? 'where h.status = $1' : ''}
+      order by h.submitted_at asc nulls last
+      limit 200`, filter ? [filter] : []);
+  res.json({ verifications: rows });
+}));
+
+// GET /admin/kyc/:userId — one application with its documents (no URLs; see /view below).
+router.get('/kyc/:userId', requireAdmin, asyncHandler(async (req, res) => {
+  const userId = String(req.params.userId);
+  if (!UUID_RE_ADMIN.test(userId)) return res.status(400).json({ error: 'user id must be a uuid' });
+  const row = (await query<any>(
+    `select h.*, u.full_name, u.username, u.phone_number, ra.email as reviewed_by_email
+       from host_verifications h join users u on u.id = h.user_id
+       left join admin_users ra on ra.id = h.reviewed_by
+      where h.user_id = $1`, [userId]))[0];
+  if (!row) return res.status(404).json({ error: 'no application' });
+  const documents = await query<any>(
+    `select id, kind, mime, uploaded_at, deleted_at from kyc_documents
+      where user_id = $1 and confirmed_at is not null order by uploaded_at desc`, [userId]);
+  const communities = await query<any>(
+    `select id, handle, name, institution_name from communities where owner_id = $1 order by created_at`, [userId]);
+  res.json({ verification: row, documents, communities });
+}));
+
+// POST /admin/kyc/:userId/documents/:docId/view — a short-lived link to ONE document, logged.
+//
+// Identity documents are the most sensitive thing this system holds. A link is minted per view
+// (not embedded in the list), expires with the presign TTL, and every view is an audit row with
+// the viewer's name — "who has looked at my PAN card" must have an answer.
+router.post('/kyc/:userId/documents/:docId/view', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const userId = String(req.params.userId);
+  const docId = String(req.params.docId);
+  if (!UUID_RE_ADMIN.test(userId) || !UUID_RE_ADMIN.test(docId)) return res.status(400).json({ error: 'ids must be uuids' });
+  if (!r2Configured()) return res.status(503).json({ error: 'storage is not configured' });
+  const doc = (await query<{ r2_key: string; kind: string }>(
+    `select r2_key, kind from kyc_documents
+      where id = $1 and user_id = $2 and confirmed_at is not null and deleted_at is null`, [docId, userId]))[0];
+  if (!doc || !doc.r2_key.startsWith('kyc/')) return res.status(404).json({ error: 'document not found' });
+  const url = await presignGet(doc.r2_key);
+  await audit(a.adminId, 'kyc.document_viewed', 'user', userId, { document_id: docId, kind: doc.kind });
+  res.json({ url });
+}));
+
+// POST /admin/kyc/:userId/approve  { note? }
+router.post('/kyc/:userId/approve', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const userId = String(req.params.userId);
+  if (!UUID_RE_ADMIN.test(userId)) return res.status(400).json({ error: 'user id must be a uuid' });
+  // The CHECK in 087 refuses 'verified' without a passing PAN check and a payout vendor, so an
+  // application that never completed Secure ID cannot be approved by accident.
+  const r = await query<any>(
+    `update host_verifications set status = 'verified', reviewed_at = now(), reviewed_by = $2,
+            rejection_reason = null, updated_at = now()
+      where user_id = $1 and status = 'pending_review' and pan_valid and cashfree_vendor_id is not null
+      returning user_id`, [userId, a.adminId]);
+  if (!r[0]) return res.status(409).json({ error: 'Only a submitted application with passing checks can be approved.' });
+  await audit(a.adminId, 'kyc.approved', 'user', userId, { note: String(req.body?.note ?? '') || null });
+  res.json({ ok: true });
+}));
+
+// POST /admin/kyc/:userId/reject  { reason }
+router.post('/kyc/:userId/reject', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const userId = String(req.params.userId);
+  const reason = String(req.body?.reason ?? '').trim();
+  if (!UUID_RE_ADMIN.test(userId)) return res.status(400).json({ error: 'user id must be a uuid' });
+  // The host reads this in the app, so it has to be something they can act on.
+  if (reason.length < 5 || reason.length > 500) return res.status(400).json({ error: 'Give the host a reason they can act on (5-500 characters).' });
+  const r = await query<any>(
+    `update host_verifications set status = 'rejected', reviewed_at = now(), reviewed_by = $2,
+            rejection_reason = $3, updated_at = now()
+      where user_id = $1 and status in ('pending_review', 'verified') returning user_id`,
+    [userId, a.adminId, reason]);
+  if (!r[0]) return res.status(409).json({ error: 'No application to reject.' });
+  await audit(a.adminId, 'kyc.rejected', 'user', userId, { reason });
+  res.json({ ok: true });
 }));
 
 export default router;

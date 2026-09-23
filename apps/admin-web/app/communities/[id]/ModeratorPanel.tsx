@@ -28,7 +28,11 @@ type Post = {
   scheduled_at: string | null;
   removed_at: string | null;
   pending: boolean;
+  channel_id: string | null;
+  channel_name: string | null;
 };
+
+type Space = { id: string; name: string | null; kind: string };
 
 type Member = { user_id: string; role: string; full_name: string | null; username: string | null };
 
@@ -44,6 +48,9 @@ export default function ModeratorPanel({
   const [posts, setPosts] = useState<Post[]>([]);
   const [body, setBody] = useState('');
   const [scheduledAt, setScheduledAt] = useState('');
+  // '' is Home; otherwise a Space id. Posting into a Space puts the post in that Space's feed.
+  const [spaceId, setSpaceId] = useState('');
+  const [spaces, setSpaces] = useState<Space[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -59,6 +66,11 @@ export default function ModeratorPanel({
   }, [id]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void api<{ spaces: Space[] }>(`/communities/${id}/spaces`)
+      .then(r => setSpaces(r.spaces ?? []))
+      .catch(() => setSpaces([]));
+  }, [id]);
 
   async function publish() {
     if (!body.trim()) return;
@@ -70,10 +82,12 @@ export default function ModeratorPanel({
           // An empty field means "now". Sent as ISO because the column is timestamptz and
           // the browser's local-time string would otherwise be read as UTC.
           scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
+          channel_id: spaceId || null,
         },
       });
       setBody(''); setScheduledAt('');
-      setNotice(scheduledAt ? 'Scheduled.' : 'Posted as Voiid Moderator.');
+      const where = spaceId ? `in ${spaces.find(s => s.id === spaceId)?.name ?? 'the Space'}` : 'on Home';
+      setNotice(scheduledAt ? `Scheduled ${where}.` : `Posted as Voiid Moderator ${where}.`);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not post');
@@ -132,6 +146,13 @@ export default function ModeratorPanel({
         />
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
           <label style={{ fontSize: 13, opacity: 0.8 }}>
+            Post to{' '}
+            <select aria-label="Post to" value={spaceId} onChange={e => setSpaceId(e.target.value)}>
+              <option value="">Home</option>
+              {spaces.map(s => <option key={s.id} value={s.id}>{s.name ?? 'Untitled Space'}</option>)}
+            </select>
+          </label>
+          <label style={{ fontSize: 13, opacity: 0.8 }}>
             Schedule{' '}
             <input
               type="datetime-local"
@@ -159,6 +180,7 @@ export default function ModeratorPanel({
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{p.body}</div>
                 <div style={{ fontSize: 12, opacity: 0.65, marginTop: 2 }}>
+                  {p.channel_name ? `${p.channel_name} · ` : 'Home · '}
                   {p.removed_at
                     ? 'Removed'
                     : p.pending

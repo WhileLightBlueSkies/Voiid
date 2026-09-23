@@ -189,6 +189,9 @@ struct CommunityCreateFlow: View {
                 }
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
+                // Soft at both ends: content fades under the nav bar and under the floating
+                // Continue/Create button rather than being cut by a hard line.
+                .softScrollEdge([.top, .bottom])
             }
             .navigationTitle("New community")
             .navigationBarTitleDisplayMode(.inline)
@@ -633,7 +636,16 @@ struct CommunityCreateFlow: View {
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.vertical, VoiidSpacing.sm)
-        .background(.bar)
+        .background {
+            // On iOS 26 the scroll view's soft bottom edge IS the separation, and an opaque bar
+            // here would cover it with a hard line again. Earlier systems have no soft edge,
+            // so they keep the bar to stop content showing through the button row.
+            if #available(iOS 26.0, *) {
+                Color.clear
+            } else {
+                Rectangle().fill(.bar).ignoresSafeArea(edges: .bottom)
+            }
+        }
     }
 
     // MARK: Create

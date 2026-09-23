@@ -915,6 +915,8 @@ private fun CommunityPostCard(
                             modifier = Modifier.size(14.dp),
                         )
                     }
+                    // Voiid-granted, like the seal above — see CommunityBadges.kt.
+                    CommunityAuthorTag(post.author_badge)
                 }
                 Text(CommunityFeedDate.age(post.created_at),
                     style = VoiidFont.rounded(11.5f), color = VoiidColor.textSecondary)

@@ -81,6 +81,11 @@ class CommunityService(context: Context) {
          */
         val membership_role: String? = null,
         val official: Boolean = false,
+        /**
+         * The verified institution this community belongs to, set only from the Voiid admin panel
+         * (087) — a host cannot type one in. Null for every ordinary community. Mirrors iOS.
+         */
+        val institution_name: String? = null,
         val posting_policy: String = "managers",
         val can_post: Boolean = false,
         val members_can_invite: Boolean = false,
@@ -372,6 +377,8 @@ class CommunityService(context: Context) {
          * Defaulted because older builds of the API did not send it.
          */
         val author_is_official: Boolean? = null,
+        /** A Voiid-granted tag, e.g. "community_moderator" (087). See [CommunityAuthorTag]. */
+        val author_badge: String? = null,
         val body: String? = null,
         val media_url: String? = null,
         val like_count: Int? = null,

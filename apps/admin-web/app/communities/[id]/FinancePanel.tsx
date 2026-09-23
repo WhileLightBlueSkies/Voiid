@@ -147,7 +147,7 @@ export default function FinancePanel({ id }: { id: string }) {
     <section className="mb-6 rounded-[22px] bg-card p-5 shadow-[var(--shadow-1)] ring-1 ring-black/[0.04] sm:p-6">
       {/* ── Header ── */}
       <header className="mb-5 flex flex-wrap items-start gap-3">
-        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[var(--accent)] text-[var(--lime)]">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[var(--accent)] text-white">
           <Wallet size={19} />
         </span>
         <div className="min-w-0 flex-1">
@@ -168,7 +168,7 @@ export default function FinancePanel({ id }: { id: string }) {
 
       {error && <div role="alert" className="notice error mb-4">{error}</div>}
       {notice && (
-        <div role="status" className="mb-4 rounded-[12px] bg-[var(--lime-soft)] px-4 py-3 text-sm text-[var(--accent-ink)]">
+        <div role="status" className="mb-4 rounded-[12px] bg-[var(--tide-soft)] px-4 py-3 text-sm text-[var(--accent-ink)]">
           {notice}
         </div>
       )}
@@ -282,9 +282,10 @@ export default function FinancePanel({ id }: { id: string }) {
               <div className="mt-3 flex gap-2.5 rounded-[14px] bg-[rgba(47,110,216,0.07)] p-3.5 text-tiny leading-relaxed text-[var(--text-dim)]">
                 <Info size={15} className="mt-0.5 shrink-0 text-[var(--info)]" />
                 <span>
-                  <b className="font-semibold text-[var(--text)]">Settlement isn&rsquo;t connected yet.</b>{' '}
-                  There is no withdrawable balance, and a refunded status needs provider reconciliation
-                  before it counts as a completed bank refund.
+                  <b className="font-semibold text-[var(--text)]">Settled by Cashfree.</b>{' '}
+                  The organiser&rsquo;s share of each Cashfree order is split at source to the owner&rsquo;s
+                  verified bank account (see Host verification); Voiid&rsquo;s commission settles to Voiid.
+                  Payout timing and any refunds are confirmed in the Cashfree dashboard.
                 </span>
               </div>
             </div>
@@ -377,7 +378,7 @@ export default function FinancePanel({ id }: { id: string }) {
                 {data.history.map((h, i) => (
                   <li key={i} className="relative flex gap-3 pb-4 pl-1 last:pb-0">
                     <span className="relative mt-1.5 flex flex-col items-center">
-                      <span className="h-2.5 w-2.5 rounded-full bg-[var(--lime-strong)] ring-4 ring-[var(--lime-soft)]" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-[var(--tide)] ring-4 ring-[var(--tide-soft)]" />
                       {i < data.history.length - 1 && <span className="absolute top-3 h-[calc(100%+4px)] w-px bg-[var(--border)]" />}
                     </span>
                     <div className="min-w-0 flex-1">
@@ -408,7 +409,7 @@ function Figure({ icon: Icon, label, value, sub, accent }: {
   icon: typeof Wallet; label: string; value: string; sub: string; accent?: boolean;
 }) {
   return (
-    <div className={`rounded-[18px] p-4 ${accent ? 'bg-[var(--lime-soft)]' : 'bg-[var(--surface-2)]'}`}>
+    <div className={`rounded-[18px] p-4 ${accent ? 'bg-[var(--tide-soft)]' : 'bg-[var(--surface-2)]'}`}>
       <div className="mb-2 flex items-center gap-2 text-tiny font-semibold text-[var(--text-dim)]">
         <Icon size={14} /> {label}
       </div>

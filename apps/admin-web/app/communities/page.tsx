@@ -15,6 +15,7 @@ type Community = {
   member_count: number; post_count: number;
   suspended_at: string | null; created_at: string;
   owner_name: string | null; owner_username: string | null;
+  institution_name?: string | null;
   /** 0–4, counted like the app's "Finish setting up" card. See GET /admin/communities. */
   setup_done: number;
 };
@@ -76,6 +77,10 @@ function Body() {
       <PageHeader
         title="Communities"
         subtitle="Manage official Voiid communities and review community moderation."
+        right={
+          // For institutions and anyone Voiid sets up by hand; hosts create their own in the app.
+          <Link href="/communities/new"><button>Create community</button></Link>
+        }
       />
 
       <div className="row" style={{ marginBottom: 16 }}>
@@ -148,7 +153,9 @@ function Body() {
                     <Link href={`/communities/${c.id}`} style={{ fontWeight: 600, color: 'var(--text)' }}>
                       {c.name}
                     </Link>
-                    <div className="mute" style={{ fontSize: 13 }}>@{c.handle}</div>
+                    <div className="mute" style={{ fontSize: 13 }}>
+                      @{c.handle}{c.institution_name ? ` · ✓ ${c.institution_name}` : ''}
+                    </div>
                   </td>
                   <td className="muted">{name(c.owner_name, c.owner_username)}</td>
                   <td className="muted">{c.category || '—'}</td>

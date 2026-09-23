@@ -27,16 +27,17 @@
 // provider sends several events about one order. Deduplicating on the delivery id is correct
 // and is what this file does.
 //
-// ── NO PROVIDER IS IMPLEMENTED ───────────────────────────────────────────────────
+// ── PROVIDERS ────────────────────────────────────────────────────────────────────
 //
-// The founder has not chosen a processor, so payments/provider.ts holds an interface and an
-// empty registry. With nothing registered this endpoint answers 404 for every provider name,
-// which is the correct answer: there is no integration, so there is no webhook.
+// Cashfree (payments/cashfree.ts) and Razorpay (payments/razorpay.ts) register from the
+// environment; VOIID_PAYMENT_PROVIDER picks which one charges. A provider that is not
+// registered answers 404 here, which is correct: no integration, no webhook.
 import { Router } from 'express';
 import express from 'express';
 import { query } from '../db';
 import { asyncHandler } from '../util';
 import { providerByName } from '../payments/provider';
+import { CASHFREE_REF_RE, type CashfreeProvider } from '../payments/cashfree';
 import { applyDelivery, claimDelivery, holdUnmatched, markFailed } from '../payments/inbox';
 
 const router = Router();
@@ -178,5 +179,81 @@ router.post(
     }
   })
 );
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// Cashfree hosted checkout, served to the app's in-app browser.
+//
+//   GET /payments/checkout/cashfree/:ref   loads Cashfree's own checkout for a pending order
+//   GET /payments/return?order=:ref        where Cashfree sends the buyer back; hands off to
+//                                          the app via `voiid-pay://return?order=…`
+//
+// NEITHER PAGE DECIDES ANYTHING. The ticket is minted by the signed webhook above; these pages
+// only move the buyer between the app and Cashfree. The app polls the order either way, so a
+// buyer who closes the browser early still gets their ticket when the payment settles.
+//
+// No session auth: an in-app browser does not carry the app's token. The reference is an
+// unguessable per-order id (`vo_` + 128 random bits), and the only thing either page can do
+// with it is show a checkout for money owed on that order — it reveals no buyer or event data.
+// ─────────────────────────────────────────────────────────────────────────────────
+
+const PAGE_STYLE = `body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0B0F10;color:#EEF3F3;
+text-align:center;padding:24px;box-sizing:border-box}main{max-width:340px}h1{font-size:21px;margin:0 0 8px}
+p{color:#9AA7A8;font-size:15px;line-height:1.45;margin:0 0 20px}a{display:inline-block;background:#C6F432;
+color:#0B0F10;font-weight:600;text-decoration:none;padding:13px 22px;border-radius:14px}`;
+
+function page(title: string, body: string, extraHead = ''): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+<style>${PAGE_STYLE}</style>${extraHead}</head><body><main>${body}</main></body></html>`;
+}
+
+router.get('/payments/checkout/cashfree/:ref', asyncHandler(async (req, res) => {
+  const ref = String(req.params.ref ?? '');
+  const provider = providerByName('cashfree') as CashfreeProvider | null;
+  res.set('cache-control', 'no-store');
+  if (!provider || !CASHFREE_REF_RE.test(ref)) {
+    return res.status(404).type('html').send(page('Checkout', '<h1>Checkout not found</h1><p>Go back to Voiid and try again.</p>'));
+  }
+  const order = (await query<{ status: string }>(
+    `select status from event_orders where provider = 'cashfree' and provider_ref = $1`, [ref]))[0];
+  if (!order) {
+    return res.status(404).type('html').send(page('Checkout', '<h1>Checkout not found</h1><p>Go back to Voiid and try again.</p>'));
+  }
+  if (order.status !== 'pending') {
+    const back = `voiid-pay://return?order=${ref}`;
+    return res.type('html').send(page('Checkout',
+      `<h1>${order.status === 'paid' ? 'Already paid' : 'This checkout has closed'}</h1>
+       <p>Return to Voiid to see your ticket.</p><a href="${back}">Back to Voiid</a>`));
+  }
+  const session = await provider.paymentSession(ref);
+  if (!session) {
+    return res.status(410).type('html').send(page('Checkout',
+      '<h1>This checkout has expired</h1><p>Go back to Voiid and book again.</p>'));
+  }
+  // JSON.stringify for the values dropped into script: the session id is Cashfree's, and it
+  // must not be able to close the string it sits in.
+  const mode = provider.env === 'production' ? 'production' : 'sandbox';
+  res.type('html').send(page('Pay with Cashfree',
+    `<h1>Opening secure checkout…</h1><p>Payments are handled by Cashfree.</p>`,
+    `<script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+     <script>window.addEventListener('load',function(){
+       Cashfree({mode:${JSON.stringify(mode)}}).checkout({paymentSessionId:${JSON.stringify(session)},redirectTarget:'_self'});
+     });</script>`));
+}));
+
+router.get('/payments/return', asyncHandler(async (req, res) => {
+  const ref = String(req.query.order ?? '');
+  res.set('cache-control', 'no-store');
+  if (!CASHFREE_REF_RE.test(ref)) {
+    return res.status(400).type('html').send(page('Voiid', '<h1>Back to Voiid</h1><p>You can close this page.</p>'));
+  }
+  const back = `voiid-pay://return?order=${ref}`;
+  // Straight back to the app. The link is there too, for a browser that blocks the redirect.
+  res.type('html').send(page('Returning to Voiid',
+    `<h1>Returning to Voiid…</h1><p>Your ticket appears in the app as soon as the payment is confirmed.</p>
+     <a href="${back}">Back to Voiid</a>`,
+    `<meta http-equiv="refresh" content="0;url=${back}">`));
+}));
 
 export default router;

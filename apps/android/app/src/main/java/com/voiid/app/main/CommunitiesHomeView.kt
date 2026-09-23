@@ -259,6 +259,7 @@ private fun CommunityRow(card: CommunityService.CommunityCard, onClick: () -> Un
                     Text("requested", style = VoiidFont.rounded(10), color = VoiidColor.textSecondary)
                 }
             }
+            InstitutionMark(card.institution_name, compact = true)
             Text("@${card.handle}", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
             card.description?.takeIf { it.isNotBlank() }?.let {
                 Text(it, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary, maxLines = 2)
@@ -426,6 +427,7 @@ internal fun CommunityDetailView(
                         fontSize = 9.5f, hPad = 6.dp, vPad = 2.dp)
                 }
             }
+            InstitutionMark(state.institution_name)
 
             Spacer(Modifier.height(VoiidSpacing.sm))
 
@@ -741,7 +743,7 @@ private fun OutlinePill(
 
 
 @Composable
-private fun CommunityInviteSheet(card: CommunityService.CommunityCard, service: CommunityService, onClose: () -> Unit) {
+internal fun CommunityInviteSheet(card: CommunityService.CommunityCard, service: CommunityService, onClose: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var url by remember(card.id) { mutableStateOf<String?>(null) }

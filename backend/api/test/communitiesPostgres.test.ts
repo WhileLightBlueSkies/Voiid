@@ -106,6 +106,67 @@ test('community roles, official controls, invite admission and encrypted lifecyc
       assert.ok(await row('&category=education'));
       assert.equal(await row('&category=Music'), undefined);
     });
+    await t.test('institution communities are created for an owner and carry moderator tags only while granted', async () => {
+      const body = { owner: prefix + '2', handle: prefix + 'inst', name: 'Fixture university', institution_name: 'Fixture University' };
+      assert.equal((await request('POST','/admin/communities',body,owner,moderatorToken)).status, 403);  // admin role only
+      const made = await request('POST','/admin/communities',body,owner,adminToken);
+      assert.equal(made.status, 201, JSON.stringify(made.body));
+      const inst = made.body.community;
+      assert.equal(inst.institution_name, 'Fixture University');
+      assert.equal(inst.owner_id, admin);                        // owned by the account named, not the Voiid admin
+      assert.equal((await request('GET',`/communities/${prefix}inst`,undefined,outsider)).body.community.institution_name, 'Fixture University');
+      // Same handle rules as the app: a taken handle is refused through the admin path too.
+      assert.equal((await request('POST','/admin/communities',{...body, handle: prefix+'normal'},owner,adminToken)).status, 409);
+
+      // A tag needs an active member …
+      assert.equal((await request('POST',`/admin/communities/${inst.id}/badges`,{user_id:member,note:'Council'},owner,adminToken)).status, 409);
+      assert.equal((await request('POST',`/communities/${inst.id}/join`,{},member)).status, 200);
+      const granted = await request('POST',`/admin/communities/${inst.id}/badges`,{user_id:member,note:'Student council',make_admin:true},owner,adminToken);
+      assert.equal(granted.status, 201, JSON.stringify(granted.body));
+      assert.equal((await query(`select role from community_members where community_id=$1 and user_id=$2`,[inst.id,member]))[0].role, 'admin');
+      assert.equal((await request('POST',`/admin/communities/${inst.id}/badges`,{user_id:member,note:'again'},owner,adminToken)).status, 409);
+
+      // … and shows on that member's posts, and nobody else's.
+      const tagged = await request('POST',`/communities/${inst.id}/posts`,{body:'Fest registrations open'},member);
+      assert.equal(tagged.status, 201, JSON.stringify(tagged.body));
+      assert.equal(tagged.body.post.author_badge, 'community_moderator');
+      const plain = await request('POST',`/communities/${inst.id}/posts`,{body:'Owner update'},admin);
+      assert.equal(plain.body.post.author_badge, null);
+      // Every query that reads authors goes through the same join — pinning included.
+      const pinned = await request('POST',`/communities/${inst.id}/announcements`,{title:'Welcome',body:'Read the rules'},admin);
+      assert.equal(pinned.status, 201, JSON.stringify(pinned.body));
+      assert.equal((await request('GET',`/communities/${inst.id}/announcements`,undefined,member)).status, 200);
+
+      // Switching the capability off takes the tag off every past post at once.
+      assert.equal((await request('POST',`/admin/communities/${inst.id}/entitlements/moderator_badge/revoke`,{note:'Contract ended'},owner,adminToken)).status, 200);
+      const feed = await request('GET',`/communities/${inst.id}/posts`,undefined,member);
+      assert.ok(feed.body.posts.length >= 2);
+      assert.ok(feed.body.posts.every((p: any) => p.author_badge === null));
+      // And a normal community cannot be given tags at all.
+      assert.equal((await request('POST',`/admin/communities/${normal}/badges`,{user_id:owner,note:'x'},owner,adminToken)).body.code, 'capability_required');
+    });
+    await t.test('KYC: only a passed application can be approved, and review is admin-only', async () => {
+      const kycUser = outsider;
+      await query(`insert into host_verifications (user_id, status, legal_name, pan_last4, pan_valid)
+                   values ($1, 'pending_review', 'Fixture Host', '234F', true)`, [kycUser]);
+      // No payout vendor yet: approving must be impossible, whatever the admin clicks.
+      assert.equal((await request('POST',`/admin/kyc/${kycUser}/approve`,{},owner,adminToken)).status, 409);
+      await query(`update host_verifications set cashfree_vendor_id = $2 where user_id = $1`, [kycUser, 'vh_fixture']);
+      assert.equal((await request('POST',`/admin/kyc/${kycUser}/approve`,{},owner,moderatorToken)).status, 403);
+      assert.equal((await request('POST',`/admin/kyc/${kycUser}/approve`,{},owner,adminToken)).status, 200);
+      const queue = await request('GET',`/admin/kyc?status=verified`,undefined,owner,moderatorToken);
+      assert.ok(queue.body.verifications.some((v: any) => v.user_id === kycUser));
+      // The schema itself refuses a verified row without a passing check, not just the route.
+      await assert.rejects(query(`update host_verifications set pan_valid = false where user_id = $1`, [kycUser]));
+      assert.equal((await request('POST',`/admin/kyc/${kycUser}/reject`,{reason:'no'},owner,adminToken)).status, 400);
+      assert.equal((await request('POST',`/admin/kyc/${kycUser}/reject`,{reason:'Name on PAN does not match'},owner,adminToken)).status, 200);
+      // A document that was never confirmed as uploaded is never viewable.
+      const doc = randomUUID();
+      await query(`insert into kyc_documents (id, user_id, kind, r2_key, mime) values ($1,$2,'pan_card',$3,'image/jpeg')`,
+                  [doc, kycUser, `kyc/${kycUser}/${doc}.jpg`]);
+      assert.equal((await request('GET',`/admin/kyc/${kycUser}`,undefined,owner,adminToken)).body.documents.length, 0);
+      await query(`delete from host_verifications where user_id = $1`, [kycUser]);
+    });
     await t.test('member cannot edit settings or grant themselves a role', async () => {
       assert.equal((await request('POST',`/communities/${community}/join`,{},member)).status,200);
       assert.equal((await request('PATCH',`/communities/${community}`,{name:'hijacked'},member)).status,403);

@@ -1086,6 +1086,8 @@ private struct CommunityPostCard: View {
                                 .foregroundStyle(VoiidColor.primary)
                                 .accessibilityLabel("Official Voiid account")
                         }
+                        // Voiid-granted, like the seal above — see CommunityBadges.swift.
+                        CommunityAuthorTag(badge: post.author_badge)
                     }
                     Text(CommunityFeedDate.age(post.created_at))
                         .font(VoiidFont.rounded(11.5))

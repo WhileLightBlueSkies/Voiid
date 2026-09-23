@@ -399,7 +399,13 @@ fun CommunityControlPanel(card:CommunityService.CommunityCard,isOwner:Boolean,on
   try {val s=community.stats(card.id);val e=eventsService.list(card.id);stats=s;events=e;error=null}
   catch(e:CancellationException){throw e}catch(_:Exception){stats=null;error="Unable to load the community overview. Check your access and connection."}
  }
- if(destination=="People")CommunityPeoplePanel(card,isOwner){destination=null}
+ val kycService=remember{KycService(ctx)}
+ var kyc by remember{mutableStateOf<KycService.Verification?>(null)}
+ LaunchedEffect(destination){ if(isOwner&&destination==null) kyc=runCatching{kycService.me()}.getOrNull() }
+ if(destination=="People")CommunityPeoplePanel(card,isOwner){destination=null;retry++}
+ if(destination=="CreateEvent"){EventEditorDialog(communityId=card.id,isOwner=isOwner,onDismiss={destination=null},onSaved={destination=null;retry++});return}
+ if(destination=="Verify"){HostVerificationScreen{destination=null};return}
+ if(destination=="Invite")CommunityInviteSheet(card,community){destination=null}
  if(destination=="Earnings")CommunityEarningsDialog(card.id){destination=null}
  if(destination=="Events")EventControlPage("Events",{destination=null}) {
   LazyColumn(contentPadding=PaddingValues(20.dp)){item{CommunityEventsSection(card.id,isOwner=isOwner,isManager=true,managementContext=true)}}
@@ -415,21 +421,57 @@ fun CommunityControlPanel(card:CommunityService.CommunityCard,isOwner:Boolean,on
    item{Text("Discovery views and referral analytics are not available yet.",style=MaterialTheme.typography.bodySmall)}
   }
  }
- if(destination!=null)return
+ if(destination!=null&&destination!="Invite")return
+ // ONE SCREEN A HOST CAN READ IN A GLANCE, top to bottom by urgency — what is waiting on them,
+ // the four things they do most, the one step that unlocks money (owners, until done), the
+ // numbers, then everything else. Mirrors iOS CommunityAdminPanel.
  EventControlPage("Admin panel",onDismiss) {
-  LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(20.dp)) {
-   item{Text(card.name,style=MaterialTheme.typography.headlineLarge);Text("Your community, in one place.")}
+  LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+   item{Text(card.name,style=MaterialTheme.typography.headlineLarge)}
    error?.let{item{Text(it);TextButton(onClick={retry++}){Text("Retry")}}}
    stats?.let{s->
-    item{Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){ControlMetric("Members",s.memberCount,Modifier.weight(1f));ControlMetric("Posts",s.postCount,Modifier.weight(1f))}}
-    item{Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){ControlMetric("Join requests",s.pendingCount,Modifier.weight(1f));ControlMetric("Reports",s.openReports,Modifier.weight(1f))}}
+    val waiting=s.pendingCount+s.openReports
+    item{
+     if(waiting>0) Card(onClick={destination="People"},modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(22.dp),
+      colors=CardDefaults.cardColors(containerColor=VoiidColor.surfaceCard),border=androidx.compose.foundation.BorderStroke(1.dp,VoiidColor.warning.copy(alpha=0.45f))){
+      Row(Modifier.padding(18.dp),verticalAlignment=Alignment.CenterVertically){
+       Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)){
+        Text("Needs you",style=MaterialTheme.typography.titleMedium)
+        Text(listOfNotNull(if(s.pendingCount>0)"${s.pendingCount} join request${if(s.pendingCount==1)"" else "s"}" else null,
+         if(s.openReports>0)"${s.openReports} report${if(s.openReports==1)"" else "s"}" else null).joinToString(" · "),style=MaterialTheme.typography.bodySmall)
+       }
+       Text("Review",color=VoiidColor.accentInk,style=MaterialTheme.typography.titleSmall)
+      }
+     } else Surface(shape=RoundedCornerShape(22.dp),color=VoiidColor.surfaceCard){
+      Text("All caught up — no requests or reports waiting.",Modifier.fillMaxWidth().padding(18.dp),color=VoiidColor.textSecondary)
+     }
+    }
    } ?: if(error==null)item{CircularProgressIndicator()} else Unit
-   item{ControlEntry("Events","Create, manage and check in guests"){destination="Events"}}
-   item{ControlEntry("People and access","Members, requests and community admins"){destination="People"}}
+   item{Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
+    QuickAction("Create event",Modifier.weight(1f)){destination="CreateEvent"}
+    QuickAction("Invite people",Modifier.weight(1f)){destination="Invite"}
+   }}
+   item{Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
+    QuickAction("People & requests",Modifier.weight(1f)){destination="People"}
+    QuickAction("Settings",Modifier.weight(1f),onSettings)
+   }}
+   kyc?.let{k-> if(isOwner&&!k.isVerified&&k.available) item{
+    ControlEntry(if(k.isInReview)"Verification in review" else "Get verified to sell tickets",
+     if(k.isInReview)"Voiid is checking your details. Paid events unlock when it's approved." else "Verify your PAN and bank account once to charge for events."){destination="Verify"}
+   }}
+   stats?.let{s->item{Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){ControlMetric("Members",s.memberCount,Modifier.weight(1f));ControlMetric("Posts",s.postCount,Modifier.weight(1f))}}}
+   item{Text("MORE",style=MaterialTheme.typography.labelMedium,color=VoiidColor.textSecondary)}
+   item{ControlEntry("Events","Manage events and check in guests"){destination="Events"}}
    item{ControlEntry("Insights","Community activity and event status"){destination="Insights"}}
    if(isOwner)item{ControlEntry("Earnings","Sales, commission and your share"){destination="Earnings"}}
-   item{ControlEntry("Community settings","Profile, discovery and joining",onSettings)}
   }
+ }
+}
+
+@Composable
+private fun QuickAction(title:String,modifier:Modifier=Modifier,onClick:()->Unit) {
+ Card(onClick=onClick,modifier=modifier.heightIn(min=84.dp),shape=RoundedCornerShape(22.dp),colors=CardDefaults.cardColors(containerColor=VoiidColor.surfaceCard)) {
+  Box(Modifier.fillMaxWidth().padding(18.dp),contentAlignment=Alignment.BottomStart){Text(title,style=MaterialTheme.typography.titleSmall)}
  }
 }
 
@@ -447,7 +489,14 @@ private fun ControlEntry(title:String,detail:String,onClick:()->Unit) {
 }
 
 @Composable
-fun EventEditorDialog(communityId:String,event:EventService.Event?=null,onDismiss:()->Unit,onSaved:()->Unit) {
+/**
+ * PAID TICKETS NEED A VERIFIED OWNER. A price is accepted only when the community's owner has
+ * passed host verification (routes/kyc.ts), because ticket money is paid out to their bank
+ * account. So Tickets reads the caller's verification: an owner who isn't verified gets a
+ * "Get verified" door instead of a price field that could only fail. Mirrors iOS
+ * `EventCreateFlow`. The price is set at creation; editing never changes it.
+ */
+fun EventEditorDialog(communityId:String,event:EventService.Event?=null,isOwner:Boolean=false,onDismiss:()->Unit,onSaved:()->Unit) {
  val ctx=LocalContext.current
  val service=remember{EventService(ApiClient(TokenStore.get(ctx)))}
  val scope=rememberCoroutineScope()
@@ -464,12 +513,22 @@ fun EventEditorDialog(communityId:String,event:EventService.Event?=null,onDismis
  var venue by rememberSaveable{mutableStateOf(event?.location_text ?: "")}
  var capacity by rememberSaveable{mutableStateOf(event?.capacity?.toString() ?: "")}
  var publish by rememberSaveable{mutableStateOf(false)}
+ var paid by rememberSaveable{mutableStateOf(false)}
+ var priceText by rememberSaveable{mutableStateOf("")}
+ // Paise, or null. ₹1 is Cashfree's minimum order.
+ val priceMinor=priceText.toBigDecimalOrNull()?.takeIf{it>=java.math.BigDecimal.ONE&&it<=java.math.BigDecimal(100000)}
+  ?.multiply(java.math.BigDecimal(100))?.setScale(0,java.math.RoundingMode.HALF_UP)?.toInt()
+ val kycService=remember{com.voiid.app.net.KycService(ctx)}
+ var kyc by remember{mutableStateOf<com.voiid.app.net.KycService.Verification?>(null)}
+ var showVerify by remember{mutableStateOf(false)}
+ LaunchedEffect(showVerify){ if(!showVerify) kyc=runCatching{kycService.me()}.getOrNull() }
+ val canCharge=isOwner&&kyc?.isVerified==true
  var busy by remember{mutableStateOf(false)}
  var error by remember{mutableStateOf<String?>(null)}
  val capacityValid=capacity.isEmpty() || (capacity.toIntOrNull()?.let{it in 1..100000}==true)
  val startFuture=event!=null || java.time.LocalDateTime.of(date,time).isAfter(java.time.LocalDateTime.now())
  val timesValid=startFuture && (!hasEnd||java.time.LocalDateTime.of(endDate,endTime).isAfter(java.time.LocalDateTime.of(date,time)))
- val valid=when(step){0->title.trim().length in 1..120;1->timesValid;2->capacityValid;else->timesValid&&capacityValid&&title.isNotBlank()}
+ val valid=when(step){0->title.trim().length in 1..120;1->timesValid;2->capacityValid&&(!paid||priceMinor!=null);else->timesValid&&capacityValid&&title.isNotBlank()}
  val focus=LocalFocusManager.current
  val listState=rememberLazyListState()
  var confirmClose by remember{mutableStateOf(false)}
@@ -481,6 +540,7 @@ fun EventEditorDialog(communityId:String,event:EventService.Event?=null,onDismis
    val end=start.plusHours(2);endDate=end.toLocalDate();endTime=end.toLocalTime()
   }
  }
+ if(showVerify){ HostVerificationScreen{showVerify=false}; return }
  if(confirmClose) AlertDialog(onDismissRequest={confirmClose=false},title={Text("Discard event changes?")},
   text={Text("Your changes haven’t been saved.")},
   confirmButton={TextButton(onClick={confirmClose=false;onDismiss()}){Text("Discard")}},
@@ -509,14 +569,29 @@ fun EventEditorDialog(communityId:String,event:EventService.Event?=null,onDismis
      OutlinedTextField(venue,{venue=it.take(300)},label={Text("Venue")},modifier=Modifier.fillMaxWidth(),enabled=!busy)
      Spacer(Modifier.height(16.dp))
      OutlinedTextField(capacity,{capacity=it.filter(Char::isDigit).take(6)},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),supportingText={Text(if(capacityValid)"Leave empty for unlimited places" else "Enter between 1 and 100,000")},label={Text("Guest capacity")},isError=!capacityValid,modifier=Modifier.fillMaxWidth(),enabled=!busy)
-     Spacer(Modifier.height(20.dp));Text("Free entry",style=MaterialTheme.typography.titleLarge);Text("Guests choose up to 10 places. One QR admits their whole booking.");Spacer(Modifier.height(8.dp));Text("Paid tickets are not available yet.",style=MaterialTheme.typography.bodySmall,color=VoiidColor.textSecondary)
+     Spacer(Modifier.height(20.dp))
+     if(event==null){
+      Row(verticalAlignment=Alignment.CenterVertically){Text("Charge for tickets",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium);Switch(paid,{paid=it},enabled=!busy)}
+      if(paid){
+       when{
+        canCharge->OutlinedTextField(priceText,{priceText=it.filter{c->c.isDigit()||c=='.'}.take(9)},singleLine=true,prefix={Text("₹")},
+         keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal),label={Text("Price per place")},
+         isError=priceText.isNotEmpty()&&priceMinor==null,supportingText={Text(if(priceText.isNotEmpty()&&priceMinor==null)"Enter a price from ₹1 to ₹1,00,000." else "Paid through Cashfree. Voiid's fee comes off each sale and your share goes to your verified bank account.")},
+         modifier=Modifier.fillMaxWidth(),enabled=!busy)
+        isOwner->ControlEntry(if(kyc?.isInReview==true)"Verification in review" else "Get verified to sell tickets",
+         if(kyc?.isInReview==true)"You can set a price once Voiid approves it." else "About two minutes. PAN and a bank account."){showVerify=true}
+        else->Text("Only the community owner can sell tickets, after they verify their identity.",color=VoiidColor.textSecondary)
+       }
+      } else Text("Free entry. Guests choose up to 10 places; one QR admits their whole booking.",color=VoiidColor.textSecondary)
+     } else {Text(if(event.free)"Free entry" else "Paid event",style=MaterialTheme.typography.titleLarge);Text("The price can't change once the event exists.",style=MaterialTheme.typography.bodySmall,color=VoiidColor.textSecondary)}
      if(event==null)Row(verticalAlignment=Alignment.CenterVertically){Text("Publish immediately",Modifier.weight(1f));Switch(publish,{publish=it})}
     }
     else->item{
      Surface(shape=RoundedCornerShape(24.dp),color=VoiidColor.surfaceCard){Column(Modifier.fillMaxWidth().padding(22.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
       Text(title,style=MaterialTheme.typography.titleLarge);Text("$date · ${time.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"))}")
       Text(venue.ifBlank{"Venue not specified"});Text(if(capacity.isBlank())"Unlimited capacity" else "$capacity places")
-      Text(if(event==null&&publish)"Publish now · Free entry" else if(event==null)"Save as draft · Free entry" else "Save changes")
+      val priceLine=if(paid&&priceMinor!=null)"₹"+java.math.BigDecimal(priceMinor).movePointLeft(2).stripTrailingZeros().toPlainString()+" per place" else "Free entry"
+      Text(if(event==null&&publish)"Publish now · $priceLine" else if(event==null)"Save as draft · $priceLine" else "Save changes")
      }}
     }
    }
@@ -531,10 +606,14 @@ fun EventEditorDialog(communityId:String,event:EventService.Event?=null,onDismis
      try{
       val start=java.time.LocalDateTime.of(date,time).atZone(java.time.ZoneId.systemDefault()).toInstant().toString()
       val end=if(hasEnd)java.time.LocalDateTime.of(endDate,endTime).atZone(java.time.ZoneId.systemDefault()).toInstant().toString() else null
-      val draft=EventService.EventDraft(title.trim(),about.trim(),start,end,venue.trim(),capacity.toIntOrNull(),publish=publish)
+      val draft=EventService.EventDraft(title.trim(),about.trim(),start,end,venue.trim(),capacity.toIntOrNull(),
+       price_minor=if(event==null&&paid)(priceMinor ?: 0) else 0,publish=publish)
       if(event==null)service.create(communityId,draft) else service.edit(event.id,draft)
       onSaved()
-     }catch(e:CancellationException){throw e}catch(_:Exception){error="Unable to save. Check the event details, your access and connection."}finally{busy=false}
+     }catch(e:CancellationException){throw e}catch(e:Exception){
+      error=if((e as? ApiError.Http)?.code=="kyc_required")"The community owner needs to be verified before this event can charge for tickets."
+       else "Unable to save. Check the event details, your access and connection."
+     }finally{busy=false}
     }}
    },modifier=Modifier.weight(1f)){Text(if(busy)"Saving…" else if(step==3) { if(event!=null) "Save changes" else if(publish) "Publish event" else "Save draft" } else "Continue")}
   }

@@ -158,6 +158,7 @@ fun CommunityJoinSheet(link: CommunityLink, onScanAgain: (() -> Unit)? = null, o
 @Composable
 private fun CommunityHeader(card: CommunityService.CommunityCard) {
     QrIdentityAvatar(card.avatar_url, card.name)
+    InstitutionMark(card.institution_name)
     if (card.official == true) {
         Text("✓ Official", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.accentInk,
             modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(VoiidColor.accentTint).padding(horizontal = 12.dp, vertical = 6.dp))
