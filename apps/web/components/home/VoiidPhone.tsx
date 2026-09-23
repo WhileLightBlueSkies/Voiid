@@ -242,8 +242,99 @@ export function VoiidPhone({ initial = 'chats', initialPath, jump, onScreen, coa
 
   const tab = screen.tab;
 
+  // ---- full screen ----------------------------------------------------------
+  //
+  // The real Fullscreen API where it exists: it lifts the element into the top
+  // layer, so no ancestor transform (the hero tilt, the reveal animations) can
+  // trap it. iPhone Safari has no element fullscreen, so there it becomes a fixed
+  // overlay — which a transformed ancestor WOULD trap, hence `freeze()`.
+  const shellRef = useRef<HTMLDivElement>(null);
+  const [full, setFull] = useState<false | 'native' | 'overlay'>(false);
+  const frozen = useRef<{ el: HTMLElement; transform: string; animation: string; filter: string }[]>([]);
+
+  const freeze = () => {
+    let el = shellRef.current?.parentElement ?? null;
+    while (el && el !== document.body) {
+      frozen.current.push({ el, transform: el.style.transform, animation: el.style.animation, filter: el.style.filter });
+      el.style.transform = 'none';
+      el.style.animation = 'none';
+      el.style.filter = 'none';
+      el = el.parentElement;
+    }
+    document.documentElement.style.overflow = 'hidden';
+  };
+  const thaw = () => {
+    frozen.current.forEach(({ el, transform, animation, filter }) => {
+      el.style.transform = transform;
+      el.style.animation = animation;
+      el.style.filter = filter;
+    });
+    frozen.current = [];
+    document.documentElement.style.overflow = '';
+  };
+
+  const enterFull = async () => {
+    const el = shellRef.current;
+    if (!el) return;
+    if (document.fullscreenEnabled && el.requestFullscreen) {
+      try {
+        await el.requestFullscreen();
+        setFull('native');
+        return;
+      } catch {
+        /* fall through to the overlay */
+      }
+    }
+    freeze();
+    setFull('overlay');
+  };
+
+  const exitFull = () => {
+    if (full === 'native' && document.fullscreenElement) void document.exitFullscreen();
+    if (full === 'overlay') thaw();
+    setFull(false);
+  };
+
+  // Esc (or the system gesture) leaving native fullscreen must reset our state too.
+  useEffect(() => {
+    const onChange = () => {
+      if (!document.fullscreenElement) setFull((f) => (f === 'native' ? false : f));
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  useEffect(() => {
+    if (full !== 'overlay') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        thaw();
+        setFull(false);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [full]);
+
+  useEffect(() => () => thaw(), []);
+
   return (
-    <div className={[styles.device, className].filter(Boolean).join(' ')} role="group" aria-roledescription="interactive phone" aria-label={label}>
+    <div ref={shellRef} className={[styles.shell, className].filter(Boolean).join(' ')} data-full={full || undefined}>
+    <button
+      type="button"
+      className={styles.fullBtn}
+      onClick={full ? exitFull : enterFull}
+      aria-label={full ? 'Exit full screen' : 'Open the app full screen'}
+      title={full ? 'Exit full screen (Esc)' : 'Full screen'}
+    >
+      {full ? (
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      ) : (
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+      )}
+      <span>{full ? 'Close' : 'Full screen'}</span>
+    </button>
+    <div className={styles.device} role="group" aria-roledescription="interactive phone" aria-label={label}>
       <div className={styles.screen} data-dark={screen.dark ? 'true' : undefined}>
         {layers.map((layer) => (
           <ScreenLayer
@@ -288,6 +379,7 @@ export function VoiidPhone({ initial = 'chats', initialPath, jump, onScreen, coa
       <span className={styles.buttonA} aria-hidden="true" />
       <span className={styles.buttonB} aria-hidden="true" />
       <span className={styles.buttonC} aria-hidden="true" />
+    </div>
     </div>
   );
 }

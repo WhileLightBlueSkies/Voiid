@@ -479,3 +479,78 @@
   .menuPanel { animation: none; }
   .chevron, .nav { transition: none; }
 }
+
+/* =============================================================================
+ * Phone layout (≤1020px). The open menu is a SHEET under the capsule: the capsule
+ * squares its corners into a card, the list scrolls if it outgrows the screen,
+ * every row is a 48px target (Material/Apple guidance), and the Features group
+ * expands inline at full width instead of reusing the desktop popover's
+ * centred-transform, which is what pushed it off the left edge.
+ * ========================================================================== */
+@media (max-width: 1020px) {
+  .bar {
+    transition: border-radius 260ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 260ms ease-out;
+  }
+  .header[data-nav-open='true'] .bar {
+    border-radius: 28px;
+    padding: 6px 6px 12px var(--space-md);
+    box-shadow: 0 24px 60px -20px rgba(13, 20, 22, 0.35), 0 0 0 1px var(--color-border);
+    background: rgba(255, 255, 255, 0.97);
+  }
+
+  .toggle { width: 44px; height: 44px; }
+  .nav, .navInner, .list, .list > li, .menuWrapper { width: 100%; }
+  .navInner { align-items: stretch; }
+
+  .navInner {
+    max-height: calc(100dvh - 110px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-inline-end: 10px;
+  }
+  .header[data-nav-open='true'] .navInner { padding-block: 4px 2px; }
+
+  .link {
+    min-height: 48px;
+    padding-inline: 14px;
+    font-size: 1.0625rem;
+    font-weight: var(--weight-semibold);
+    color: var(--color-text);
+  }
+  .menuTrigger { width: 100%; justify-content: space-between; }
+
+  .menuPanel,
+  .menuPanelOpen {
+    position: static;
+    transform: none;
+    translate: none;
+    width: 100%;
+    padding: 6px;
+    border-radius: 20px;
+    background: var(--color-surface-2);
+    border: 0;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .menuPanel { display: none; }
+  .menuPanelOpen { display: block; opacity: 1; pointer-events: auto; }
+  .menuPanelHeader { padding: 6px 8px 8px; }
+
+  .menuItem {
+    align-items: center;
+    min-height: 52px;
+    padding: 8px 10px;
+  }
+  .menuItem:hover { transform: none; }
+  .menuIcon { width: 36px; height: 36px; border-radius: 10px; }
+  .menuLabel { font-size: 1rem; }
+  .badgeEncrypted,
+  .badgePublic { font-size: 0.72rem; padding: 2px 7px; }
+
+  .cta {
+    min-height: 50px;
+    margin-top: 6px;
+    font-size: 1rem;
+  }
+}

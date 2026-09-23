@@ -128,9 +128,9 @@
   --text-h3: clamp(1.3rem, 1.14rem + 0.7vw, 1.65rem);
   --text-lede: clamp(1.09rem, 1rem + 0.5vw, 1.35rem);
   --text-body: 1.0625rem;   /* 17px — the app's body size */
-  --text-small: 0.9375rem;  /* 15px — subhead */
-  --text-caption: 0.8125rem;/* 13px — footnote */
-  --text-micro: 0.75rem;    /* 12px — caption / eyebrow */
+  --text-small: 1rem;       /* 16px — subhead; the smallest size used for paragraphs */
+  --text-caption: 0.875rem; /* 14px — footnote */
+  --text-micro: 0.8125rem;  /* 13px — caption / eyebrow; the floor */
 
   --weight-regular: 400;
   --weight-medium: 500;

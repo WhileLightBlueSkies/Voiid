@@ -466,3 +466,81 @@
   .coachRing, .typing i { animation: none; }
   .chatScroll, .tabbar { transition: none; }
 }
+
+/* ---- full screen --------------------------------------------------------- */
+
+.shell {
+  position: relative;
+  width: 100%;
+}
+
+.fullBtn {
+  position: absolute;
+  z-index: 30;
+  top: -16px;
+  right: -16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(10, 34, 36, 0.78);
+  color: #eefaf9;
+  font: 650 13px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 10px 24px -10px rgba(0, 0, 0, 0.6);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  transition: transform 160ms cubic-bezier(0.32, 0.72, 0, 1), background-color 160ms ease-out;
+}
+.fullBtn:hover { background: rgba(19, 130, 140, 0.9); }
+.fullBtn:active { transform: scale(0.95); }
+.fullBtn:focus-visible { outline: 2px solid #2ec5cf; outline-offset: 2px; }
+.fullBtn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Native fullscreen and the iPhone overlay share one layout: the phone as tall as
+ * the screen allows, centred on night. */
+.shell[data-full] {
+  display: grid;
+  place-items: center;
+  background: radial-gradient(80% 60% at 50% 0%, #0b3c40, #031214 70%);
+  padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+}
+.shell[data-full='overlay'] {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  width: 100vw;
+  height: 100dvh;
+  animation: fullIn 320ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.shell:fullscreen { width: 100vw; height: 100vh; }
+.shell[data-full] .device {
+  width: min(94vw, calc((100dvh - 40px) * 1206 / 2622));
+}
+.shell[data-full] .fullBtn {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  right: 16px;
+}
+@keyframes fullIn {
+  from { opacity: 0; transform: scale(0.96); }
+}
+
+@media (max-width: 520px) {
+  .fullBtn { top: -12px; right: -8px; padding: 0 10px; }
+  .fullBtn span { display: none; }
+  .fullBtn { width: 40px; justify-content: center; padding: 0; }
+  .shell[data-full] .fullBtn span { display: inline; }
+  .shell[data-full] .fullBtn { width: auto; padding: 0 14px; }
+}

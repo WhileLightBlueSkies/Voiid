@@ -344,7 +344,7 @@
   pointer-events: none;
 }
 .chip b { display: block; font-size: 0.86rem; font-weight: 700; letter-spacing: -0.01em; }
-.chip small { display: block; font-size: 0.74rem; color: var(--on-night-dim); }
+.chip small { display: block; font-size: 0.8125rem; color: var(--on-night-dim); }
 .chipIcon {
   display: grid;
   place-items: center;
@@ -653,7 +653,7 @@
 .sealBubble[data-shown='true'] { opacity: 1; transform: none; }
 .sealCipher {
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   word-break: break-all;
   opacity: 0;
   color: var(--mint);
@@ -669,7 +669,7 @@
   border-radius: 16px;
   background: rgba(0, 0, 0, 0.3);
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   color: rgba(143, 245, 228, 0.35);
   word-break: break-all;
   transition: color 300ms ease-out;
@@ -733,7 +733,7 @@
   box-shadow: inset 0 0 0 1px var(--glass-line);
 }
 .stackChip b { font-family: var(--font-mono); font-size: 0.9rem; color: var(--on-night); }
-.stackChip small { font-size: 0.75rem; color: var(--on-night-dim); }
+.stackChip small { font-size: 0.8125rem; color: var(--on-night-dim); }
 .stackLink {
   display: inline-flex;
   align-items: center;
@@ -894,7 +894,7 @@
 }
 .store small {
   display: block;
-  font-size: 0.72rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--on-night-dim);
   letter-spacing: 0;
@@ -1025,9 +1025,9 @@
 @media (max-width: 520px) {
   .heroStats { flex-wrap: nowrap; gap: 18px; margin-top: 36px; padding-top: 20px; }
   .heroStats dt { font-size: 1.6rem; }
-  .heroStats dd { font-size: 0.72rem; max-width: 11ch; }
+  .heroStats dd { font-size: 0.8125rem; max-width: 11ch; }
   .chip { padding: 8px 10px 8px 8px; border-radius: 14px; }
-  .chip b { font-size: 0.76rem; }
+  .chip b { font-size: 0.8125rem; }
   .chip small { display: none; }
   .chipIcon { width: 26px; height: 26px; border-radius: 8px; }
   .chipA { left: -8%; }
