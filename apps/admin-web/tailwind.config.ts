@@ -3,14 +3,8 @@ import type { Config } from 'tailwindcss';
 //
 // Tailwind, configured to Voiid's console palette rather than the stock shadcn theme.
 //
-// The colour values are NOT new. They are the same tokens this panel already used, which in
-// turn mirror the app's Theme.swift — teal #13828C, near-black #080C0E, the Cloudflare-style
-// orange reserved for attention. Adopting shadcn's default slate/zinc here would have made
-// the console look like a different product from the app it administers.
-//
-// Radii stay TIGHT (6/8px, not shadcn's 0.5rem default). A data table with marketing-page
-// corners reads as a settings sheet; consoles that people work in all day — Cloudflare,
-// Linear, Vercel — all run tighter than a landing page does.
+// The console is LIGHT: soft-grey page, white rounded cards, black primary controls and a
+// single mint-green signal colour. Tokens live in globals.css; this file only names them.
 //
 export default {
   darkMode: ['class'],
@@ -27,7 +21,7 @@ export default {
         // migration safe rather than a two-theme mess.
         border: 'hsl(var(--border-hsl))',
         input: 'hsl(var(--border-hsl))',
-        ring: 'hsl(var(--accent-hsl))',
+        ring: 'hsl(var(--lime-hsl))',
         background: 'hsl(var(--bg-hsl))',
         foreground: 'hsl(var(--text-hsl))',
         primary: {
@@ -65,11 +59,14 @@ export default {
         warning: 'hsl(var(--warning-hsl))',
         attention: 'hsl(var(--attention-hsl))',
         info: 'hsl(var(--info-hsl))',
+        lime: 'hsl(var(--lime-hsl))',
       },
       borderRadius: {
-        lg: '8px',
-        md: '6px',
-        sm: '4px',
+        // Soft and generous: cards at 20, controls at 12, chips at 8. Primary buttons go
+        // further still, to a full pill, in button.tsx.
+        lg: '20px',
+        md: '12px',
+        sm: '8px',
       },
       fontSize: {
         // A console reads at 13/14px, not 16. These are the sizes the panel already used;

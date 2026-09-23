@@ -26,7 +26,7 @@ export function BarRow({ label, value, max, tone }: {
         <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
           <span style={{ fontSize: 13 }}>{label}</span>
         </div>
-        <div style={{ height: 6, background: 'var(--surface-2)', borderRadius: 999, overflow: 'hidden' }}>
+        <div style={{ height: 6, background: 'var(--surface-3)', borderRadius: 999, overflow: 'hidden' }}>
           <div style={{
             width: `${pct}%`, height: '100%',
             background: tone ?? 'var(--accent)', borderRadius: 999,

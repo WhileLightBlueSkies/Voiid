@@ -4,79 +4,75 @@
 /*
  * Voiid Admin — internal operations console.
  *
- * DARK, and on Voiid's real brand. The previous build was purple (#b59be0), which is not a
- * Voiid colour and never has been: the app and the marketing site are both TIDE #13828C.
- * An internal tool that looks like a different product is one people stop trusting the
- * numbers in.
+ * LIGHT, soft-grey ground with white cards, black controls and a single mint-green accent.
+ * The hierarchy is carried by three things only: white cards lift off the grey page, black
+ * marks what is ACTIVE or primary, and green marks what is LIVE or good. Anything else stays
+ * neutral, so the eye lands on the number rather than on the chrome around it.
  *
- * Dark because a moderation surface is stared at for long stretches next to playing video,
- * where a bright ground is fatiguing. Teal is mid-tone, so it carries WHITE labels when
- * filled and lightens to --accent-ink when it has to be read as text on the dark ground.
+ * Every page reads these tokens (var(--surface), .card, .panel, button) rather than raw
+ * colours, which is what lets the whole console change skin in this one file.
  */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  --bg: #0a0e14;              /* Theme.swift background (dark) */
-  --surface: #111720;         /* surfaceCard (dark) */
-  --surface-2: #171e29;       /* surfaceRaised (dark) */
-  --surface-3: #1e2733;       /* hover / pressed well */
+  --bg: #eff1ee;              /* the page: grey with the faintest green cast */
+  --surface: #ffffff;         /* cards */
+  --surface-2: #f5f6f4;       /* wells, table hover, inputs at rest */
+  --surface-3: #eaece8;       /* pressed / empty track */
 
-  --border: #222c3a;          /* divider (dark) */
-  --border-strong: #33405280;
+  --border: #e4e7e2;
+  --border-strong: #d3d7d0;
 
-  --text: #e8edf5;
-  --text-dim: #9aa7b8;
-  --text-mute: #6b7b8f;
+  --text: #0d0f0d;
+  --text-dim: #555b55;
+  --text-mute: #8b918a;
 
-  /* The fill and the ink are different jobs. #13828C on #080C0E is too dark to READ,
-   * so teal text uses the lighter ink — the same split the marketing site makes. */
-  --accent: #19c3d4;
-  --accent-hover: #2dd6e6;
-  --accent-ink: #5fe3f0;
-  --accent-quiet: rgba(25, 195, 212, 0.13);
+  /* The primary FILL is black — the active nav pill, the main button, the send action.
+   * Green is never a button background: it is the "live" signal, and spending it on
+   * chrome would dilute what it means on a meter. */
+  --accent: #0f1110;
+  --accent-hover: #2b2f2c;
+  /* Green ink for text and links; the light mint cannot be read as text on white. */
+  --accent-ink: #1a8a3c;
+  --accent-quiet: rgba(126, 224, 134, 0.22);
+
+  --lime: #86e38c;            /* the signature mint: meters, highlights, the logo */
+  --lime-strong: #57cf63;
+  --lime-soft: #dcf8de;
 
   /* Status is never carried by hue alone anywhere in this panel — always a word too. */
-  --ok: #34d399;
-  --danger: #f87171;
-  --warning: #fbbf24;
-  --info: #60a5fa;
+  --ok: #1e9e4f;
+  --danger: #d93a3a;
+  --warning: #b98407;
+  --info: #2f6ed8;
+  --attention: #e2701b;
 
-  /* Cloudflare's console reads TIGHT: 6/8px radii, not the 12/16 of a marketing page.
-   * Rounder corners make a data table look like a settings sheet. */
-  --radius: 6px;
-  --radius-lg: 8px;
-  --sidebar: 240px;
+  --radius: 12px;
+  --radius-lg: 22px;
+  --sidebar: 256px;
 
-  /* An elevation scale, because a console stacks: page < panel < popover. Dark UI cannot
-   * lean on shadow alone, so each step pairs a shadow with a lighter border. */
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.32);
-  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.40);
+  /* Soft, wide shadows: on a light ground elevation reads through shadow, not edge. */
+  --shadow-1: 0 1px 2px rgba(16, 24, 16, 0.04), 0 1px 1px rgba(16, 24, 16, 0.02);
+  --shadow-2: 0 18px 40px -16px rgba(16, 24, 16, 0.22), 0 2px 6px rgba(16, 24, 16, 0.05);
 
-  /* Cloudflare's signature: the orange accent for attention states, used sparingly and
-   * NEVER as the primary action — teal stays the brand. */
-  --attention: #fb923c;
+  --row-h: 48px;
 
-  --row-h: 44px;
-
-  /* THE SAME COLOURS, as HSL triplets, for Tailwind and shadcn.
-   *
-   * Duplicated deliberately rather than converted: every page still written against
-   * var(--surface) keeps rendering identically while components move to bg-card, so the
-   * migration can be incremental instead of a flag day. Both names resolve to one pixel.
-   * Change a colour here and change its hex twin above — they are one decision. */
-  --bg-hsl: 216 33% 6%;
-  --surface-hsl: 216 31% 10%;
-  --surface-2-hsl: 217 28% 13%;
-  --surface-3-hsl: 214 26% 16%;
-  --border-hsl: 215 26% 18%;
-  --text-hsl: 217 39% 94%;
-  --text-mute-hsl: 213 14% 49%;
-  --accent-hsl: 185 79% 46%;
-  --ok-hsl: 158 64% 52%;
-  --danger-hsl: 0 91% 71%;
-  --warning-hsl: 43 96% 56%;
-  --info-hsl: 213 94% 68%;
-  --attention-hsl: 27 96% 61%;
+  /* THE SAME COLOURS, as HSL triplets, for Tailwind and shadcn. Change a colour here and
+   * change its hex twin above — they are one decision. */
+  --bg-hsl: 100 10% 94%;
+  --surface-hsl: 0 0% 100%;
+  --surface-2-hsl: 90 10% 96%;
+  --surface-3-hsl: 90 10% 92%;
+  --border-hsl: 96 9% 90%;
+  --text-hsl: 120 7% 5%;
+  --text-mute-hsl: 111 3% 55%;
+  --accent-hsl: 150 6% 6%;
+  --ok-hsl: 143 68% 37%;
+  --danger-hsl: 0 68% 54%;
+  --warning-hsl: 42 93% 38%;
+  --info-hsl: 218 68% 52%;
+  --attention-hsl: 26 79% 50%;
+  --lime-hsl: 124 62% 71%;
 }
 
 * { box-sizing: border-box; }
@@ -88,31 +84,24 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 14px/1.55 var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  /* Inter's defaults leave figures proportional; a console compares numbers DOWN a
-   * column, so tabular is the right default and prose is the exception. */
-  font-feature-settings: "cv11", "ss01", "tnum";
-  letter-spacing: -0.006em;
+  font-feature-settings: "tnum";
+  letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
 }
 
 a { color: var(--accent-ink); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* Console typography is SMALLER and denser than a site's. 20/14 with tight tracking on the
- * headings; the interface should read as an instrument panel, not an article. */
-h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
-h2 { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; margin: 0; }
+h1 { font-size: 30px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.1; margin: 0; }
+h2 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
 
-/* A section label with a rule running to the edge — the device Cloudflare uses to break a
- * long dashboard into scannable bands without boxing every group. */
+/* A quiet section label with a hairline running to the edge. */
 .section-label {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--text-mute);
   margin: 0 0 12px;
 }
@@ -131,61 +120,71 @@ button {
   font-weight: 600;
   cursor: pointer;
   border: 0;
-  /* Rectangular, not pill. A pill button is a marketing control; a console button sits in
-   * a toolbar next to inputs and must share their geometry. */
-  border-radius: var(--radius);
-  padding: 7px 14px;
+  border-radius: 999px;
+  padding: 8px 16px;
   background: var(--accent);
   color: #fff;
-  transition: background 120ms ease, opacity 120ms ease;
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
 }
-button:hover:not(:disabled) { background: var(--accent-hover); }
-button:disabled { opacity: 0.45; cursor: default; }
+/* :where() keeps these at plain-element weight. Written as `button:hover:not(:disabled)`
+ * they outranked every Tailwind hover utility, and a white control (a dropdown, an icon
+ * button) turned solid black under the cursor. */
+button:where(:hover:not(:disabled)) { background: var(--accent-hover); }
+button:where(:disabled) { opacity: 0.4; cursor: default; }
 button.ghost {
-  background: transparent;
-  color: var(--text-dim);
-  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
-button.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+button.ghost:hover:not(:disabled) { background: var(--surface-2); }
 button.danger { background: var(--danger); color: #fff; }
-button.danger:hover:not(:disabled) { background: #f2585d; }
-button.sm { padding: 6px 12px; font-size: 13px; }
+button.danger:hover:not(:disabled) { background: #c22f2f; }
+button.sm { padding: 6px 13px; font-size: 12px; }
 
 input, select, textarea {
   font: inherit;
   width: 100%;
-  padding: 10px 13px;
+  padding: 10px 14px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-quiet);
+  border-color: var(--lime-strong);
+  box-shadow: 0 0 0 4px var(--accent-quiet);
 }
-input::placeholder { color: var(--text-mute); }
+input::placeholder, textarea::placeholder { color: var(--text-mute); }
+/* A fallback for any native <select> that slips in: drop the OS chrome and draw our chevron.
+ * The console's real choice control is components/ui/dropdown.tsx. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 40px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23555b55' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+}
+
+:focus-visible { outline: 2px solid var(--lime-strong); outline-offset: 2px; }
 
 /* ── Surfaces ──────────────────────────────────────────────────────────────── */
 
 .card {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(15, 17, 16, 0.04);
   border-radius: var(--radius-lg);
-  padding: 16px;
+  padding: 20px;
   box-shadow: var(--shadow-1);
-  /* A 1px highlight along the top edge. On a near-black ground a drop shadow is invisible,
-   * so elevation has to be carried by light catching the upper lip — which is what makes a
-   * panel read as sitting ON the page rather than cut out of it. */
-  background-image: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0) 120px);
 }
 
-/* A panel with its own titled header bar — the primary grouping unit of the Cloudflare
- * dashboard, and the reason its long pages stay navigable. */
+/* A card with its own titled header. */
 .panel {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(15, 17, 16, 0.04);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-1);
   overflow: hidden;
@@ -194,11 +193,11 @@ input::placeholder { color: var(--text-mute); }
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
+  background: var(--surface);
 }
-.panel > .body { padding: 16px; }
+.panel > .body { padding: 20px; }
 
 .row {
   display: flex;
@@ -208,11 +207,31 @@ input::placeholder { color: var(--text-mute); }
 
 .muted { color: var(--text-dim); }
 .mute  { color: var(--text-mute); }
+/* Every figure on the console: Geist, lining numerals. Proportional by default so a headline
+ * like "1,463" is not gapped around its 1s; .tabular for figures stacked in a column. */
+.num {
+  font-family: var(--font-num), var(--font-sans), system-ui, sans-serif;
+  /* The body's inherited "tnum" feature would outrank font-variant-numeric; reset it. */
+  font-feature-settings: normal;
+  font-variant-numeric: lining-nums proportional-nums;
+  letter-spacing: -0.02em;
+}
+.num.tabular, .tabular { font-variant-numeric: lining-nums tabular-nums; }
+/* A superscript unit (the % on a readout) sits in the text face, smaller and lifted. */
+.num sup { font-family: var(--font-sans); letter-spacing: 0; }
+/* Chart axes and tooltips are figures too. */
+.recharts-text, .recharts-tooltip-wrapper { font-family: var(--font-num), var(--font-sans), sans-serif; }
+
 .mono  {
   font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
-  font-size: 0.94em;   /* mono runs visually larger at the same px; this matches its neighbours */
+  font-size: 0.92em;
   letter-spacing: -0.01em;
+}
+
+/* A hairline tick strip — the "remaining capacity" texture from the meters, reusable. */
+.ticks {
+  background-image: repeating-linear-gradient(90deg, var(--border-strong) 0 1px, transparent 1px 4px);
 }
 
 /* ── Table ─────────────────────────────────────────────────────────────────── */
@@ -220,27 +239,26 @@ input::placeholder { color: var(--text-mute); }
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left;
-  font-size: 11px;
-  background: var(--surface-2);
+  font-size: 12px;
+  background: var(--surface);
   position: sticky;
   top: 0;
   z-index: 1;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-weight: 500;
   color: var(--text-mute);
-  padding: 10px 12px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 td {
-  padding: 9px 12px;
+  padding: 10px 14px;
   font-size: 13px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
   height: var(--row-h);
 }
 tbody tr:last-child td { border-bottom: 0; }
+tbody tr { transition: background 120ms ease; }
 tbody tr:hover { background: var(--surface-2); }
 
 /* ── Pill ──────────────────────────────────────────────────────────────────── */
@@ -251,29 +269,28 @@ tbody tr:hover { background: var(--surface-2); }
   gap: 5px;
   font-size: 11px;
   font-weight: 600;
-  padding: 2px 7px;
-  /* Slightly rounded, not a lozenge — matches the button geometry above. */
-  border-radius: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
   background: var(--surface-2);
   color: var(--text-dim);
   border: 1px solid var(--border);
   white-space: nowrap;
 }
-.pill.ok      { color: var(--ok);      border-color: rgba(47, 163, 107, 0.35); }
-.pill.danger  { color: var(--danger);  border-color: rgba(229, 72, 77, 0.35); }
-.pill.warning { color: var(--warning); border-color: rgba(250, 204, 21, 0.30); }
-.pill.accent  { color: var(--accent-ink); border-color: rgba(19, 130, 140, 0.40); }
-.pill.attention { color: var(--attention); border-color: rgba(246, 130, 31, 0.35); }
+.pill.ok        { color: var(--ok);        background: rgba(30, 158, 79, 0.09);  border-color: rgba(30, 158, 79, 0.18); }
+.pill.danger    { color: var(--danger);    background: rgba(217, 58, 58, 0.08);  border-color: rgba(217, 58, 58, 0.18); }
+.pill.warning   { color: var(--warning);   background: rgba(185, 132, 7, 0.09);  border-color: rgba(185, 132, 7, 0.2); }
+.pill.accent    { color: var(--accent-ink); background: var(--lime-soft);        border-color: rgba(87, 207, 99, 0.35); }
+.pill.attention { color: var(--attention); background: rgba(226, 112, 27, 0.09); border-color: rgba(226, 112, 27, 0.2); }
 
 /* ── Notices ───────────────────────────────────────────────────────────────── */
 
 .notice {
   border-radius: var(--radius);
-  padding: 11px 14px;
+  padding: 12px 16px;
   font-size: 14px;
   border: 1px solid;
 }
-.notice.error { color: var(--danger); border-color: rgba(229, 72, 77, 0.35); background: rgba(229, 72, 77, 0.08); }
+.notice.error { color: var(--danger); border-color: rgba(217, 58, 58, 0.22); background: rgba(217, 58, 58, 0.06); }
 .notice.info  { color: var(--text-dim); border-color: var(--border); background: var(--surface); }
 
 .empty {
@@ -282,34 +299,27 @@ tbody tr:hover { background: var(--surface-2); }
   color: var(--text-mute);
 }
 
+/* Scrollbars that belong to a light UI instead of the OS default slab. */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+
 @media (prefers-reduced-motion: reduce) {
   /*
-   * GENTLER, NOT ABSENT. Killing every animation outright removes the cues that tell
-   * someone a dialog arrived or a row changed — reduced motion asks for less vestibular
-   * movement, not less feedback. So transforms are dropped (that is the part which causes
-   * discomfort) while opacity is kept and shortened.
+   * GENTLER, NOT ABSENT. Transforms are dropped (the part which causes discomfort) while
+   * opacity is kept and shortened, so a dialog arriving is still announced.
    */
   *, *::before, *::after {
     animation-duration: 120ms !important;
     animation-delay: 0ms !important;
     transition-duration: 120ms !important;
   }
-  /* No scaling or sliding entrances; the surface simply becomes present. */
   .animate-in { animation-name: rm-fade !important; }
   [style*="transform"] { transition-property: opacity !important; }
 }
 @keyframes rm-fade { from { opacity: 0 } to { opacity: 1 } }
 
 /*
- * UTILITIES LAST, and this ordering is load-bearing.
- *
- * Emitted at the top, Tailwind's utilities lose to every bare-element rule below them —
- * `button { background: var(--accent) }` and `.bg-transparent` have the same specificity,
- * so the later one wins, and a shadcn <Button variant="ghost"> came out solid teal. The
- * page looked unstyled because its classes were present and silently outranked.
- *
- * Putting them here means a utility overrides the legacy element styles, which is the
- * behaviour every Tailwind component assumes. The element rules above stay for the pages
- * not yet migrated; as each one moves to components, its rule can go.
+ * UTILITIES LAST, and this ordering is load-bearing: emitted at the top, Tailwind's
+ * utilities would lose to the bare-element rules above (`button {…}` vs `.bg-transparent`
+ * share a specificity), and every shadcn variant would silently render as the default.
  */
 @tailwind utilities;

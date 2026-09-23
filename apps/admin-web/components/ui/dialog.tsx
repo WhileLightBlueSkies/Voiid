@@ -88,15 +88,14 @@ export function PromptDialog({
           behaviour every modal on every platform has taught. */}
       <div
         className="absolute inset-0 animate-in fade-in duration-150"
-        style={{ background: 'rgba(4,8,12,0.62)', backdropFilter: 'blur(3px)' }}
+        style={{ background: 'rgba(20,24,20,0.28)', backdropFilter: 'blur(6px)' }}
         onClick={busy ? undefined : onCancel}
       />
       <div
         className="relative w-full max-w-[440px] rounded-lg border border-border bg-card p-5
                    animate-in fade-in zoom-in-95 duration-150"
         style={{
-          backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0) 120px)',
-          boxShadow: '0 24px 60px -20px rgba(0,0,0,0.85)',
+          boxShadow: '0 30px 70px -24px rgba(16,24,16,0.35)',
         }}
       >
         <h2 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">{title}</h2>
@@ -164,15 +163,14 @@ export function ConfirmDialog({
          role="alertdialog" aria-modal="true" aria-label={title}>
       <div
         className="absolute inset-0 animate-in fade-in duration-150"
-        style={{ background: 'rgba(4,8,12,0.62)', backdropFilter: 'blur(3px)' }}
+        style={{ background: 'rgba(20,24,20,0.28)', backdropFilter: 'blur(6px)' }}
         onClick={busy ? undefined : onCancel}
       />
       <div
         className="relative w-full max-w-[400px] rounded-lg border border-border bg-card p-5
                    animate-in fade-in zoom-in-95 duration-150"
         style={{
-          backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0) 110px)',
-          boxShadow: '0 24px 60px -20px rgba(0,0,0,0.85)',
+          boxShadow: '0 30px 70px -24px rgba(16,24,16,0.35)',
         }}
       >
         <h2 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">{title}</h2>

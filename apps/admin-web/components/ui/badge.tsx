@@ -8,16 +8,16 @@ import { cn } from '../../lib/utils';
 // the number is the content, the status is the label on it.
 //
 const badgeVariants = cva(
-  'inline-flex items-center rounded-sm border px-2 py-0.5 text-tiny font-medium transition-colors',
+  'inline-flex items-center rounded-full border px-2.5 py-0.5 text-tiny font-semibold transition-colors',
   {
     variants: {
       variant: {
-        default: 'border-transparent bg-[var(--accent-quiet)] text-[var(--accent-ink)]',
+        default: 'border-transparent bg-[var(--lime-soft)] text-[var(--accent-ink)]',
         secondary: 'border-border bg-secondary text-[var(--text-dim)]',
-        destructive: 'border-transparent bg-[rgba(229,72,77,0.14)] text-[#ff8a8d]',
-        ok: 'border-transparent bg-[rgba(47,163,107,0.14)] text-[#5cc98f]',
-        warning: 'border-transparent bg-[rgba(250,204,21,0.14)] text-[#e3c13f]',
-        attention: 'border-transparent bg-[rgba(246,130,31,0.14)] text-[#f6a45f]',
+        destructive: 'border-transparent bg-[rgba(217,58,58,0.09)] text-[var(--danger)]',
+        ok: 'border-transparent bg-[rgba(30,158,79,0.1)] text-[var(--ok)]',
+        warning: 'border-transparent bg-[rgba(185,132,7,0.1)] text-[var(--warning)]',
+        attention: 'border-transparent bg-[rgba(226,112,27,0.1)] text-[var(--attention)]',
         outline: 'border-border text-[var(--text-dim)]',
       },
     },

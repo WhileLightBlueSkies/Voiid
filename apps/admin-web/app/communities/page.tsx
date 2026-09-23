@@ -1,5 +1,7 @@
 'use client';
 
+import { Dropdown } from '../../components/ui/dropdown';
+
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import Shell from '../../components/Shell';
@@ -13,7 +15,17 @@ type Community = {
   member_count: number; post_count: number;
   suspended_at: string | null; created_at: string;
   owner_name: string | null; owner_username: string | null;
+  /** 0–4, counted like the app's "Finish setting up" card. See GET /admin/communities. */
+  setup_done: number;
 };
+
+// Same order and wording as the apps' create flow and settings (JoinPolicyOption).
+const JOIN_LABEL: Record<string, string> = {
+  open: 'Open to all', approval: 'Request to join', invite_only: 'Invite only',
+};
+// The create flow's list (CommunityCategory). The column is free text, so this filters only.
+const CATEGORIES = ['Education', 'Design', 'Tech', 'Gaming', 'Music', 'Sport', 'Local', 'Business'];
+const SETUP_TOTAL = 4;
 
 export default function Communities() {
   return <Shell>{() => <Body />}</Shell>;
@@ -27,6 +39,8 @@ function Body() {
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState('');
   const [state, setState] = useState<'all' | 'active' | 'suspended'>('all');
+  const [joinPolicy, setJoinPolicy] = useState<'all' | 'open' | 'approval' | 'invite_only'>('all');
+  const [category, setCategory] = useState('all');
 
   const load = useCallback(async (append: string | null = null) => {
     setLoading(true);
@@ -36,6 +50,8 @@ function Body() {
       if (append) p.set('cursor', append);
       if (q.trim()) p.set('q', q.trim());
       if (state !== 'all') p.set('state', state);
+      if (joinPolicy !== 'all') p.set('join_policy', joinPolicy);
+      if (category !== 'all') p.set('category', category);
       const r = await api<{ communities: Community[]; next_cursor: string | null }>(
         `/communities?${p}`,
       );
@@ -47,7 +63,7 @@ function Body() {
     } finally {
       setLoading(false);
     }
-  }, [q, state]);
+  }, [q, state, joinPolicy, category]);
 
   // Debounced so typing a handle does not fire a request per keystroke.
   useEffect(() => {
@@ -69,15 +85,39 @@ function Body() {
           onChange={(e) => setQ(e.target.value)}
           style={{ maxWidth: 320 }}
         />
-        <select
+        <Dropdown
+          ariaLabel="Status"
           value={state}
-          onChange={(e) => setState(e.target.value as typeof state)}
-          style={{ maxWidth: 180 }}
-        >
-          <option value="all">All</option>
-          <option value="active">Active</option>
-          <option value="suspended">Suspended</option>
-        </select>
+          onChange={setState}
+          options={[
+            { value: 'all', label: 'All communities' },
+            { value: 'active', label: 'Active' },
+            { value: 'suspended', label: 'Suspended' },
+          ]}
+          className="min-w-[190px]"
+        />
+        <Dropdown
+          ariaLabel="Who can join"
+          value={joinPolicy}
+          onChange={setJoinPolicy}
+          options={[
+            { value: 'all', label: 'Any join setting' },
+            { value: 'open', label: JOIN_LABEL.open },
+            { value: 'approval', label: JOIN_LABEL.approval },
+            { value: 'invite_only', label: JOIN_LABEL.invite_only },
+          ]}
+          className="min-w-[190px]"
+        />
+        <Dropdown
+          ariaLabel="Category"
+          value={category}
+          onChange={setCategory}
+          options={[
+            { value: 'all', label: 'All categories' },
+            ...CATEGORIES.map((c) => ({ value: c, label: c })),
+          ]}
+          className="min-w-[170px]"
+        />
       </div>
 
       <Async
@@ -92,6 +132,9 @@ function Body() {
               <tr>
                 <th>Community</th>
                 <th>Owner</th>
+                <th>Category</th>
+                <th>Who can join</th>
+                <th title="The host's Finish setting up card: description, Spaces, rules, invites">Setup</th>
                 <th>Members</th>
                 <th>Posts</th>
                 <th>Created</th>
@@ -108,6 +151,18 @@ function Body() {
                     <div className="mute" style={{ fontSize: 13 }}>@{c.handle}</div>
                   </td>
                   <td className="muted">{name(c.owner_name, c.owner_username)}</td>
+                  <td className="muted">{c.category || '—'}</td>
+                  <td className="muted">{JOIN_LABEL[c.join_policy] ?? c.join_policy}</td>
+                  <td>
+                    {/* Official communities are run by Voiid, not set up by a host. */}
+                    {c.official_key
+                      ? <span className="mute">—</span>
+                      : c.setup_done >= SETUP_TOTAL
+                        ? <Pill tone="ok">Done</Pill>
+                        : <Pill tone={c.setup_done === 0 ? 'warning' : undefined}>
+                            {c.setup_done}/{SETUP_TOTAL}
+                          </Pill>}
+                  </td>
                   <td className="mono">{c.member_count}</td>
                   <td className="mono">{c.post_count}</td>
                   <td className="muted" style={{ fontSize: 13 }}>{when(c.created_at)}</td>

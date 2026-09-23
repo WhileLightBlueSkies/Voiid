@@ -1,5 +1,7 @@
 'use client';
 
+import { Dropdown } from '../../components/ui/dropdown';
+
 //
 // GOVERNMENT REQUESTS — the console for a compelled disclosure.
 //
@@ -182,15 +184,20 @@ function NewRequest({ onDone }: { onDone: (id: string | null) => void }) {
         </label>
         <label>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>How it arrived</div>
-          <select value={f.received_channel} onChange={(e) => set('received_channel', e.target.value)}
-                  style={{ width: '100%' }}>
-            <option value="sealed_post">Sealed post</option>
-            <option value="email">Email</option>
-            <option value="in_person">In person</option>
-            <option value="court_portal">Court portal</option>
-            <option value="mlat">MLAT</option>
-            <option value="other">Other</option>
-          </select>
+          <Dropdown
+            variant="field"
+            ariaLabel="How it arrived"
+            value={f.received_channel}
+            onChange={(v) => set('received_channel', v)}
+            options={[
+              { value: 'sealed_post', label: 'Sealed post' },
+              { value: 'email', label: 'Email' },
+              { value: 'in_person', label: 'In person' },
+              { value: 'court_portal', label: 'Court portal' },
+              { value: 'mlat', label: 'MLAT', hint: 'Mutual legal assistance treaty' },
+              { value: 'other', label: 'Other' },
+            ]}
+          />
         </label>
         <label style={{ display: 'flex', alignItems: 'flex-end', gap: 8, paddingBottom: 8 }}>
           <input type="checkbox" checked={f.emergency}
@@ -432,14 +439,20 @@ function UploadOrder({ id, onDone }: { id: string; onDone: () => void }) {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-      <select value={kind} onChange={(e) => setKind(e.target.value)}>
-        <option value="fir">FIR copy</option>
-        <option value="court_warrant">Court warrant</option>
-        <option value="magistrate_order">Magistrate order</option>
-        <option value="written_notice">Written notice</option>
-        <option value="mlat_request">MLAT request</option>
-        <option value="other">Other</option>
-      </select>
+      <Dropdown
+        ariaLabel="Document type"
+        value={kind}
+        onChange={setKind}
+        options={[
+          { value: 'fir', label: 'FIR copy' },
+          { value: 'court_warrant', label: 'Court warrant' },
+          { value: 'magistrate_order', label: 'Magistrate order' },
+          { value: 'written_notice', label: 'Written notice' },
+          { value: 'mlat_request', label: 'MLAT request' },
+          { value: 'other', label: 'Other' },
+        ]}
+        className="min-w-[190px]"
+      />
       <input type="file" accept="application/pdf,image/*" disabled={busy}
              onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
       {busy && <span className="mute" style={{ fontSize: 13 }}>Uploading…</span>}
@@ -456,20 +469,32 @@ function CloseCase({ busy, onClose }: { busy: boolean; onClose: (j: unknown) => 
     <div className="card" style={{ padding: 16, marginBottom: 18 }}>
       <div style={{ fontWeight: 600, marginBottom: 10 }}>Close this request</div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-        <select value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="complied">Complied</option>
-          <option value="narrowed">Narrowed after pushback</option>
-          <option value="refused">Refused</option>
-          <option value="no_data">No responsive data</option>
-          <option value="withdrawn">Withdrawn by authority</option>
-        </select>
-        <select value={notified} onChange={(e) => setNotified(e.target.value)}>
-          <option value="pending">Subject: not yet notified</option>
-          <option value="notified">Subject notified</option>
-          <option value="barred_by_order">Notification barred by the order</option>
-          <option value="deferred">Notification deferred</option>
-          <option value="not_required">Notification not required</option>
-        </select>
+        <Dropdown
+          ariaLabel="Outcome"
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: 'complied', label: 'Complied' },
+            { value: 'narrowed', label: 'Narrowed after pushback' },
+            { value: 'refused', label: 'Refused' },
+            { value: 'no_data', label: 'No responsive data' },
+            { value: 'withdrawn', label: 'Withdrawn by authority' },
+          ]}
+          className="min-w-[220px]"
+        />
+        <Dropdown
+          ariaLabel="Subject notification"
+          value={notified}
+          onChange={setNotified}
+          options={[
+            { value: 'pending', label: 'Subject: not yet notified' },
+            { value: 'notified', label: 'Subject notified' },
+            { value: 'barred_by_order', label: 'Notification barred by the order' },
+            { value: 'deferred', label: 'Notification deferred' },
+            { value: 'not_required', label: 'Notification not required' },
+          ]}
+          className="min-w-[260px]"
+        />
       </div>
       <textarea rows={3} placeholder="Why this outcome. Required — a decision with no stated reason is indefensible later."
                 value={note} onChange={(e) => setNote(e.target.value)} style={{ width: '100%', marginBottom: 10 }} />

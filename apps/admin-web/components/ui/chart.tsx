@@ -35,17 +35,17 @@ export type Point = { day: string; value: number };
 /**
  * The series palette, in the order a chart should consume it.
  *
- * Teal first because it is the brand; the rest are chosen to stay separable in dark UI AND
- * when desaturated — which is both the colour-blind case and what happens when someone
+ * Ink first and mint second, the console's two marks; the rest are chosen to stay separable
+ * on white AND when desaturated — which is both the colour-blind case and what happens when someone
  * prints a board pack in greyscale.
  */
 export const SERIES = [
-  'var(--accent-ink)',
-  '#f6a45f',
-  '#5cc98f',
-  '#8b9df0',
-  '#e3c13f',
-  '#d98ac0',
+  '#0f1110',
+  '#4fc95b',
+  '#9aa09a',
+  '#2f6ed8',
+  '#e2701b',
+  '#b35fc4',
 ] as const;
 
 const AXIS = {
@@ -59,11 +59,11 @@ const AXIS = {
 function ChartTooltip() {
   return (
     <Tooltip
-      cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+      cursor={{ fill: 'rgba(15,17,16,0.04)' }}
       contentStyle={{
-        background: 'var(--surface-2)',
-        border: '1px solid var(--border-strong)',
-        borderRadius: 6,
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        borderRadius: 12,
         fontSize: 12,
         padding: '8px 10px',
         boxShadow: 'var(--shadow-2)',
@@ -78,7 +78,7 @@ function Frame({ title, right, total, children }: {
   title: string; right?: ReactNode; total?: string; children: ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div className="rounded-lg border border-black/[0.04] bg-card p-5 shadow-[var(--shadow-1)]">
       <div className="mb-3 flex items-baseline gap-3">
         <div className="text-sm font-semibold">{title}</div>
         {total && <div className="mono text-tiny text-[var(--text-mute)]">{total}</div>}
@@ -93,7 +93,7 @@ function Frame({ title, right, total, children }: {
 
 function Empty({ title }: { title: string }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div className="rounded-lg border border-black/[0.04] bg-card p-5 shadow-[var(--shadow-1)]">
       <div className="mb-3 text-sm font-semibold">{title}</div>
       <div className="flex h-[180px] items-center justify-center text-sm text-[var(--text-mute)]">
         No data.

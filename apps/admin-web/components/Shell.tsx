@@ -1,21 +1,24 @@
 'use client';
 
 //
-// The console frame: sidebar, header, and the session guard every page sits behind.
+// The console frame: a floating left sidebar, the top bar, and the session guard every
+// page sits behind.
 //
 // The guard lives HERE rather than in each page because a page that forgot it would render
 // its shell, fire its fetches, and only then bounce — briefly showing an operator chrome
 // they may not be entitled to. One gate, applied once, cannot be forgotten by a new page.
 //
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api, clearToken, getToken, ApiError } from '../lib/api';
 import {
   LayoutDashboard, BarChart3, Flag, Film, Users2, CalendarDays, Gamepad2,
   BellRing, UserCog, FileText, Landmark, ScrollText, LogOut,
+  Bell, Menu, Search, ShieldCheck, X, PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react';
+import { BrandMark } from './Brand';
 import type { LucideIcon } from 'lucide-react';
 
 export type Me = { email: string; name: string; role: 'admin' | 'moderator' };
@@ -68,9 +71,32 @@ const NAV: { section: string; items: NavItem[] }[] = [
   },
 ];
 
+const COLLAPSE_KEY = 'voiid.admin.sidebar-collapsed';
+
 export default function Shell({ children }: { children: (me: Me) => ReactNodeLike }) {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [navOpen, setNavOpen] = useState(false);
+  // Desktop only: the sidebar folds to an icon rail. Remembered per browser — a convenience,
+  // so a blocked or empty storage simply means "expanded".
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return typeof window !== 'undefined' && localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
+  });
+  const toggleCollapsed = () => setCollapsed((c) => {
+    try { localStorage.setItem(COLLAPSE_KEY, c ? '0' : '1'); } catch { /* not persisted; still toggles */ }
+    return !c;
+  });
+
+  useEffect(() => {
+    // "[" folds and unfolds, as in most consoles — never while typing into a field.
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (e.key === '[' && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); toggleCollapsed(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
   const router = useRouter();
   const pathname = usePathname();
 
@@ -102,128 +128,288 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
     .map((g) => ({ ...g, items: g.items.filter((n) => !n.adminOnly || me.role === 'admin') }))
     .filter((g) => g.items.length > 0);
 
+  const signOut = async () => {
+    // Best-effort server logout, then clear locally REGARDLESS. A network failure must not
+    // leave a live token sitting in the tab.
+    await api('/logout', { method: 'POST', json: {} }).catch(() => {});
+    clearToken();
+    router.replace('/login');
+  };
+
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div className="flex min-h-screen gap-5 p-3 sm:p-4">
+      {/* Scrim for the drawer below lg. The sidebar is a permanent column on a desktop and a
+          sheet on anything narrower, where a 256px column would take half the screen. */}
+      {navOpen && (
+        <div
+          aria-hidden
+          onClick={() => setNavOpen(false)}
+          className="fixed inset-0 z-30 bg-black/20 backdrop-blur-[2px] lg:hidden"
+        />
+      )}
+
       <aside
-        style={{
-          width: 'var(--sidebar)',
-          flex: '0 0 var(--sidebar)',
-          borderRight: '1px solid var(--border)',
-          background: 'var(--surface)',
-          padding: '20px 12px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 4,
-          position: 'sticky',
-          top: 0,
-          height: '100vh',
-        }}
+        className={[
+          'z-40 flex w-[var(--sidebar)] shrink-0 flex-col rounded-[28px] bg-card p-4',
+          'shadow-[var(--shadow-1)] ring-1 ring-black/[0.04]',
+          'fixed inset-y-3 left-3 transition-[transform,width,padding] duration-200 ease-out sm:inset-y-4 sm:left-4',
+          collapsed ? 'lg:w-[84px] lg:px-3' : '',
+          'lg:sticky lg:top-4 lg:h-[calc(100vh-32px)] lg:translate-x-0',
+          navOpen ? 'translate-x-0 shadow-[var(--shadow-2)]' : '-translate-x-[calc(100%+24px)]',
+        ].join(' ')}
       >
-        <div className="mb-4 flex items-center gap-2.5 px-2.5 pb-4"
-             style={{ borderBottom: '1px solid var(--border)' }}>
-          <span
-            className="grid h-7 w-7 place-items-center rounded-md text-[13px] font-bold text-[#04181b]"
-            style={{
-              background: 'linear-gradient(150deg, var(--accent-ink), var(--accent))',
-              boxShadow: '0 2px 10px rgba(25,195,212,0.25)',
-            }}
-          >
-            V
-          </span>
-          <div className="leading-tight">
-            <div className="text-sm font-semibold tracking-[-0.01em]">Voiid</div>
-            <div className="text-micro text-[var(--text-mute)]">Operations</div>
+        <div className={`mb-5 flex items-center gap-3 px-1.5 pt-1 ${collapsed ? 'lg:flex-col lg:gap-3 lg:px-0' : ''}`}>
+          <BrandMark size={30} />
+          <div className={`whitespace-nowrap leading-tight ${collapsed ? 'lg:hidden' : ''}`}>
+            <div className="text-[17px] font-bold tracking-[-0.02em]">Voiid</div>
+            <div className="text-micro font-medium text-[var(--text-mute)]">Operations console</div>
           </div>
+          <button
+            aria-label="Close menu"
+            onClick={() => setNavOpen(false)}
+            className="ml-auto grid h-8 w-8 place-items-center rounded-full bg-transparent p-0 text-[var(--text-dim)] hover:bg-[var(--surface-2)] lg:hidden"
+          >
+            <X size={16} />
+          </button>
+          <button
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={`${collapsed ? 'Expand' : 'Collapse'} sidebar  [`}
+            aria-expanded={!collapsed}
+            onClick={toggleCollapsed}
+            className={`hidden h-9 w-9 place-items-center rounded-full bg-transparent p-0 text-[var(--text-dim)] hover:bg-[var(--surface-2)] hover:text-[var(--text)] lg:grid ${collapsed ? '' : 'ml-auto'}`}
+          >
+            {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+          </button>
         </div>
 
-        {sections.map((g, gi) => (
-          <div key={g.section || gi} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {g.section && (
-              <div className="px-2.5 pb-1.5 pt-4 text-micro font-semibold uppercase tracking-[0.07em] text-[var(--text-mute)]">
-                {g.section}
-              </div>
-            )}
-            {g.items.map((n) => {
-              const active = n.href === '/' ? pathname === '/' : pathname.startsWith(n.href);
-              return (
-                <Link
-                  key={n.href}
-                  href={n.href}
-                  aria-current={active ? 'page' : undefined}
-                  className={[
-                    'group relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm',
-                    'no-underline transition-colors',
-                    active
-                      ? 'bg-[var(--accent-quiet)] font-semibold text-[var(--text)]'
-                      : 'font-medium text-[var(--text-dim)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]',
-                  ].join(' ')}
-                >
-                  {/* A RAIL, not just a fill. A tinted background alone is easy to lose in
-                      peripheral vision on a dark sidebar; a bright edge against the panel
-                      border is what the eye actually catches when scanning back. */}
-                  {active && (
-                    <span
-                      aria-hidden
-                      className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r"
-                      style={{ background: 'var(--accent-ink)' }}
+        <nav className="-mx-1 flex-1 overflow-y-auto px-1" aria-label="Sections">
+          {sections.map((g, gi) => (
+            <div key={g.section || gi} className="flex flex-col gap-0.5">
+              {g.section && (
+                <>
+                  <div className={`whitespace-nowrap px-3.5 pb-1.5 pt-5 text-micro font-semibold text-[var(--text-mute)] ${collapsed ? 'lg:hidden' : ''}`}>
+                    {g.section}
+                  </div>
+                  {/* In the rail a group heading becomes a hairline: the grouping survives
+                      even when there is no room for its name. */}
+                  {collapsed && <div aria-hidden className="mx-3 my-3 hidden h-px bg-[var(--border)] lg:block" />}
+                </>
+              )}
+              {g.items.map((n) => {
+                const active = isActive(pathname, n.href);
+                return (
+                  <Link
+                    key={n.href}
+                    href={n.href}
+                    aria-current={active ? 'page' : undefined}
+                    onClick={() => setNavOpen(false)}
+                    title={collapsed ? n.label : undefined}
+                    aria-label={collapsed ? n.label : undefined}
+                    className={[
+                      'group relative flex h-11 items-center gap-3 rounded-full px-3.5 text-sm',
+                      collapsed ? 'lg:mx-auto lg:w-11 lg:justify-center lg:px-0' : '',
+                      'no-underline transition-colors duration-150 hover:no-underline',
+                      active
+                        ? 'bg-[var(--accent)] font-semibold text-white'
+                        : 'font-medium text-[var(--text-dim)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]',
+                    ].join(' ')}
+                  >
+                    <n.icon
+                      size={17}
+                      strokeWidth={active ? 2.2 : 1.9}
+                      className={active ? 'text-[var(--lime)]' : 'text-[var(--text-mute)] group-hover:text-[var(--text)]'}
                     />
-                  )}
-                  <n.icon
-                    size={15}
-                    strokeWidth={active ? 2.2 : 1.9}
-                    className={active ? 'text-[var(--accent-ink)]' : 'text-[var(--text-mute)] group-hover:text-[var(--text-dim)]'}
-                  />
-                  <span className="flex-1">{n.label}</span>
-                  {/* A standing mark on the surfaces where a mistake is a legal problem.
-                      Not a warning — the work is legitimate — but the eye should never
-                      land here thinking it is somewhere ordinary. */}
-                  {n.tone === 'legal' && (
-                    <span aria-hidden className="h-1.5 w-1.5 rounded-full"
-                          style={{ background: 'var(--attention)' }} />
-                  )}
-                </Link>
-              );
-            })}
-          </div>
-        ))}
+                    <span className={`flex-1 whitespace-nowrap ${collapsed ? 'lg:hidden' : ''}`}>{n.label}</span>
+                    {/* A standing mark on the surfaces where a mistake is a legal problem.
+                        Not a warning — the work is legitimate — but the eye should never
+                        land here thinking it is somewhere ordinary. */}
+                    {n.tone === 'legal' && (
+                      <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${collapsed ? 'lg:absolute lg:right-1.5 lg:top-2' : ''}`}
+                            style={{ background: 'var(--attention)' }} />
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
 
-        <div className="mt-auto pt-3" style={{ borderTop: '1px solid var(--border)' }}>
-          <div className="mb-2 flex items-center gap-2.5 px-1">
-            {/* An initial, not a generic avatar glyph. On a console where two people share a
-                machine, the question the footer answers is "who am I signed in as" — and a
-                letter answers it faster than a name read at 12px. */}
-            <span
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-tiny font-semibold"
-              style={{ background: 'var(--surface-3)', color: 'var(--accent-ink)' }}
-            >
-              {(me.name || me.email).charAt(0).toUpperCase()}
-            </span>
-            <div className="min-w-0 flex-1 leading-tight">
-              <div className="truncate text-tiny font-semibold" title={me.name || me.email}>
-                {me.name || me.email}
-              </div>
-              <div className="text-micro text-[var(--text-mute)]">
-                {me.role === 'admin' ? 'Admin' : 'Moderator'}
-              </div>
+        {/* The privacy promise, stated where every operator sees it every day: this console
+            administers containers, never content. */}
+        <div className={`mt-4 rounded-[20px] bg-[var(--lime-soft)] p-4 [@media(max-height:940px)]:hidden ${collapsed ? 'lg:hidden' : ''}`}>
+          <div className="flex items-center gap-2 text-tiny font-semibold text-[var(--text)]">
+            <ShieldCheck size={15} className="text-[var(--accent-ink)]" />
+            End-to-end encrypted
+          </div>
+          <p className="m-0 mt-1 text-micro leading-relaxed text-[var(--text-dim)]">
+            Messages and calls never reach this console. The server holds no key.
+          </p>
+        </div>
+
+        <div className={`mt-3 flex items-center gap-2.5 rounded-full bg-[var(--surface-2)] p-1.5 pr-2 ${collapsed ? 'lg:flex-col lg:rounded-[22px] lg:pr-1.5' : ''}`}>
+          <Avatar me={me} size={34} />
+          <div className={`min-w-0 flex-1 leading-tight ${collapsed ? 'lg:hidden' : ''}`}>
+            <div className="truncate text-tiny font-semibold" title={me.name || me.email}>
+              {me.name || me.email}
+            </div>
+            <div className="text-micro text-[var(--text-mute)]">
+              {me.role === 'admin' ? 'Admin' : 'Moderator'}
             </div>
           </div>
           <button
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-tiny font-medium text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
-            onClick={async () => {
-              // Best-effort server logout, then clear locally REGARDLESS. A network failure
-              // must not leave a live token sitting in the tab.
-              await api('/logout', { method: 'POST', json: {} }).catch(() => {});
-              clearToken();
-              router.replace('/login');
-            }}
+            onClick={signOut}
+            aria-label="Sign out"
+            title="Sign out"
+            className="grid h-8 w-8 place-items-center rounded-full bg-card p-0 text-[var(--text-dim)] shadow-[var(--shadow-1)] hover:bg-card hover:text-[var(--danger)]"
           >
-            <LogOut size={13} strokeWidth={2} />
-            Sign out
+            <LogOut size={14} strokeWidth={2} />
           </button>
         </div>
       </aside>
 
-      <main style={{ flex: 1, padding: '28px 32px', minWidth: 0 }}>{children(me)}</main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 items-center gap-3 pb-1 sm:h-16">
+          <button
+            aria-label="Open menu"
+            onClick={() => setNavOpen(true)}
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-card p-0 text-[var(--text)] shadow-[var(--shadow-1)] hover:bg-card lg:hidden"
+          >
+            <Menu size={18} />
+          </button>
+
+          <JumpTo sections={sections} onGo={(href) => router.push(href)} />
+
+          <div className="ml-auto flex items-center gap-2">
+            <Link
+              href="/reports"
+              aria-label="Reports queue"
+              title="Reports queue"
+              className="grid h-11 w-11 place-items-center rounded-full bg-card text-[var(--text)] shadow-[var(--shadow-1)] transition-colors hover:bg-[var(--surface-2)]"
+            >
+              <Bell size={17} strokeWidth={2} />
+            </Link>
+            <Link
+              href="/audit"
+              aria-label="Audit log"
+              title="Audit log"
+              className="hidden h-11 w-11 place-items-center rounded-full bg-card text-[var(--text)] shadow-[var(--shadow-1)] transition-colors hover:bg-[var(--surface-2)] sm:grid"
+            >
+              <ScrollText size={17} strokeWidth={2} />
+            </Link>
+            <div className="ml-1 hidden items-center gap-2.5 md:flex">
+              <Avatar me={me} size={42} />
+              <div className="leading-tight">
+                <div className="text-sm font-semibold">{me.name || me.email}</div>
+                <div className="text-tiny text-[var(--text-mute)]">
+                  {me.role === 'admin' ? 'Admin' : 'Moderator'}
+                </div>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <main className="min-w-0 flex-1 pb-8 pt-4 sm:px-1">{children(me)}</main>
+      </div>
+    </div>
+  );
+}
+
+function isActive(pathname: string, href: string) {
+  return href === '/' ? pathname === '/' : pathname.startsWith(href);
+}
+
+/** An initial, not a stock avatar glyph: "who am I signed in as" is answered faster by a letter. */
+function Avatar({ me, size }: { me: Me; size: number }) {
+  return (
+    <span
+      className="grid shrink-0 place-items-center rounded-full font-bold text-[var(--text)]"
+      style={{ width: size, height: size, background: 'var(--lime)', fontSize: size * 0.4 }}
+    >
+      {(me.name || me.email).charAt(0).toUpperCase()}
+    </span>
+  );
+}
+
+/**
+ * "Jump to…" — a page finder, not a data search.
+ *
+ * Every page already has its own filter for its own records; what the header can do honestly
+ * is get an operator to the right page by name. "/" focuses it from anywhere, as it does on
+ * most consoles, and Enter opens the highlighted match.
+ */
+function JumpTo({ sections, onGo }: {
+  sections: { section: string; items: NavItem[] }[];
+  onGo: (href: string) => void;
+}) {
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+  const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (e.key === '/' && !typing) { e.preventDefault(); input.current?.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  const all = sections.flatMap((g) => g.items.map((i) => ({ ...i, section: g.section || 'General' })));
+  const term = q.trim().toLowerCase();
+  const matches = term
+    ? all.filter((i) => i.label.toLowerCase().includes(term) || i.section.toLowerCase().includes(term))
+    : all;
+
+  const go = (href: string) => { onGo(href); setQ(''); setOpen(false); input.current?.blur(); };
+
+  return (
+    <div className="relative w-full max-w-[420px]">
+      <div className="flex h-11 items-center gap-2 rounded-full bg-card pl-1.5 pr-4 shadow-[var(--shadow-1)] focus-within:ring-4 focus-within:ring-[var(--accent-quiet)]">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--accent)] text-white">
+          <Search size={14} strokeWidth={2.4} />
+        </span>
+        <input
+          ref={input}
+          value={q}
+          onChange={(e) => { setQ(e.target.value); setHi(0); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 120)}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, matches.length - 1)); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
+            else if (e.key === 'Enter' && matches[hi]) { e.preventDefault(); go(matches[hi].href); }
+            else if (e.key === 'Escape') { setOpen(false); input.current?.blur(); }
+          }}
+          placeholder="Jump to a page…"
+          aria-label="Jump to a page"
+          className="h-full min-w-0 flex-1 border-0 bg-transparent p-0 text-sm shadow-none focus:shadow-none"
+        />
+        <kbd className="hidden rounded-md border border-border px-1.5 text-micro text-[var(--text-mute)] sm:block">/</kbd>
+      </div>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 max-h-[360px] overflow-y-auto rounded-[20px] bg-card p-1.5 shadow-[var(--shadow-2)] ring-1 ring-black/[0.04]">
+          {matches.length === 0 ? (
+            <div className="px-3 py-4 text-sm text-[var(--text-mute)]">No page matches “{q}”.</div>
+          ) : matches.map((m, i) => (
+            <button
+              key={m.href}
+              onMouseDown={(e) => { e.preventDefault(); go(m.href); }}
+              onMouseEnter={() => setHi(i)}
+              className={[
+                'flex w-full items-center gap-3 rounded-full bg-transparent px-3 py-2 text-left text-sm font-medium text-[var(--text)]',
+                i === hi ? 'bg-[var(--surface-2)] hover:bg-[var(--surface-2)]' : 'hover:bg-transparent',
+              ].join(' ')}
+            >
+              <m.icon size={15} className="text-[var(--text-mute)]" />
+              <span className="flex-1">{m.label}</span>
+              <span className="text-micro text-[var(--text-mute)]">{m.section}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

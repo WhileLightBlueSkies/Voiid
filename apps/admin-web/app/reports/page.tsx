@@ -1,5 +1,7 @@
 'use client';
 
+import { Dropdown } from '../../components/ui/dropdown';
+
 import { useRef, useState } from 'react';
 import Shell from '../../components/Shell';
 import { PageHeader, Pill, when } from '../../components/ui';
@@ -19,6 +21,12 @@ type Report = {
 };
 
 const RESOLUTIONS = ['removed', 'no_action', 'duplicate', 'escalated'] as const;
+const RESOLUTION_HINTS: Record<(typeof RESOLUTIONS)[number], string> = {
+  removed: 'Take the content down',
+  no_action: 'Reviewed, nothing breaks the rules',
+  duplicate: 'Already handled in another report',
+  escalated: 'Needs a senior or legal decision',
+};
 
 export default function Reports() {
   return <Shell>{() => <Body />}</Shell>;
@@ -107,15 +115,25 @@ function Body() {
               {resolved ? (
                 <span className="muted">{r.resolution ?? '—'}</span>
               ) : (
-                <select
+                <>
+                {/* An ACTION menu, not a stored choice: it always shows the prompt, and a
+                    pick opens the confirmation rather than changing a value in place. */}
+                <Dropdown
+                  ariaLabel="Resolve report"
+                  placeholder="Resolve as…"
+                  value=""
                   disabled={busy !== null}
-                  defaultValue=""
-                  onChange={(e) => { const resolution = e.currentTarget.value; e.currentTarget.value = ''; if (resolution) setPending({ id: r.id, resolution }); }}
-                  style={{ width: 'auto', minWidth: 150 }}
-                >
-                  <option value="" disabled>Resolve as…</option>
-                  {RESOLUTIONS.map((v) => <option key={v} value={v}>{v.replace('_', ' ')}</option>)}
-                </select>
+                  onChange={(resolution) => setPending({ id: r.id, resolution })}
+                  options={RESOLUTIONS.map((v) => ({
+                    value: v,
+                    label: v.charAt(0).toUpperCase() + v.slice(1).replace('_', ' '),
+                    hint: RESOLUTION_HINTS[v],
+                    tone: v === 'removed' ? 'danger' as const : undefined,
+                  }))}
+                  className="min-w-[160px]"
+                  menuMinWidth={240}
+                />
+                </>
               )}
             </td>
           </tr>

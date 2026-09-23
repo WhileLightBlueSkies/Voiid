@@ -289,7 +289,7 @@ function Body({ me }: { me: Me }) {
 
             {entsError && (
               <div role="alert" className="mx-4 mt-3 rounded-md border px-3 py-2 text-sm"
-                   style={{ borderColor: 'rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.09)', color: '#fca5a5' }}>
+                   style={{ borderColor: 'rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.09)', color: 'var(--danger)' }}>
                 {entsError}
               </div>
             )}
@@ -342,7 +342,7 @@ function Body({ me }: { me: Me }) {
             </div>
             {postsError ? (
               <div role="alert" className="m-4 rounded-md border px-3 py-2 text-sm"
-                   style={{ borderColor: 'rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.09)', color: '#fca5a5' }}>
+                   style={{ borderColor: 'rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.09)', color: 'var(--danger)' }}>
                 {postsError}
               </div>
             ) : posts.length === 0 ? (

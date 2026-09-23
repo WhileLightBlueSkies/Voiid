@@ -1,5 +1,7 @@
 'use client';
 
+import { Dropdown } from '../../components/ui/dropdown';
+
 //
 // Analytics.
 //
@@ -26,7 +28,6 @@ import { AreaChart, StackedBarChart } from '../../components/Chart';
 import { Card } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
-import { Select } from '../../components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { api } from '../../lib/api';
 
@@ -82,10 +83,14 @@ function Body() {
         subtitle="Usage, audience and growth across Voiid."
         right={
           <div className="flex items-center gap-2">
-            <Select aria-label="Chart date range" value={days} className="w-[140px]"
-                    onChange={(e) => setDays(Number(e.target.value))}>
-              {[7, 30, 90].map((n) => <option key={n} value={n}>Last {n} days</option>)}
-            </Select>
+            <Dropdown
+              ariaLabel="Chart date range"
+              value={days}
+              onChange={setDays}
+              options={[7, 30, 90].map((n) => ({ value: n, label: `Last ${n} days` }))}
+              className="min-w-[150px]"
+              menuMinWidth={180}
+            />
             <Button variant="outline" disabled={loading} onClick={() => setRevision((v) => v + 1)}>
               {loading ? 'Loading…' : 'Refresh'}
             </Button>
@@ -95,7 +100,7 @@ function Body() {
 
       {error && (
         <div role="alert" className="mb-5 rounded-md border px-3 py-2.5 text-sm"
-             style={{ borderColor: 'rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.09)', color: '#fca5a5' }}>
+             style={{ borderColor: 'rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.09)', color: 'var(--danger)' }}>
           {error}{' '}
           <button className="underline" onClick={() => setRevision((v) => v + 1)}>Retry</button>
         </div>

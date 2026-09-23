@@ -21,6 +21,7 @@ import { useRouter } from 'next/navigation';
 import { api, setToken, ApiError } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input, Label } from '../../components/ui/input';
+import { BrandMark } from '../../components/Brand';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -71,8 +72,8 @@ export default function Login() {
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            'radial-gradient(760px circle at 18% 8%, rgba(25,195,212,0.10), transparent 62%),' +
-            'radial-gradient(680px circle at 84% 92%, rgba(96,165,250,0.07), transparent 60%)',
+            'radial-gradient(760px circle at 18% 8%, rgba(134,227,140,0.35), transparent 62%),' +
+            'radial-gradient(680px circle at 84% 92%, rgba(134,227,140,0.18), transparent 60%)',
         }}
       />
       {/* A faint grid. It gives the empty field a sense of scale — the difference between
@@ -83,8 +84,8 @@ export default function Login() {
         className="pointer-events-none absolute inset-0 opacity-[0.35]"
         style={{
           backgroundImage:
-            'linear-gradient(rgba(255,255,255,0.028) 1px, transparent 1px),' +
-            'linear-gradient(90deg, rgba(255,255,255,0.028) 1px, transparent 1px)',
+            'linear-gradient(rgba(15,17,16,0.05) 1px, transparent 1px),' +
+            'linear-gradient(90deg, rgba(15,17,16,0.05) 1px, transparent 1px)',
           backgroundSize: '52px 52px',
           maskImage: 'radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 78%)',
           WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 78%)',
@@ -96,15 +97,7 @@ export default function Login() {
             identity is context, and stacking them lets the form start at its own first
             line instead of a third of the way down. */}
         <div className="mb-7 flex items-center gap-2.5">
-          <span
-            className="grid h-8 w-8 place-items-center rounded-md text-[15px] font-bold text-[#04181b]"
-            style={{
-              background: 'linear-gradient(150deg, var(--accent-ink), var(--accent))',
-              boxShadow: '0 2px 14px rgba(25,195,212,0.30)',
-            }}
-          >
-            V
-          </span>
+          <BrandMark size={32} />
           <div className="leading-tight">
             <div className="text-[15px] font-semibold tracking-[-0.01em]">Voiid</div>
             <div className="text-tiny text-[var(--text-mute)]">Operations console</div>
@@ -113,13 +106,9 @@ export default function Login() {
 
         <form
           onSubmit={submit}
-          className="rounded-lg border border-border bg-card p-6"
+          className="rounded-[28px] border border-black/[0.04] bg-card p-7"
           style={{
-            // The same top-edge highlight the rest of the console's cards carry, a little
-            // stronger here because this card has nothing else competing for the eye.
-            backgroundImage:
-              'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0) 140px)',
-            boxShadow: '0 18px 50px -20px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.02)',
+            boxShadow: 'var(--shadow-2)',
           }}
         >
           <h1 className="mb-1 text-[17px] font-semibold tracking-[-0.015em]">Sign in</h1>
@@ -154,7 +143,7 @@ export default function Login() {
               style={{
                 borderColor: 'rgba(248,113,113,0.28)',
                 background: 'rgba(248,113,113,0.09)',
-                color: '#fca5a5',
+                color: 'var(--danger)',
               }}
             >
               {error}

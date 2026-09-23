@@ -1,5 +1,7 @@
 'use client';
 
+import { Dropdown } from '../../../components/ui/dropdown';
+
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '../../../lib/api';
@@ -68,8 +70,8 @@ export default function OfficialControls({ id, community, members, reload }: { i
       <div style={{ display: 'grid', gap: 12, margin: '18px 0' }}>
         <label>Name<input maxLength={60} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
         <label>Description<textarea maxLength={500} value={form.description ?? ''} onChange={e => setForm({ ...form, description: e.target.value })} /></label>
-        <label>Who can join<select value={form.join_policy} onChange={e => setForm({ ...form, join_policy: e.target.value })}><option value="open">Anyone</option><option value="approval">Approval required</option><option value="invite_only">Invite only</option></select></label>
-        <label>Who can publish posts<select value={form.posting_policy} onChange={e => setForm({ ...form, posting_policy: e.target.value })}><option value="members">All members</option><option value="managers">Owner and admins</option></select></label>
+        <div className="grid gap-1.5"><span>Who can join</span><Dropdown variant="field" ariaLabel="Who can join" value={form.join_policy} onChange={v => setForm({ ...form, join_policy: v })} options={[{ value: 'open', label: 'Anyone', hint: 'Joins immediately' }, { value: 'approval', label: 'Approval required', hint: 'An admin approves each request' }, { value: 'invite_only', label: 'Invite only', hint: 'Only with an invite link' }]} /></div>
+        <div className="grid gap-1.5"><span>Who can publish posts</span><Dropdown variant="field" ariaLabel="Who can publish posts" value={form.posting_policy} onChange={v => setForm({ ...form, posting_policy: v })} options={[{ value: 'members', label: 'All members' }, { value: 'managers', label: 'Owner and admins' }]} /></div>
         <label><input type="checkbox" checked={form.discoverable} onChange={e => setForm({ ...form, discoverable: e.target.checked })} /> Show in community search</label>
         <label><input type="checkbox" checked={form.join_policy !== 'invite_only' && form.members_can_invite} disabled={form.join_policy === 'invite_only'} onChange={e => setForm({ ...form, members_can_invite: e.target.checked })} /> Members can create invites</label>
         <button disabled={!form.name.trim()} onClick={() => void act('PATCH', '', form)}>Save settings</button>
@@ -90,9 +92,13 @@ export default function OfficialControls({ id, community, members, reload }: { i
         </td></tr>)}
       </tbody></table></div>
       <h3>Content and invitations</h3>
-      <select value={tab} onChange={e => { setTab(e.target.value); setTitle(''); setBody(''); setLink(''); setNotice(null); }}>
-        {['posts', 'announcements', 'links', 'rules', 'channels', 'invites'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
-      </select>
+      <Dropdown
+        ariaLabel="Content type"
+        value={tab}
+        onChange={t => { setTab(t); setTitle(''); setBody(''); setLink(''); setNotice(null); }}
+        options={['posts', 'announcements', 'links', 'rules', 'channels', 'invites'].map(t => ({ value: t, label: t.charAt(0).toUpperCase() + t.slice(1) }))}
+        className="min-w-[200px]"
+      />
       <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
         {!['posts', 'invites'].includes(tab) && <input aria-label="Title" placeholder={tab === 'channels' ? 'Space name' : 'Title'} value={title} maxLength={tab === 'channels' ? 60 : 120} onChange={e => setTitle(e.target.value)} />}
         {['posts', 'announcements', 'rules'].includes(tab) && <textarea aria-label="Body" placeholder={tab === 'rules' ? 'Rule details' : 'Write your message'} value={body} maxLength={tab === 'rules' ? 400 : tab === 'announcements' ? 2000 : 4000} onChange={e => setBody(e.target.value)} />}

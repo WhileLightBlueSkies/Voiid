@@ -1,17 +1,19 @@
 import './globals.css';
 import type { ReactNode } from 'react';
-import { Inter, JetBrains_Mono } from 'next/font/google';
+import { Plus_Jakarta_Sans, Geist, Geist_Mono } from 'next/font/google';
 
 //
-// Inter, self-hosted through next/font rather than a <link> to Google.
+// Plus Jakarta Sans, self-hosted through next/font rather than a <link> to Google. A
+// geometric face with open counters: large figures read as instruments, and it stays
+// legible at the 12–13px a dense table runs at.
 //
 // Two reasons beyond speed. The font file is served from our own origin, so the panel makes
 // no third-party request on load — an admin console phoning out to a CDN on every page view
 // is a needless tell about who is using it and when. And next/font emits the size-adjust
-// metrics for the fallback, so the swap from system font to Inter does not reflow the page:
+// metrics for the fallback, so the swap from system font to the webfont does not reflow the page:
 // on a dense table, a reflow after paint moves every row under the cursor.
 //
-const inter = Inter({
+const sans = Plus_Jakarta_Sans({
   subsets: ['latin'],
   display: 'swap',
   variable: '--font-sans',
@@ -21,14 +23,22 @@ const inter = Inter({
 });
 
 //
-// JetBrains Mono for figures and identifiers.
+// Geist for FIGURES. The text face is built for words; its digits are wide and uneven, and a
+// dashboard's headline is a number. Geist's numerals are narrow, even and crisp at 48px as
+// well as 12px, so every readout on the console uses it (the .num class).
 //
-// The tabular numerals are the point: in a column of counts, a proportional font makes 111
-// narrower than 999, so the digits fail to line up and the eye cannot compare rows by
-// length. Its zero is also slashed, which matters where the console prints ids and hashes
-// that someone will read aloud or type back.
+const num = Geist({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-num',
+  weight: ['400', '500', '600'],
+});
+
 //
-const mono = JetBrains_Mono({
+// Geist Mono for identifiers and table counts: the same drawing as the figures, fixed-width,
+// so a column of counts lines up and an id reads unambiguously.
+//
+const mono = Geist_Mono({
   subsets: ['latin'],
   display: 'swap',
   variable: '--font-mono',
@@ -44,7 +54,10 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${mono.variable}`}>
+    // suppressHydrationWarning covers THIS element's attributes only, not its children.
+    // Browser extensions (Storylane, Grammarly, dark-mode tools) stamp classes onto <html>
+    // before React loads, which is noise rather than a bug in the console.
+    <html lang="en" className={`${sans.variable} ${num.variable} ${mono.variable}`} suppressHydrationWarning>
       <body>{children}</body>
     </html>
   );
