@@ -23,8 +23,10 @@ const buttonVariants = cva(
         destructive: 'bg-destructive text-white hover:brightness-110',
         outline: 'border border-border bg-card hover:bg-secondary',
         secondary: 'bg-secondary text-secondary-foreground hover:bg-accent',
-        ghost: 'hover:bg-accent hover:text-accent-foreground text-[var(--text-dim)]',
-        link: 'text-[var(--accent-ink)] underline-offset-4 hover:underline',
+        // bg-transparent is required, not decoration: without it the bare `button` rule in
+        // globals.css paints these solid black.
+        ghost: 'bg-transparent hover:bg-accent hover:text-accent-foreground text-[color:var(--text-dim)]',
+        link: 'bg-transparent text-[color:var(--accent-ink)] underline-offset-4 hover:bg-transparent hover:underline',
       },
       size: {
         default: 'h-9 px-4 py-2',

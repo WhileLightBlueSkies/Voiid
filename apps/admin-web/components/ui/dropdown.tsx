@@ -170,7 +170,7 @@ export function Dropdown<V extends string | number>({
           if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); openMenu(); }
         }}
         className={cn(
-          'group inline-flex items-center gap-2 text-left text-sm font-medium text-[var(--text)]',
+          'group inline-flex items-center gap-2 text-left text-sm font-medium text-[color:var(--text)]',
           'bg-card shadow-[var(--shadow-1)] ring-1 ring-[var(--border)] transition-[box-shadow,background] duration-150',
           'hover:bg-card hover:ring-[var(--border-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--lime-strong)]',
           'disabled:cursor-not-allowed disabled:opacity-50',
@@ -179,12 +179,12 @@ export function Dropdown<V extends string | number>({
           className,
         )}
       >
-        <span className={cn('min-w-0 flex-1 truncate', !selected && 'text-[var(--text-dim)]')}>
+        <span className={cn('min-w-0 flex-1 truncate', !selected && 'text-[color:var(--text-dim)]')}>
           {selected?.label ?? placeholder}
         </span>
         <span className={cn(
           'grid h-6 w-6 shrink-0 place-items-center rounded-full transition-[transform,background] duration-200',
-          open ? 'rotate-180 bg-[var(--accent)] text-white' : 'bg-[var(--surface-2)] text-[var(--text-dim)]',
+          open ? 'rotate-180 bg-[var(--accent)] text-white' : 'bg-[var(--surface-2)] text-[color:var(--text-dim)]',
         )}>
           <ChevronDown size={14} strokeWidth={2.4} />
         </span>
@@ -223,16 +223,16 @@ export function Dropdown<V extends string | number>({
                   'flex cursor-pointer items-center gap-3 rounded-[12px] px-3 py-2.5 text-sm transition-colors duration-100',
                   i === hi && 'bg-[var(--surface-2)]',
                   isSel ? 'font-semibold' : 'font-medium',
-                  o.tone === 'danger' ? 'text-[var(--danger)]' : 'text-[var(--text)]',
+                  o.tone === 'danger' ? 'text-[color:var(--danger)]' : 'text-[color:var(--text)]',
                 )}
               >
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{o.label}</span>
-                  {o.hint && <span className="block truncate text-micro font-normal text-[var(--text-mute)]">{o.hint}</span>}
+                  {o.hint && <span className="block truncate text-micro font-normal text-[color:var(--text-mute)]">{o.hint}</span>}
                 </span>
                 <span className={cn(
                   'grid h-5 w-5 shrink-0 place-items-center rounded-full transition-opacity',
-                  isSel ? 'bg-[var(--lime)] text-[var(--text)] opacity-100' : 'opacity-0',
+                  isSel ? 'bg-[var(--lime)] text-[color:var(--text)] opacity-100' : 'opacity-0',
                 )}>
                   <Check size={12} strokeWidth={3} />
                 </span>

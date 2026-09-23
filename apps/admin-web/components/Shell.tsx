@@ -296,15 +296,6 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
             >
               <ScrollText size={17} strokeWidth={2} />
             </Link>
-            <div className="ml-1 hidden items-center gap-2.5 md:flex">
-              <Avatar me={me} size={42} />
-              <div className="leading-tight">
-                <div className="text-sm font-semibold">{me.name || me.email}</div>
-                <div className="text-tiny text-[var(--text-mute)]">
-                  {me.role === 'admin' ? 'Admin' : 'Moderator'}
-                </div>
-              </div>
-            </div>
           </div>
         </header>
 
