@@ -120,8 +120,11 @@ struct TournamentCreateFlow: View {
     /// Two seats exactly. The route checks the same thing against the `games` row and 400s a
     /// game that cannot be played one-against-one; filtering here means the picker never
     /// offers one.
+    ///
+    /// Playable only, too: the catalog also carries announced teasers and games this build is
+    /// below min_app for, and a tournament of either could never start a match.
     private var eligible: [GamesAPI.CatalogGame] {
-        games.filter { $0.min_players <= 2 && $0.max_players >= 2 }
+        games.filter { $0.state == .playable && $0.min_players <= 2 && $0.max_players >= 2 }
     }
 
     var body: some View {

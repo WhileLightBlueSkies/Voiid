@@ -39,6 +39,8 @@ struct GamesScreen: View {
                     .padding(.top, VoiidSpacing.sm)
                 }
                 .scrollIndicators(.hidden)
+                // Pull to re-read the catalog — how an operator checks an admin-panel flip.
+                .refreshable { await store.loadCatalog() }
                 .softScrollEdge()
                 .contentMargins(.bottom, max(session.bottomInset, 96), for: .scrollContent)
             }
@@ -91,10 +93,12 @@ struct GamesScreen: View {
                 SocialProfileView(handle: handle)
             }
         }
+        // The shelf is the admin panel's to decide (release state, min_app, the pull).
+        .task { await store.loadCatalog() }
     }
 
     private func open(_ game: Game) {
-        guard game.isPlayable else { return }
+        guard game.isPlayable, !game.needsUpdate else { return }
         Haptics.tap()
         setup = game
     }
@@ -269,7 +273,9 @@ private struct GameCard: View {
         }
         .buttonStyle(PressableButtonStyle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(game.title). \(game.pitch)")
+        .accessibilityLabel(game.needsUpdate
+            ? "\(game.title). Update the app to play."
+            : "\(game.title). \(game.pitch)")
     }
 
     private var artwork: some View {
@@ -310,11 +316,22 @@ private struct GameCard: View {
 
             Spacer(minLength: 0)
 
-            Image(systemName: "play.fill")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(VoiidColor.textOnAccent)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(VoiidColor.accent))
+            if game.needsUpdate {
+                // Below the game's min_app on the server: the copy in this build is one we
+                // decided is not good enough, so it is shown but not started.
+                Text("Update to play")
+                    .font(VoiidFont.rounded(12, .semibold))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(Capsule().fill(VoiidColor.surfaceRaised))
+            } else {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(VoiidColor.textOnAccent)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(VoiidColor.accent))
+            }
         }
         .padding(.horizontal, VoiidSpacing.md - 2)
         .padding(.vertical, VoiidSpacing.sm + 2)
@@ -361,7 +378,7 @@ struct UpcomingGameSheet: View {
                             .font(VoiidFont.rounded(26, .bold))
                             .foregroundColor(VoiidColor.textPrimary)
 
-                        Text("Coming in Season 2")
+                        Text(game.teaser ?? "Coming soon")
                             .font(VoiidFont.rounded(13, .bold))
                             .tracking(1)
                             .foregroundColor(VoiidColor.accent)

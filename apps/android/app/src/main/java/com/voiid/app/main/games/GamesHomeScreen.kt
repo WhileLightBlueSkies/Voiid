@@ -65,6 +65,9 @@ import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
 import kotlinx.coroutines.launch
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 
 /**
  * One action in the Games header, styled exactly as Communities styles its create button:
@@ -106,12 +109,27 @@ fun GamesHomeScreen(
     val dismissed = remember { mutableStateListOf<String>() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
+    // The shelf is the admin panel's to decide. Null until anything is known, which renders
+    // the built-in shelf; the last catalog this device saw stands in while offline, so a
+    // game pulled from the panel stays pulled.
+    var catalog by remember { mutableStateOf(ShelfCache.load(context)) }
+
     LaunchedEffect(Unit) {
-        runCatching { service.catalog() }.onSuccess { games = it }
+        runCatching { service.catalog() }.onSuccess {
+            games = it
+            catalog = it
+            ShelfCache.save(context, it)
+        }
         while (true) {
             runCatching { service.invites() }.onSuccess { invites = it }
             kotlinx.coroutines.delay(20_000)
         }
+    }
+
+    val shelf = shelfFor(catalog)
+    val soon = comingSoonFor(catalog)
+    val toastUpdate = {
+        android.widget.Toast.makeText(context, "Update Voiid to play this game.", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     if (showSettings) {
@@ -159,8 +177,8 @@ fun GamesHomeScreen(
                 )
             }
 
-            // Continue last played
-            Row(
+            // Continue last played — only while Ludo is actually on the shelf.
+            if (shelf.any { it.def.slug == "ludo" && !it.needsUpdate }) Row(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(VoiidRadius.md))
@@ -256,41 +274,24 @@ fun GamesHomeScreen(
                     })
                 }
             }
-            // Ludo Card
-            if (category != "Arcade") HeroGameCard(
-                title = "Ludo",
-                pitch = "Roll a six to leave home. First to get all four in wins.",
-                players = "1–4",
-                duration = "10–20 min",
-                artwork = com.voiid.app.R.drawable.game_ludo_home,
-                icon = Icons.Default.Casino,
-                gradient = Brush.linearGradient(
-                    listOf(Color(0xFF13828C), Color(0xFF68B8BD))
-                ),
-                onClick = {
-                    val target = games.firstOrNull { it.slug == "ludo" }
-                        ?: GamesService.CatalogGame("ludo", "ludo", "Ludo", "Board", 1, 4)
-                    onPickGame(target)
-                },
-            )
-
-            // Snake Card
-            if (category != "Board") HeroGameCard(
-                title = "Snake Arena",
-                pitch = "Eat, grow, and cut off anyone bigger than you.",
-                players = "You + 11 bots",
-                duration = "3–8 min",
-                artwork = com.voiid.app.R.drawable.game_snake_home,
-                icon = Icons.Default.Gesture,
-                gradient = Brush.linearGradient(
-                    listOf(Color(0xFF2FA36B), Color(0xFFE8A72E))
-                ),
-                onClick = {
-                    val target = games.firstOrNull { it.slug == "snake" }
-                        ?: GamesService.CatalogGame("snake", "snake", "Snake Arena", "Arcade", 1, 12)
-                    onPickGame(target)
-                },
-            )
+            // The shelf, as the server catalog allows it (see shelfFor).
+            shelf.filter { category == "All" || it.def.category == category }.forEach { item ->
+                val d = item.def
+                HeroGameCard(
+                    title = d.title,
+                    pitch = d.pitch,
+                    players = d.players,
+                    duration = d.duration,
+                    artwork = d.artwork,
+                    icon = d.icon,
+                    gradient = Brush.linearGradient(d.colors),
+                    needsUpdate = item.needsUpdate,
+                    onClick = {
+                        if (item.needsUpdate) toastUpdate()
+                        else onPickGame(games.firstOrNull { it.slug == d.slug } ?: d.fallback)
+                    },
+                )
+            }
         }
 
         Spacer(Modifier.height(VoiidSpacing.xl))
@@ -302,32 +303,15 @@ fun GamesHomeScreen(
                 .padding(horizontal = VoiidSpacing.md),
             verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
         ) {
-            Text(
+            if (soon.isNotEmpty()) Text(
                 "Coming soon",
                 style = VoiidFont.rounded(18, FontWeight.Bold),
                 color = VoiidColor.textPrimary,
             )
 
-            ComingSoonRow(
-                title = "Word Duel",
-                pitch = "Two players, one board, seven letters.",
-                icon = Icons.Outlined.TextFields,
-                tint = Color(0xFF3B7DD8),
-            )
-
-            ComingSoonRow(
-                title = "Carrom",
-                pitch = "Flick, pocket, repeat.",
-                icon = Icons.Outlined.SportsEsports,
-                tint = Color(0xFFE8A72E),
-            )
-
-            ComingSoonRow(
-                title = "Quiz Night",
-                pitch = "Ten questions, everyone at once.",
-                icon = Icons.Outlined.QuestionMark,
-                tint = Color(0xFF8B5CF6),
-            )
+            soon.forEach { item ->
+                ComingSoonRow(title = item.title, pitch = item.pitch, icon = item.icon, tint = item.tint)
+            }
         }
     }
 }
@@ -341,6 +325,7 @@ private fun HeroGameCard(
     artwork: Int,
     icon: ImageVector,
     gradient: Brush,
+    needsUpdate: Boolean = false,
     onClick: () -> Unit,
 ) {
     Column(
@@ -389,7 +374,23 @@ private fun HeroGameCard(
 
             Spacer(Modifier.weight(1f))
 
-            Box(
+            if (needsUpdate) {
+                // Below the game's min_app on the server: shown, not started.
+                Box(
+                    Modifier
+                        .height(34.dp)
+                        .clip(CircleShape)
+                        .background(VoiidColor.fieldFill)
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Update to play",
+                        style = VoiidFont.rounded(12, FontWeight.SemiBold),
+                        color = VoiidColor.textSecondary,
+                    )
+                }
+            } else Box(
                 Modifier
                     .size(34.dp)
                     .clip(CircleShape)
@@ -486,4 +487,97 @@ private fun ComingSoonRow(
             )
         }
     }
+}
+
+// ── Server-driven shelf ─────────────────────────────────────────────────────────────────
+//
+// The admin panel's release controls, applied (parity with iOS GamesStore.apply):
+//   live + playable → on the shelf.       live + update → on the shelf, "Update to play".
+//   announced       → "Coming soon", with the panel's teaser.
+//   hidden / pulled → absent: the server never sends those rows.
+// A live row this BUILD cannot launch goes to "Coming soon": there is no screen behind it.
+
+/** A game this build can open from the shelf, keyed by its catalog slug. */
+private class ShelfDef(
+    val slug: String,
+    val title: String,
+    val pitch: String,
+    val players: String,
+    val duration: String,
+    val artwork: Int,
+    val icon: ImageVector,
+    val colors: List<Color>,
+    val category: String,
+    val fallback: GamesService.CatalogGame,
+)
+
+private val SHELF = listOf(
+    ShelfDef(
+        "ludo", "Ludo", "Roll a six to leave home. First to get all four in wins.",
+        "1–4", "10–20 min", com.voiid.app.R.drawable.game_ludo_home, Icons.Default.Casino,
+        listOf(Color(0xFF13828C), Color(0xFF68B8BD)), "Board",
+        GamesService.CatalogGame("ludo", "ludo", "Ludo", "Board", 1, 4),
+    ),
+    ShelfDef(
+        "snake", "Snake Arena", "Eat, grow, and cut off anyone bigger than you.",
+        "You + 11 bots", "3–8 min", com.voiid.app.R.drawable.game_snake_home, Icons.Default.Gesture,
+        listOf(Color(0xFF2FA36B), Color(0xFFE8A72E)), "Arcade",
+        GamesService.CatalogGame("snake", "snake", "Snake Arena", "Arcade", 1, 12),
+    ),
+)
+
+/** This build's art for games it lists but cannot open yet. */
+private class SoonDef(val slug: String, val title: String, val pitch: String, val icon: ImageVector, val tint: Color)
+
+private val SOON = listOf(
+    SoonDef("word", "Word Duel", "Two players, one board, seven letters.", Icons.Outlined.TextFields, Color(0xFF3B7DD8)),
+    SoonDef("carrom", "Carrom", "Flick, pocket, repeat.", Icons.Outlined.SportsEsports, Color(0xFFE8A72E)),
+    SoonDef("quiz", "Quiz Night", "Ten questions, everyone at once.", Icons.Outlined.QuestionMark, Color(0xFF8B5CF6)),
+)
+
+private class ShelfItem(val def: ShelfDef, val needsUpdate: Boolean)
+private class SoonItem(val title: String, val pitch: String, val icon: ImageVector, val tint: Color)
+
+private fun shelfFor(catalog: List<GamesService.CatalogGame>?): List<ShelfItem> {
+    if (catalog == null) return SHELF.map { ShelfItem(it, needsUpdate = false) }
+    return SHELF.mapNotNull { def ->
+        val row = catalog.firstOrNull { it.slug == def.slug } ?: return@mapNotNull null
+        if (row.availability == GamesService.Availability.ANNOUNCED) return@mapNotNull null
+        ShelfItem(def, needsUpdate = row.availability == GamesService.Availability.UPDATE)
+    }
+}
+
+private fun comingSoonFor(catalog: List<GamesService.CatalogGame>?): List<SoonItem> {
+    if (catalog == null) return SOON.map { SoonItem(it.title, it.pitch, it.icon, it.tint) }
+    return catalog
+        .filter { row -> row.availability == GamesService.Availability.ANNOUNCED || SHELF.none { it.slug == row.slug } }
+        .map { row ->
+            val local = SOON.firstOrNull { it.slug == row.slug }
+            SoonItem(
+                title = local?.title ?: row.name,
+                pitch = row.teaser ?: local?.pitch ?: "Coming soon",
+                icon = local?.icon ?: Icons.Outlined.SportsEsports,
+                tint = local?.tint ?: Color(0xFF13828C),
+            )
+        }
+}
+
+/** The last catalog this device received. A convenience copy: the server re-decides on every load. */
+private object ShelfCache {
+    private val json = Json { ignoreUnknownKeys = true }
+    private const val PREFS = "games_shelf"
+    private const val KEY = "catalog_v1"
+
+    fun save(context: android.content.Context, games: List<GamesService.CatalogGame>) {
+        runCatching {
+            context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                .edit().putString(KEY, json.encodeToString(games)).apply()
+        }
+    }
+
+    fun load(context: android.content.Context): List<GamesService.CatalogGame>? = runCatching {
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .getString(KEY, null)
+            ?.let { json.decodeFromString<List<GamesService.CatalogGame>>(it) }
+    }.getOrNull()
 }
