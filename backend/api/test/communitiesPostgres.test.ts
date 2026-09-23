@@ -80,6 +80,32 @@ test('community roles, official controls, invite admission and encrypted lifecyc
       assert.equal(r.status,201,JSON.stringify(r.body));
     }
     await query(`update communities set official_key='feedback',posting_policy='managers' where id=$1`,[community]);
+    await t.test('handle availability agrees with what create will accept', async () => {
+      const check = async (h: string, user = owner) => (await request('GET',`/communities/handle-available?handle=${h}`,undefined,user)).body;
+      assert.deepEqual(await check('2bad'), { available: false, reason: 'format' });
+      assert.equal((await check(prefix+'normal', outsider)).available, false);              // another community
+      assert.equal((await check(prefix.toUpperCase()+'NORMAL', outsider)).available, false); // case-insensitive
+      assert.equal((await check('invite')).available, false);                               // reserved route
+      // A community may not take even its OWN creator's username — unlike the creators
+      // checker, which excludes the caller. Create must refuse the same name.
+      assert.equal((await check(prefix+'0')).available, false);
+      assert.equal((await request('POST','/communities',{id:randomUUID(),handle:prefix+'0',name:'Own name'})).status, 409);
+      assert.deepEqual(await check(prefix+'free'), { available: true, reason: null });
+    });
+    await t.test('admin list counts setup exactly as the app card does, and filters', async () => {
+      const row = async (qs = '') => (await request('GET',`/admin/communities?q=${prefix}${qs}`,undefined,owner,adminToken))
+        .body.communities.find((c: any) => c.id === normal);
+      // Fresh: no description, only the two built-in Spaces, no rules, no invites, one member.
+      assert.equal((await row()).setup_done, 0);
+      assert.equal((await request('PATCH',`/communities/${normal}`,{description:'For testing.'})).status, 200);
+      assert.equal((await request('POST',`/communities/${normal}/rules`,{title:'Be kind'})).status, 201);
+      assert.equal((await row()).setup_done, 2);
+      assert.ok(await row('&join_policy=open'));
+      assert.equal(await row('&join_policy=approval'), undefined);
+      await query(`update communities set category='Education' where id=$1`,[normal]);
+      assert.ok(await row('&category=education'));
+      assert.equal(await row('&category=Music'), undefined);
+    });
     await t.test('member cannot edit settings or grant themselves a role', async () => {
       assert.equal((await request('POST',`/communities/${community}/join`,{},member)).status,200);
       assert.equal((await request('PATCH',`/communities/${community}`,{name:'hijacked'},member)).status,403);

@@ -1483,14 +1483,39 @@ router.get('/communities', requireAdmin, asyncHandler(async (req, res) => {
     params.push(`%${q.toLowerCase()}%`);
     where.push(`(lower(c.name) like $${params.length} or lower(c.handle) like $${params.length})`);
   }
+  const joinPolicy = typeof req.query.join_policy === 'string' ? req.query.join_policy : '';
+  if (['open', 'approval', 'invite_only'].includes(joinPolicy)) {
+    params.push(joinPolicy);
+    where.push(`c.join_policy = $${params.length}`);
+  }
+  const category = typeof req.query.category === 'string' ? req.query.category.trim() : '';
+  if (category) {
+    // Free text in the column, so matched case-insensitively.
+    params.push(category.toLowerCase());
+    where.push(`lower(c.category) = $${params.length}`);
+  }
   params.push(limit);
 
+  // `setup_done` is the app's "Finish setting up" card, counted the same way
+  // (CommunitySetupCard on iOS and Android): a description, a Space beyond the two every
+  // community gets, a rule, and an invite or a second member. Derived, never stored, so it
+  // cannot disagree with what the host sees.
   const rows = await query<any>(
     `select c.id, c.handle, c.name, c.description, c.category,
             c.discoverable, c.join_policy, c.member_count, c.max_members, c.official_key, c.posting_policy,
             c.suspended_at, c.created_at, c.owner_id,
             u.full_name as owner_name, u.username as owner_username,
-            (select count(*) from community_posts p where p.community_id = c.id)::int as post_count
+            (select count(*) from community_posts p where p.community_id = c.id)::int as post_count,
+            ( (case when coalesce(btrim(c.description), '') <> '' then 1 else 0 end)
+            + (case when (select count(*) from community_channels ch where ch.community_id = c.id) > 2
+                    then 1 else 0 end)
+            + (case when exists (select 1 from community_rules r where r.community_id = c.id)
+                    then 1 else 0 end)
+            + (case when c.member_count > 1
+                      or exists (select 1 from community_invites i
+                                  where i.community_id = c.id and i.revoked_at is null)
+                    then 1 else 0 end)
+            )::int as setup_done
        from communities c
        left join users u on u.id = c.owner_id
        ${where.length ? `where ${where.join(' and ')}` : ''}

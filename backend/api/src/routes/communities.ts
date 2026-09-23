@@ -652,6 +652,42 @@ router.post(
 // DISCOVERY  (declare every literal one-segment route ABOVE `GET /:handle`)
 // ═════════════════════════════════════════════════════════════════════════════════
 
+// GET /communities/handle-available?handle=
+//
+// So the create flow can say "taken" as the host types instead of failing on the last tap.
+// ADVISORY: the insert above re-checks under the real constraint, because someone can take
+// the name between this call and that one and only the database can settle the race.
+//
+// It asks exactly what assert_handle_available() (081) asks when a COMMUNITY claims a name:
+// reserved words, every username and every social handle — with NO owner exclusion, because
+// a community may not take even its own creator's username — plus other communities.
+// `GET /creators/handle-available` is not reusable here: it excludes the caller's own names
+// and ignores communities, so it would green-light names this insert then rejects.
+router.get(
+  '/handle-available',
+  requireAuth,
+  rateLimit({ max: 180, windowSeconds: 60, bucket: 'community-handle-check' }),
+  asyncHandler(async (req, res) => {
+    const handle = String(req.query.handle ?? '').trim().toLowerCase();
+    if (!HANDLE_RE.test(handle)) {
+      return res.json({ available: false, reason: 'format' });
+    }
+    const rows = await query<{ taken: boolean }>(
+      `select exists (
+          select 1 from reserved_handles where handle = $1
+          union all
+          select 1 from users where lower(username) = $1
+          union all
+          select 1 from social_profiles where lower(handle) = $1
+          union all
+          select 1 from communities where lower(handle) = $1
+       ) as taken`,
+      [handle]
+    );
+    return res.json({ available: !rows[0].taken, reason: rows[0].taken ? 'taken' : null });
+  })
+);
+
 // GET /communities/search?q=&limit=
 //
 // Only `discoverable and suspended_at is null` — the partial indexes in 030 cover exactly
