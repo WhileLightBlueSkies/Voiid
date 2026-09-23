@@ -71,6 +71,9 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
     var account by remember { mutableStateOf("") }
     var accountAgain by remember { mutableStateOf("") }
     var ifsc by remember { mutableStateOf("") }
+    // Paid to a bank account or to a UPI ID — Cashfree pays out to either.
+    var payoutUpi by remember { mutableStateOf(false) }
+    var upi by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var submitError by remember { mutableStateOf<String?>(null) }
 
@@ -94,6 +97,8 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
         legalName.trim().length < 2 -> "Enter your full name as on your PAN."
         !email.contains("@") || !email.contains(".") -> "Enter your email."
         !Regex("^[A-Z]{5}[0-9]{4}[A-Z]$").matches(pan) -> "Enter a valid PAN, e.g. ABCDE1234F."
+        payoutUpi && !Regex("^[a-z0-9._-]{2,256}@[a-z][a-z0-9.-]{1,64}$").matches(upi) -> "Enter your UPI ID, e.g. name@okhdfcbank."
+        payoutUpi -> null
         account.length < 6 -> "Enter your bank account number."
         account != accountAgain -> "The account numbers don't match."
         !Regex("^[A-Z]{4}0[A-Z0-9]{6}$").matches(ifsc) -> "Enter a valid IFSC, e.g. HDFC0001234."
@@ -131,11 +136,11 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
                     Message("Paid events are coming soon", "Voiid can't verify hosts yet. Free events work as usual.")
                 }
                 v.isVerified -> {
-                    item { Message("You're verified", "You can sell tickets in communities you own. Your share of each sale is paid to the bank account ending ${v.bank_last4 ?: "••••"}.") }
+                    item { Message("You're verified", "You can sell tickets in communities you own. Your share of each sale is paid to ${if (v.payout_method == "upi") "your UPI ID ${v.upi_masked ?: ""}" else "the bank account ending ${v.bank_last4 ?: "••••"}"}.") }
                     item { PayoutSummary(v) }
                 }
                 v.isInReview -> {
-                    item { Message("We're reviewing your details", "Your PAN and bank account passed the automatic checks. Voiid reviews every host before they can take payments — usually within a day. Adding a document can speed it up.") }
+                    item { Message("We're reviewing your details", "Your PAN and payout account passed the automatic checks. Voiid reviews every host before they can take payments — usually within a day. Adding a document can speed it up.") }
                     item { PayoutSummary(v) }
                     item {
                         Surface(shape = RoundedCornerShape(22.dp), color = VoiidColor.surfaceCard) {
@@ -178,7 +183,7 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
                     }
                     item {
                         Text("Verify to sell tickets", style = MaterialTheme.typography.headlineMedium)
-                        Text("Ticket money is paid to your bank account, so we need to confirm who you are. It takes about two minutes. Free events never need this.",
+                        Text("Ticket money is paid to your bank account or UPI ID, so we need to confirm who you are. It takes about two minutes. Free events never need this.",
                             color = VoiidColor.textSecondary)
                     }
                     item {
@@ -192,6 +197,18 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
                             OutlinedTextField(pan, { pan = it.uppercase().filter(Char::isLetterOrDigit).take(10) }, label = { Text("PAN") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                val pick: @Composable (Boolean, String) -> Unit = { isUpi, label ->
+                                    if (payoutUpi == isUpi) Button(onClick = {}, enabled = !submitting, modifier = Modifier.weight(1f)) { Text(label) }
+                                    else OutlinedButton(onClick = { payoutUpi = isUpi }, enabled = !submitting, modifier = Modifier.weight(1f)) { Text(label) }
+                                }
+                                pick(false, "Bank account"); pick(true, "UPI ID")
+                            }
+                            if (payoutUpi) {
+                                OutlinedTextField(upi, { upi = it.lowercase().filterNot(Char::isWhitespace).take(100) }, label = { Text("UPI ID for payouts") },
+                                    placeholder = { Text("name@okhdfcbank") }, singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, autoCorrectEnabled = false))
+                            } else {
                             Text("Bank account for payouts", style = MaterialTheme.typography.titleMedium)
                             OutlinedTextField(account, { account = it.filter(Char::isLetterOrDigit).take(40) }, label = { Text("Account number") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
@@ -203,6 +220,7 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
                             OutlinedTextField(ifsc, { ifsc = it.uppercase().filter(Char::isLetterOrDigit).take(11) }, label = { Text("IFSC") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false))
+                            }
                             Text("Cashfree deposits ₹1 to check the account. Voiid keeps only the last four digits of your PAN and account.",
                                 style = MaterialTheme.typography.bodySmall, color = VoiidColor.textSecondary)
                             submitError?.let { Text(it, color = VoiidColor.error) }
@@ -213,9 +231,11 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
                                 submitting = true; submitError = null
                                 scope.launch {
                                     try {
-                                        status = service.verify(KycService.VerifyInput(legalName.trim(), email.trim(), pan, account, ifsc))
+                                        status = service.verify(if (payoutUpi)
+                                            KycService.VerifyInput(legalName.trim(), email.trim(), pan, "upi", upi_id = upi)
+                                        else KycService.VerifyInput(legalName.trim(), email.trim(), pan, "bank", bank_account = account, ifsc = ifsc))
                                         // The numbers have done their job; don't keep them on screen or in memory.
-                                        pan = ""; account = ""; accountAgain = ""; ifsc = ""
+                                        pan = ""; account = ""; accountAgain = ""; ifsc = ""; upi = ""
                                     } catch (e: CancellationException) { throw e } catch (e: Exception) {
                                         submitError = (e as? ApiError)?.message ?: "Couldn't verify right now. Try again."
                                     } finally { submitting = false }
@@ -245,7 +265,8 @@ private fun PayoutSummary(v: KycService.Verification) {
         Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Payout details", style = MaterialTheme.typography.titleMedium)
             Text("${v.legal_name ?: "—"}${v.pan_last4?.let { " · PAN ending $it" } ?: ""}")
-            Text(listOfNotNull(v.bank_name, v.bank_last4?.let { "Account ending $it" }, v.ifsc).joinToString(" · "),
+            Text(if (v.payout_method == "upi") listOfNotNull("UPI ID", v.upi_masked, v.bank_name).joinToString(" · ")
+                 else listOfNotNull(v.bank_name, v.bank_last4?.let { "Account ending $it" }, v.ifsc).joinToString(" · "),
                 color = VoiidColor.textSecondary)
         }
     }

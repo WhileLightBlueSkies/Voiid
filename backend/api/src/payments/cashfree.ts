@@ -251,25 +251,11 @@ export class CashfreeProvider implements PaymentProvider {
    * Register a verified host as a vendor. The bank details go to Cashfree and are NOT kept
    * here — Voiid stores the vendor id and the last four digits, nothing a leak could spend.
    */
-  async createVendor(v: {
-    vendorId: string; name: string; email: string; phone: string;
-    accountNumber: string; accountHolder: string; ifsc: string; pan: string;
-  }): Promise<{ vendorId: string; status: string }> {
+  async createVendor(v: VendorInput): Promise<{ vendorId: string; status: string }> {
     const res = await fetch(`${pgBase(this.env)}/easy-split/vendors`, {
       method: 'POST',
       headers: this.headers(),
-      body: JSON.stringify({
-        vendor_id: v.vendorId,
-        status: 'ACTIVE',
-        name: v.name,
-        email: v.email,
-        phone: tenDigitPhone(v.phone),
-        verify_account: true,
-        dashboard_access: false,
-        schedule_option: 1,
-        bank: { account_number: v.accountNumber, account_holder: v.accountHolder, ifsc: v.ifsc },
-        kyc_details: { account_type: 'INDIVIDUAL', business_type: 'Education', pan: v.pan },
-      }),
+      body: JSON.stringify({ vendor_id: v.vendorId, ...vendorBody(v) }),
     });
     const out = await res.json().catch(() => ({})) as { vendor_id?: string; status?: string; code?: string; message?: string };
     if (!res.ok || !out.vendor_id) {
@@ -283,24 +269,11 @@ export class CashfreeProvider implements PaymentProvider {
    * A host who re-submits (a rejected application, a changed bank) already has a vendor —
    * vendor ids are permanent at Cashfree — so the new details replace the old ones in place.
    */
-  async updateVendor(v: {
-    vendorId: string; name: string; email: string; phone: string;
-    accountNumber: string; accountHolder: string; ifsc: string; pan: string;
-  }): Promise<{ vendorId: string; status: string }> {
+  async updateVendor(v: VendorInput): Promise<{ vendorId: string; status: string }> {
     const res = await fetch(`${pgBase(this.env)}/easy-split/vendors/${encodeURIComponent(v.vendorId)}`, {
       method: 'PATCH',
       headers: this.headers(),
-      body: JSON.stringify({
-        status: 'ACTIVE',
-        name: v.name,
-        email: v.email,
-        phone: tenDigitPhone(v.phone),
-        verify_account: true,
-        dashboard_access: false,
-        schedule_option: 1,
-        bank: { account_number: v.accountNumber, account_holder: v.accountHolder, ifsc: v.ifsc },
-        kyc_details: { account_type: 'INDIVIDUAL', business_type: 'Education', pan: v.pan },
-      }),
+      body: JSON.stringify(vendorBody(v)),
     });
     const out = await res.json().catch(() => ({})) as { vendor_id?: string; status?: string; code?: string; message?: string };
     if (!res.ok) {
@@ -309,6 +282,30 @@ export class CashfreeProvider implements PaymentProvider {
     }
     return { vendorId: v.vendorId, status: out.status ?? 'UNKNOWN' };
   }
+}
+
+/**
+ * Where a host is paid: a bank account, or a UPI ID. Easy Split takes either — exactly one is
+ * sent, and the other key is left out rather than sent as null.
+ */
+export type VendorInput = {
+  vendorId: string; name: string; email: string; phone: string; pan: string; accountHolder: string;
+} & ({ method: 'bank'; accountNumber: string; ifsc: string } | { method: 'upi'; vpa: string });
+
+function vendorBody(v: VendorInput): Record<string, unknown> {
+  return {
+    status: 'ACTIVE',
+    name: v.name,
+    email: v.email,
+    phone: tenDigitPhone(v.phone),
+    verify_account: true,
+    dashboard_access: false,
+    schedule_option: 1,
+    ...(v.method === 'bank'
+      ? { bank: { account_number: v.accountNumber, account_holder: v.accountHolder, ifsc: v.ifsc } }
+      : { upi: { vpa: v.vpa, account_holder: v.accountHolder } }),
+    kyc_details: { account_type: 'INDIVIDUAL', business_type: 'Education', pan: v.pan },
+  };
 }
 
 export class CashfreeError extends Error {
@@ -371,6 +368,31 @@ export class CashfreeVerification {
       registeredName: out?.name ?? out?.registered_name,
       nameMatch: out?.name_match === 'Y' ? true : out?.name_match === 'N' ? false : undefined,
       referenceId: out?.reference_id != null ? String(out.reference_id) : undefined,
+    };
+  }
+
+  /**
+   * UPI penny drop: ₹1 to the VPA, and the bank returns the holder's name. Synchronous.
+   * `user_consent` is required by the API — the host gives it by submitting the form, which
+   * says a ₹1 check will be made.
+   */
+  async verifyUpi(verificationId: string, vpa: string, name: string): Promise<BankResult> {
+    const out = await this.post('/upi/penny-drop', {
+      verification_id: verificationId,
+      vpa,
+      name,
+      user_consent: {
+        obtained: true, type: 'EXPLICIT', timestamp: new Date().toISOString(),
+        purpose: 'Verify payout account for event ticket sales',
+      },
+    });
+    return {
+      valid: out?.status === 'VALID' || out?.status === 'SUCCESS',
+      nameAtBank: out?.name_at_bank,
+      nameMatchResult: out?.name_match_result,
+      statusCode: out?.status,
+      referenceId: out?.reference_id != null ? String(out.reference_id) : undefined,
+      bankName: out?.ifsc_details?.bank ?? out?.ifsc_details?.bank_name,
     };
   }
 

@@ -70,7 +70,7 @@ function Body() {
                 'rounded px-2.5 py-1 text-tiny font-medium capitalize transition-colors',
                 status === s
                   ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
-                  : 'bg-transparent text-[var(--text-mute)] hover:text-[var(--text-dim)]',
+                  : 'bg-transparent text-[var(--text-dim)] hover:text-[var(--text)]',
               ].join(' ')}
             >
               {s === '' ? 'All' : s}

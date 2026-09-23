@@ -33,6 +33,9 @@ struct HostVerificationView: View {
     @State private var account = ""
     @State private var accountAgain = ""
     @State private var ifsc = ""
+    /// Paid to a bank account or to a UPI ID — Cashfree pays out to either.
+    @State private var payoutUPI = false
+    @State private var upi = ""
     @State private var submitting = false
     @State private var submitError: String?
 
@@ -43,11 +46,16 @@ struct HostVerificationView: View {
 
     private static let panRE = /^[A-Z]{5}[0-9]{4}[A-Z]$/
     private static let ifscRE = /^[A-Z]{4}0[A-Z0-9]{6}$/
+    private static let upiRE = /^[a-z0-9._-]{2,256}@[a-z][a-z0-9.-]{1,64}$/
 
     private var formProblem: String? {
         if legalName.trimmingCharacters(in: .whitespaces).count < 2 { return "Enter your full name as on your PAN." }
         if !email.contains("@") || !email.contains(".") { return "Enter your email." }
         if pan.wholeMatch(of: Self.panRE) == nil { return "Enter a valid PAN, e.g. ABCDE1234F." }
+        if payoutUPI {
+            if upi.wholeMatch(of: Self.upiRE) == nil { return "Enter your UPI ID, e.g. name@okhdfcbank." }
+            return nil
+        }
         if account.count < 6 { return "Enter your bank account number." }
         if account != accountAgain { return "The account numbers don\u{2019}t match." }
         if ifsc.wholeMatch(of: Self.ifscRE) == nil { return "Enter a valid IFSC, e.g. HDFC0001234." }
@@ -97,11 +105,11 @@ struct HostVerificationView: View {
                     text: "Voiid can\u{2019}t verify hosts yet. Free events work as usual.")
         } else if v.isVerified {
             message(icon: "checkmark.seal.fill", title: "You\u{2019}re verified",
-                    text: "You can sell tickets in communities you own. Your share of each sale is paid to the bank account ending \(v.bank_last4 ?? "••••").")
+                    text: "You can sell tickets in communities you own. Your share of each sale is paid to \(v.payout_method == "upi" ? "your UPI ID \(v.upi_masked ?? "")" : "the bank account ending \(v.bank_last4 ?? "••••")").")
             payoutSummary(v)
         } else if v.isInReview {
             message(icon: "hourglass", title: "We\u{2019}re reviewing your details",
-                    text: "Your PAN and bank account passed the automatic checks. Voiid reviews every host before they can take payments \u{2014} usually within a day. Adding a document can speed it up.")
+                    text: "Your PAN and payout account passed the automatic checks. Voiid reviews every host before they can take payments \u{2014} usually within a day. Adding a document can speed it up.")
             payoutSummary(v)
             documents(v)
         } else {
@@ -119,7 +127,7 @@ struct HostVerificationView: View {
             Text("Verify to sell tickets")
                 .font(VoiidFont.rounded(24, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
-            Text("Ticket money is paid to your bank account, so we need to confirm who you are. It takes about two minutes. Free events never need this.")
+            Text("Ticket money is paid to your bank account or UPI ID, so we need to confirm who you are. It takes about two minutes. Free events never need this.")
                 .font(VoiidFont.rounded(14))
                 .foregroundColor(VoiidColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -136,16 +144,31 @@ struct HostVerificationView: View {
                 input("PAN", text: Binding(get: { pan }, set: { pan = String($0.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(10)) }),
                       caps: .characters)
             }
-            VoiidCardSection("Bank account for payouts",
-                             footer: "Cashfree deposits ₹1 to check the account. It\u{2019}s paid out to the name on your PAN.") {
-                input("Account number", text: Binding(get: { account }, set: { account = String($0.filter { $0.isNumber || $0.isLetter }.prefix(40)) }),
-                      keyboard: .numberPad, secure: true)
-                VoiidRowDivider(inset: VoiidSpacing.md)
-                input("Re-enter account number", text: Binding(get: { accountAgain }, set: { accountAgain = String($0.filter { $0.isNumber || $0.isLetter }.prefix(40)) }),
-                      keyboard: .numberPad)
-                VoiidRowDivider(inset: VoiidSpacing.md)
-                input("IFSC", text: Binding(get: { ifsc }, set: { ifsc = String($0.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(11)) }),
-                      caps: .characters)
+            Picker("Get paid to", selection: $payoutUPI.animation(.easeOut(duration: 0.18))) {
+                Text("Bank account").tag(false)
+                Text("UPI ID").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .disabled(submitting)
+
+            if payoutUPI {
+                VoiidCardSection("UPI ID for payouts",
+                                 footer: "Cashfree sends ₹1 to check the UPI ID and who it belongs to.") {
+                    input("name@okhdfcbank", text: Binding(get: { upi }, set: { upi = String($0.lowercased().filter { !$0.isWhitespace }.prefix(100)) }),
+                          keyboard: .emailAddress)
+                }
+            } else {
+                VoiidCardSection("Bank account for payouts",
+                                 footer: "Cashfree deposits ₹1 to check the account. It\u{2019}s paid out to the name on your PAN.") {
+                    input("Account number", text: Binding(get: { account }, set: { account = String($0.filter { $0.isNumber || $0.isLetter }.prefix(40)) }),
+                          keyboard: .numberPad, secure: true)
+                    VoiidRowDivider(inset: VoiidSpacing.md)
+                    input("Re-enter account number", text: Binding(get: { accountAgain }, set: { accountAgain = String($0.filter { $0.isNumber || $0.isLetter }.prefix(40)) }),
+                          keyboard: .numberPad)
+                    VoiidRowDivider(inset: VoiidSpacing.md)
+                    input("IFSC", text: Binding(get: { ifsc }, set: { ifsc = String($0.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(11)) }),
+                          caps: .characters)
+                }
             }
 
             Label("Voiid keeps only the last four digits of your PAN and account. Cashfree checks the rest.",
@@ -187,8 +210,13 @@ struct HostVerificationView: View {
             VoiidSettingsRow(icon: "person.text.rectangle", title: v.legal_name ?? "—",
                              detail: v.pan_last4.map { "PAN ending \($0)" })
             VoiidRowDivider()
-            VoiidSettingsRow(icon: "building.columns", title: v.bank_name ?? "Bank account",
-                             detail: [v.bank_last4.map { "Account ending \($0)" }, v.ifsc].compactMap { $0 }.joined(separator: " · "))
+            if v.payout_method == "upi" {
+                VoiidSettingsRow(icon: "indianrupeesign.circle", title: "UPI ID",
+                                 detail: [v.upi_masked, v.bank_name].compactMap { $0 }.joined(separator: " · "))
+            } else {
+                VoiidSettingsRow(icon: "building.columns", title: v.bank_name ?? "Bank account",
+                                 detail: [v.bank_last4.map { "Account ending \($0)" }, v.ifsc].compactMap { $0 }.joined(separator: " · "))
+            }
         }
     }
 
@@ -290,9 +318,11 @@ struct HostVerificationView: View {
             let v = try await KycService.shared.verify(.init(
                 legal_name: legalName.trimmingCharacters(in: .whitespaces),
                 email: email.trimmingCharacters(in: .whitespaces),
-                pan: pan, bank_account: account, ifsc: ifsc))
+                pan: pan, payout_method: payoutUPI ? "upi" : "bank",
+                bank_account: payoutUPI ? nil : account, ifsc: payoutUPI ? nil : ifsc,
+                upi_id: payoutUPI ? upi : nil))
             // The numbers have done their job; don't keep them on screen or in memory.
-            pan = ""; account = ""; accountAgain = ""; ifsc = ""
+            pan = ""; account = ""; accountAgain = ""; ifsc = ""; upi = ""
             Haptics.success()
             withAnimation(.easeOut(duration: 0.2)) { status = v }
             if v.isVerified { onVerified() }

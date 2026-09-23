@@ -1,7 +1,7 @@
 // Host KYC — the gate in front of paid events (087_moderator_badges_institutions_host_kyc.sql).
 //
 //   GET  /kyc/me                          where this host stands, and their documents
-//   POST /kyc/verify                      PAN + bank → Cashfree Secure ID → Easy Split vendor
+//   POST /kyc/verify                      PAN + bank account or UPI ID → Secure ID → Easy Split vendor
 //   POST /kyc/documents                   presign an upload into the private `kyc/` prefix
 //   POST /kyc/documents/:id/confirm       the upload landed; show it to reviewers
 //   DELETE /kyc/documents/:id             withdraw a document before review
@@ -25,7 +25,7 @@ import { asyncHandler } from '../util';
 import { rateLimit } from '../security';
 import { presignPut, objectExists, r2Configured } from '../r2';
 import {
-  AUTO_ACCEPT_NAME_MATCH, CashfreeError, cashfreeFromEnv, cashfreeVerificationFromEnv,
+  AUTO_ACCEPT_NAME_MATCH, CashfreeError, cashfreeFromEnv, cashfreeVerificationFromEnv, type VendorInput,
 } from '../payments/cashfree';
 
 const router = Router();
@@ -34,6 +34,14 @@ const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const ACCOUNT_RE = /^[0-9A-Za-z]{6,40}$/;
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
+// A UPI ID: handle@provider, the characters Cashfree accepts.
+const VPA_RE = /^[a-z0-9._-]{2,256}@[a-z][a-z0-9.-]{1,64}$/;
+
+/** "rahul.s@okhdfcbank" → "ra•••@okhdfcbank": the provider stays readable, the person doesn't. */
+export function maskVpa(vpa: string): string {
+  const [who, where] = vpa.split('@');
+  return `${who.slice(0, 2)}\u2022\u2022\u2022@${where}`;
+}
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DOC_KINDS = ['pan_card', 'bank_proof', 'address_proof', 'institution_letter', 'other'];
@@ -54,6 +62,8 @@ export type HostVerificationRow = {
   bank_name: string | null;
   name_at_bank: string | null;
   bank_name_match: string | null;
+  payout_method: string | null;
+  upi_masked: string | null;
   cashfree_vendor_id: string | null;
   vendor_status: string | null;
   submitted_at: string | null;
@@ -73,6 +83,9 @@ function shape(row: HostVerificationRow | undefined, docs: any[], configured: bo
     bank_last4: row?.bank_last4 ?? null,
     ifsc: row?.ifsc ?? null,
     bank_name: row?.bank_name ?? null,
+    // 'bank' or 'upi' — where this host's share is paid. `upi_masked` is set for UPI.
+    payout_method: row?.payout_method ?? null,
+    upi_masked: row?.upi_masked ?? null,
     submitted_at: row?.submitted_at ?? null,
     reviewed_at: row?.reviewed_at ?? null,
     rejection_reason: row?.rejection_reason ?? null,
@@ -131,16 +144,23 @@ router.post(
     const legalName = typeof b.legal_name === 'string' ? b.legal_name.trim().replace(/\s+/g, ' ') : '';
     const email = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
     const pan = typeof b.pan === 'string' ? b.pan.trim().toUpperCase() : '';
+    // Paid to a bank account (the default, and what older app builds send) or to a UPI ID.
+    const method: 'bank' | 'upi' = b.payout_method === 'upi' ? 'upi' : 'bank';
     const account = typeof b.bank_account === 'string' ? b.bank_account.replace(/\s/g, '') : '';
     const ifsc = typeof b.ifsc === 'string' ? b.ifsc.trim().toUpperCase() : '';
+    const vpa = typeof b.upi_id === 'string' ? b.upi_id.trim().toLowerCase() : '';
 
     if (legalName.length < 2 || legalName.length > 100) {
       return res.status(400).json({ error: 'Enter your full name as it appears on your PAN.' });
     }
     if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
     if (!PAN_RE.test(pan)) return res.status(400).json({ error: 'That doesn’t look like a PAN (e.g. ABCDE1234F).' });
-    if (!ACCOUNT_RE.test(account)) return res.status(400).json({ error: 'Enter a valid bank account number.' });
-    if (!IFSC_RE.test(ifsc)) return res.status(400).json({ error: 'That doesn’t look like an IFSC (e.g. HDFC0001234).' });
+    if (method === 'bank') {
+      if (!ACCOUNT_RE.test(account)) return res.status(400).json({ error: 'Enter a valid bank account number.' });
+      if (!IFSC_RE.test(ifsc)) return res.status(400).json({ error: 'That doesn’t look like an IFSC (e.g. HDFC0001234).' });
+    } else if (!VPA_RE.test(vpa)) {
+      return res.status(400).json({ error: 'That doesn’t look like a UPI ID (e.g. name@okhdfcbank).' });
+    }
 
     const existing = (await query<HostVerificationRow>(
       `select * from host_verifications where user_id = $1`, [user_id]))[0];
@@ -153,18 +173,24 @@ router.post(
       if (!panResult.valid) {
         return res.status(422).json({ error: 'That PAN couldn’t be verified. Check it and try again.', code: 'pan_invalid' });
       }
-      const bank = await verification.verifyBankAccount(account, ifsc, legalName);
+      const bank = method === 'bank'
+        ? await verification.verifyBankAccount(account, ifsc, legalName)
+        : await verification.verifyUpi(`upi_${user_id.replace(/-/g, '')}_${Date.now()}`, vpa, legalName);
       if (!bank.valid) {
-        return res.status(422).json({ error: 'That bank account couldn’t be verified. Check the number and IFSC.', code: 'bank_invalid' });
+        return res.status(422).json(method === 'bank'
+          ? { error: 'That bank account couldn’t be verified. Check the number and IFSC.', code: 'bank_invalid' }
+          : { error: 'That UPI ID couldn’t be verified. Check it and try again.', code: 'upi_invalid' });
       }
 
       const phone = (await query<{ phone_number: string | null }>(
         `select phone_number from users where id = $1`, [user_id]))[0]?.phone_number ?? '';
-      const vendorArgs = {
+      const base = {
         vendorId: existing?.cashfree_vendor_id ?? `vh_${user_id.replace(/-/g, '')}`,
-        name: legalName, email, phone,
-        accountNumber: account, accountHolder: bank.nameAtBank || legalName, ifsc, pan,
+        name: legalName, email, phone, pan, accountHolder: bank.nameAtBank || legalName,
       };
+      const vendorArgs: VendorInput = method === 'bank'
+        ? { ...base, method: 'bank', accountNumber: account, ifsc }
+        : { ...base, method: 'upi', vpa };
       const vendor = existing?.cashfree_vendor_id
         ? await gateway.updateVendor(vendorArgs)
         : await gateway.createVendor(vendorArgs);
@@ -174,10 +200,10 @@ router.post(
            (user_id, status, legal_name, email,
             pan_last4, pan_registered_name, pan_valid, pan_name_match, pan_reference,
             bank_last4, ifsc, bank_name, name_at_bank, bank_name_match, bank_reference,
-            cashfree_vendor_id, vendor_status, submitted_at, reviewed_at, reviewed_by,
-            rejection_reason, updated_at)
+            cashfree_vendor_id, vendor_status, payout_method, upi_masked, submitted_at,
+            reviewed_at, reviewed_by, rejection_reason, updated_at)
          values ($1, 'pending_review', $2, $3, $4, $5, true, $6, $7, $8, $9, $10, $11, $12, $13,
-                 $14, $15, now(), null, null, null, now())
+                 $14, $15, $16, $17, now(), null, null, null, now())
          on conflict (user_id) do update set
             status = 'pending_review', legal_name = excluded.legal_name, email = excluded.email,
             pan_last4 = excluded.pan_last4, pan_registered_name = excluded.pan_registered_name,
@@ -187,13 +213,15 @@ router.post(
             name_at_bank = excluded.name_at_bank, bank_name_match = excluded.bank_name_match,
             bank_reference = excluded.bank_reference,
             cashfree_vendor_id = excluded.cashfree_vendor_id,
-            vendor_status = excluded.vendor_status, submitted_at = now(), reviewed_at = null,
+            vendor_status = excluded.vendor_status, payout_method = excluded.payout_method,
+            upi_masked = excluded.upi_masked, submitted_at = now(), reviewed_at = null,
             reviewed_by = null, rejection_reason = null, updated_at = now()`,
         [user_id, legalName, email, pan.slice(-4), panResult.registeredName ?? null,
          panResult.nameMatch ?? null, panResult.referenceId ?? null,
-         account.slice(-4), ifsc, bank.bankName ?? null, bank.nameAtBank ?? null,
+         method === 'bank' ? account.slice(-4) : null, method === 'bank' ? ifsc : null,
+         bank.bankName ?? null, bank.nameAtBank ?? null,
          bank.nameMatchResult ?? null, bank.referenceId ?? null,
-         vendor.vendorId, vendor.status]
+         vendor.vendorId, vendor.status, method, method === 'upi' ? maskVpa(vpa) : null]
       );
     } catch (e) {
       if (e instanceof CashfreeError) {

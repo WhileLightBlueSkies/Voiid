@@ -36,6 +36,10 @@ class KycService(context: Context) {
         val bank_last4: String? = null,
         val ifsc: String? = null,
         val bank_name: String? = null,
+        /** "bank" or "upi" — where this host's share is paid. */
+        val payout_method: String? = null,
+        /** For UPI: "ra•••@okhdfcbank". Voiid never keeps the full ID. */
+        val upi_masked: String? = null,
         val submitted_at: String? = null,
         val reviewed_at: String? = null,
         val rejection_reason: String? = null,
@@ -53,7 +57,11 @@ class KycService(context: Context) {
     suspend fun me(): Verification = api.requestAs<Envelope>("GET", "kyc/me").verification
 
     @Serializable
-    data class VerifyInput(val legal_name: String, val email: String, val pan: String, val bank_account: String, val ifsc: String)
+    /** Exactly one payout destination: a bank account (with IFSC) or a UPI ID. */
+    data class VerifyInput(
+        val legal_name: String, val email: String, val pan: String, val payout_method: String,
+        val bank_account: String? = null, val ifsc: String? = null, val upi_id: String? = null,
+    )
 
     suspend fun verify(input: VerifyInput): Verification =
         api.requestAs<Envelope>("POST", "kyc/verify",

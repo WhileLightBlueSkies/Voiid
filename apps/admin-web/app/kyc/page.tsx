@@ -26,6 +26,7 @@ type Row = {
   pan_last4: string | null; pan_registered_name: string | null; pan_name_match: boolean | null;
   bank_last4: string | null; ifsc: string | null; bank_name: string | null;
   name_at_bank: string | null; bank_name_match: string | null;
+  payout_method: string | null; upi_masked: string | null;
   cashfree_vendor_id: string | null; vendor_status: string | null;
   submitted_at: string | null; reviewed_at: string | null; rejection_reason: string | null;
   full_name: string | null; username: string | null;
@@ -198,9 +199,15 @@ function Application({ userId, me, onChanged }: { userId: string; me: Me; onChan
         </section>
 
         <section className="grid gap-1">
-          <h3 className="m-0 text-sm font-semibold">Bank account (payouts go here)</h3>
-          <Line label="Account" value={v.bank_last4 ? `••••${v.bank_last4}` : '—'} />
-          <Line label="IFSC" value={`${v.ifsc ?? '—'}${v.bank_name ? ` · ${v.bank_name}` : ''}`} />
+          <h3 className="m-0 text-sm font-semibold">{v.payout_method === 'upi' ? 'UPI ID (payouts go here)' : 'Bank account (payouts go here)'}</h3>
+          {v.payout_method === 'upi' ? (
+            <Line label="UPI ID" value={`${v.upi_masked ?? '—'}${v.bank_name ? ` · ${v.bank_name}` : ''}`} />
+          ) : (
+            <>
+              <Line label="Account" value={v.bank_last4 ? `••••${v.bank_last4}` : '—'} />
+              <Line label="IFSC" value={`${v.ifsc ?? '—'}${v.bank_name ? ` · ${v.bank_name}` : ''}`} />
+            </>
+          )}
           <Line label="Name at bank" value={v.name_at_bank ?? '—'} />
           <Line label="Name match" value={v.bank_name_match ? prettyMatch(v.bank_name_match) : '—'} />
           <Line label="Payout account" value={v.cashfree_vendor_id ? `${v.cashfree_vendor_id} (${v.vendor_status ?? 'unknown'})` : 'Not created'} />

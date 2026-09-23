@@ -2785,7 +2785,7 @@ router.get('/kyc', requireAdmin, asyncHandler(async (req, res) => {
   const rows = await query<any>(
     `select h.user_id, h.status, h.legal_name, h.pan_last4, h.pan_registered_name, h.pan_name_match,
             h.bank_last4, h.ifsc, h.bank_name, h.name_at_bank, h.bank_name_match,
-            h.cashfree_vendor_id, h.vendor_status, h.submitted_at, h.reviewed_at, h.rejection_reason,
+            h.payout_method, h.upi_masked, h.cashfree_vendor_id, h.vendor_status, h.submitted_at, h.reviewed_at, h.rejection_reason,
             u.full_name, u.username,
             (select count(*)::int from kyc_documents d
               where d.user_id = h.user_id and d.confirmed_at is not null and d.deleted_at is null) as document_count,

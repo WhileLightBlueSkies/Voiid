@@ -44,6 +44,10 @@ final class KycService {
         let bank_last4: String?
         let ifsc: String?
         let bank_name: String?
+        /// "bank" or "upi" — where this host's share is paid.
+        let payout_method: String?
+        /// For UPI: "ra•••@okhdfcbank". Voiid never keeps the full ID.
+        let upi_masked: String?
         let submitted_at: String?
         let reviewed_at: String?
         let rejection_reason: String?
@@ -64,12 +68,15 @@ final class KycService {
         return env.verification
     }
 
+    /// Exactly one payout destination: a bank account (`bank_account` + `ifsc`) or a UPI ID.
     struct VerifyInput: Encodable {
         let legal_name: String
         let email: String
         let pan: String
-        let bank_account: String
-        let ifsc: String
+        let payout_method: String
+        let bank_account: String?
+        let ifsc: String?
+        let upi_id: String?
     }
 
     func verify(_ input: VerifyInput) async throws -> Verification {

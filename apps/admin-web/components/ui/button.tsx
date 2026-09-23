@@ -21,7 +21,9 @@ const buttonVariants = cva(
       variant: {
         default: 'bg-primary text-white hover:bg-[var(--accent-hover)]',
         destructive: 'bg-destructive text-white hover:brightness-110',
-        outline: 'border border-border bg-card hover:bg-secondary',
+        // A text colour is REQUIRED on every light variant: without one the label inherits the
+        // bare `button` rule's white and vanishes on the white fill.
+        outline: 'border border-border bg-card text-[color:var(--text)] hover:bg-secondary',
         secondary: 'bg-secondary text-secondary-foreground hover:bg-accent',
         // bg-transparent is required, not decoration: without it the bare `button` rule in
         // globals.css paints these solid black.
