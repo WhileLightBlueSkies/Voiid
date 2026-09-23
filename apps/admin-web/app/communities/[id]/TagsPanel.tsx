@@ -29,15 +29,18 @@ type Tag = {
 const who = (m: { full_name: string | null; username: string | null; user_id: string }) =>
   m.full_name ?? (m.username ? `@${m.username}` : m.user_id);
 
-export default function TagsPanel({ id, institutionName, members, reload }: {
+export default function TagsPanel({ id, institutionName, emailDomains, members, reload }: {
   id: string;
   institutionName: string | null;
+  emailDomains: string[];
   members: Member[];
   reload: () => Promise<void>;
 }) {
   const [tags, setTags] = useState<Tag[]>([]);
   const [allowed, setAllowed] = useState(false);
   const [institution, setInstitution] = useState(institutionName ?? '');
+  const savedDomains = (emailDomains ?? []).join(', ');
+  const [domains, setDomains] = useState(savedDomains);
   const [pick, setPick] = useState('');
   const [note, setNote] = useState('');
   const [makeAdmin, setMakeAdmin] = useState(true);
@@ -57,6 +60,7 @@ export default function TagsPanel({ id, institutionName, members, reload }: {
 
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => { setInstitution(institutionName ?? ''); }, [institutionName]);
+  useEffect(() => { setDomains(savedDomains); }, [savedDomains]);
 
   async function run(label: string, fn: () => Promise<unknown>) {
     setBusy(true); setError(null); setNotice(null);
@@ -101,6 +105,23 @@ export default function TagsPanel({ id, institutionName, members, reload }: {
               {institution.trim() ? 'Save' : 'Remove'}
             </Button>
           </div>
+        </div>
+
+        <div className="grid gap-2">
+          <label className="text-tiny text-[var(--text-mute)]" htmlFor="domains">Allowed email domains</label>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <input id="domains" placeholder="e.g. iitb.ac.in, student.iitb.ac.in" value={domains}
+                   onChange={e => setDomains(e.target.value)} style={{ maxWidth: 340 }} />
+            <Button size="sm" disabled={busy || domains.trim() === savedDomains}
+                    onClick={() => void run(domains.trim() ? 'Email domains saved.' : 'Anyone can join again.', () =>
+                      api(`/communities/${id}/institution`, { method: 'PATCH', json: { email_domains: domains } }))}>
+              Save
+            </Button>
+          </div>
+          <p className="m-0 text-tiny text-[var(--text-mute)]">
+            When set, people must confirm an email at one of these domains (a code is emailed to them)
+            before they can join. Subdomains count. Leave empty to let anyone join. Existing members are not affected.
+          </p>
         </div>
 
         <div className="grid gap-2">

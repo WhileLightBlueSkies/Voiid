@@ -19,7 +19,7 @@ import FinancePanel from './FinancePanel';
 
 type Detail = {
   community: {
-    official_key: string | null; posting_policy: string; institution_name: string | null;
+    official_key: string | null; posting_policy: string; institution_name: string | null; institution_domains: string[] | null;
     id: string; handle: string; name: string; description: string | null;
     category: string | null; discoverable: boolean; join_policy: string;
     member_count: number; max_members: number | null; members_can_invite: boolean;
@@ -282,7 +282,7 @@ function Body({ me, id }: { me: Me; id: string }) {
           {(d.community.official_key || ents.some(e => e.capability === 'moderator_badge' && e.live)) && me.role === 'admin' &&
             <ModeratorPanel id={id} members={d.members} reload={async () => { await load(); await loadPosts(); }} />}
           {me.role === 'admin' &&
-            <TagsPanel id={id} institutionName={d.community.institution_name} members={d.members}
+            <TagsPanel id={id} institutionName={d.community.institution_name} emailDomains={d.community.institution_domains ?? []} members={d.members}
                        reload={async () => { await load(); await loadEnts(); }} />}
           <Card className="mb-5">
             <div className="border-b border-border px-4 py-3">

@@ -1501,7 +1501,7 @@ router.get('/communities', requireAdmin, asyncHandler(async (req, res) => {
   // community gets, a rule, and an invite or a second member. Derived, never stored, so it
   // cannot disagree with what the host sees.
   const rows = await query<any>(
-    `select c.id, c.handle, c.name, c.description, c.category, c.institution_name,
+    `select c.id, c.handle, c.name, c.description, c.category, c.institution_name, c.institution_domains,
             c.discoverable, c.join_policy, c.member_count, c.max_members, c.official_key, c.posting_policy,
             c.suspended_at, c.created_at, c.owner_id,
             u.full_name as owner_name, u.username as owner_username,
@@ -1601,7 +1601,7 @@ router.get('/communities/:id', requireAdmin, asyncHandler(async (req, res) => {
   }
 
   const rows = await query<any>(
-    `select c.id, c.handle, c.name, c.description, c.category, c.institution_name,
+    `select c.id, c.handle, c.name, c.description, c.category, c.institution_name, c.institution_domains,
             c.discoverable, c.join_policy, c.member_count, c.max_members, c.official_key, c.posting_policy,
             c.suspended_at, c.created_at, c.owner_id, c.members_can_invite,
             u.full_name as owner_name, u.username as owner_username
@@ -2581,6 +2581,21 @@ router.post('/push/send', requireAdmin, requireRole('admin'), asyncHandler(async
 // ═════════════════════════════════════════════════════════════════════════════════
 
 const UUID_RE_ADMIN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// A bare registrable domain: `iitb.ac.in`, not `@iitb.ac.in`, not a URL.
+const DOMAIN_RE = /^(?=.{3,190}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+
+/** Normalise an admin-typed list ("@IITB.ac.in, student.iitb.ac.in") or refuse it. */
+function parseDomains(raw: unknown): string[] | { error: string } {
+  if (raw == null) return [];
+  const list = (Array.isArray(raw) ? raw : String(raw).split(/[\s,]+/))
+    .map((d) => String(d).trim().toLowerCase().replace(/^@/, ''))
+    .filter(Boolean);
+  const unique = [...new Set(list)];
+  if (unique.length > 20) return { error: 'at most 20 email domains' };
+  const bad = unique.find((d) => !DOMAIN_RE.test(d));
+  if (bad) return { error: `"${bad}" is not an email domain (e.g. iitb.ac.in)` };
+  return unique;
+}
 
 // GET /admin/communities/:id/spaces — the Space picker for Voiid Moderator posts.
 router.get('/communities/:id/spaces', requireAdmin, asyncHandler(async (req, res) => {
@@ -2617,6 +2632,8 @@ router.post('/communities', requireAdmin, requireRole('admin'), asyncHandler(asy
   if (institution && (institution.length < 2 || institution.length > 120)) {
     return res.status(400).json({ error: 'institution_name must be 2 to 120 characters' });
   }
+  const domains = parseDomains(b.email_domains);
+  if (!Array.isArray(domains)) return res.status(400).json(domains);
 
   const created = await createCommunity(owner.id, {
     id: randomUUID(),
@@ -2627,9 +2644,11 @@ router.post('/communities', requireAdmin, requireRole('admin'), asyncHandler(asy
   if (created.status !== 201) return res.status(created.status).json(created.body);
   const community = created.body.community;
 
-  if (institution) {
-    await query(`update communities set institution_name = $2 where id = $1`, [community.id, institution]);
-    community.institution_name = institution;
+  if (institution || domains.length > 0) {
+    await query(`update communities set institution_name = $2, institution_domains = $3 where id = $1`,
+                [community.id, institution || null, domains]);
+    community.institution_name = institution || null;
+    community.email_domains = domains;
   }
   if (b.moderator_tag === true || institution) {
     await query(
@@ -2638,25 +2657,37 @@ router.post('/communities', requireAdmin, requireRole('admin'), asyncHandler(asy
       [community.id, a.adminId, institution ? `Institution community: ${institution}` : 'Created by Voiid with moderator tags']);
   }
   await audit(a.adminId, 'community.created_for_owner', 'community', community.id,
-              { owner_id: owner.id, handle: community.handle, institution_name: institution || null });
+              { owner_id: owner.id, handle: community.handle, institution_name: institution || null, email_domains: domains });
   res.status(201).json({ community });
 }));
 
-// PATCH /admin/communities/:id/institution  { institution_name: string | null }
+// PATCH /admin/communities/:id/institution  { institution_name?: string | null, email_domains?: string[] | string }
+//
+// Either key may be sent alone. An empty domain list lifts the college-email requirement.
 router.patch('/communities/:id/institution', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = String(req.params.id);
   if (!UUID_RE_ADMIN.test(id)) return res.status(400).json({ error: 'community id must be a uuid' });
+  const setName = 'institution_name' in (req.body ?? {});
+  const setDomains = 'email_domains' in (req.body ?? {});
+  if (!setName && !setDomains) return res.status(400).json({ error: 'send institution_name and/or email_domains' });
   const raw = req.body?.institution_name;
   const value = raw == null ? null : String(raw).trim();
-  if (value !== null && (value.length < 2 || value.length > 120)) {
+  if (setName && value !== null && (value.length < 2 || value.length > 120)) {
     return res.status(400).json({ error: 'institution_name must be 2 to 120 characters, or null' });
   }
-  const r = await query(`update communities set institution_name = $2 where id = $1 returning id`, [id, value]);
+  const domains = setDomains ? parseDomains(req.body.email_domains) : [];
+  if (!Array.isArray(domains)) return res.status(400).json(domains);
+  const r = await query<{ institution_name: string | null; institution_domains: string[] }>(
+    `update communities
+        set institution_name = case when $3 then $2 else institution_name end,
+            institution_domains = case when $5 then $4::text[] else institution_domains end
+      where id = $1 returning institution_name, institution_domains`,
+    [id, value, setName, domains, setDomains]);
   if (!r[0]) return res.status(404).json({ error: 'community not found' });
-  await audit(a.adminId, value ? 'community.institution_set' : 'community.institution_cleared',
-              'community', id, { institution_name: value });
-  res.json({ ok: true, institution_name: value });
+  await audit(a.adminId, 'community.institution_updated', 'community', id,
+              { institution_name: r[0].institution_name, email_domains: r[0].institution_domains });
+  res.json({ ok: true, institution_name: r[0].institution_name, email_domains: r[0].institution_domains });
 }));
 
 /** Tags are allowed in official communities and ones holding the moderator_badge grant. */

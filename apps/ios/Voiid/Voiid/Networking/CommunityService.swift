@@ -123,6 +123,9 @@ final class CommunityService {
         /// Voiid admin panel (087) — a host cannot type one in, so the mark beside it means
         /// something. Nil for every ordinary community.
         let institution_name: String?
+        /// Email domains a joiner must prove they hold an address at (088), e.g. ["iitb.ac.in"].
+        /// Empty or nil means anyone may join under the ordinary policy.
+        let email_domains: [String]?
         let posting_policy: String?
         var can_post: Bool?
         var membership_state: String?
@@ -915,6 +918,22 @@ final class CommunityService {
         let env: Envelope = try await api.request(
             "DELETE", "communities/\(communityId)/links/\(linkId)")
         return env.deleted ?? true
+    }
+
+    /// Send a 6-digit code to a college address (088). The server refuses an address outside the
+    /// community's domains, and answers 503 `mail_unavailable` when email isn't set up.
+    func startEmailVerification(communityId: String, email: String) async throws {
+        struct Body: Encodable { let email: String }
+        struct Ok: Decodable { let ok: Bool? }
+        let _: Ok = try await api.request("POST", "communities/\(communityId)/email/start", body: Body(email: email))
+    }
+
+    /// Prove the address. Once confirmed it counts for every community that accepts its domain.
+    func confirmEmailVerification(communityId: String, email: String, code: String) async throws {
+        struct Body: Encodable { let email: String; let code: String }
+        struct Ok: Decodable { let ok: Bool? }
+        let _: Ok = try await api.request("POST", "communities/\(communityId)/email/confirm",
+                                          body: Body(email: email, code: code))
     }
 
     func join(communityId: String, inviteToken: String?) async throws -> (state: String, existed: Bool) {

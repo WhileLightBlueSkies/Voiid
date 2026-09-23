@@ -74,6 +74,7 @@ fun CommunityJoinSheet(link: CommunityLink, onScanAgain: (() -> Unit)? = null, o
     var alreadyIn by remember(link) { mutableStateOf(false) }
     var error by remember(link) { mutableStateOf<String?>(null) }
     var busy by remember(link) { mutableStateOf(false) }
+    var collegeEmail by remember(link) { mutableStateOf(false) }
     var openCommunity by remember(link) { mutableStateOf(false) }
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
     var retry by remember(link) { mutableStateOf(0) }
@@ -149,9 +150,14 @@ fun CommunityJoinSheet(link: CommunityLink, onScanAgain: (() -> Unit)? = null, o
             val result = service.join(c.id, link.inviteToken)
             joined = result.state; alreadyIn = result.existed; haptics.success()
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (e: Exception) { error = messageFor(e, link.handle) }
+        catch (e: Exception) {
+            if ((e as? com.voiid.app.net.ApiError.Http)?.code == "institution_email_required") collegeEmail = true
+            else error = messageFor(e, link.handle)
+        }
         finally { busy = false }
     }
+    // A college community (088): prove the email, then setting busy re-runs the join above.
+    card?.let { c -> if (collegeEmail) CollegeEmailDialog(c, onDismiss = { collegeEmail = false }) { busy = true } }
 }
 
 /** Name, handle, avatar, member count — the public card and nothing more. */

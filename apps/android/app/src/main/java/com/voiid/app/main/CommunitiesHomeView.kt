@@ -314,6 +314,7 @@ internal fun CommunityDetailView(
         if (state.isMember) notificationMode = runCatching { service.notificationPreference(card.id) }.getOrNull()
     }
     var showSettings by remember { mutableStateOf(false) }
+    var collegeEmail by remember { mutableStateOf(false) }
     var showAdmin by remember { mutableStateOf(false) }
     var showInvite by remember { mutableStateOf(false) }
     var showReport by remember { mutableStateOf(false) }
@@ -471,7 +472,11 @@ internal fun CommunityDetailView(
                                 // A full reload, never an optimistic flip: whether a join
                                 // landed as active or pending is the server's to say.
                                 .onSuccess { reload() }
-                                .onFailure { actionError = it.message ?: "Couldn't join." }
+                                .onFailure {
+                                    // A college community: prove the email, then retry (088).
+                                    if ((it as? com.voiid.app.net.ApiError.Http)?.code == "institution_email_required") collegeEmail = true
+                                    else actionError = it.message ?: "Couldn't join."
+                                }
                             busy = false
                         }
                     },
@@ -626,6 +631,9 @@ internal fun CommunityDetailView(
     }
 
     if (showInvite) CommunityInviteSheet(state, service) { showInvite = false }
+    if (collegeEmail) CollegeEmailDialog(state, onDismiss = { collegeEmail = false }) {
+        scope.launch { runCatching { service.join(state.id, null) }.onSuccess { reload() }.onFailure { actionError = it.message } }
+    }
     if (showReport) ReportSheet(com.voiid.app.net.ReportTarget.Community(state.id)) { showReport = false }
     if (showAdmin) CommunityControlPanel(state,amHost,onDismiss={showAdmin=false},onSettings={showAdmin=false;showSettings=true})
     if (showSettings) {

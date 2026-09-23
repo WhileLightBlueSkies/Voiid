@@ -199,7 +199,9 @@ struct CommunityAdminPanel: View {
                 }
             }
 
-            if isOwner, let kyc, !kyc.isVerified, kyc.available != false {
+            // Shown to every owner who isn't verified — even before payments are switched on, so the
+            // feature is findable. The screen itself says when paid events aren't available yet.
+            if isOwner, let kyc, !kyc.isVerified {
                 Button { Haptics.tap(); destination = .verify } label: {
                     card {
                         adminEntry(kyc.isInReview ? "Verification in review" : "Get verified to sell tickets",

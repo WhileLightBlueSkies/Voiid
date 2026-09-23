@@ -86,6 +86,8 @@ class CommunityService(context: Context) {
          * (087) — a host cannot type one in. Null for every ordinary community. Mirrors iOS.
          */
         val institution_name: String? = null,
+        /** Email domains a joiner must prove they hold an address at (088). Empty = no restriction. */
+        val email_domains: List<String> = emptyList(),
         val posting_policy: String = "managers",
         val can_post: Boolean = false,
         val members_can_invite: Boolean = false,
@@ -280,6 +282,21 @@ class CommunityService(context: Context) {
             ),
         )
         return api.requestAs<CommunityEnvelope>("POST", "communities", jsonBody = body).community
+    }
+
+    @Serializable private data class EmailBody(val email: String)
+    @Serializable private data class EmailCodeBody(val email: String, val code: String)
+
+    /** Send a 6-digit code to a college address (088). Mirrors iOS. */
+    suspend fun startEmailVerification(communityId: String, email: String) {
+        api.request("POST", "communities/$communityId/email/start",
+            ApiClient.json.encodeToString(EmailBody.serializer(), EmailBody(email)))
+    }
+
+    /** Prove the address; it then counts for every community that accepts its domain. */
+    suspend fun confirmEmailVerification(communityId: String, email: String, code: String) {
+        api.request("POST", "communities/$communityId/email/confirm",
+            ApiClient.json.encodeToString(EmailCodeBody.serializer(), EmailCodeBody(email, code)))
     }
 
     suspend fun join(communityId: String, inviteToken: String?): JoinResult {

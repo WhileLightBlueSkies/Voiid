@@ -455,7 +455,8 @@ fun CommunityControlPanel(card:CommunityService.CommunityCard,isOwner:Boolean,on
     QuickAction("People & requests",Modifier.weight(1f)){destination="People"}
     QuickAction("Settings",Modifier.weight(1f),onSettings)
    }}
-   kyc?.let{k-> if(isOwner&&!k.isVerified&&k.available) item{
+   // Every unverified owner sees it, even before payments are switched on — the screen says so.
+   kyc?.let{k-> if(isOwner&&!k.isVerified) item{
     ControlEntry(if(k.isInReview)"Verification in review" else "Get verified to sell tickets",
      if(k.isInReview)"Voiid is checking your details. Paid events unlock when it's approved." else "Verify your PAN and bank account once to charge for events."){destination="Verify"}
    }}

@@ -46,7 +46,8 @@ import { isCommunityNotificationMode } from '../notificationPolicy';
 // route_handles.sql reserves those words as handles: a community that managed to take the
 // handle @search would be permanently unreachable through its own info-card route.
 import { Router } from 'express';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'crypto';
+import { mailConfigured, sendMail, verificationEmail } from '../mailer';
 import { pool, query } from '../db';
 import { purgeCommunityData } from '../communityDeletion';
 import { requireAuth as requireUserAuth } from '../auth';
@@ -174,6 +175,8 @@ type CommunityRow = {
   posting_policy: string;
   // 087. Written only by the admin panel; null for every ordinary community.
   institution_name?: string | null;
+  // 088. Email domains a joiner must prove they hold an address at. Empty = no restriction.
+  institution_domains?: string[] | null;
 };
 
 /**
@@ -196,6 +199,8 @@ async function publicCard(row: CommunityRow) {
     // 087. The name a VERIFIED institution community carries ("IIT Bombay"). Set only from the
     // admin panel, so the apps may draw a verified mark beside it; a host cannot type one in.
     institution_name: row.institution_name ?? null,
+    // 088. Shown BEFORE joining so a stranger knows which email the community will ask for.
+    email_domains: row.institution_domains ?? [],
     posting_policy: row.posting_policy,
     handle: row.handle,
     name: row.name,
@@ -227,7 +232,7 @@ async function publicCard(row: CommunityRow) {
 const COMMUNITY_COLUMNS = `id, owner_id, handle, name, description, avatar_r2_key,
                            discoverable, join_policy, member_count, max_members,
                            suspended_at, created_at, category, members_can_invite, official_key, posting_policy,
-                           institution_name`;
+                           institution_name, institution_domains`;
 
 /**
  * Resolve a community by uuid OR by handle, in one probe either way.
@@ -923,6 +928,105 @@ router.get(
 //
 // Redemption happens INSIDE the transaction and AFTER the cap check, so a join that fails
 // because the community is full does not silently burn a use of the link.
+/** `name@student.iitb.ac.in` matches `iitb.ac.in`; `name@notiitb.ac.in` does not. */
+export function emailMatchesDomains(email: string, domains: string[]): boolean {
+  const at = email.lastIndexOf('@');
+  if (at < 1) return false;
+  const host = email.slice(at + 1).toLowerCase();
+  return domains.some((d) => host === d || host.endsWith('.' + d));
+}
+
+const EMAIL_RE = /^[^\s@]{1,64}@[a-z0-9.-]{1,190}\.[a-z]{2,}$/i;
+const CODE_TTL_MINUTES = 10;
+const CODE_MAX_ATTEMPTS = 5;
+
+function codeHash(userId: string, email: string, code: string): string {
+  return createHash('sha256').update(`${userId}:${email}:${code}`).digest('hex');
+}
+
+// POST /communities/:id/email/start  { email }
+//
+// Emails a 6-digit code to an address at one of this community's institution domains. The
+// domain check happens HERE as well as at join, so nobody is sent a code for an address that
+// could never admit them.
+router.post(
+  '/:id/email/start',
+  requireAuth,
+  // Each call sends a real email. Tight, because a loop here is spam with our name on it.
+  rateLimit({ max: 5, windowSeconds: 3600, bucket: 'community-email-code' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+
+    const community = (await query<CommunityRow>(
+      `select ${COMMUNITY_COLUMNS} from communities where id = $1`, [communityId]))[0];
+    if (!community || community.suspended_at) return res.status(404).json({ error: 'no such community' });
+    const domains = community.institution_domains ?? [];
+    if (domains.length === 0) return res.status(409).json({ error: 'This community does not need an email.' });
+    if (!emailMatchesDomains(email, domains)) {
+      return res.status(422).json({
+        error: `Use your ${domains.map((d) => '@' + d).join(' or ')} email.`,
+        code: 'email_domain_not_allowed', domains,
+      });
+    }
+    if (!mailConfigured()) {
+      return res.status(503).json({ error: 'Email verification isn\u2019t available yet.', code: 'mail_unavailable' });
+    }
+
+    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    await query(
+      `insert into email_verification_codes (user_id, email, code_hash, expires_at, attempts, created_at)
+       values ($1, $2, $3, now() + make_interval(mins => $4), 0, now())
+       on conflict (user_id, email) do update
+          set code_hash = excluded.code_hash, expires_at = excluded.expires_at,
+              attempts = 0, created_at = now()`,
+      [user_id, email, codeHash(user_id, email, code), CODE_TTL_MINUTES]);
+    const mail = verificationEmail(code, community.name);
+    try {
+      await sendMail(email, mail.subject, mail.text, mail.html);
+    } catch {
+      return res.status(502).json({ error: 'Couldn\u2019t send the email. Try again in a minute.', code: 'mail_failed' });
+    }
+    res.json({ ok: true, expires_in_minutes: CODE_TTL_MINUTES });
+  })
+);
+
+// POST /communities/:id/email/confirm  { email, code }
+router.post(
+  '/:id/email/confirm',
+  requireAuth,
+  rateLimit({ max: 30, windowSeconds: 3600, bucket: 'community-email-confirm' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const code = String(req.body?.code ?? '').trim();
+    if (!EMAIL_RE.test(email) || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: 'Enter the 6-digit code from the email.' });
+    }
+    const row = (await query<{ code_hash: string; expired: boolean; attempts: number }>(
+      `select code_hash, expires_at < now() as expired, attempts
+         from email_verification_codes where user_id = $1 and email = $2`, [user_id, email]))[0];
+    if (!row || row.expired || row.attempts >= CODE_MAX_ATTEMPTS) {
+      return res.status(410).json({ error: 'That code has expired. Send a new one.', code: 'code_expired' });
+    }
+    const a = Buffer.from(row.code_hash, 'hex');
+    const b = Buffer.from(codeHash(user_id, email, code), 'hex');
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      await query(`update email_verification_codes set attempts = attempts + 1 where user_id = $1 and email = $2`,
+                  [user_id, email]);
+      return res.status(422).json({ error: 'That code isn\u2019t right.', code: 'code_wrong' });
+    }
+    await query(`delete from email_verification_codes where user_id = $1 and email = $2`, [user_id, email]);
+    await query(
+      `insert into user_verified_emails (user_id, email) values ($1, $2)
+       on conflict (user_id, email) do update set verified_at = now()`, [user_id, email]);
+    res.json({ ok: true, email });
+  })
+);
+
 router.post(
   '/:id/join',
   requireAuth,
@@ -980,6 +1084,25 @@ router.post(
             ? await channelsOf(communityId, user_id, existing.role === 'admin' || existing.role === 'owner')
             : [],
         });
+      }
+
+      // ── College email, for institution communities (088) ──────────────────────
+      //
+      // Checked BEFORE the policy, so an invite link cannot walk someone past it: the
+      // institution chose "people with our email", and a forwarded link is not that. The owner
+      // is exempt — they were assigned the community by Voiid, not admitted to it.
+      const domains = community.institution_domains ?? [];
+      if (domains.length > 0 && community.owner_id !== user_id) {
+        const proven = (await client.query<{ email: string }>(
+          `select email from user_verified_emails where user_id = $1`, [user_id])).rows;
+        if (!proven.some((r) => emailMatchesDomains(r.email, domains))) {
+          await client.query('rollback');
+          return res.status(403).json({
+            error: `Verify an email at ${domains.map((d) => '@' + d).join(' or ')} to join.`,
+            code: 'institution_email_required',
+            domains,
+          });
+        }
       }
 
       // ── What state does this join land in? ────────────────────────────────────

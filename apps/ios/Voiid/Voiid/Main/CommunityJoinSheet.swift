@@ -43,6 +43,8 @@ struct CommunityJoinSheet: View {
     @State private var alreadyIn = false
     @State private var error: String?
     @State private var busy = false
+    /// A college community refused the join until an email is proven (088).
+    @State private var collegeEmail = false
 
     var body: some View {
         NavigationStack {
@@ -99,6 +101,9 @@ struct CommunityJoinSheet: View {
         .tint(VoiidColor.primary)
         .interactiveDismissDisabled(busy)
         .task(id: link.id) { await resolve() }
+        .sheet(isPresented: $collegeEmail) {
+            if let card { CollegeEmailSheet(card: card) { Task { await join(card) } } }
+        }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
@@ -291,7 +296,11 @@ struct CommunityJoinSheet: View {
             alreadyIn = result.existed
             Haptics.success()
         } catch {
-            self.error = Self.message(for: error, handle: link.handle)
+            if case APIError.http(403, _, "institution_email_required") = error {
+                collegeEmail = true
+            } else {
+                self.error = Self.message(for: error, handle: link.handle)
+            }
         }
         busy = false
     }

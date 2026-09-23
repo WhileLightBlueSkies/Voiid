@@ -30,6 +30,8 @@ struct CommunityDetailView: View {
     @State private var adminCard: CommunityService.CommunityCard?
     /// Settings opened straight from the setup card's "rules" task, skipping the admin panel.
     @State private var settingsCard: CommunityService.CommunityCard?
+    /// Set when a join was refused for want of a college email (088).
+    @State private var collegeEmailCard: CommunityService.CommunityCard?
     @State private var tab: CommunityTab = .home
     @State private var openConversation: VConversation?
     @State private var notificationMode: String?
@@ -129,6 +131,9 @@ struct CommunityDetailView: View {
         // only proof we have one is the card that produced the menu the host just tapped.
         .sheet(item: $adminCard) { c in
             CommunityAdminPanel(communityId: c.id, communityName: c.name, isOwner: isOwner(c), communityCard: c, onSettingsSaved: { card = $0; Task { await load() } })
+        }
+        .sheet(item: $collegeEmailCard) { c in
+            CollegeEmailSheet(card: c) { Task { await join(c) } }
         }
         .sheet(item: $settingsCard) { c in
             CommunitySettingsView(card: c, onSaved: { card = $0 })
@@ -593,6 +598,11 @@ struct CommunityDetailView: View {
             _ = try await CommunityService.shared.join(communityId: c.id, inviteToken: nil)
             await load()
         } catch {
+            // A college community: prove the email, then the sheet retries this join.
+            if case APIError.http(403, _, "institution_email_required") = error {
+                collegeEmailCard = c
+                return
+            }
             self.actionError = (error as? APIError)?.errorDescription ?? "Couldn\u{2019}t join."
         }
     }

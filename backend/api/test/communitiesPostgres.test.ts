@@ -145,6 +145,42 @@ test('community roles, official controls, invite admission and encrypted lifecyc
       // And a normal community cannot be given tags at all.
       assert.equal((await request('POST',`/admin/communities/${normal}/badges`,{user_id:owner,note:'x'},owner,adminToken)).body.code, 'capability_required');
     });
+    await t.test('college-email communities admit only proven addresses at their domains', async () => {
+      assert.equal((await request('POST','/admin/communities',{owner:prefix+'2',handle:prefix+'uni',name:'Email uni',
+        institution_name:'Email University',email_domains:'@Uni.test, notadomain'},owner,adminToken)).status, 400);
+      const made = await request('POST','/admin/communities',{owner:prefix+'2',handle:prefix+'uni',name:'Email uni',
+        institution_name:'Email University',email_domains:'@Uni.test'},owner,adminToken);
+      assert.equal(made.status, 201, JSON.stringify(made.body));
+      const uni = made.body.community;
+      assert.deepEqual((await request('GET',`/communities/${prefix}uni`,undefined,outsider)).body.community.email_domains, ['uni.test']);
+
+      // No proven email: refused, with the domains to ask for — and an invite cannot skip it.
+      const refused = await request('POST',`/communities/${uni.id}/join`,{},outsider);
+      assert.equal(refused.status, 403);
+      assert.equal(refused.body.code, 'institution_email_required');
+      assert.deepEqual(refused.body.domains, ['uni.test']);
+
+      // A code is never sent to an address outside the domains, and without SMTP none is sent.
+      assert.equal((await request('POST',`/communities/${uni.id}/email/start`,{email:'x@gmail.com'},outsider)).body.code, 'email_domain_not_allowed');
+      assert.equal((await request('POST',`/communities/${uni.id}/email/start`,{email:'x@evil-uni.test'},outsider)).body.code, 'email_domain_not_allowed');
+      assert.equal((await request('POST',`/communities/${uni.id}/email/start`,{email:'x@student.uni.test'},outsider)).body.code, 'mail_unavailable');
+
+      // The code path itself: a stored hash, a wrong guess, then the right one.
+      const email = 'someone@student.uni.test';
+      const hash = createHash('sha256').update(`${outsider}:${email}:123456`).digest('hex');
+      await query(`insert into email_verification_codes (user_id,email,code_hash,expires_at) values ($1,$2,$3,now()+interval '10 minutes')`,
+                  [outsider, email, hash]);
+      assert.equal((await request('POST',`/communities/${uni.id}/email/confirm`,{email,code:'000000'},outsider)).body.code, 'code_wrong');
+      assert.equal((await request('POST',`/communities/${uni.id}/email/confirm`,{email,code:'123456'},outsider)).status, 200);
+      assert.equal((await request('POST',`/communities/${uni.id}/email/confirm`,{email,code:'123456'},outsider)).body.code, 'code_expired'); // single use
+      assert.equal((await request('POST',`/communities/${uni.id}/join`,{},outsider)).status, 200);
+
+      // Lifting the requirement is an admin act, and empty means open again.
+      assert.equal((await request('PATCH',`/admin/communities/${uni.id}/institution`,{email_domains:[]},owner,adminToken)).status, 200);
+      assert.equal((await request('POST',`/communities/${uni.id}/join`,{},member)).status, 200);
+      await query(`delete from community_members where community_id = $1 and user_id = $2`, [uni.id, outsider]);
+      await query(`delete from user_verified_emails where user_id = $1`, [outsider]);
+    });
     await t.test('KYC: only a passed application can be approved, and review is admin-only', async () => {
       const kycUser = outsider;
       await query(`insert into host_verifications (user_id, status, legal_name, pan_last4, pan_valid)

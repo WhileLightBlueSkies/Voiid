@@ -39,6 +39,7 @@ function Body() {
   const [category, setCategory] = useState('Education');
   const [joinPolicy, setJoinPolicy] = useState('open');
   const [institution, setInstitution] = useState('');
+  const [domains, setDomains] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +55,7 @@ function Body() {
           description: description.trim() || undefined,
           category, join_policy: joinPolicy,
           institution_name: institution.trim() || undefined,
+          email_domains: domains.trim() || undefined,
         },
       });
       router.push(`/communities/${r.community.id}`);
@@ -105,6 +107,10 @@ function Body() {
           <Field label="Verified institution" hint="Optional. Shows a verified mark and switches on moderator tags.">
             <input value={institution} maxLength={120} onChange={e => setInstitution(e.target.value)}
                    placeholder="Northstar University" />
+          </Field>
+
+          <Field label="Allowed email domains" hint="Optional. Only people who confirm an email at these domains can join, e.g. iitb.ac.in">
+            <input value={domains} onChange={e => setDomains(e.target.value)} placeholder="northstar.edu" />
           </Field>
 
           {error && <div role="alert" className="notice error">{error}</div>}
