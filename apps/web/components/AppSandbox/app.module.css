@@ -1,0 +1,1154 @@
+/* =============================================================================
+ * The interface INSIDE the phone.
+ *
+ * Every length is in `cqw` — 1% of the device's screen width — because the frame
+ * is a container (see PhoneFrame.module.css). One consequence worth knowing: this
+ * file never needs a media query. The app looks the same at 24rem on a desktop
+ * and at 17rem on a phone, and the page around it resizes the device instead.
+ *
+ * Colour comes from the site's semantic tokens, so the simulated app follows the
+ * visitor's light/dark choice exactly as the real one follows the system's.
+ * ========================================================================== */
+
+.screen { background: var(--color-background); }
+
+.app {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  font-size: 4cqw;
+  line-height: 1.35;
+}
+
+/* One screen at a time. The key changes on navigation, so this animates on every
+ * push and pop — the movement is what tells you a screen was stacked on another
+ * rather than swapped for it. */
+.page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  animation: pageIn 260ms var(--ease-out) both;
+}
+
+.page[data-direction='back'] { animation-name: pageBack; }
+.page[data-direction='none'] { animation-name: pageFade; }
+
+@keyframes pageIn { from { opacity: 0; transform: translateX(14%); } }
+@keyframes pageBack { from { opacity: 0; transform: translateX(-10%); } }
+@keyframes pageFade { from { opacity: 0; } }
+
+/* ---- Navigation bar ------------------------------------------------------- */
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 2.4cqw;
+  flex: none;
+  padding: 1.5cqw 4cqw 3cqw;
+  padding-block-start: calc(var(--safe-top) + 1cqw);
+  border-block-end: 1px solid var(--color-divider);
+  background: var(--color-background);
+}
+
+.navBack,
+.navButton,
+.navAvatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 0;
+  background: none;
+  color: var(--color-primary-ink);
+  cursor: pointer;
+  padding: 0;
+}
+
+.navBack { width: 7cqw; height: 9cqw; margin-inline-start: -2cqw; }
+.navButton { width: 9cqw; height: 9cqw; border-radius: 999px; background: var(--color-accent-quiet); }
+.navIcon { display: grid; place-items: center; color: var(--color-primary-ink); }
+
+.navTitle { display: grid; gap: 0.4cqw; min-width: 0; line-height: 1.15; }
+.navTitle h2 { font-size: 4.6cqw; font-weight: var(--weight-bold); letter-spacing: -0.02em; }
+.navTitle small {
+  display: flex;
+  align-items: center;
+  gap: 1cqw;
+  color: var(--color-text-dim);
+  font-size: 2.9cqw;
+}
+.navTitle small svg { flex: none; width: 2.9cqw; height: 2.9cqw; }
+.navTrailing { display: flex; align-items: center; gap: 2cqw; margin-inline-start: auto; }
+
+/* ---- Scrolling body ------------------------------------------------------- */
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3cqw 4cqw 4cqw;
+  scrollbar-width: none;
+}
+.scroll::-webkit-scrollbar { display: none; }
+
+/* ---- Avatars -------------------------------------------------------------- */
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 12cqw;
+  height: 12cqw;
+  border-radius: 4.2cqw;
+  color: #fff;
+  font-size: 5cqw;
+  font-weight: var(--weight-bold);
+}
+.avatar[data-size='sm'] { width: 9cqw; height: 9cqw; border-radius: 3.2cqw; font-size: 3.8cqw; }
+.avatar[data-size='lg'] { width: 24cqw; height: 24cqw; border-radius: 8.5cqw; font-size: 10cqw; }
+.avatar svg { width: 5cqw; height: 5cqw; }
+
+.avatar[data-tone='teal'] { background: linear-gradient(145deg, #2aa7ae, #0d6a73); }
+.avatar[data-tone='violet'] { background: linear-gradient(145deg, #a173d8, #5b2a8f); }
+.avatar[data-tone='blue'] { background: linear-gradient(145deg, #5b93e8, #1e40af); }
+.avatar[data-tone='amber'] { background: linear-gradient(145deg, #e0a35a, #8a5400); }
+.avatar[data-tone='green'] { background: linear-gradient(145deg, #58c08a, #146c3a); }
+
+/* ---- Chat list ------------------------------------------------------------ */
+.search {
+  display: flex;
+  align-items: center;
+  gap: 2cqw;
+  margin-block-end: 2cqw;
+  padding: 2.6cqw 3.4cqw;
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text-mute);
+}
+.search svg { flex: none; width: 4cqw; height: 4cqw; }
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 3.6cqw;
+  outline: none;
+}
+.search input::-webkit-search-cancel-button { display: none; }
+
+.chatList { display: grid; list-style: none; margin: 0; padding: 0; }
+
+.chatRow {
+  display: flex;
+  align-items: center;
+  gap: 3cqw;
+  width: 100%;
+  padding: 3cqw 2cqw;
+  border: 0;
+  border-radius: 4cqw;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.chatRow:hover { background: var(--color-surface-2); }
+
+.chatRowBody { flex: 1; min-width: 0; display: grid; gap: 0.8cqw; }
+.chatRowTop { display: flex; align-items: baseline; justify-content: space-between; gap: 2cqw; }
+.chatRowTop strong { font-size: 4cqw; font-weight: var(--weight-semibold); }
+.chatRowTop small { flex: none; color: var(--color-text-mute); font-size: 2.9cqw; }
+.chatRowBottom { display: flex; align-items: center; justify-content: space-between; gap: 2cqw; }
+
+.chatPreview {
+  overflow: hidden;
+  color: var(--color-text-dim);
+  font-size: 3.4cqw;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unread {
+  display: grid;
+  place-items: center;
+  flex: none;
+  min-width: 5.2cqw;
+  height: 5.2cqw;
+  padding-inline: 1.4cqw;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+  font-size: 2.8cqw;
+  font-style: normal;
+  font-weight: var(--weight-bold);
+}
+
+.empty { padding: 6cqw 2cqw; color: var(--color-text-dim); font-size: 3.4cqw; }
+
+/* ---- Thread --------------------------------------------------------------- */
+.thread {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2cqw;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3cqw 4cqw;
+  scrollbar-width: none;
+}
+.thread::-webkit-scrollbar { display: none; }
+
+.threadNotice {
+  align-self: center;
+  display: flex;
+  align-items: flex-start;
+  gap: 1.4cqw;
+  max-width: 92%;
+  margin-block-end: 1cqw;
+  padding: 2.2cqw 3cqw;
+  border-radius: 3cqw;
+  background: var(--color-accent-quiet);
+  color: var(--color-primary-ink);
+  font-size: 2.8cqw;
+  line-height: 1.35;
+  text-align: center;
+}
+.threadNotice svg { flex: none; width: 3cqw; height: 3cqw; margin-block-start: 0.4cqw; }
+
+.systemLine {
+  align-self: center;
+  padding: 1.4cqw 3cqw;
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text-mute);
+  font-size: 2.8cqw;
+}
+
+.bubble {
+  position: relative;
+  max-width: 78%;
+  padding: 2.6cqw 3.2cqw 3.4cqw;
+  border-radius: 4.4cqw;
+  font-size: 3.7cqw;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mine {
+  align-self: flex-end;
+  border-end-end-radius: 1.4cqw;
+  background: var(--color-bubble-sent);
+  color: var(--color-text-on-bubble);
+}
+
+.theirs {
+  align-self: flex-start;
+  border-end-start-radius: 1.4cqw;
+  background: var(--color-bubble-received);
+  color: var(--color-text);
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1cqw;
+  margin-block-start: 0.6cqw;
+  font-size: 2.5cqw;
+  font-style: normal;
+  opacity: 0.68;
+}
+/* Read receipts OFF is not a missing tick: the ticks stay and simply never turn
+ * blue, which is what the setting actually does. */
+.meta b { font-weight: var(--weight-regular); }
+.read { opacity: 1; }
+
+.typing { display: flex; gap: 1.2cqw; padding-block: 3.4cqw; }
+.typing i {
+  width: 2cqw;
+  height: 2cqw;
+  border-radius: 999px;
+  background: var(--color-text-mute);
+  animation: blink 1.1s infinite;
+}
+.typing i:nth-child(2) { animation-delay: 0.15s; }
+.typing i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes blink { 0%, 60%, 100% { opacity: 0.3; } 30% { opacity: 1; } }
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Location and game cards — the attachments a thread actually carries. */
+.card {
+  display: flex;
+  align-items: center;
+  gap: 2.6cqw;
+  max-width: 82%;
+  padding: 2.2cqw 3.4cqw 2.2cqw 2.2cqw;
+  border-radius: 4.4cqw;
+  background: var(--color-bubble-sent);
+  color: var(--color-text-on-bubble);
+}
+.card.mine { align-self: flex-end; border-end-end-radius: 1.4cqw; }
+
+.cardMap {
+  position: relative;
+  flex: none;
+  width: 11cqw;
+  height: 11cqw;
+  overflow: hidden;
+  border-radius: 3cqw;
+  background:
+    linear-gradient(115deg, transparent 46%, rgba(255, 255, 255, 0.35) 46% 54%, transparent 54%),
+    linear-gradient(200deg, transparent 58%, rgba(255, 255, 255, 0.28) 58% 66%, transparent 66%),
+    rgba(255, 255, 255, 0.18);
+}
+.cardPin {
+  position: absolute;
+  inset-block-start: 36%;
+  inset-inline-start: 50%;
+  width: 2.4cqw;
+  height: 2.4cqw;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 0 0 1.4cqw rgba(255, 255, 255, 0.3);
+}
+
+.cardGame {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 11cqw;
+  height: 11cqw;
+  border-radius: 3cqw;
+  background: rgba(255, 255, 255, 0.2);
+}
+.cardGame svg { width: 5cqw; height: 5cqw; }
+
+.cardText { display: grid; gap: 0.5cqw; line-height: 1.2; }
+.cardText strong { font-size: 3.6cqw; font-weight: var(--weight-semibold); }
+.cardText small { font-size: 2.8cqw; opacity: 0.8; }
+
+/* ---- Composer ------------------------------------------------------------- */
+.composerWrap {
+  flex: none;
+  padding: 2cqw 4cqw;
+  padding-block-end: 2cqw;
+  border-block-start: 1px solid var(--color-divider);
+  background: var(--color-background);
+}
+
+.chips { display: flex; gap: 2cqw; margin-block-end: 2.4cqw; }
+.chips button {
+  display: inline-flex;
+  align-items: center;
+  gap: 1.2cqw;
+  padding: 1.8cqw 3cqw;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-dim);
+  font: inherit;
+  font-size: 3cqw;
+  cursor: pointer;
+}
+.chips button svg { width: 3.4cqw; height: 3.4cqw; }
+.chips button[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--color-accent-quiet);
+  color: var(--color-primary-ink);
+}
+
+.sheet {
+  margin-block-end: 2.4cqw;
+  padding: 3cqw;
+  border-radius: 4cqw;
+  background: var(--color-surface-2);
+}
+.sheet p { margin-block-end: 2.2cqw; color: var(--color-text-dim); font-size: 3cqw; }
+.sheetRow { display: flex; flex-wrap: wrap; gap: 1.8cqw; }
+.sheetRow button {
+  flex: 1 1 auto;
+  padding: 2.2cqw 2.6cqw;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+  font: inherit;
+  font-size: 3.1cqw;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+.composer { display: flex; align-items: center; gap: 2cqw; }
+.composer input {
+  flex: 1;
+  min-width: 0;
+  padding: 3cqw 4cqw;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 3.6cqw;
+  outline: none;
+}
+.composer input:focus-visible { border-color: var(--color-primary); }
+.composer button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 10.5cqw;
+  height: 10.5cqw;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+  cursor: pointer;
+}
+.composer button:disabled { opacity: 0.4; cursor: default; }
+.composer button svg { width: 4.4cqw; height: 4.4cqw; }
+
+/* ---- Call ----------------------------------------------------------------- */
+.call {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(var(--safe-top) + 10cqw) 6cqw calc(var(--safe-bottom) + 5cqw);
+  background:
+    radial-gradient(85% 45% at 50% 14%, rgba(19, 130, 140, 0.45), transparent 72%),
+    radial-gradient(70% 40% at 80% 96%, rgba(107, 33, 168, 0.3), transparent 70%),
+    linear-gradient(170deg, #16292a, #05100e);
+  color: #fff;
+  text-align: center;
+}
+
+.callName { margin-block-start: 4cqw; font-size: 6cqw; font-weight: var(--weight-semibold); }
+.callClock {
+  margin-block-start: 1.4cqw;
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 4cqw;
+  font-variant-numeric: tabular-nums;
+}
+.callLock {
+  display: inline-flex;
+  align-items: center;
+  gap: 1.4cqw;
+  margin-block-start: 3.4cqw;
+  padding: 1.8cqw 3.4cqw;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  font-size: 3cqw;
+}
+.callLock svg { width: 3.4cqw; height: 3.4cqw; }
+
+.selfView {
+  display: grid;
+  place-items: center;
+  width: 20cqw;
+  height: 28cqw;
+  margin-block-start: 5cqw;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 5cqw;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.callStatus { margin-block-start: auto; color: rgba(255, 255, 255, 0.7); font-size: 3cqw; }
+
+.callControls { display: flex; gap: 5cqw; margin-block-start: 4cqw; }
+.callControls button {
+  display: grid;
+  place-items: center;
+  width: 14cqw;
+  height: 14cqw;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  cursor: pointer;
+}
+.callControls button[aria-pressed='true'] { background: #fff; color: #10201f; }
+.hangUp { background: var(--color-error) !important; color: #fff !important; }
+.hangUp svg { transform: rotate(135deg); }
+
+/* ---- Moments -------------------------------------------------------------- */
+.momentGrid { display: grid; gap: 3cqw; list-style: none; margin: 0; padding: 0; }
+
+.momentCard {
+  display: flex;
+  flex-direction: column;
+  gap: 2cqw;
+  width: 100%;
+  min-height: 34cqw;
+  padding: 3.4cqw;
+  border: 0;
+  border-radius: 5cqw;
+  background: linear-gradient(155deg, var(--from), var(--to));
+  color: #fff;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.momentTop { display: flex; align-items: center; gap: 2.2cqw; }
+.momentTop span { display: grid; line-height: 1.15; }
+.momentTop strong { font-size: 3.4cqw; font-weight: var(--weight-semibold); }
+.momentTop small { font-size: 2.7cqw; opacity: 0.78; }
+.momentCaption { margin-block-start: auto; font-size: 4.6cqw; font-weight: var(--weight-semibold); letter-spacing: -0.02em; }
+.momentAudience { display: flex; align-items: center; gap: 1.2cqw; font-size: 2.8cqw; opacity: 0.85; }
+.momentAudience svg { width: 3cqw; height: 3cqw; }
+
+/* A flat two-stop gradient does not read as a photograph; it reads as a swatch.
+ * These three offset radials give the stand-in artwork a light source and a
+ * subject, which is as far as an honest placeholder should go — it never
+ * pretends to be a specific picture. */
+.moment,
+.clip { --art-depth:
+    radial-gradient(42% 26% at 74% 22%, rgba(255, 255, 255, 0.26), transparent 70%),
+    radial-gradient(56% 34% at 22% 58%, rgba(0, 0, 0, 0.26), transparent 72%),
+    radial-gradient(90% 60% at 50% 110%, rgba(0, 0, 0, 0.42), transparent 70%);
+}
+
+.moment {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  padding: calc(var(--safe-top) + 2cqw) 4cqw calc(var(--safe-bottom) + 4cqw);
+  background: var(--art-depth), linear-gradient(165deg, var(--from), var(--to));
+  color: #fff;
+}
+
+.momentBars { display: flex; gap: 1.2cqw; }
+.momentBars span {
+  flex: 1;
+  height: 0.9cqw;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.3);
+}
+.momentBars span[data-state='done'] { background: rgba(255, 255, 255, 0.85); }
+.momentBars span[data-state='live'] { background: #fff; }
+
+.momentHead { display: flex; align-items: center; gap: 2.4cqw; margin-block-start: 3cqw; }
+.momentHead > span { display: grid; line-height: 1.15; }
+.momentHead strong { font-size: 3.6cqw; font-weight: var(--weight-semibold); }
+.momentHead small { font-size: 2.8cqw; opacity: 0.8; }
+.momentHead button {
+  display: grid;
+  place-items: center;
+  width: 9cqw;
+  height: 9cqw;
+  margin-inline-start: auto;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  cursor: pointer;
+}
+
+/* Two invisible halves: tap right to go on, left to go back. Exactly the gesture
+ * every story viewer uses, and both halves are real buttons with real names. */
+.momentTaps { display: flex; flex: 1; margin-block: 3cqw; }
+.momentTaps button { flex: 1; border: 0; background: none; cursor: pointer; }
+.momentTaps button:disabled { cursor: default; }
+
+.momentFoot { display: grid; gap: 1.6cqw; }
+.momentFoot p { font-size: 5cqw; font-weight: var(--weight-semibold); letter-spacing: -0.02em; line-height: 1.18; }
+.momentFoot > span { display: flex; align-items: center; gap: 1.4cqw; font-size: 2.9cqw; opacity: 0.85; }
+.momentFoot > span svg { flex: none; width: 3.2cqw; height: 3.2cqw; }
+.momentFoot small { font-size: 2.7cqw; opacity: 0.66; }
+
+/* ---- Map ------------------------------------------------------------------ */
+.mapWrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.map {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  /* Blocks of built-up land, so the roads have something to cut through. A flat
+   * fill with three white bars on it does not read as a map. */
+  background:
+    repeating-linear-gradient(
+      100deg,
+      transparent 0 7cqw,
+      color-mix(in srgb, var(--color-text) 4%, transparent) 7cqw 7.6cqw
+    ),
+    repeating-linear-gradient(
+      10deg,
+      transparent 0 9cqw,
+      color-mix(in srgb, var(--color-text) 4%, transparent) 9cqw 9.6cqw
+    ),
+    var(--color-surface-2);
+}
+
+.park { position: absolute; inset: 8% auto auto 6%; width: 38%; height: 26%; border-radius: 6cqw; background: color-mix(in srgb, var(--hue-calls) 26%, transparent); }
+.water { position: absolute; inset: auto -4% -8% auto; width: 42%; height: 26%; border-radius: 14cqw 0 0 0; background: color-mix(in srgb, var(--hue-map) 26%, transparent); }
+
+.road { position: absolute; background: var(--color-background); box-shadow: 0 0 0 0.3cqw color-mix(in srgb, var(--color-text) 6%, transparent); }
+.roadA { inset: 40% -20% auto -20%; height: 6cqw; transform: rotate(-14deg); }
+.roadB { inset: -20% auto -20% 34%; width: 5cqw; transform: rotate(9deg); }
+.roadC { inset: 70% -20% auto -20%; height: 4cqw; transform: rotate(6deg); }
+
+.friendPin {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 8.5cqw;
+  height: 8.5cqw;
+  border: 0.7cqw solid var(--color-background);
+  border-radius: 3cqw 3cqw 3cqw 0.8cqw;
+  background: var(--hue-map);
+  color: #fff;
+  font-size: 3.2cqw;
+  font-weight: var(--weight-bold);
+}
+.friendPin[data-who='A'] { inset-block-start: 22%; inset-inline-start: 18%; background: #7c3aed; }
+.friendPin[data-who='N'] { inset-block-start: 56%; inset-inline-end: 22%; background: #1e40af; }
+
+.you {
+  position: absolute;
+  z-index: 3;
+  inset-block-start: 43%;
+  inset-inline-start: 45%;
+  width: 6cqw;
+  height: 6cqw;
+  border: 1cqw solid var(--color-background);
+  border-radius: 999px;
+  background: var(--color-primary);
+  box-shadow: 0 0.4cqw 1.6cqw rgba(0, 0, 0, 0.25);
+}
+/* Sharing is shown as a growing accuracy ring, not as a colour change: the state
+ * has to survive being colour-blind and being printed. */
+.you[data-sharing='true'] {
+  box-shadow:
+    0 0.4cqw 1.6cqw rgba(0, 0, 0, 0.25),
+    0 0 0 6cqw color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+.you[data-sharing='true']::after {
+  content: '';
+  position: absolute;
+  inset: -6cqw;
+  border-radius: 999px;
+  background: var(--color-accent-quiet);
+  animation: pulse 2.4s var(--ease-out) infinite;
+}
+@keyframes pulse { 0% { transform: scale(0.7); opacity: 0.9; } 100% { transform: scale(1.25); opacity: 0; } }
+
+.mapSheet {
+  position: relative;
+  z-index: 4;
+  flex: none;
+  display: grid;
+  gap: 2.6cqw;
+  padding: 4cqw 4cqw calc(var(--safe-bottom) + 1cqw);
+  border-start-start-radius: 6cqw;
+  border-start-end-radius: 6cqw;
+  margin-block-start: -6cqw;
+  background: var(--color-surface);
+  box-shadow: 0 -2cqw 8cqw rgba(0, 0, 0, 0.12);
+}
+.mapStatus { color: var(--color-text-dim); font-size: 3.2cqw; }
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1cqw;
+  padding: 1cqw;
+  border-radius: 999px;
+  background: var(--color-surface-2);
+}
+.segmented button {
+  padding: 2.4cqw 1cqw;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--color-text-dim);
+  font: inherit;
+  font-size: 3.2cqw;
+  cursor: pointer;
+}
+.segmented button[aria-pressed='true'] {
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: var(--weight-semibold);
+  box-shadow: var(--shadow-xs);
+}
+
+.mapStart,
+.mapStop {
+  padding: 3.4cqw;
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 3.8cqw;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+.mapStart { background: var(--color-primary); color: var(--color-text-on-primary); }
+.mapStop { background: var(--color-surface-2); color: var(--color-error); }
+
+/* ---- Clips ---------------------------------------------------------------- */
+.clip {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  padding: calc(var(--safe-top) + 2cqw) 4cqw 3cqw;
+  background: var(--art-depth), linear-gradient(165deg, var(--from), var(--to));
+  color: #fff;
+}
+
+/* Text over media needs a scrim, not luck. The gradients behind a clip are
+ * arbitrary, so the bottom third gets a guaranteed dark floor to sit on. */
+.clip::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 52%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.72), transparent);
+  pointer-events: none;
+}
+
+.clipTop { position: relative; z-index: 2; display: flex; }
+.publicChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 1.2cqw;
+  padding: 1.6cqw 3cqw;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.38);
+  font-size: 2.8cqw;
+  font-weight: var(--weight-semibold);
+}
+.publicChip svg { width: 3cqw; height: 3cqw; }
+
+.clipSurface {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.clipPlay {
+  display: grid;
+  place-items: center;
+  width: 18cqw;
+  height: 18cqw;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  backdrop-filter: blur(8px);
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+/* While it plays the control gets out of the way, which is the only honest way to
+ * show "playing" on a surface with no video behind it. */
+.clipPlay[data-playing='true'] { opacity: 0; }
+.clipSurface:hover .clipPlay,
+.clipSurface:focus-visible .clipPlay { opacity: 1; }
+
+.clipRail {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 4cqw;
+  margin-block: auto 3cqw;
+  margin-inline-start: auto;
+  justify-items: center;
+}
+.clipRail button,
+.clipStat {
+  display: grid;
+  gap: 0.8cqw;
+  justify-items: center;
+  border: 0;
+  background: none;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.clipStat { cursor: default; }
+.clipRail small { font-size: 2.7cqw; font-variant-numeric: tabular-nums; }
+.clipRail button[data-liked='true'] { color: #ff8d91; }
+
+.clipFoot { position: relative; z-index: 2; display: grid; gap: 1.4cqw; }
+.clipFoot strong { font-size: 3.8cqw; font-weight: var(--weight-bold); }
+.clipFoot p { font-size: 3.4cqw; }
+.clipNote { color: rgba(255, 255, 255, 0.72); font-size: 2.7cqw; line-height: 1.35; }
+
+.clipNav {
+  position: absolute;
+  z-index: 3;
+  inset-block-start: 50%;
+  inset-inline-end: 3cqw;
+  display: grid;
+  gap: 2cqw;
+  transform: translateY(-50%);
+}
+.clipNav button {
+  display: grid;
+  place-items: center;
+  width: 9cqw;
+  height: 9cqw;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  cursor: pointer;
+}
+.clipNav button:disabled { opacity: 0.3; cursor: default; }
+
+/* ---- Games ---------------------------------------------------------------- */
+.gameGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 3cqw; list-style: none; margin: 0; padding: 0; }
+
+.gameCard {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2cqw;
+  width: 100%;
+  height: 100%;
+  padding: 3.4cqw;
+  border: 0;
+  border-radius: 5cqw;
+  background: linear-gradient(155deg, var(--from), var(--to));
+  color: #fff;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.gameArt {
+  display: grid;
+  place-items: center;
+  width: 11cqw;
+  height: 11cqw;
+  margin-block-end: 2cqw;
+  border-radius: 3.6cqw;
+  background: rgba(255, 255, 255, 0.2);
+}
+.gameCard strong { font-size: 4.2cqw; font-weight: var(--weight-bold); }
+.gameCard small { font-size: 2.9cqw; opacity: 0.85; line-height: 1.3; }
+.gameCard em { margin-block-start: 1.4cqw; font-size: 2.7cqw; font-style: normal; opacity: 0.75; }
+
+.gamesNote {
+  margin-block-start: 4cqw;
+  padding: 3cqw;
+  border-radius: 4cqw;
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  font-size: 3cqw;
+  line-height: 1.4;
+}
+
+.comingSoon { display: grid; justify-items: center; gap: 2.4cqw; padding: 6cqw 2cqw; text-align: center; }
+.comingSoon .gameArt { width: 16cqw; height: 16cqw; border-radius: 5cqw; background: linear-gradient(155deg, var(--from), var(--to)); color: #fff; }
+.comingSoon h3 { font-size: 4.6cqw; font-weight: var(--weight-bold); }
+.comingSoon p { color: var(--color-text-dim); font-size: 3.3cqw; line-height: 1.45; }
+
+.game { display: grid; gap: 3cqw; justify-items: center; }
+.gameScore {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  color: var(--color-text-dim);
+  font-size: 3.2cqw;
+}
+.gameScore strong { color: var(--color-text); font-size: 4cqw; font-variant-numeric: tabular-nums; }
+
+.snakeBoard {
+  position: relative;
+  display: grid;
+  gap: 0.4cqw;
+  width: 100%;
+  aspect-ratio: 15 / 20;
+  padding: 1.6cqw;
+  border-radius: 4cqw;
+  background: var(--color-surface-3);
+  outline: none;
+}
+.snakeBoard:focus-visible { box-shadow: var(--ring); }
+
+.snakeCell { border-radius: 0.8cqw; }
+.snakeCell[data-kind='head'] { background: var(--color-primary); border-radius: 1.4cqw; }
+.snakeCell[data-kind='body'] { background: color-mix(in srgb, var(--color-primary) 60%, transparent); }
+.snakeCell[data-kind='food'] { background: var(--hue-games); border-radius: 999px; }
+
+.gameOverlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 2.6cqw;
+  padding: 5cqw;
+  border-radius: 4cqw;
+  background: color-mix(in srgb, var(--color-background) 88%, transparent);
+  backdrop-filter: blur(4px);
+  text-align: center;
+}
+.gameOverlay p { color: var(--color-text-dim); font-size: 3.2cqw; line-height: 1.4; }
+
+.gamePrimary {
+  padding: 3cqw 5cqw;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+  font: inherit;
+  font-size: 3.6cqw;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+.dpad {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2cqw;
+  width: 100%;
+}
+.dpad button {
+  display: grid;
+  place-items: center;
+  height: 12cqw;
+  border: 1px solid var(--color-border);
+  border-radius: 3.4cqw;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.dpad button:disabled { opacity: 0.4; cursor: default; }
+
+.gameNote { color: var(--color-text-dim); font-size: 3cqw; text-align: center; }
+
+.cricketBoard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4cqw;
+  width: 100%;
+  padding: 5cqw 3cqw;
+  border-radius: 5cqw;
+  background: linear-gradient(155deg, #8a5400, #33200a);
+  color: #fff;
+}
+.cricketHand { display: grid; gap: 1.2cqw; justify-items: center; }
+.cricketPick {
+  display: grid;
+  place-items: center;
+  width: 16cqw;
+  height: 16cqw;
+  border-radius: 5cqw;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 7cqw;
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+.cricketHand small { font-size: 2.9cqw; opacity: 0.82; }
+.cricketVs { font-size: 3.2cqw; opacity: 0.66; }
+
+.cricketScore { display: flex; justify-content: space-between; width: 100%; color: var(--color-text-dim); font-size: 3.2cqw; }
+.cricketScore strong { color: var(--color-text); font-size: 4.4cqw; font-variant-numeric: tabular-nums; }
+
+/* ---- Tic Tac Toe and Rock Paper Scissors ---------------------------------- */
+.tttBoard {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2cqw;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 2cqw;
+  border-radius: 5cqw;
+  background: var(--color-surface-3);
+}
+.tttBoard button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 3.4cqw;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 10cqw;
+  line-height: 1;
+  cursor: pointer;
+}
+.tttBoard button:disabled { cursor: default; }
+.tttBoard button[data-mark='x'] { color: var(--color-primary-ink); }
+.tttBoard button[data-mark='o'] { color: var(--hue-stories); }
+/* The winning line is marked by fill as well as by the three symbols sitting in a
+ * row, so it does not depend on noticing a colour. */
+.tttBoard button[data-win='true'] { background: var(--color-accent-quiet); box-shadow: inset 0 0 0 0.6cqw var(--color-primary); }
+
+.rpsKeys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2cqw; width: 100%; }
+.rpsKeys button {
+  display: grid;
+  gap: 1cqw;
+  justify-items: center;
+  padding: 3cqw 1cqw;
+  border: 1px solid var(--color-border);
+  border-radius: 4cqw;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 3cqw;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+.rpsKeys button span { font-size: 7cqw; line-height: 1; }
+
+.cricketKeys { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1.6cqw; width: 100%; }
+.cricketKeys button {
+  height: 12cqw;
+  border: 1px solid var(--color-border);
+  border-radius: 3cqw;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 4cqw;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+/* ---- Profile and the ledger ----------------------------------------------- */
+.profileCard { display: grid; justify-items: center; gap: 1.6cqw; padding: 4cqw 0 6cqw; text-align: center; }
+.profileCard strong { font-size: 5cqw; font-weight: var(--weight-bold); }
+.profileCard small { color: var(--color-text-dim); font-size: 3.2cqw; }
+
+.settingsList { display: grid; gap: 1.6cqw; list-style: none; margin: 0; padding: 0; }
+.settingsList button {
+  display: flex;
+  align-items: center;
+  gap: 3cqw;
+  width: 100%;
+  padding: 3.4cqw;
+  border: 0;
+  border-radius: 4cqw;
+  background: var(--color-surface-2);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.settingsList span { flex: 1; display: grid; gap: 0.6cqw; }
+.settingsList strong { font-size: 3.7cqw; font-weight: var(--weight-semibold); }
+.settingsList small { color: var(--color-text-dim); font-size: 2.9cqw; line-height: 1.35; }
+.settingsLink { color: var(--color-text); }
+.settingsLink svg { flex: none; color: var(--color-text-mute); }
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 12cqw;
+  height: 7cqw;
+  border-radius: 999px;
+  background: var(--color-surface-3);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 0.8cqw;
+  inset-inline-start: 0.8cqw;
+  width: 5.4cqw;
+  height: 5.4cqw;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: var(--shadow-xs);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.switch[data-on='true'] { background: var(--color-primary); }
+.switch[data-on='true']::after { transform: translateX(5cqw); }
+
+.ledger { margin-block-end: 3cqw; padding: 3.4cqw; border-radius: 4.4cqw; background: var(--color-surface-2); }
+.ledger h3 { display: flex; align-items: center; gap: 1.6cqw; margin-block-end: 2.4cqw; font-size: 3.8cqw; font-weight: var(--weight-bold); }
+.ledger ul { display: grid; gap: 1.8cqw; list-style: none; margin: 0; padding: 0; }
+.ledger li { display: flex; align-items: flex-start; gap: 1.8cqw; color: var(--color-text-dim); font-size: 3.1cqw; line-height: 1.35; }
+.ledger li svg { flex: none; margin-block-start: 0.6cqw; }
+.ledger[data-kind='sealed'] h3, .ledger[data-kind='sealed'] li svg { color: var(--color-primary-ink); }
+.ledger[data-kind='open'] h3, .ledger[data-kind='open'] li svg { color: var(--hue-stories); }
+
+/* ---- Tab bar -------------------------------------------------------------- */
+.tabBar {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  flex: none;
+  padding: 2cqw 2cqw calc(var(--safe-bottom) - 1cqw);
+  border-block-start: 1px solid var(--color-divider);
+  background: var(--color-background);
+}
+.tabBar button {
+  display: grid;
+  gap: 1cqw;
+  justify-items: center;
+  padding: 1.4cqw 0;
+  border: 0;
+  border-radius: 3cqw;
+  background: none;
+  color: var(--color-text-mute);
+  font: inherit;
+  cursor: pointer;
+}
+.tabBar small { font-size: 2.6cqw; }
+.tabBar button[aria-current='page'] { color: var(--color-primary-ink); font-weight: var(--weight-semibold); }
+
+/* On a media surface the bar floats over the artwork rather than sitting on a
+ * page-coloured slab, the way every full-bleed feed does it. */
+.app[data-media='true'] .tabBar {
+  border-block-start-color: rgba(255, 255, 255, 0.16);
+  background: rgba(8, 14, 13, 0.72);
+  backdrop-filter: blur(14px);
+}
+.app[data-media='true'] .tabBar button { color: rgba(255, 255, 255, 0.62); }
+.app[data-media='true'] .tabBar button[aria-current='page'] { color: #fff; }
+
+/* When the tab bar is up it absorbs the home-indicator gutter. When it is not —
+ * a chat thread, a game, the settings list — whatever sits at the bottom has to
+ * absorb it itself, or the composer ends up under the indicator. */
+.app:not([data-tabs='true']) .scroll,
+.app:not([data-tabs='true']) .composerWrap { padding-block-end: calc(var(--safe-bottom) + 1cqw); }
+
+/* ---- Focus and motion ----------------------------------------------------- */
+/* The page sets `strong` to the page's ink. Inside the phone, half the surfaces
+ * are dark in BOTH themes (a call, a clip, a moment), and that inherited ink
+ * turned every name on them near-black on near-black. Emphasis inside the app
+ * takes its colour from whatever it is sitting on. */
+.app strong,
+.app b,
+.app h3 { color: inherit; }
+
+.app :focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* The `[data-direction]` rules above are more specific than a bare `.page`, so
+   * a plain `.page { animation: none }` here loses to them and the slide keeps
+   * playing. Every variant has to be named. */
+  .page,
+  .page[data-direction='forward'],
+  .page[data-direction='back'],
+  .page[data-direction='none'] { animation: none; }
+  .typing i, .you[data-sharing='true'] {
+  box-shadow:
+    0 0.4cqw 1.6cqw rgba(0, 0, 0, 0.25),
+    0 0 0 6cqw color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+.you[data-sharing='true']::after { animation: none; }
+  .you[data-sharing='true'] {
+  box-shadow:
+    0 0.4cqw 1.6cqw rgba(0, 0, 0, 0.25),
+    0 0 0 6cqw color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+.you[data-sharing='true']::after { opacity: 0.5; transform: scale(1); }
+  .switch, .switch::after, .clipPlay { transition: none; }
+}

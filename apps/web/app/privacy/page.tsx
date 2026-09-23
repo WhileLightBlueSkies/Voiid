@@ -6,13 +6,14 @@ import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { LockMotif } from '../../components/LockMotif';
 import styles from './page.module.css';
+import { buildPageMetadata } from '../../lib/metadata';
 
-export const metadata: Metadata = {
-  title: 'Privacy',
+export const metadata: Metadata = buildPageMetadata({
+  title: 'Privacy architecture and data visibility',
   description:
-    'What is end-to-end encrypted, what deliberately is not, and exactly what our ' +
-    'servers can see. Written to be checked, not to reassure.',
-};
+    'See exactly what Voiid encrypts end to end, what remains server-readable by design, which metadata exists and how each privacy boundary works.',
+  path: '/privacy/',
+});
 
 /*
  * THE PAGE THIS SITE EXISTS TO BE ABLE TO WRITE. Two rules held throughout:

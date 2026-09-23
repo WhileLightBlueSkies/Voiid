@@ -1,16 +1,21 @@
 import type { ReactNode } from 'react';
 import { hueVars, type DomainHue } from '../lib/hues';
+import { PhoneFrame } from './PhoneFrame';
 import styles from './PhoneMockup.module.css';
 
 /**
  * A phone, drawn in CSS.
  *
  * No screenshots: there is no CDN budget, offline builds must work, and a real
- * screenshot goes stale the day the app ships a change. This is a frame — the
- * titanium rail, the rounded display, the Dynamic-Island cutout, the home
- * indicator — that a page fills with real markup styled from the same tokens the
- * app uses. What is inside is HTML, so it stays sharp, reflows on a phone, and can
- * be read by a screen reader.
+ * screenshot goes stale the day the app ships a change. What is inside is HTML, so
+ * it stays sharp, reflows on a phone, and can be read by a screen reader.
+ *
+ * THE HARDWARE IS `PhoneFrame`. This component is the *stage* — the hue glow, the
+ * tilt, the size steps and the in-screen furniture below — and nothing else. It
+ * used to draw its own frame, whose band was mixed from `--color-text` against the
+ * page surface; on the light theme that produced a pale silver phone that all but
+ * vanished into a white page, and it disagreed with the frame in the hero and the
+ * tour. One device, one silhouette, everywhere.
  *
  * ACCESSIBILITY: the frame is decorative and hidden. What a page puts inside is
  * real content, so give the mockup a `label` describing what the screen shows, or
@@ -64,27 +69,15 @@ export function PhoneMockup({
     >
       {glow ? <span className={styles.glow} aria-hidden="true" /> : null}
 
-      <div className={styles.device}>
-        {/* Frame, buttons and cutout are chrome — never announced. */}
-        <span className={styles.buttonVolumeUp} aria-hidden="true" />
-        <span className={styles.buttonVolumeDown} aria-hidden="true" />
-        <span className={styles.buttonPower} aria-hidden="true" />
-
-        <div className={styles.screen}>
-          <div className={styles.statusBar} aria-hidden="true">
-            <span className={styles.clock}>{time}</span>
-            <span className={styles.island} />
-            <span className={styles.indicators}>
-              <span className={styles.signal} />
-              <span className={styles.battery} />
-            </span>
-          </div>
-
-          <div className={styles.content}>{children}</div>
-
-          <span className={styles.homeIndicator} aria-hidden="true" />
-        </div>
-      </div>
+      {/* `--screen-w` is the DISPLAY width; PhoneFrame is sized by the BODY width,
+          and the display is 0.916 of it (see PhoneFrame's proportions). */}
+      <PhoneFrame
+        className={styles.device}
+        width="calc(var(--screen-w) / 0.916)"
+        time={time}
+      >
+        <div className={styles.inner}>{children}</div>
+      </PhoneFrame>
     </div>
   );
 }

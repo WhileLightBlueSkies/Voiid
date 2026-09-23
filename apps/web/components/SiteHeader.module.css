@@ -35,7 +35,7 @@
    * Here the capsule is a HIGH-opacity white with a faint border and a real
    * shadow — the shadow is what lifts it off the page now, and the blur only has
    * to soften whatever scrolls under it. */
-  background: rgba(255, 255, 255, 0.82);
+  background: color-mix(in srgb, var(--color-surface) 84%, transparent);
   border: 1px solid var(--color-border);
   box-shadow: var(--shadow-card);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
@@ -89,6 +89,8 @@
   gap: 2px;
   list-style: none;
 }
+
+.mobileFeatures { display: none; }
 
 .link {
   display: inline-flex;
@@ -286,26 +288,33 @@
   .toggle { display: inline-flex; }
 
   .nav {
-    /* `grid-template-rows: 0fr → 1fr` animates a height the browser can actually
-     * interpolate, without a hardcoded max-height guess that clips the list. */
-    flex-basis: 100%;
-    display: grid;
-    grid-template-rows: 0fr;
-    transition: grid-template-rows var(--dur-base) var(--ease-out);
+    display: none;
+    position: absolute;
+    inset-block-start: calc(100% + 8px);
+    inset-inline: 0;
+    max-height: calc(100dvh - 90px);
+    overflow-y: auto;
+    padding: 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-pop);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
   }
 
   .navInner {
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
-    overflow: hidden;
-    min-height: 0;
+    width: 100%;
   }
 
   .list {
     flex-direction: column;
     align-items: stretch;
     gap: 2px;
+    width: 100%;
   }
 
   .link {
@@ -346,8 +355,7 @@
   /* Driven by the button's state on the header rather than a sibling checkbox (W03). The
    * animation, its duration and its easing token are unchanged. */
   .header[data-nav-open='true'] .nav {
-    grid-template-rows: 1fr;
-    margin-block-start: var(--space-2xs);
+    display: block;
   }
 
   .link[aria-current='page'] {
@@ -364,6 +372,70 @@
   .header[data-nav-open='true'] .toggle .bars span:nth-child(3) {
     transform: translateY(-6px) rotate(-45deg);
   }
+}
+
+@media (max-width: 700px) {
+  .header {
+    inset-block-start: max(10px, env(safe-area-inset-top));
+    padding-inline: 14px;
+  }
+
+  .bar {
+    position: relative;
+    min-height: 60px;
+    flex-wrap: nowrap;
+    gap: 2px;
+    padding: 6px 7px 6px 18px;
+    border: 1px solid var(--color-border);
+    border-radius: 22px;
+    box-shadow: var(--shadow-lift);
+    background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  }
+
+  .brand { min-width: 0; }
+  .toggle { width: 46px; height: 46px; margin-inline-end: 0; border-radius: 16px; background: var(--color-accent-quiet); color: var(--color-primary-ink); }
+  .nav {
+    inset-inline: 0;
+    inset-block-start: calc(100% + 10px);
+    max-height: calc(100dvh - 88px - env(safe-area-inset-top));
+    padding: 16px;
+    border-radius: 24px;
+    background: var(--color-surface);
+  }
+  .navInner { gap: 16px; }
+  .list { gap: 4px; }
+  .hasMenu { display: none; }
+  .mobileFeatures { display: block; margin-block-end: 8px; }
+  .mobileNavLabel {
+    display: block;
+    padding: 4px 8px 12px;
+    color: var(--color-primary-ink);
+    font-size: 12px;
+    font-weight: var(--weight-bold);
+    letter-spacing: var(--tracking-wide);
+    text-transform: uppercase;
+  }
+  .mobileFeatureList { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; list-style: none; }
+  .mobileFeatureLink {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 60px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    background: var(--color-surface-2);
+    font-size: 15px;
+    font-weight: var(--weight-semibold);
+    text-decoration: none;
+  }
+  .mobileFeatureLink[aria-current='page'] { border-color: var(--color-primary); background: var(--color-accent-quiet); }
+  .mobileFeatureIcon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; }
+  .mobileFeatureArrow { margin-inline-start: auto; color: var(--color-text-mute); }
+  .link { min-height: 52px; font-weight: var(--weight-semibold); }
+  .menuItem { min-height: 48px; align-items: center; }
+  .menuLabel { font-size: var(--text-body); }
+  .cta { min-height: 52px; font-size: var(--text-body); width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

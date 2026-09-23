@@ -9,6 +9,7 @@ asset of any kind. `npm run build -w @voiid/web` writes a plain directory of HTM
 npm run dev  -w @voiid/web     # localhost:3000
 npm run build -w @voiid/web    # static export → apps/web/out
 npm run typecheck -w @voiid/web
+npm run test:e2e -w @voiid/web # Playwright marketing-site checks
 ```
 
 ---
@@ -25,8 +26,9 @@ The only sanctioned exceptions are the four below, each commented where it occur
 Three of them are not colour choices at all, which is the test to apply if you think
 you have found a fifth:
 
-- the two `<meta name="theme-color">` values in `app/layout.tsx` — the browser chrome
-  reads them before any stylesheet parses, so `var()` is not available;
+- the browser-chrome colours in `app/layout.tsx`, `components/ThemeScript.tsx`, and
+  `components/ThemeToggle.tsx` — they run before stylesheets or update the browser's
+  `<meta name="theme-color">`, where `var()` is unavailable;
 - the phone's Dynamic-Island cutout in `PhoneMockup.module.css` — a hole in the
   display, the same near-black in both themes because physics has no light mode;
 - the `#000` stops in the Hero's `mask-image` — a mask samples *alpha*, so that is an
@@ -67,43 +69,34 @@ design. (Note also that the `ComingSoonView` header comment names *Games* alongs
 Communities; that comment is stale. Games is fully built on both platforms — iOS routes
 `.games` to a real `GamesHomeView()` — so the Games claims on this site are sound.)
 
-**3. One amber moment per page.** Amber (`--color-accent`) is the single warm colour
-in the system and its power is entirely its rarity. Count these as amber before you
-add another: `<Button variant="accent">`, `<CTA accent>`, `<E2EEBadge state="refereed">`,
-anything with `hue="games"` or `hue="payments"`, and the unread pill inside
-`<PhoneRow badge>`. On the home page the amber moment is spent on the Games card.
+**3. Keep warm colour rare.** Teal is the brand accent. Amber belongs to games and
+server-refereed states, where it carries meaning; avoid scattering it through generic
+buttons or decoration. On the home page that warm moment is the Games card.
 
 ---
 
 ## Tokens (`app/globals.css`)
 
-`:root` carries the light values; `@media (prefers-color-scheme: dark)` redefines the
-same names. Dark is the designed state — compose for it first, then check light.
+`:root` carries the light values and is the deliberate first-visit default.
+`html[data-theme='dark']` redefines the same names after a visitor explicitly chooses
+dark mode. The selection is stored as `voiid-theme`; it does not silently follow the
+operating-system theme.
 
 ### Colour
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `--color-primary` | `#2E2440` | `#B59BE0` | Brand, every primary action |
-| `--color-primary-soft` | `#6B5A8C` | `#8F78B8` | Primary at reading weight |
-| `--color-background` | `#F1EEF5` | `#0D0B14` | The ground |
-| `--color-surface` | `#FFFFFF` | `#1C1826` | Cards, one step up |
-| `--color-surface-2` | `#EAE5F2` | `#171320` | Inset wells, inert chips |
-| `--color-text` | `#241D33` | `#E6E1EF` | |
-| `--color-text-dim` | `#5F5570` | `#A79CBD` | Body copy inside cards, captions |
-| `--color-text-on-primary` | `#EFEAF7` | `#14101F` | On a filled primary surface |
-| `--color-text-on-accent` | `#17120A` | `#241A08` | On a filled amber surface |
-| `--color-divider` | `#E3DEEC` | `#241F2F` | Must recede |
-| `--color-border` | `#D6CFE4` | `#342D42` | A line meant to be noticed |
-| `--color-accent` | `#B57210` | `#E8A33D` | Amber. Once per page. |
-| `--color-accent-quiet` | 12% amber | 14% amber | Amber wash |
-| `--color-success` | `#1F7A52` | `#63C78D` | |
-| `--color-error` | `#C0392F` | `#EF7A6B` | |
-| `--color-warning` | `#B07818` | `#E0A83C` | |
-| `--color-info` | `#2A5B8F` | `#7FB0E0` | |
-| `--color-bubble-sent` | `#2E2440` | `#7862A6` | Inside `PhoneMockup` only |
-| `--color-bubble-received` | `#FFFFFF` | `#1C1826` | Inside `PhoneMockup` only |
-| `--color-text-on-bubble` | `#F8F5FC` | `#F8F5FC` | Fixed in both themes |
+| `--color-primary` | `#13828c` | `#79ded0` | Brand and primary actions |
+| `--color-primary-ink` | `#0b5c64` | `#8ce6d8` | Accessible brand-colour text |
+| `--color-background` | `#fbfcfc` | `#07110f` | Page ground |
+| `--color-surface` | `#ffffff` | `#0e1d1a` | Raised cards and panels |
+| `--color-surface-2` | `#f2f5f6` | `#142824` | Inset wells and quiet chips |
+| `--color-text` | `#0d1416` | `#f2faf8` | Primary copy |
+| `--color-text-dim` | `#55646a` | `#a9c3bd` | Secondary copy |
+| `--color-border` | `#dbe3e5` | `#26413c` | Card and control edges |
+| `--color-accent` | `#13828c` | `#79ded0` | Brand accent |
+| `--color-bubble-sent` | `#13828c` | `#5fcabb` | Phone previews only |
+| `--color-bubble-received` | `#f2f5f6` | `#19322d` | Phone previews only |
 
 Status colour is never the *only* signal — pair it with a glyph and a word, as
 `E2EEBadge` does. Roughly one man in twelve has a colour-vision deficiency.
@@ -115,12 +108,12 @@ are site-side aliases so every nav entry has one.
 
 | `DomainHue` | Light | Dark | Page |
 |---|---|---|---|
-| `chat` | `#2E2440` | `#B59BE0` | Messaging, Home |
-| `calls` | `#2E7D5B` | `#5FBE8D` | Calls |
-| `map` | `#2A5B8F` | `#7FB0E0` | Map |
-| `stories` / `clips` | `#7B4B8A` | `#C98BD8` | Clips |
-| `payments` / `games` | `#A9690C` | `#E8A33D` | Games — **this is amber** |
-| `privacy` | `#2E2440` | `#B59BE0` | Privacy |
+| `chat` | `#0b5c64` | `#8ce6d8` | Messaging, Home |
+| `calls` | `#146c3a` | `#83d8a6` | Calls |
+| `map` | `#1e40af` | `#9ab9ff` | Map |
+| `stories` / `clips` | `#6b21a8` | `#d6a8ef` | Clips |
+| `payments` / `games` | `#8a5400` | `#f2bd72` | Games — the warm hue |
+| `privacy` | `#0b5c64` | `#8ce6d8` | Privacy |
 
 Apply a hue by passing `hue="map"` to `Hero`, `Section`, `FeatureCard`, `CTA`,
 `PhoneMockup` or `Callout`. That sets `--hue` and `--hue-wash` on the subtree, and
@@ -229,7 +222,8 @@ The closing band. One per page.
   hue?: DomainHue; accent?: boolean; className?: string }
 ```
 
-`accent` is the amber treatment — see rule 3.
+`accent` uses the brand accent treatment; warm amber remains reserved for games and
+server-refereed status — see rule 3.
 
 ### `<Button>`, `<ButtonRow>` — `components/Button.tsx`
 Every action is a link; there is deliberately no `<button>` variant.
@@ -267,10 +261,41 @@ Where the sentence about what we *cannot* do gets a frame of its own.
   glyph?: GlyphName; className?: string }
 ```
 
+### `<PhoneFrame>` — `components/PhoneFrame.tsx`
+**The** device. One silhouette for the whole site: the hero composition, every feature
+page, and the interactive tour all render this, because a phone drawn three times is a
+phone drawn three different shapes.
+
+```ts
+{ children: ReactNode;
+  width?: string;                        // ANY CSS LENGTH — never a percentage, see below
+  time?: string;                         // status-bar clock, default '9:41'
+  chrome?: 'auto' | 'light' | 'dark';    // ink for the status bar + home indicator
+  statusBar?: boolean;                   // off for a screen that draws its own
+  label?: string;                        // makes it one labelled image; omit when interactive
+  className?: string; screenClassName?: string; style?: CSSProperties }
+```
+
+Everything derives from `width` (the BODY width): bezel `0.042W`, body radius `0.17W`,
+screen radius `0.128W` (concentric — body radius minus bezel), Dynamic Island 31.8% of
+the screen at 3.4:1, home indicator 35.4%. The ratios come from a 6.1" iPhone.
+
+Two rules that are easy to break:
+
+- **`width` must be a real length.** It feeds `calc(var(--phone-w) * 0.042)` for the
+  bezel and the radii; a percentage in there resolves against a different box and
+  silently deforms the device. `min(23rem, 100cqw - 3rem, …)` is fine; `80%` is not.
+- **The screen is a container** (`container-type: inline-size`), so everything drawn
+  inside it is sized in `cqw`. That is why the same interface renders identically at
+  13rem in the hero and 23rem in the tour, and why none of it needs a media query.
+
+The frame is graphite in **both** themes. A real phone does not turn white when the
+page does; only what is on the screen follows the theme.
+
 ### `<PhoneMockup>` + screen furniture — `components/PhoneMockup.tsx`
-A device drawn entirely in CSS — titanium rail, side buttons, Dynamic Island, home
-indicator — that you fill with real markup. No screenshots: they need a CDN and they
-go stale the day the app changes.
+The *stage* around a `PhoneFrame`: hue bloom, tilt, the three size steps, and the
+in-screen furniture below. It no longer draws a frame of its own. No screenshots: they
+need a CDN and they go stale the day the app changes.
 
 ```ts
 PhoneMockup {
@@ -293,6 +318,38 @@ PhoneRow     { avatar?: ReactNode; title: ReactNode; preview?: ReactNode;
 
 Everything inside the screen is sized in `em` off the display width, so content scales
 with `size` automatically. Content is clipped, not scrolled — compose it to fit.
+`--screen-w` is the DISPLAY width; `PhoneFrame` takes the BODY width, which is
+`--screen-w / 0.916`.
+
+### The interactive tour — `components/AppSandbox/`
+"Go through the app" opens a full-viewport simulation of the product. It is an
+application, not a slideshow: tabs, one back stack per tab, a composer you can type in,
+a call with a running clock, location sharing with an end time, a clip feed, and four
+games that really play.
+
+| File | Holds |
+| --- | --- |
+| `types.ts` | `TabId`, `Route`, `SandboxState`, `SandboxAction` |
+| `state.ts` | the reducer — all navigation and every state change, pure |
+| `data.ts` | chats, messages, moments, clips and the game catalogue |
+| `screens.tsx` | one component per screen plus the nav bar |
+| `games.tsx` | Tic Tac Toe, Rock Paper Scissors, Hand Cricket, Snake |
+| `AppSandbox.tsx` | the dialog, the guide column, the phone |
+| `app.module.css` | the interface inside the screen — all of it in `cqw` |
+
+Rules it has to keep:
+
+- **Navigation lives inside the phone.** The guide column on the left is a set of
+  shortcuts; delete it and the app still works. That is the test that it is an app.
+- **The tab bar belongs to tab roots only.** A pushed screen — a chat, a game, the
+  settings list — takes the whole display, and whatever sits at its bottom absorbs the
+  home-indicator gutter itself.
+- **Clips is a tab root**, so it keeps the tab bar even though it is full-bleed. Hiding
+  it there strands the visitor on the feed.
+- **The game catalogue is exactly the four seeded games** (see `app/games/page.tsx`).
+  A browser test asserts it.
+- The whole thing is `import()`ed only after the button is pressed, and a test asserts
+  the chunk is absent from the initial payload.
 
 ### `<LockMotif>` — `components/LockMotif.tsx`
 The E2EE diagram: two devices, two keys, a sealed packet, and a server that only ever

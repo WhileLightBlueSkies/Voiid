@@ -1,0 +1,111 @@
+.section {
+  width: min(100%, calc(var(--container-wide) + var(--container-pad) * 2));
+  margin-inline: auto;
+  padding: var(--section-gap) var(--container-pad);
+}
+
+.heading { display: grid; justify-items: center; text-align: center; }
+.heading h2 { max-width: 18ch; margin-block-start: 1rem; }
+.heading > p:last-child {
+  max-width: 46ch;
+  margin-block-start: 1rem;
+  color: var(--color-text-dim);
+  font-size: var(--text-lede);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1rem;
+  margin-block-start: 3.5rem;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  grid-column: span 2;
+  gap: 1.25rem;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xl);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-decoration: none;
+  box-shadow: var(--shadow-card);
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+
+/* Row one is two wide cards, row two is three narrow ones. A wide card's preview
+ * is also WIDER, not just bigger: a 16:10 frame stretched across half the page
+ * becomes a tall empty box with two chat bubbles in the corner of it. */
+.card[data-large='true'] { grid-column: span 3; }
+.card[data-large='true'] { --preview-ratio: 2.3 / 1; }
+
+.body { display: flex; flex-direction: column; flex: 1; padding: 0 0.6rem 0.6rem; }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
+.card h3 { font-size: var(--text-h3); letter-spacing: var(--tracking-h3); }
+
+/* The privacy status rides on the card, not in a footnote three sections down. */
+.boundary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.24rem 0.55rem;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+}
+.boundary[data-kind='sealed'] { background: var(--color-accent-quiet); color: var(--color-primary-ink); }
+.boundary[data-kind='open'] {
+  background: color-mix(in srgb, var(--hue-stories) 12%, transparent);
+  color: var(--hue-stories);
+}
+
+.card p {
+  max-width: 34ch;
+  margin-block-start: 0.6rem;
+  color: var(--color-text-dim);
+  font-size: var(--text-small);
+  line-height: 1.55;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-block-start: auto;
+  padding-block-start: 1rem;
+  color: var(--color-primary-ink);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .card:hover { transform: translateY(-5px); border-color: var(--color-border-strong); box-shadow: var(--shadow-lift); }
+  .card:hover .link svg { transform: translateX(3px); }
+  .link svg { transition: transform var(--dur-fast) var(--ease-out); }
+}
+
+@media (max-width: 840px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .card, .card[data-large='true'] { grid-column: span 1; }
+}
+
+@media (max-width: 560px) {
+  .heading { justify-items: start; text-align: start; }
+  .heading h2 { max-width: 12ch; }
+  .grid { grid-template-columns: 1fr; gap: 1.1rem; margin-block-start: 2.2rem; }
+  .card, .card[data-large='true'] { gap: 1rem; padding: 0.8rem; --preview-ratio: 1.9 / 1; }
+  .body { padding: 0 0.4rem 0.45rem; }
+  .card p { font-size: var(--text-small); }
+  .link { padding-block-start: 0.75rem; font-size: var(--text-small); }
+  .boundary { font-size: 0.75rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card { transition-property: border-color, box-shadow; }
+  .link svg { transition: none; }
+}

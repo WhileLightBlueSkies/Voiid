@@ -6,13 +6,14 @@ import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { CTA } from '../../components/CTA';
 import { PhoneMockup, PhoneAppBar } from '../../components/PhoneMockup';
+import { buildPageMetadata } from '../../lib/metadata';
 
-export const metadata: Metadata = {
-  title: 'Map',
+export const metadata: Metadata = buildPageMetadata({
+  title: 'Secure live location sharing and friends map',
   description:
-    'A friends map that starts empty. You appear to nobody until you name someone, and ' +
-    'going invisible mints a new key so the dark period stays dark.',
-};
+    'Share live location privately for the time and people you choose. Voiid starts invisible, encrypts positions on your phone and expires sharing automatically.',
+  path: '/map/',
+});
 
 /*
  * CLAIMS CHECKED (README rule 2), against docs/LOCATION.md and the header of

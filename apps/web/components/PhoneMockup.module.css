@@ -11,24 +11,28 @@
   justify-content: center;
   /* Never wider than its column: this is the most likely cause of sideways scroll. */
   max-width: 100%;
+  /* NOT clipped. `overflow: clip` here used to cut the device's drop shadow into a
+   * hard-edged grey rectangle — a clipped soft shadow is worse than no shadow.
+   * Sideways scroll is held off by `max-width` above and verified at 320px by the
+   * "no phone overflow" browser test, which walks every public route. */
+  overflow: visible;
+  padding-block: calc(var(--screen-w) * 0.06);
 }
 
 .sm { --screen-w: min(240px, 72vw); }
 .md { --screen-w: min(300px, 76vw); }
 .lg { --screen-w: min(340px, 80vw); }
 
-.stage {
-  --bezel: calc(var(--screen-w) * 0.038);
-  --screen-h: calc(var(--screen-w) * 2.1667); /* 19.5:9 */
-  --screen-r: calc(var(--screen-w) * 0.145);
-  --frame-r: calc(var(--screen-r) + var(--bezel));
-}
+
 
 /* Bloom of the domain hue behind the device — the graphic that makes a bare frame
  * feel placed rather than pasted. Clipped by the stage so it cannot widen the page. */
+/* The bloom must stay INSIDE the stage's clip. It used to be inset negatively,
+ * which was invisible while the stage hugged the device; now that the stage is
+ * padded, a bloom hanging outside it gets clipped into a hard grey rectangle. */
 .glow {
   position: absolute;
-  inset: -12% -18%;
+  inset: 5% 1%;
   z-index: 0;
   border-radius: 50%;
   background: radial-gradient(
@@ -40,157 +44,30 @@
   pointer-events: none;
 }
 
-/* ---- the frame ----------------------------------------------------------- */
+/* ---- the device ---------------------------------------------------------- *
+ * The frame, the side keys, the status bar, the Dynamic Island and the home
+ * indicator all live in PhoneFrame now. What remains here is the content plane
+ * inside the display and the type scale it is measured in. */
 
-.device {
-  position: relative;
-  z-index: 1;
-  width: calc(var(--screen-w) + var(--bezel) * 2);
-  padding: var(--bezel);
-  border-radius: var(--frame-r);
-  /* A rail, not a flat slab: the highlight down the left and the shadow down the
-   * right is what reads as brushed metal at this size. */
-  background: linear-gradient(
-    145deg,
-    color-mix(in srgb, var(--color-text) 34%, var(--color-surface)) 0%,
-    color-mix(in srgb, var(--color-text) 12%, var(--color-surface)) 26%,
-    color-mix(in srgb, var(--color-text) 30%, var(--color-surface)) 55%,
-    color-mix(in srgb, var(--color-text) 8%, var(--color-surface)) 82%,
-    color-mix(in srgb, var(--color-text) 26%, var(--color-surface)) 100%
-  );
-  box-shadow: var(--shadow-device);
-}
+.device { position: relative; z-index: 1; }
 
-.buttonVolumeUp,
-.buttonVolumeDown,
-.buttonPower {
-  position: absolute;
-  width: calc(var(--bezel) * 0.42);
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--color-text) 32%, var(--color-surface));
-}
-
-.buttonVolumeUp {
-  inset-inline-start: calc(var(--bezel) * -0.34);
-  inset-block-start: 21%;
-  height: 7%;
-}
-.buttonVolumeDown {
-  inset-inline-start: calc(var(--bezel) * -0.34);
-  inset-block-start: 30%;
-  height: 7%;
-}
-.buttonPower {
-  inset-inline-end: calc(var(--bezel) * -0.34);
-  inset-block-start: 25%;
-  height: 11%;
-}
-
-/* ---- the display --------------------------------------------------------- */
-
-.screen {
-  position: relative;
+.inner {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  width: var(--screen-w);
-  height: var(--screen-h);
-  border-radius: var(--screen-r);
-  overflow: hidden;
-  /* The app's own ground — not the page's, so the mockup reads as the product even
-   * when the page around it is in the light theme. */
-  background: var(--color-background);
-  /* The inner ring of glass inside the metal. */
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-text) 22%, transparent);
+  min-height: 0;
+  /* PhoneFrame's status bar and home indicator are OVERLAID, so the content plane
+   * keeps clear of both itself. */
+  padding-block: var(--safe-top) var(--safe-bottom);
   /* Everything inside is a small fixed scale — the screen is ~300px wide, so page
-   * body type would be absurd in it. */
+   * body type would be absurd in it. The furniture below is all sized in `em`
+   * against this one declaration. */
   font-size: calc(var(--screen-w) * 0.0433);
   line-height: 1.35;
   color: var(--color-text);
-}
-
-/* ---- status bar + Dynamic Island ----------------------------------------- */
-
-.statusBar {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(var(--screen-w) * 0.038) calc(var(--screen-w) * 0.06)
-    calc(var(--screen-w) * 0.012);
-  flex: none;
-}
-
-.clock {
-  font-size: 0.85em;
-  font-weight: var(--weight-semibold);
-  letter-spacing: 0.01em;
-}
-
-.island {
-  position: absolute;
-  inset-inline-start: 50%;
-  inset-block-start: calc(var(--screen-w) * 0.026);
-  transform: translateX(-50%);
-  width: calc(var(--screen-w) * 0.3);
-  height: calc(var(--screen-w) * 0.093);
-  border-radius: var(--radius-pill);
-  /* Not a token, and deliberately so: the cutout is a hole in the display. It is the
-   * same near-black in both themes because physics does not have a light mode. */
-  background: #05040a;
-}
-
-.indicators {
-  display: inline-flex;
-  align-items: center;
-  gap: calc(var(--screen-w) * 0.02);
-}
-
-.signal {
-  width: calc(var(--screen-w) * 0.05);
-  height: calc(var(--screen-w) * 0.033);
-  clip-path: polygon(0 100%, 22% 100%, 22% 62%, 0 62%, 0 100%, 39% 100%, 39% 40%,
-    61% 40%, 61% 100%, 78% 100%, 78% 16%, 100% 16%, 100% 100%);
-  background: currentColor;
-  opacity: 0.85;
-}
-
-.battery {
-  width: calc(var(--screen-w) * 0.073);
-  height: calc(var(--screen-w) * 0.036);
-  border-radius: calc(var(--screen-w) * 0.011);
-  border: 1px solid currentColor;
-  opacity: 0.6;
-  position: relative;
-}
-.battery::after {
-  content: '';
-  position: absolute;
-  inset: 1.5px;
-  inset-inline-end: 40%;
-  border-radius: 1px;
-  background: currentColor;
-}
-
-/* ---- content area -------------------------------------------------------- */
-
-.content {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   /* Content is composed to fit; anything longer is clipped rather than given a
    * scrollbar, because a scrollbar inside a marketing mockup reads as a bug. */
   overflow: hidden;
-}
-
-.homeIndicator {
-  flex: none;
-  width: 34%;
-  height: calc(var(--screen-w) * 0.016);
-  margin: calc(var(--screen-w) * 0.02) auto calc(var(--screen-w) * 0.028);
-  border-radius: var(--radius-pill);
-  background: var(--color-text);
-  opacity: 0.35;
 }
 
 /* ---- tilt ---------------------------------------------------------------- */

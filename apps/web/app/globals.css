@@ -6,12 +6,8 @@
  * "improve" a brand hex on this side; fix Theme.swift and copy it down, or the
  * site and the product drift apart.
  *
- * THE SITE IS LIGHT ONLY. The APP is designed dark; the marketing site is not, and
- * the two are allowed to differ — a product page has to work on a projector, in a
- * press screenshot and on a phone in daylight, and the category (WhatsApp, Arattai,
- * Signal) reads light. There is deliberately no `prefers-color-scheme: dark` block:
- * a half-maintained second theme is worse than one theme done properly. `color-scheme`
- * is pinned to `light` so form controls and scrollbars follow rather than inverting.
+ * Light is the deliberate first-visit default. A visitor may opt into the dark
+ * palette; both themes use the same semantic tokens and component geometry.
  *
  * NO PAGE MAY WRITE A RAW HEX. If a page needs a colour that is not here, the token
  * is missing — add it here and say what it is for.
@@ -38,6 +34,11 @@
   --color-surface: #ffffff;           /* cards, panels — the raised plane */
   --color-surface-2: #f2f5f6;         /* wells, insets, quiet chips */
   --color-surface-3: #e9eef0;         /* pressed / deepest well */
+  --color-contrast-surface: #07110f;  /* dark truth-telling bands in either theme */
+  --color-contrast-card: #0e1d1a;
+  --color-on-contrast: #f2faf8;
+  --color-on-contrast-dim: #a9c3bd;
+  --color-contrast-border: #26413c;
 
   /* ---- Text --------------------------------------------------------------- */
   /* 15.8:1 on the ground. Near-black rather than pure black: pure #000 on white
@@ -71,6 +72,13 @@
   --color-bubble-received: #f2f5f6;
   --color-text-on-bubble: #ffffff;
 
+  /* Cinematic demo surface inside the interactive Clips preview. It represents
+   * media artwork rather than page chrome, so it remains intentionally dark. */
+  --color-media-ground: #0a1513;
+  --color-media-depth: #172f2a;
+  --color-media-warm: #df9e60;
+  --color-media-text: #ffffff;
+
   /* ---- Domain hues — SECTION IDENTITY ONLY. Never body text, never bubbles. -
    * One hue per feature page; the page sets --hue once and its components inherit.
    * These are the READING weights: each is dark enough to set small text on white,
@@ -101,6 +109,23 @@
   --shadow-pop: 0 4px 8px rgba(13, 20, 22, 0.06), 0 24px 56px -16px rgba(13, 20, 22, 0.16);
   --shadow-device: 0 8px 16px rgba(13, 20, 22, 0.06), 0 48px 88px -24px rgba(13, 20, 22, 0.20);
   --ring: 0 0 0 3px rgba(19, 130, 140, 0.28);
+
+  /* ---- Device shell ------------------------------------------------------- *
+   * The phone silhouette is a PRODUCT SHOT, not page chrome: it is the same
+   * graphite hardware in both themes, because a real phone does not turn white
+   * when the page does. Only what is ON the screen follows the theme.
+   *
+   * `--device-edge` is the polished chamfer that catches light along the top and
+   * left of the band; `--device-shade` is the shadow the band casts into itself
+   * along the bottom. Without those two the frame reads as a flat black
+   * rectangle, which is the single clearest tell of a fake device mockup. */
+  --device-band: linear-gradient(150deg, #4a5458 0%, #1b2326 16%, #10171a 50%, #222b2f 82%, #545e63 100%);
+  --device-edge: rgba(255, 255, 255, 0.42);
+  --device-shade: rgba(0, 0, 0, 0.55);
+  --device-button: linear-gradient(180deg, #333c40, #1a2225);
+  /* The glass sheen laid over the screen. Low enough to read as glass rather
+   * than as a white streak across the interface underneath. */
+  --device-glass: rgba(255, 255, 255, 0.07);
 
   /* ---- Decorative gradient mesh (hero / CTA grounds) ---------------------- *
    * Far weaker than the dark values: on white, a tinted field at 0.2+ opacity
@@ -203,6 +228,65 @@
   --z-header: 100;
 }
 
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --color-primary: #79ded0;
+  --color-primary-hover: #91e8da;
+  --color-primary-active: #61c7b8;
+  --color-primary-ink: #8ce6d8;
+  --color-background: #07110f;
+  --color-surface: #0e1d1a;
+  --color-surface-2: #142824;
+  --color-surface-3: #1a342f;
+  --color-contrast-surface: #07110f;
+  --color-contrast-card: #0e1d1a;
+  --color-on-contrast: #f2faf8;
+  --color-on-contrast-dim: #a9c3bd;
+  --color-contrast-border: #26413c;
+  --color-text: #f2faf8;
+  --color-text-dim: #a9c3bd;
+  --color-text-mute: #78958e;
+  --color-text-on-primary: #06110f;
+  --color-text-on-accent: #06110f;
+  --color-divider: #1a302c;
+  --color-border: #26413c;
+  --color-border-strong: #3d5f58;
+  --color-accent: #79ded0;
+  --color-accent-quiet: rgba(121, 222, 208, 0.12);
+  --color-success: #71d2a3;
+  --color-error: #ff8d91;
+  --color-warning: #f2bd72;
+  --color-info: #8fb7ff;
+  --color-bubble-sent: #5fcabb;
+  --color-bubble-received: #19322d;
+  --color-text-on-bubble: #06110f;
+  --hue-chat: #8ce6d8;
+  --hue-stories: #d6a8ef;
+  --hue-map: #9ab9ff;
+  --hue-calls: #83d8a6;
+  --hue-payments: #f2bd72;
+  --hue-games: #f2bd72;
+  --hue-clips: #d6a8ef;
+  --hue-privacy: #8ce6d8;
+  --hue-wash: rgba(121, 222, 208, 0.10);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.20), 0 8px 22px -10px rgba(0, 0, 0, 0.42);
+  --shadow-lift: 0 3px 8px rgba(0, 0, 0, 0.24), 0 18px 38px -14px rgba(0, 0, 0, 0.54);
+  --shadow-pop: 0 8px 18px rgba(0, 0, 0, 0.28), 0 32px 72px -22px rgba(0, 0, 0, 0.72);
+  --shadow-device: 0 12px 24px rgba(0, 0, 0, 0.34), 0 54px 96px -26px rgba(0, 0, 0, 0.78);
+  --ring: 0 0 0 3px rgba(121, 222, 208, 0.34);
+  /* The hardware does not change with the theme; only its contact with the page
+   * does. On a dark ground the chamfer needs slightly more light to separate the
+   * frame from the background behind it. */
+  --device-edge: rgba(255, 255, 255, 0.5);
+  --device-shade: rgba(0, 0, 0, 0.7);
+  --device-glass: rgba(255, 255, 255, 0.05);
+  --mesh-1: rgba(74, 196, 179, 0.13);
+  --mesh-2: rgba(80, 116, 193, 0.10);
+  --mesh-3: rgba(159, 90, 188, 0.08);
+  --grid-line: rgba(218, 247, 240, 0.035);
+}
+
 /* =============================================================================
  * Reset + base
  * ========================================================================== */
@@ -232,6 +316,20 @@ body {
   line-height: var(--leading-body);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+@media (max-width: 600px) {
+  :root {
+    --container-pad: 22px;
+    --section-gap: 5rem;
+    --text-display: clamp(3rem, 11.8vw, 3.6rem);
+    --text-h1: clamp(2.65rem, 10vw, 3.1rem);
+    --text-h2: clamp(2.1rem, 8vw, 2.6rem);
+    --text-h3: 1.45rem;
+    --text-lede: 1.1875rem;
+    --text-small: 1rem;
+    --text-caption: 0.9375rem;
+  }
 }
 
 /*

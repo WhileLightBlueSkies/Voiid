@@ -6,13 +6,14 @@ import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { CTA } from '../../components/CTA';
 import { PhoneMockup, PhoneAppBar } from '../../components/PhoneMockup';
+import { buildPageMetadata } from '../../lib/metadata';
 
-export const metadata: Metadata = {
-  title: 'Clips',
+export const metadata: Metadata = buildPageMetadata({
+  title: 'Discover and share public short video clips',
   description:
-    'Short public video with creator profiles and follows. Clips are not end-to-end ' +
-    'encrypted — the server can read them, and here is why.',
-};
+    'Watch public short videos, follow creators and share clips with friends. Voiid explains clearly why public clips are not end-to-end encrypted.',
+  path: '/clips/',
+});
 
 /*
  * THIS IS THE PAGE MOST AT RISK OF OVERCLAIMING, so it leads with the exception rather

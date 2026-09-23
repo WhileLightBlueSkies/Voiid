@@ -6,13 +6,14 @@ import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { CTA } from '../../components/CTA';
 import { PhoneMockup, PhoneAppBar } from '../../components/PhoneMockup';
+import { buildPageMetadata } from '../../lib/metadata';
 
-export const metadata: Metadata = {
-  title: 'Games',
+export const metadata: Metadata = buildPageMetadata({
+  title: 'Play social games inside your conversations',
   description:
-    'Four games you can play with a friend from inside the chat. The server referees ' +
-    'the match, so game moves are not end-to-end encrypted.',
-};
+    'Play Tic Tac Toe, Rock Paper Scissors, Hand Cricket and Snake with a friend inside Voiid chats, with fair matches refereed by the server.',
+  path: '/games/',
+});
 
 /*
  * CLAIMS CHECKED (README rule 2):

@@ -1,0 +1,177 @@
+/* =============================================================================
+ * The device shell. Read the header comment in PhoneFrame.tsx first — it states
+ * the proportions this file implements and where they come from.
+ *
+ * EVERY size here is derived from one number, `--phone-w`. Nothing is a magic
+ * pixel value, because the same frame has to hold its shape from 11rem (a hero
+ * ornament on a phone) to 26rem (the tour on a desktop).
+ * ========================================================================== */
+
+.phone {
+  /* Body width. Callers override it; this is the fallback. */
+  --phone-w: 15.5rem;
+
+  /* The black border between the metal band and the first pixel. */
+  --bezel: calc(var(--phone-w) * 0.042);
+  /* Concentric corners: the screen radius is the body radius minus the bezel, so
+   * the two curves stay parallel. Picking them independently is what makes a
+   * mockup's corners look subtly wrong without anyone being able to say why. */
+  --radius-body: calc(var(--phone-w) * 0.17);
+  --radius-screen: calc(var(--radius-body) - var(--bezel));
+  --key-w: calc(var(--phone-w) * 0.013);
+
+  position: relative;
+  width: var(--phone-w);
+  aspect-ratio: 0.483;
+  isolation: isolate;
+}
+
+/* ---- Side hardware -------------------------------------------------------- *
+ * Four keys, sitting UNDER the band (z-index) so only the sliver that overhangs
+ * the silhouette is visible. A phone with a perfectly smooth outline reads as a
+ * rectangle; these four nubs are most of what reads as "phone". */
+.key {
+  position: absolute;
+  z-index: 0;
+  width: calc(var(--key-w) * 1.9);
+  border-radius: calc(var(--phone-w) * 0.008);
+  background: var(--device-button);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.action { inset-inline-start: calc(var(--key-w) * -0.85); inset-block-start: 16.5%; height: 4.6%; }
+.volumeUp { inset-inline-start: calc(var(--key-w) * -0.85); inset-block-start: 25.2%; height: 7.4%; }
+.volumeDown { inset-inline-start: calc(var(--key-w) * -0.85); inset-block-start: 34.4%; height: 7.4%; }
+.power { inset-inline-end: calc(var(--key-w) * -0.85); inset-block-start: 26.8%; height: 10.6%; }
+
+/* ---- The band ------------------------------------------------------------- *
+ * One gradient does the titanium: light on the top-left chamfer, dark through the
+ * middle of the band, light again where the far edge catches the room. The three
+ * inset shadows are the chamfer itself — a 1px bright ring all round, a spill of
+ * light from above and a shade cast into the band from below. */
+.band {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  padding: var(--bezel);
+  border-radius: var(--radius-body);
+  background: var(--device-band);
+  box-shadow:
+    var(--shadow-device),
+    inset 0 0 0 calc(var(--phone-w) * 0.0035) var(--device-edge),
+    inset 0 calc(var(--phone-w) * 0.008) calc(var(--phone-w) * 0.016) rgba(255, 255, 255, 0.13),
+    inset 0 calc(var(--phone-w) * -0.008) calc(var(--phone-w) * 0.016) var(--device-shade);
+}
+
+/* ---- The screen ----------------------------------------------------------- */
+.screen {
+  /* The unit everything drawn inside the phone is measured in. 1cqw = 1% of the
+   * screen's width, so the simulated interface scales with the device and no
+   * call site has to re-tune a font size. */
+  container-type: inline-size;
+
+  /* Apple's safe areas, as fractions of the screen width: 54pt of status bar and
+   * 34pt of home-indicator gutter on a 393pt-wide screen. */
+  --safe-top: 15cqw;
+  --safe-bottom: 8.6cqw;
+  --chrome-ink: var(--color-text);
+
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-screen);
+  background: var(--color-background);
+  color: var(--color-text);
+  /* The display sits a hair below the bezel. Barely visible, and the frame looks
+   * machined rather than printed because of it. */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.phone[data-chrome='light'] .screen { --chrome-ink: #ffffff; }
+.phone[data-chrome='dark'] .screen { --chrome-ink: #000000; }
+
+.content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---- Dynamic Island ------------------------------------------------------- *
+ * Overlaid, never in flow. The previous mockups put the notch in the document
+ * flow, which pushed the interface down by its height and left a white band
+ * above the app — a thing no phone has ever done. */
+.island {
+  position: absolute;
+  z-index: 3;
+  inset-block-start: 2.8cqw;
+  inset-inline-start: 50%;
+  width: 31.8cqw;
+  height: 9.35cqw;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #000;
+  /* The camera, as a faint lens rather than a drawn circle. */
+  box-shadow: inset calc(-31.8cqw * 0.29) 0 0 calc(-31.8cqw * 0.25) rgba(30, 44, 56, 0.85);
+}
+
+/* ---- Status bar ----------------------------------------------------------- */
+.statusBar {
+  position: absolute;
+  z-index: 2;
+  inset: 0 0 auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--safe-top);
+  padding-inline: 8cqw;
+  color: var(--chrome-ink);
+  font-size: 4.3cqw;
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+  pointer-events: none;
+}
+
+.time { font-variant-numeric: tabular-nums; }
+
+.statusIcons { display: flex; align-items: center; gap: 1.3cqw; }
+.signal { width: 4.6cqw; }
+.wifi { width: 4.3cqw; }
+.battery { width: 6.9cqw; }
+
+/* ---- Home indicator ------------------------------------------------------- */
+.homeIndicator {
+  position: absolute;
+  z-index: 3;
+  inset-block-end: 2.1cqw;
+  inset-inline-start: 50%;
+  width: 35.4cqw;
+  height: 1.3cqw;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--chrome-ink);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* ---- Glass ---------------------------------------------------------------- *
+ * One diagonal sheen and one corner bloom. Kept under 8% opacity: the job is to
+ * suggest a sheet of glass in front of the interface, not to wash it out. */
+.glass {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(104deg, transparent 34%, var(--device-glass) 46%, transparent 58%),
+    radial-gradient(120% 60% at 12% -8%, var(--device-glass), transparent 60%);
+}
+
+/* Apple's corners are superellipses rather than arcs, and `corner-shape` would
+ * draw a real one — but Next's CSS pipeline drops the ENTIRE stylesheet when it
+ * meets that property inside an `@supports` test (verified: the module vanished
+ * from the page chunk with no build error, which is a miserable failure to
+ * debug). The radius above is the right approximation; revisit when the toolchain
+ * parses it. */

@@ -8,13 +8,14 @@ import { Glyph } from '../../components/Glyph';
 import { PhoneMockup, PhoneAppBar, PhoneRow, PhoneAvatar } from '../../components/PhoneMockup';
 import { CallPath } from '../../components/CallPath';
 import styles from './page.module.css';
+import { buildPageMetadata } from '../../lib/metadata';
 
-export const metadata: Metadata = {
-  title: 'Calls',
+export const metadata: Metadata = buildPageMetadata({
+  title: 'Private voice and video calls',
   description:
-    'One-to-one and group voice and video with frame-level end-to-end encryption and ' +
-    'verified keying. We keep the call log — who, when, how long — and never the call.',
-};
+    'Make one-to-one or group voice and video calls with frame-level end-to-end encryption. Voiid routes the call but cannot listen to it.',
+  path: '/calls/',
+});
 
 /*
  * CLAIMS CHECKED (README rule 2):

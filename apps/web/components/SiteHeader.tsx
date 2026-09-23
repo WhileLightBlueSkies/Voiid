@@ -7,6 +7,7 @@ import { SURFACES, HEADER_NAV } from '../lib/nav';
 import { Wordmark } from './Wordmark';
 import { Logomark } from './Logomark';
 import { Glyph, type GlyphName } from './Glyph';
+import { ThemeToggle } from './ThemeToggle';
 import styles from './SiteHeader.module.css';
 
 /**
@@ -123,6 +124,8 @@ export function SiteHeader() {
           <Wordmark size={22} />
         </Link>
 
+        <ThemeToggle />
+
         {/*
           A BUTTON, not a checkbox. A checkbox has a checked state, which assistive technology
           announces as "checked" rather than "expanded", and it cannot carry aria-expanded at
@@ -154,6 +157,26 @@ export function SiteHeader() {
               height, and this element is what gets clipped while it does. */}
           <div className={styles.navInner}>
           <ul className={styles.list}>
+            <li className={styles.mobileFeatures}>
+              <span className={styles.mobileNavLabel}>Explore the app</span>
+              <ul className={styles.mobileFeatureList}>
+                {SURFACES.map((surface) => (
+                  <li key={surface.href}>
+                    <Link
+                      href={surface.href}
+                      className={styles.mobileFeatureLink}
+                      aria-current={isCurrent(surface.href) ? 'page' : undefined}
+                    >
+                      <span className={styles.mobileFeatureIcon} style={{ color: `var(--hue-${surface.hue})` }}>
+                        <Glyph name={SURFACE_GLYPH[surface.href] ?? 'chat'} size={20} />
+                      </span>
+                      <span>{surface.label}</span>
+                      <Glyph name="arrow-right" size={16} className={styles.mobileFeatureArrow} />
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </li>
             <li className={styles.hasMenu}>
               <details className={styles.menu}>
                 <summary

@@ -58,6 +58,8 @@ apps/ios/vendor/
 # Next.js build output — generated, never source.
 .next/
 out/
+test-results/
+playwright-report/
 *.tsbuildinfo
 
 # Local dependency symlinks used by artifact builders.

@@ -10,13 +10,14 @@ import { Button, ButtonRow } from '../../components/Button';
 import { Glyph } from '../../components/Glyph';
 import { PhoneMockup, PhoneAppBar, ChatBubble, PhoneAvatar } from '../../components/PhoneMockup';
 import styles from './page.module.css';
+import { buildPageMetadata } from '../../lib/metadata';
 
-export const metadata: Metadata = {
-  title: 'Messaging',
+export const metadata: Metadata = buildPageMetadata({
+  title: 'Private messaging and encrypted group chats',
   description:
-    'End-to-end encrypted chats and groups. Reaching you takes more than knowing your ' +
-    'number — mutual contacts, or your @username and a PIN you hand out yourself.',
-};
+    'Send end-to-end encrypted messages, photos, voice notes and files in private or group chats, with contact controls that keep strangers outside.',
+  path: '/messaging/',
+});
 
 /*
  * CLAIMS CHECKED, per apps/web/README.md rule 2:
