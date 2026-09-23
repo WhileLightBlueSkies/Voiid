@@ -91,6 +91,7 @@
         android:theme="@style/Theme.Voiid"
         tools:targetApi="31">
         <activity android:name=".payments.EventCheckoutActivity" android:exported="false" />
+        <activity android:name=".payments.DigiLockerActivity" android:exported="false" />
         <!-- NO APPLICATION-WIDE CLEARTEXT (Q03). android:usesCleartextTraffic used to be "true"
              here, which permits plaintext for every connection the app ever makes, in every
              build type — plumbing for talking to a laptop, shipped to users. Local http

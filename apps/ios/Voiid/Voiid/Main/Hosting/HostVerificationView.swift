@@ -15,11 +15,16 @@
 //  because a form asking for a PAN without saying where it goes is a form people abandon.
 //
 
+import AuthenticationServices
 import PhotosUI
 import SwiftUI
 
 struct HostVerificationView: View {
     @Environment(\.dismiss) private var dismiss
+    /// Safari's engine in a sheet — DigiLocker's own page, with its own OTP flow.
+    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
+    @State private var aadhaarBusy = false
+    @State private var aadhaarError: String?
     /// Fired when the host becomes verified, so a price field behind this can unlock.
     var onVerified: () -> Void = {}
 
@@ -111,6 +116,7 @@ struct HostVerificationView: View {
             message(icon: "hourglass", title: "We\u{2019}re reviewing your details",
                     text: "Your PAN and payout account passed the automatic checks. Voiid reviews every host before they can take payments \u{2014} usually within a day. Adding a document can speed it up.")
             payoutSummary(v)
+            aadhaar(v)
             documents(v)
         } else {
             if v.isRejected, let reason = v.rejection_reason {
@@ -217,6 +223,58 @@ struct HostVerificationView: View {
                 VoiidSettingsRow(icon: "building.columns", title: v.bank_name ?? "Bank account",
                                  detail: [v.bank_last4.map { "Account ending \($0)" }, v.ifsc].compactMap { $0 }.joined(separator: " · "))
             }
+        }
+    }
+
+    // MARK: Aadhaar
+
+    @ViewBuilder
+    private func aadhaar(_ v: KycService.Verification) -> some View {
+        VoiidCardSection("Aadhaar",
+                         footer: v.aadhaar_verified == true ? nil
+                               : "You\u{2019}ll sign in to DigiLocker with your Aadhaar and an OTP. Voiid only receives the last four digits \u{2014} never your full Aadhaar number.") {
+            if v.aadhaar_verified == true {
+                VoiidSettingsRow(icon: "checkmark.seal.fill", title: "Verified with DigiLocker",
+                                 detail: "Aadhaar ending \(v.aadhaar_last4 ?? "••••")")
+            } else {
+                Button {
+                    Task { await verifyAadhaar() }
+                } label: {
+                    HStack {
+                        VoiidSettingsRow(icon: "person.text.rectangle",
+                                         title: "Verify Aadhaar with DigiLocker",
+                                         detail: v.aadhaar_required == false ? "Optional, but speeds up review." : "Needed before Voiid can approve you.")
+                        if aadhaarBusy { ProgressView().padding(.trailing, VoiidSpacing.md) }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(aadhaarBusy)
+                if let aadhaarError {
+                    Text(aadhaarError)
+                        .font(VoiidFont.rounded(12.5))
+                        .foregroundColor(VoiidColor.error)
+                        .padding(.horizontal, VoiidSpacing.md)
+                        .padding(.bottom, 8)
+                }
+            }
+        }
+    }
+
+    /// Link → DigiLocker in a web sheet → back via `voiid-kyc://` → the server collects the
+    /// result. The server's answer is what counts: closing the sheet early still asks it, so a
+    /// host who finished DigiLocker but lost the redirect is not made to do it twice.
+    private func verifyAadhaar() async {
+        aadhaarBusy = true; aadhaarError = nil
+        defer { aadhaarBusy = false }
+        do {
+            let url = try await KycService.shared.startAadhaar()
+            _ = try? await webAuthenticationSession.authenticate(using: url, callbackURLScheme: "voiid-kyc",
+                                                                 preferredBrowserSession: .shared)
+            let v = try await KycService.shared.completeAadhaar()
+            Haptics.success()
+            withAnimation(.easeOut(duration: 0.2)) { status = v }
+        } catch {
+            aadhaarError = (error as? APIError)?.errorDescription ?? "Couldn\u{2019}t verify with DigiLocker. Try again."
         }
     }
 

@@ -81,6 +81,17 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
     var kindMenu by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
     var uploadError by remember { mutableStateOf<String?>(null) }
+    var aadhaarBusy by remember { mutableStateOf(false) }
+    var aadhaarError by remember { mutableStateOf<String?>(null) }
+
+    // Back from DigiLocker (or closed early): either way the server says whether it's done.
+    val digilocker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        scope.launch {
+            try { status = service.completeAadhaar() }
+            catch (e: CancellationException) { throw e } catch (e: Exception) { aadhaarError = e.message ?: "Couldn't verify with DigiLocker. Try again." }
+            finally { aadhaarBusy = false }
+        }
+    }
 
     LaunchedEffect(retry) {
         try {
@@ -142,6 +153,33 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
                 v.isInReview -> {
                     item { Message("We're reviewing your details", "Your PAN and payout account passed the automatic checks. Voiid reviews every host before they can take payments — usually within a day. Adding a document can speed it up.") }
                     item { PayoutSummary(v) }
+                    item {
+                        Surface(shape = RoundedCornerShape(22.dp), color = VoiidColor.surfaceCard) {
+                            Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("Aadhaar", style = MaterialTheme.typography.titleMedium)
+                                if (v.aadhaar_verified) {
+                                    Text("Verified with DigiLocker · Aadhaar ending ${v.aadhaar_last4 ?: "••••"}")
+                                } else {
+                                    Text(if (v.aadhaar_required) "Needed before Voiid can approve you." else "Optional, but speeds up review.",
+                                        color = VoiidColor.textSecondary)
+                                    Button(enabled = !aadhaarBusy, modifier = Modifier.fillMaxWidth(), onClick = {
+                                        aadhaarBusy = true; aadhaarError = null
+                                        scope.launch {
+                                            try {
+                                                val url = service.startAadhaar()
+                                                digilocker.launch(android.content.Intent(ctx, com.voiid.app.payments.DigiLockerActivity::class.java).putExtra("url", url))
+                                            } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                                                aadhaarError = e.message ?: "Couldn't open DigiLocker. Try again."; aadhaarBusy = false
+                                            }
+                                        }
+                                    }) { Text(if (aadhaarBusy) "Please wait…" else "Verify Aadhaar with DigiLocker") }
+                                    Text("You'll sign in to DigiLocker with your Aadhaar and an OTP. Voiid only receives the last four digits — never your full Aadhaar number.",
+                                        style = MaterialTheme.typography.bodySmall, color = VoiidColor.textSecondary)
+                                    aadhaarError?.let { Text(it, color = VoiidColor.error) }
+                                }
+                            }
+                        }
+                    }
                     item {
                         Surface(shape = RoundedCornerShape(22.dp), color = VoiidColor.surfaceCard) {
                             Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

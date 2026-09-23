@@ -371,6 +371,50 @@ export class CashfreeVerification {
     };
   }
 
+  private async get(path: string): Promise<any> {
+    const res = await fetch(`${verificationBase(this.env)}${path}`, {
+      headers: { 'x-client-id': this.clientId, 'x-client-secret': this.clientSecret },
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      console.error(`[cashfree-secureid] GET ${path.split('?')[0]} failed: HTTP ${res.status} ${(out as any)?.code ?? ''}`);
+      throw new CashfreeError((out as any)?.message ?? 'verification service unavailable', res.status);
+    }
+    return out;
+  }
+
+  /**
+   * DigiLocker: a link the host opens to sign in to DigiLocker (Aadhaar + OTP on DigiLocker's
+   * own page) and consent to share their Aadhaar. Lives 10 minutes. `redirectUrl` is where
+   * DigiLocker sends them afterwards.
+   */
+  async createDigilocker(verificationId: string, redirectUrl: string): Promise<{ url: string }> {
+    const out = await this.post('/digilocker', {
+      verification_id: verificationId,
+      document_requested: ['AADHAAR'],
+      redirect_url: redirectUrl,
+      user_flow: 'signup',
+    });
+    if (typeof out?.url !== 'string') throw new CashfreeError('DigiLocker returned no link', 502);
+    return { url: out.url };
+  }
+
+  /** PENDING | AUTHENTICATED | EXPIRED | CONSENT_DENIED. */
+  async digilockerStatus(verificationId: string): Promise<string> {
+    const out = await this.get(`/digilocker?verification_id=${encodeURIComponent(verificationId)}`);
+    return String(out?.status ?? 'PENDING');
+  }
+
+  /**
+   * The Aadhaar DigiLocker shared. `uid` arrives MASKED ("xxxxxxxx5647"); only its last four
+   * digits and the name leave this function — the photo, address and XML are dropped here.
+   */
+  async digilockerAadhaar(verificationId: string): Promise<{ last4: string | null; name: string | null }> {
+    const out = await this.get(`/digilocker/document/AADHAAR?verification_id=${encodeURIComponent(verificationId)}`);
+    const digits = String(out?.uid ?? '').replace(/\D/g, '');
+    return { last4: digits.length >= 4 ? digits.slice(-4) : null, name: typeof out?.name === 'string' ? out.name : null };
+  }
+
   /**
    * UPI penny drop: ₹1 to the VPA, and the bank returns the holder's name. Synchronous.
    * `user_consent` is required by the API — the host gives it by submitting the form, which

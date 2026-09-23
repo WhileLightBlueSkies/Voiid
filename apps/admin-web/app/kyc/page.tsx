@@ -27,6 +27,7 @@ type Row = {
   bank_last4: string | null; ifsc: string | null; bank_name: string | null;
   name_at_bank: string | null; bank_name_match: string | null;
   payout_method: string | null; upi_masked: string | null;
+  aadhaar_last4: string | null; aadhaar_name_match: boolean | null; aadhaar_verified_at: string | null;
   cashfree_vendor_id: string | null; vendor_status: string | null;
   submitted_at: string | null; reviewed_at: string | null; rejection_reason: string | null;
   full_name: string | null; username: string | null;
@@ -34,7 +35,7 @@ type Row = {
 };
 
 type Detail = {
-  verification: Row & { email: string | null; phone_number: string | null; reviewed_by_email: string | null };
+  verification: Row & { email: string | null; phone_number: string | null; reviewed_by_email: string | null; aadhaar_name: string | null };
   documents: { id: string; kind: string; mime: string; uploaded_at: string; deleted_at: string | null }[];
   communities: { id: string; handle: string; name: string; institution_name: string | null }[];
 };
@@ -121,7 +122,8 @@ function Body({ me }: { me: Me }) {
                     </td>
                     <td>
                       <Pill tone={STATUS[r.status]?.tone}>{STATUS[r.status]?.label ?? r.status}</Pill>{' '}
-                      {r.bank_name_match && <Pill tone={MATCH_TONE[r.bank_name_match]}>{prettyMatch(r.bank_name_match)}</Pill>}
+                      {r.bank_name_match && <Pill tone={MATCH_TONE[r.bank_name_match]}>{prettyMatch(r.bank_name_match)}</Pill>}{' '}
+                      <Pill tone={r.aadhaar_verified_at ? 'ok' : 'warning'}>{r.aadhaar_verified_at ? 'Aadhaar ✓' : 'Aadhaar pending'}</Pill>
                     </td>
                     <td className="muted" style={{ fontSize: 13 }}>{r.submitted_at ? when(r.submitted_at) : '—'}</td>
                   </tr>
@@ -211,6 +213,22 @@ function Application({ userId, me, onChanged }: { userId: string; me: Me; onChan
           <Line label="Name at bank" value={v.name_at_bank ?? '—'} />
           <Line label="Name match" value={v.bank_name_match ? prettyMatch(v.bank_name_match) : '—'} />
           <Line label="Payout account" value={v.cashfree_vendor_id ? `${v.cashfree_vendor_id} (${v.vendor_status ?? 'unknown'})` : 'Not created'} />
+        </section>
+
+        <section className="grid gap-1">
+          <h3 className="m-0 text-sm font-semibold">Aadhaar (via DigiLocker)</h3>
+          {v.aadhaar_verified_at ? (
+            <>
+              <Line label="Aadhaar" value={`xxxx xxxx ${v.aadhaar_last4 ?? '••••'}`} />
+              <Line label="Name on Aadhaar" value={v.aadhaar_name ?? '—'} />
+              <Line label="Matches the PAN name" value={v.aadhaar_name_match == null ? 'Not checked' : v.aadhaar_name_match ? 'Yes' : 'No — check carefully'} />
+              <Line label="Verified" value={when(v.aadhaar_verified_at)} />
+            </>
+          ) : (
+            <p className="m-0 text-sm text-[var(--text-mute)]">
+              Not verified yet. The host completes this in the app through DigiLocker; approval waits for it.
+            </p>
+          )}
         </section>
 
         <section className="grid gap-1">

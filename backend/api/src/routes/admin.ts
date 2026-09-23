@@ -40,6 +40,7 @@ import { presignGet, deleteObject, r2Configured } from '../r2';
 import { clientIp } from '../security';
 import { invalidateAccountState } from '../auth';
 import { CAPABILITIES, isCapability } from '../communityEntitlements';
+import { aadhaarRequired } from './kyc';
 
 const router = Router();
 
@@ -2785,7 +2786,7 @@ router.get('/kyc', requireAdmin, asyncHandler(async (req, res) => {
   const rows = await query<any>(
     `select h.user_id, h.status, h.legal_name, h.pan_last4, h.pan_registered_name, h.pan_name_match,
             h.bank_last4, h.ifsc, h.bank_name, h.name_at_bank, h.bank_name_match,
-            h.payout_method, h.upi_masked, h.cashfree_vendor_id, h.vendor_status, h.submitted_at, h.reviewed_at, h.rejection_reason,
+            h.payout_method, h.upi_masked, h.aadhaar_last4, h.aadhaar_name_match, h.aadhaar_verified_at, h.cashfree_vendor_id, h.vendor_status, h.submitted_at, h.reviewed_at, h.rejection_reason,
             u.full_name, u.username,
             (select count(*)::int from kyc_documents d
               where d.user_id = h.user_id and d.confirmed_at is not null and d.deleted_at is null) as document_count,
@@ -2842,12 +2843,19 @@ router.post('/kyc/:userId/approve', requireAdmin, requireRole('admin'), asyncHan
   if (!UUID_RE_ADMIN.test(userId)) return res.status(400).json({ error: 'user id must be a uuid' });
   // The CHECK in 087 refuses 'verified' without a passing PAN check and a payout vendor, so an
   // application that never completed Secure ID cannot be approved by accident.
+  // Aadhaar through DigiLocker (090) is required unless KYC_REQUIRE_AADHAAR=false.
+  const needAadhaar = aadhaarRequired();
   const r = await query<any>(
     `update host_verifications set status = 'verified', reviewed_at = now(), reviewed_by = $2,
             rejection_reason = null, updated_at = now()
       where user_id = $1 and status = 'pending_review' and pan_valid and cashfree_vendor_id is not null
-      returning user_id`, [userId, a.adminId]);
-  if (!r[0]) return res.status(409).json({ error: 'Only a submitted application with passing checks can be approved.' });
+        and (not $3 or aadhaar_verified_at is not null)
+      returning user_id`, [userId, a.adminId, needAadhaar]);
+  if (!r[0]) {
+    return res.status(409).json({ error: needAadhaar
+      ? 'Only a submitted application with passing checks and a DigiLocker-verified Aadhaar can be approved.'
+      : 'Only a submitted application with passing checks can be approved.' });
+  }
   await audit(a.adminId, 'kyc.approved', 'user', userId, { note: String(req.body?.note ?? '') || null });
   res.json({ ok: true });
 }));

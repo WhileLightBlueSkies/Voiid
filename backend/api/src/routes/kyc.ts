@@ -24,8 +24,9 @@ import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
 import { rateLimit } from '../security';
 import { presignPut, objectExists, r2Configured } from '../r2';
+import { namesMatch } from '../kycNames';
 import {
-  AUTO_ACCEPT_NAME_MATCH, CashfreeError, cashfreeFromEnv, cashfreeVerificationFromEnv, type VendorInput,
+  AUTO_ACCEPT_NAME_MATCH, CashfreeError, apiPublicBase, cashfreeFromEnv, cashfreeVerificationFromEnv, type VendorInput,
 } from '../payments/cashfree';
 
 const router = Router();
@@ -64,6 +65,10 @@ export type HostVerificationRow = {
   bank_name_match: string | null;
   payout_method: string | null;
   upi_masked: string | null;
+  aadhaar_last4: string | null;
+  aadhaar_name_match: boolean | null;
+  aadhaar_verified_at: string | null;
+  digilocker_verification_id: string | null;
   cashfree_vendor_id: string | null;
   vendor_status: string | null;
   submitted_at: string | null;
@@ -86,6 +91,11 @@ function shape(row: HostVerificationRow | undefined, docs: any[], configured: bo
     // 'bank' or 'upi' — where this host's share is paid. `upi_masked` is set for UPI.
     payout_method: row?.payout_method ?? null,
     upi_masked: row?.upi_masked ?? null,
+    // Aadhaar through DigiLocker (090). Only the last four digits are ever stored.
+    aadhaar_verified: row?.aadhaar_verified_at != null,
+    aadhaar_last4: row?.aadhaar_last4 ?? null,
+    aadhaar_name_match: row?.aadhaar_name_match ?? null,
+    aadhaar_required: aadhaarRequired(),
     submitted_at: row?.submitted_at ?? null,
     reviewed_at: row?.reviewed_at ?? null,
     rejection_reason: row?.rejection_reason ?? null,
@@ -104,6 +114,14 @@ async function load(userId: string) {
       where user_id = $1 and confirmed_at is not null and deleted_at is null
       order by uploaded_at`, [userId]);
   return { row, docs };
+}
+
+/**
+ * Whether approval needs a DigiLocker-verified Aadhaar. On by default; KYC_REQUIRE_AADHAAR=false
+ * turns it off for an account where Cashfree has not switched DigiLocker on yet.
+ */
+export function aadhaarRequired(): boolean {
+  return process.env.KYC_REQUIRE_AADHAAR?.trim() !== 'false';
 }
 
 /** Whether this user may price an event — used by routes/events.ts. */
@@ -239,6 +257,105 @@ router.post(
     });
   })
 );
+
+// ── Aadhaar through DigiLocker ──────────────────────────────────────────────────
+//
+// POST /kyc/aadhaar/start     → { url }   a 10-minute DigiLocker link for this host
+// POST /kyc/aadhaar/complete  → the verification, once the host has consented
+// GET  /kyc/digilocker/return            where DigiLocker sends the host; hands back to the app
+//
+// The host enters their Aadhaar and OTP on DigiLocker's page, never in Voiid. Cashfree then
+// gives us the Aadhaar MASKED; see 090 for what is and isn't kept.
+
+router.post(
+  '/kyc/aadhaar/start',
+  requireAuth,
+  rateLimit({ max: 10, windowSeconds: 3600, bucket: 'kyc-aadhaar' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const verification = cashfreeVerificationFromEnv();
+    if (!verification) return res.status(503).json({ error: 'Aadhaar verification isn\u2019t available yet.', code: 'kyc_unavailable' });
+    const row = (await query<HostVerificationRow>(`select * from host_verifications where user_id = $1`, [user_id]))[0];
+    // PAN and payout first: Aadhaar confirms the person those belong to.
+    if (!row || row.status === 'draft') return res.status(409).json({ error: 'Verify your PAN and payout details first.' });
+    if (row.aadhaar_verified_at) return res.status(409).json({ error: 'Your Aadhaar is already verified.' });
+
+    const verificationId = `dl_${user_id.replace(/-/g, '')}_${Date.now()}`;
+    try {
+      const { url } = await verification.createDigilocker(verificationId, `${apiPublicBase()}/v1/kyc/digilocker/return`);
+      await query(`update host_verifications set digilocker_verification_id = $2, updated_at = now() where user_id = $1`,
+                  [user_id, verificationId]);
+      res.json({ url, expires_in_minutes: 10 });
+    } catch (e) {
+      if (e instanceof CashfreeError) {
+        return res.status(502).json({ error: 'DigiLocker isn\u2019t responding right now. Try again in a few minutes.', code: 'kyc_provider_error' });
+      }
+      throw e;
+    }
+  })
+);
+
+router.post(
+  '/kyc/aadhaar/complete',
+  requireAuth,
+  rateLimit({ max: 30, windowSeconds: 3600, bucket: 'kyc-aadhaar-complete' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const verification = cashfreeVerificationFromEnv();
+    if (!verification) return res.status(503).json({ error: 'Aadhaar verification isn\u2019t available yet.', code: 'kyc_unavailable' });
+    const row = (await query<HostVerificationRow & { pan_registered_name: string | null }>(
+      `select * from host_verifications where user_id = $1`, [user_id]))[0];
+    if (!row?.digilocker_verification_id) return res.status(409).json({ error: 'Start Aadhaar verification first.' });
+    if (row.aadhaar_verified_at) {
+      const { docs } = await load(user_id);
+      return res.json({ verification: shape(row, docs, true) });
+    }
+    try {
+      const status = await verification.digilockerStatus(row.digilocker_verification_id);
+      if (status === 'PENDING') {
+        return res.status(409).json({ error: 'DigiLocker hasn\u2019t finished yet. Complete it, then try again.', code: 'digilocker_pending' });
+      }
+      if (status !== 'AUTHENTICATED') {
+        return res.status(410).json({
+          error: status === 'CONSENT_DENIED' ? 'You didn\u2019t share your Aadhaar. Start again to try once more.'
+                                             : 'That DigiLocker link expired. Start again.',
+          code: status === 'CONSENT_DENIED' ? 'digilocker_denied' : 'digilocker_expired',
+        });
+      }
+      const aadhaar = await verification.digilockerAadhaar(row.digilocker_verification_id);
+      if (!aadhaar.last4 || !aadhaar.name) {
+        return res.status(422).json({ error: 'DigiLocker didn\u2019t return your Aadhaar. Try again.', code: 'digilocker_no_document' });
+      }
+      const against = row.pan_registered_name || row.legal_name || '';
+      await query(
+        `update host_verifications
+            set aadhaar_last4 = $2, aadhaar_name = $3, aadhaar_name_match = $4,
+                aadhaar_verified_at = now(), digilocker_verification_id = null, updated_at = now()
+          where user_id = $1`,
+        [user_id, aadhaar.last4, aadhaar.name, namesMatch(aadhaar.name, against)]);
+    } catch (e) {
+      if (e instanceof CashfreeError) {
+        return res.status(502).json({ error: 'DigiLocker isn\u2019t responding right now. Try again in a few minutes.', code: 'kyc_provider_error' });
+      }
+      throw e;
+    }
+    const { row: fresh, docs } = await load(user_id);
+    res.json({ verification: shape(fresh, docs, true) });
+  })
+);
+
+// Where DigiLocker sends the host back. No auth — an in-app browser has no token — and it
+// decides nothing: it only returns the host to the app, which calls /complete itself.
+router.get('/kyc/digilocker/return', (_req, res) => {
+  res.set('cache-control', 'no-store');
+  const back = 'voiid-kyc://return';
+  res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Returning to Voiid</title>
+<meta http-equiv="refresh" content="0;url=${back}">
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:-apple-system,system-ui,sans-serif;background:#0B0F10;color:#EEF3F3;text-align:center;padding:24px}
+p{color:#9AA7A8}a{display:inline-block;background:#C6F432;color:#0B0F10;font-weight:600;text-decoration:none;padding:13px 22px;border-radius:14px}</style>
+</head><body><main><h1>Returning to Voiid…</h1><p>You can close this page if it doesn\u2019t close itself.</p><a href="${back}">Back to Voiid</a></main></body></html>`);
+});
 
 router.post(
   '/kyc/documents',

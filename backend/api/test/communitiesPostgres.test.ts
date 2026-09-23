@@ -188,6 +188,9 @@ test('community roles, official controls, invite admission and encrypted lifecyc
       // No payout vendor yet: approving must be impossible, whatever the admin clicks.
       assert.equal((await request('POST',`/admin/kyc/${kycUser}/approve`,{},owner,adminToken)).status, 409);
       await query(`update host_verifications set cashfree_vendor_id = $2 where user_id = $1`, [kycUser, 'vh_fixture']);
+      // Aadhaar through DigiLocker is required by default (090): still not approvable.
+      assert.equal((await request('POST',`/admin/kyc/${kycUser}/approve`,{},owner,adminToken)).status, 409);
+      await query(`update host_verifications set aadhaar_last4 = '5647', aadhaar_verified_at = now() where user_id = $1`, [kycUser]);
       assert.equal((await request('POST',`/admin/kyc/${kycUser}/approve`,{},owner,moderatorToken)).status, 403);
       assert.equal((await request('POST',`/admin/kyc/${kycUser}/approve`,{},owner,adminToken)).status, 200);
       const queue = await request('GET',`/admin/kyc?status=verified`,undefined,owner,moderatorToken);

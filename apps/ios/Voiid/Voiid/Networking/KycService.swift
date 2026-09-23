@@ -48,6 +48,12 @@ final class KycService {
         let payout_method: String?
         /// For UPI: "ra•••@okhdfcbank". Voiid never keeps the full ID.
         let upi_masked: String?
+        /// Aadhaar through DigiLocker (090). Only the last four digits are ever kept.
+        let aadhaar_verified: Bool?
+        let aadhaar_last4: String?
+        let aadhaar_name_match: Bool?
+        /// Whether approval waits for Aadhaar on this server.
+        let aadhaar_required: Bool?
         let submitted_at: String?
         let reviewed_at: String?
         let rejection_reason: String?
@@ -81,6 +87,22 @@ final class KycService {
 
     func verify(_ input: VerifyInput) async throws -> Verification {
         let env: Envelope = try await api.request("POST", "kyc/verify", body: input)
+        return env.verification
+    }
+
+    /// A 10-minute DigiLocker link. The host enters their Aadhaar and OTP on DigiLocker's page.
+    func startAadhaar() async throws -> URL {
+        struct Out: Decodable { let url: String }
+        let out: Out = try await api.request("POST", "kyc/aadhaar/start")
+        guard let url = URL(string: out.url), url.scheme == "https" else {
+            throw APIError.http(status: 502, message: "DigiLocker didn\u{2019}t return a link. Try again.")
+        }
+        return url
+    }
+
+    /// Ask the server to collect the result once the host is back from DigiLocker.
+    func completeAadhaar() async throws -> Verification {
+        let env: Envelope = try await api.request("POST", "kyc/aadhaar/complete")
         return env.verification
     }
 

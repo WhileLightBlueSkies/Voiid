@@ -40,6 +40,11 @@ class KycService(context: Context) {
         val payout_method: String? = null,
         /** For UPI: "ra•••@okhdfcbank". Voiid never keeps the full ID. */
         val upi_masked: String? = null,
+        /** Aadhaar through DigiLocker (090). Only the last four digits are ever kept. */
+        val aadhaar_verified: Boolean = false,
+        val aadhaar_last4: String? = null,
+        val aadhaar_name_match: Boolean? = null,
+        val aadhaar_required: Boolean = true,
         val submitted_at: String? = null,
         val reviewed_at: String? = null,
         val rejection_reason: String? = null,
@@ -66,6 +71,14 @@ class KycService(context: Context) {
     suspend fun verify(input: VerifyInput): Verification =
         api.requestAs<Envelope>("POST", "kyc/verify",
             ApiClient.json.encodeToString(VerifyInput.serializer(), input)).verification
+
+    @Serializable private data class DigiLockerLink(val url: String)
+
+    /** A 10-minute DigiLocker link; the host enters Aadhaar and OTP on DigiLocker's page. */
+    suspend fun startAadhaar(): String = api.requestAs<DigiLockerLink>("POST", "kyc/aadhaar/start").url
+
+    /** Collect the result once the host is back from DigiLocker. */
+    suspend fun completeAadhaar(): Verification = api.requestAs<Envelope>("POST", "kyc/aadhaar/complete").verification
 
     enum class DocumentKind(val wire: String, val title: String) {
         PAN_CARD("pan_card", "PAN card"),
