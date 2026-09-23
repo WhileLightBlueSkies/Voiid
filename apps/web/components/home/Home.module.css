@@ -1039,6 +1039,28 @@
   .heroRing { display: none; }
 }
 
+@media (max-width: 700px) {
+  .hero { padding-top: calc(var(--header-height) + 56px); }
+  .heroInner { text-align: start; }
+  .heroCopy { align-items: flex-start; }
+  .heroTitle { max-width: 12ch; margin-top: 18px; font-size: clamp(2.8rem, 11.5vw, 3.45rem); line-height: 1.01; }
+  .heroLede { margin: 20px 0 0; max-width: 36ch; font-size: 1.125rem; line-height: 1.52; }
+  .heroActions { width: 100%; justify-content: flex-start; gap: 10px; margin-top: 24px; }
+  .heroActions a { flex: 1; justify-content: center; min-height: 54px; padding-inline: 10px; }
+  .heroStats { display: none; }
+  .heroStage { width: min(360px, 86vw); margin-top: 14px; }
+
+  .sectionHead { align-items: flex-start; text-align: start; }
+  .sectionHead .lede { margin-inline: 0; }
+  .h2 { max-width: 13ch; font-size: clamp(2.1rem, 8.5vw, 2.6rem); }
+  .lede { font-size: 1.125rem; }
+  .storyMobileCopy { align-items: flex-start; text-align: start; }
+  .storyMobileCopy .stance { align-self: flex-start; }
+  .downloadInner { text-align: start; }
+  .downloadCopy { align-items: flex-start; }
+  .stores { justify-content: flex-start; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aurora span,
   .shine,

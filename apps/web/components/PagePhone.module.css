@@ -65,6 +65,7 @@
 }
 
 @media (max-width: 899px) {
+  .wrap { overflow-x: clip; }
   .wrap[data-tilt] .phone { transform: none; }
   .phone { width: min(290px, 74vw); }
 }

@@ -155,6 +155,26 @@ export function SiteHeader() {
         <nav ref={navRef} aria-hidden={collapsed || undefined} id="site-nav" className={styles.nav} aria-label="Main" inert={collapsed}>
           <div className={styles.navInner}>
             <ul className={styles.list}>
+              <li className={styles.mobileFeatures}>
+                <span className={styles.mobileNavLabel}>Explore the app</span>
+                <ul className={styles.mobileFeatureList}>
+                  {SURFACES.map((surface) => (
+                    <li key={surface.href}>
+                      <Link
+                        href={surface.href}
+                        className={styles.mobileFeatureLink}
+                        aria-current={isCurrent(surface.href) ? 'page' : undefined}
+                      >
+                        <span className={styles.mobileFeatureIcon} style={{ color: `var(--hue-${surface.hue})` }}>
+                          <Glyph name={SURFACE_GLYPH[surface.href] ?? 'chat'} size={21} />
+                        </span>
+                        <span>{surface.label}</span>
+                        <Glyph name="arrow-right" size={16} className={styles.mobileFeatureArrow} />
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </li>
               <li className={styles.hasMenu}>
                 <div ref={menuRef} className={styles.menuWrapper}>
                   <button
