@@ -100,7 +100,6 @@ struct WelcomeTermsScreen: View {
             }
             .ignoresSafeArea(edges: .bottom)
         }
-        .preferredColorScheme(.dark)
         // Matches how every other screen presents these (ConsentPromptView, AboutView):
         // wrapped in a NavigationStack so the document gets its own title bar and Done.
         .sheet(item: $reading) { doc in

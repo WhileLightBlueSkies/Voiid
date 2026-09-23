@@ -123,7 +123,6 @@ struct CreateProfileScreen: View {
             }
             .ignoresSafeArea(edges: .bottom)
         }
-        .preferredColorScheme(.dark)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
     }

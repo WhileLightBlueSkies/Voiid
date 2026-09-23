@@ -19,6 +19,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import uniffi.voiid.decryptBackup
@@ -87,10 +89,12 @@ object LocationShareEngine {
     private fun monitorExpiry() {
         if (expiryJob?.isActive == true) return
         expiryJob = scope.launch {
-            while (outbound.isNotEmpty()) {
+            var ticks = 0
+            while (outbound.isNotEmpty() || keyStore.all.keys.any { it.startsWith(pendingStopPrefix()) }) {
                 val now = System.currentTimeMillis()
                 outbound.values.filter { it.expiresAt <= now }.map { it.shareId }
-                    .forEach { stopShare(it) }
+                    .forEach { id -> launch { stopShare(id) } }
+                if (ticks++ % 15 == 0) launch { retryPendingStops() }
                 kotlinx.coroutines.delay(1_000)
             }
         }
@@ -105,8 +109,7 @@ object LocationShareEngine {
         val keyB64: String,
         val expiresAt: Long,              // millis
         val cadenceSeconds: Int,
-        var seq: Long = 0,
-        var liveStartSent: Boolean = false,
+        var seq: Long = System.currentTimeMillis(),
     )
 
     // MARK: - Init / relay wiring
@@ -122,9 +125,10 @@ object LocationShareEngine {
             provider = LocationProvider(context)
             // Receiving side of the shared seam. Client-side authorization: a fix for a share we
             // hold no key for is dropped (docs/LOCATION.md §9, §11).
-            LocationRelay.subscribeFix { shareId, from, ct, _ -> onFixFrame(shareId, from, ct) }
-            LocationRelay.subscribeStop { shareId, _, kind, _ -> if (kind != "map") endInbound(shareId) }
-            LocationRelay.subscribeControl { plain, from, convId -> onControl(plain, from, convId) }
+            LocationRelay.subscribeFix { shareId, from, ct, _ -> scope.launch { onFixFrame(shareId, from, ct) } }
+            LocationRelay.subscribeStop { shareId, _, kind, _ -> scope.launch { if (kind != "map") endInbound(shareId) } }
+            LocationRelay.subscribeControl { plain, from, convId -> scope.launch { onControl(plain, from, convId) } }
+            scope.launch { hydrateViews(); retryPendingStops() }
 
         }
     }
@@ -155,52 +159,55 @@ object LocationShareEngine {
      * Drawing a 30 m circle around a deliberately-placed pin would invent a measurement that
      * was never taken.
      */
-    fun sendPin(
-        context: Context,
-        conv: ShareTarget,
-        label: String?,
-        pickedLat: Double? = null,
-        pickedLon: Double? = null,
-    ) {
+    suspend fun sendPin(
+        context: Context, conv: ShareTarget, label: String?,
+        pickedLat: Double? = null, pickedLon: Double? = null,
+    ): String? {
         init(context)
-
-        fun emit(lat: Double, lon: Double, acc: Double?) {
-            val env = LocationEnvelope(k = LocationEnvelope.K_PIN, t = System.currentTimeMillis(), lat = lat, lon = lon, acc = acc, label = label?.ifBlank { null })
-            // LocationRef.acc is non-null; 0.0 is its "no radius" value, which is exactly
-            // what a hand-placed pin has. The wire envelope keeps a real null.
-            chat.storeLocationOutgoing(conv.conversationId, ChatEngine.LocationRef(kind = LocationEnvelope.K_PIN, lat = lat, lon = lon, acc = acc ?: 0.0, label = label?.ifBlank { null }))
-            scope.launch { sendControl(conv, env) }
-        }
-
-        if (pickedLat != null && pickedLon != null) {
-            emit(round5(pickedLat), round5(pickedLon), null)
-            return
-        }
-
-        provider.currentFix { loc ->
-            if (loc == null) { Log.w(TAG, "pin: no location fix available"); return@currentFix }
-            emit(round5(loc.latitude), round5(loc.longitude), loc.accuracy.toDouble())
-        }
+        return try {
+            val fix = if (pickedLat == null || pickedLon == null) provider.freshFix() else null
+            val lat = pickedLat ?: fix?.latitude ?: return "Couldn’t locate you. Try again outdoors."
+            val lon = pickedLon ?: fix?.longitude ?: return "Choose a location first."
+            require(validCoordinate(lat, lon))
+            val acc = fix?.accuracy?.toDouble()
+            val env = LocationEnvelope(k = LocationEnvelope.K_PIN, t = System.currentTimeMillis(),
+                lat = round5(lat), lon = round5(lon), acc = acc, label = label?.ifBlank { null })
+            sendControl(conv, env)
+            chat.storeLocationOutgoing(conv.conversationId, ChatEngine.LocationRef(
+                kind = LocationEnvelope.K_PIN, lat = env.lat, lon = env.lon, acc = acc ?: 0.0, label = env.label))
+            null
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { (e as? ApiError)?.userMessage ?: "Couldn’t send location. Please try again." }
     }
 
     // MARK: - Live share (P2 + P3)
 
     /**
      * Start a live share. [durationSeconds] ∈ {900, 3600, 28800}. Returns null on success or an
-     * error string. The caller must already have secured the runtime permission (foreground
-     * always; background when duration > 15 min) — see LocationPermissions.
+     * error string. The caller obtains foreground permission while visible; a location
+     * foreground service owns subsequent background updates.
      */
     suspend fun startLiveShare(context: Context, conv: ShareTarget, durationSeconds: Int): String? {
         init(context)
+        if (!LocationPermissions.hasForeground(context)) return "Allow location access to share live location."
+        var createdId: String? = null
         return try {
-            val targets = if (conv.isGroup) service.conversationMemberIds(conv.conversationId).filter { it != tokens.userId }
-                          else listOfNotNull(conv.peerUserId)
+            val (firstFix, targets) = coroutineScope {
+                val location = async { provider.freshFix() }
+                val audience = async {
+                    if (conv.isGroup) service.conversationMemberIds(conv.conversationId).filter { it != tokens.userId }
+                    else listOfNotNull(conv.peerUserId)
+                }
+                location.await() to audience.await()
+            }
+            if (firstFix == null) return "Couldn’t locate you. Check location services and try again."
             if (targets.isEmpty()) return "No one to share with."
             val created = service.createShare(LocationService.KIND_CONVERSATION, conv.conversationId, targets, durationSeconds)
+            createdId = created.share_id
             val keyB64 = Base64.encodeToString(generateMasterSecret(), Base64.NO_WRAP)  // 32 random bytes
             keyStore.edit().putString(created.share_id, keyB64).apply()
             val expiresAt = parseIso(created.expires_at)
-            outbound[created.share_id] = Outbound(
+            val pendingShare = Outbound(
                 shareId = created.share_id, conversationId = conv.conversationId, isGroup = conv.isGroup,
                 peerUserId = conv.peerUserId, recipientIds = targets, keyB64 = keyB64,
                 expiresAt = expiresAt, cadenceSeconds = LIVE_CADENCE_SECONDS,
@@ -214,39 +221,48 @@ object LocationShareEngine {
                     cadenceSeconds = LIVE_CADENCE_SECONDS, state = "live",
                 ))
             }
+            require(expiresAt > System.currentTimeMillis())
+            sendControl(conv, LocationEnvelope(k = LocationEnvelope.K_LIVE_START, s = created.share_id,
+                t = System.currentTimeMillis(), expiresAt = expiresAt, key = keyB64, cadence = LIVE_CADENCE_SECONDS))
+            outbound[created.share_id] = pendingShare
+            chat.storeLocationOutgoing(conv.conversationId, ChatEngine.LocationRef(
+                kind = LocationEnvelope.K_LIVE_START, shareId = created.share_id,
+                lat = firstFix.latitude, lon = firstFix.longitude, acc = firstFix.accuracy.toDouble(),
+                expiresAt = expiresAt, cadenceSeconds = LIVE_CADENCE_SECONDS))
+            inboundViews[created.share_id] = LiveShareView(created.share_id, tokens.userId ?: "", expiresAt,
+                LIVE_CADENCE_SECONDS, null, false)
+            inboundConversation[created.share_id] = conv.conversationId
             outboundActive.add(OutboundShareView(created.share_id, conv.conversationId, expiresAt))
             monitorExpiry()
-            // Start emitting: the FGS keeps updates flowing while backgrounded; the first fix
-            // triggers the durable live_start (initial coords + the shareKey) and the bubble.
+            // Start emitting only after the durable key envelope has been accepted.
             LocationForegroundService.start(appContext!!)
-            provider.startLive { loc -> onFix(loc) }
+            provider.startLive(onError = { stopAllFromSystem() }) { loc -> onFix(loc) }
+            onFix(firstFix)
             null
         } catch (e: Exception) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                createdId?.let {
+                    val route = org.json.JSONObject().put("conversation", conv.conversationId)
+                        .put("group", conv.isGroup).put("peer", conv.peerUserId ?: "")
+                    keyStore.edit().putString(pendingStopPrefix() + it, route.toString()).apply()
+                    stopShare(it)
+                }
+            }
+            if (e is kotlinx.coroutines.CancellationException) throw e
             (e as? ApiError)?.userMessage ?: "Couldn’t start live location."
         }
     }
 
     private fun onFix(loc: Location) {
+        if (!LocationPermissions.hasForeground(appContext!!)) { stopAllFromSystem(); return }
         // Never label an old cached fix as a fresh position.
         val ageMillis = (android.os.SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000
-        if (!loc.hasAccuracy() || loc.accuracy < 0 || ageMillis !in 0..60_000) return
+        if (!loc.hasAccuracy() || !loc.accuracy.isFinite() || loc.accuracy < 0 || ageMillis !in 0..60_000 ||
+            !validCoordinate(loc.latitude, loc.longitude)) return
         val lat = round5(loc.latitude); val lon = round5(loc.longitude); val acc = loc.accuracy.toDouble()
         val now = System.currentTimeMillis()
         for (ob in outbound.values) {
             if (now >= ob.expiresAt) { scope.launch { stopShare(ob.shareId) }; continue }
-            if (!ob.liveStartSent) {
-                ob.liveStartSent = true
-                val startEnv = LocationEnvelope(
-                    k = LocationEnvelope.K_LIVE_START, s = ob.shareId, t = now, lat = lat, lon = lon, acc = acc,
-                    expiresAt = ob.expiresAt, key = ob.keyB64, cadence = ob.cadenceSeconds,
-                )
-                // Local echo for the SENDER's own live bubble (keyless ref — key never in store).
-                chat.storeLocationOutgoing(ob.conversationId, ChatEngine.LocationRef(
-                    kind = LocationEnvelope.K_LIVE_START, shareId = ob.shareId, lat = lat, lon = lon, acc = acc,
-                    expiresAt = ob.expiresAt, cadenceSeconds = ob.cadenceSeconds,
-                ))
-                scope.launch { sendControl(ShareTarget(ob.conversationId, ob.isGroup, ob.peerUserId), startEnv) }
-            }
             // P3: one ciphertext for the whole audience, over the WS relay only.
             val fixEnv = LocationEnvelope(k = LocationEnvelope.K_FIX, s = ob.shareId, n = ob.seq++, t = loc.time, lat = lat, lon = lon, acc = acc)
             val json = ApiClient.json.encodeToString(LocationEnvelope.serializer(), fixEnv)
@@ -254,6 +270,11 @@ object LocationShareEngine {
                 Base64.encodeToString(encryptBackup(Base64.decode(ob.keyB64, Base64.NO_WRAP), json.toByteArray()), Base64.NO_WRAP)
             }.getOrNull() ?: continue
             ws.sendLocUpdate(ob.shareId, ob.recipientIds, ct)
+            val fix = LocationFix(ob.shareId, tokens.userId ?: "", lat, lon, acc, fixEnv.n!!, loc.time)
+            inboundViews[ob.shareId]?.let { inboundViews[ob.shareId] = it.copy(lastFix = fix) }
+            scope.launch { withContext(Dispatchers.IO) {
+                dao.upsertLastFix(LocationLastFixRow(ob.shareId, fix.senderUserId, lat, lon, acc, fix.seq, fix.fixedAt / 1000))
+            } }
         }
     }
 
@@ -263,22 +284,43 @@ object LocationShareEngine {
     suspend fun stopShare(shareId: String) {
         val ob = outbound.remove(shareId)
         outboundActive.removeAll { it.shareId == shareId }
+        // Persist retry metadata before discarding the key; stopping GPS never waits for HTTP.
         if (ob != null) {
-            runCatching { ws.sendLocStop(shareId, ob.recipientIds) }
-            runCatching {
-                sendControl(
-                    ShareTarget(ob.conversationId, ob.isGroup, ob.peerUserId),
-                    LocationEnvelope(k = LocationEnvelope.K_LIVE_STOP, s = shareId, t = System.currentTimeMillis()),
-                )
-            }
+            val route = org.json.JSONObject().put("conversation", ob.conversationId)
+                .put("group", ob.isGroup).put("peer", ob.peerUserId ?: "")
+            keyStore.edit().putString(pendingStopPrefix() + shareId, route.toString()).apply()
         }
-        runCatching { service.endShare(shareId) }
         keyStore.edit().remove(shareId).apply()
-        runCatching { withContext(Dispatchers.IO) { dao.markEnded(shareId, nowSec()) } }
+        inboundViews[shareId]?.let { inboundViews[shareId] = it.copy(endedExplicit = true, stoppedBeforeExpiry = it.stoppedBeforeExpiry || (!it.endedExplicit && System.currentTimeMillis() < it.expiresAt)) }
         if (outbound.isEmpty()) {
             provider.stop()
             appContext?.let { LocationForegroundService.stop(it) }
         }
+        if (ob != null) runCatching { ws.sendLocStop(shareId, ob.recipientIds) }
+        withContext(Dispatchers.IO) { dao.markEnded(shareId, nowSec()) }
+        monitorExpiry()
+        retryPendingStops()
+    }
+
+    private fun pendingStopPrefix() = "pending_stop_${tokens.userId}_"
+    private val stopMutex = kotlinx.coroutines.sync.Mutex()
+    private suspend fun retryPendingStops() {
+        if (!stopMutex.tryLock()) return
+        try {
+            val prefix = pendingStopPrefix()
+            for ((key, value) in keyStore.all) {
+                if (!key.startsWith(prefix) || value !is String) continue
+                val id = key.removePrefix(prefix)
+                val route = runCatching { org.json.JSONObject(value) }.getOrNull() ?: continue
+                val durable = runCatching {
+                    sendControl(ShareTarget(route.getString("conversation"), route.getBoolean("group"),
+                        route.optString("peer").ifBlank { null }),
+                        LocationEnvelope(k = LocationEnvelope.K_LIVE_STOP, s = id, t = System.currentTimeMillis()))
+                }.isSuccess
+                val removed = runCatching { service.endShare(id) }.isSuccess
+                if (durable && removed) keyStore.edit().remove(key).apply()
+            }
+        } finally { stopMutex.unlock() }
     }
 
     /** Revoke one recipient: stop them, then rekey the remaining audience so the removed key
@@ -303,7 +345,7 @@ object LocationShareEngine {
 
     /** Fired from the notification Stop action / task removal — end every outbound share. */
     fun stopAllFromSystem() {
-        scope.launch { outbound.keys.toList().forEach { runCatching { stopShare(it) } } }
+        scope.launch { outbound.keys.toList().forEach { id -> launch { runCatching { stopShare(id) } } } }
     }
 
     /** Non-suspend entry point for UI (a bubble/banner Stop tap). */
@@ -315,36 +357,39 @@ object LocationShareEngine {
 
     /** A decrypted durable control envelope (`_vloc`) off the ratchet/MLS. Lifts the shareKey,
      *  drives share state, and renders the pin / live_start bubble. */
-    private fun onControl(plaintextJson: String, ownerUserId: String, conversationId: String) {
+    private suspend fun onControl(plaintextJson: String, ownerUserId: String, conversationId: String) {
         val env = parseEnvelope(plaintextJson) ?: return
         val shareId = env.s
         val createdAt = if (env.t > 0) env.t else System.currentTimeMillis()
         when (env.k) {
             LocationEnvelope.K_PIN -> {
-                if (env.lat == null || env.lon == null) return
+                if (env.lat == null || env.lon == null || !validCoordinate(env.lat, env.lon)) return
                 val ref = ChatEngine.LocationRef(kind = LocationEnvelope.K_PIN, lat = env.lat, lon = env.lon, acc = env.acc ?: 0.0, label = env.label)
                 chat.storeLocationInbound(conversationId, "locpin_${ownerUserId}_${env.t}", ownerUserId, ref, createdAt)
             }
             LocationEnvelope.K_LIVE_START -> {
                 if (shareId == null) return
+                val stored = withContext(Dispatchers.IO) { dao.share(shareId) }
+                if (stored?.endedAt != null || (stored?.direction == "in" && stored.peerUserId != ownerUserId)) return
+                val existing = inboundViews[shareId]
+                if (existing != null && (existing.ownerUserId != ownerUserId || existing.endedExplicit)) return
                 val keyB64 = env.key ?: return
+                if (runCatching { Base64.decode(keyB64, Base64.NO_WRAP).size }.getOrNull() != 32) return
                 keyStore.edit().putString(shareId, keyB64).apply()
                 val expiresAt = env.expiresAt ?: (createdAt + 3_600_000L)
                 val cadence = env.cadence ?: LIVE_CADENCE_SECONDS
-                val initial = if (env.lat != null && env.lon != null)
-                    LocationFix(shareId, ownerUserId, env.lat, env.lon, env.acc ?: 0.0, 0, createdAt) else null
-                scope.launch {
-                    withContext(Dispatchers.IO) {
+                val initial = existing?.lastFix ?: if (env.lat != null && env.lon != null && validCoordinate(env.lat, env.lon))
+                    LocationFix(shareId, ownerUserId, env.lat, env.lon, env.acc ?: 0.0, -1, createdAt) else null
+                inboundViews[shareId] = LiveShareView(shareId, ownerUserId, expiresAt, cadence, initial, endedExplicit = false)
+                inboundConversation[shareId] = conversationId
+                withContext(Dispatchers.IO) {
                         dao.upsertShare(LocationShareRow(
                             id = shareId, kind = "conversation", direction = "in",
                             conversationId = conversationId, peerUserId = ownerUserId,
                             startedAt = createdAt / 1000, expiresAt = expiresAt / 1000, endedAt = null,
                             cadenceSeconds = cadence, state = "live",
                         ))
-                        initial?.let { dao.upsertLastFix(LocationLastFixRow(shareId, ownerUserId, it.lat, it.lon, it.acc, 0, it.fixedAt / 1000)) }
-                    }
-                    inboundViews[shareId] = LiveShareView(shareId, ownerUserId, expiresAt, cadence, initial, endedExplicit = false)
-                    inboundConversation[shareId] = conversationId
+                        initial?.let { dao.upsertLastFix(LocationLastFixRow(shareId, ownerUserId, it.lat, it.lon, it.acc, it.seq, it.fixedAt / 1000)) }
                 }
                 // Always store the bubble — even without an initial coordinate (an iOS
                 // live_start carries none). It shows "locating…" until the fix stream lands.
@@ -352,11 +397,14 @@ object LocationShareEngine {
                 chat.storeLocationInbound(conversationId, "loclive_$shareId", ownerUserId, ref, createdAt)
             }
             LocationEnvelope.K_LIVE_REKEY -> {
-                if (shareId == null) return
+                if (shareId == null || inboundViews[shareId]?.ownerUserId != ownerUserId) return
                 env.key?.let { keyStore.edit().putString(shareId, it).apply() }
                 env.expiresAt?.let { newExp -> inboundViews[shareId]?.let { inboundViews[shareId] = it.copy(expiresAt = newExp) } }
             }
-            LocationEnvelope.K_LIVE_STOP -> shareId?.let { endInbound(it) }
+            LocationEnvelope.K_LIVE_STOP -> shareId?.let {
+                val row = withContext(Dispatchers.IO) { dao.share(it) }
+                if (inboundViews[it]?.ownerUserId == ownerUserId || row?.peerUserId == ownerUserId) endInbound(it)
+            }
         }
     }
 
@@ -367,8 +415,11 @@ object LocationShareEngine {
             val bytes = decryptBackup(Base64.decode(keyB64, Base64.NO_WRAP), Base64.decode(ciphertextB64, Base64.NO_WRAP))
             parseEnvelope(String(bytes))
         }.getOrNull() ?: return
-        if (env.k != LocationEnvelope.K_FIX || env.lat == null || env.lon == null) return
-        val seq = env.n ?: return
+        if (env.k != LocationEnvelope.K_FIX || env.s != shareId || env.lat == null || env.lon == null) return
+        if (view.ownerUserId != fromUserId || view.endedExplicit || System.currentTimeMillis() >= view.expiresAt) return
+        if (!validCoordinate(env.lat, env.lon) || env.acc?.let { !it.isFinite() || it < 0 } == true) return
+        if (env.t <= 0 || env.t > System.currentTimeMillis() + 10_000) return
+        val seq = env.n?.takeIf { it >= 0 } ?: return
         val prev = view.lastFix
         if (prev != null && seq <= prev.seq) return   // out-of-order relay frame → drop, never a jump back
         val fix = LocationFix(shareId, fromUserId, env.lat, env.lon, env.acc ?: 0.0, seq, if (env.t > 0) env.t else System.currentTimeMillis())
@@ -385,8 +436,9 @@ object LocationShareEngine {
         // teardown, which is exactly the bug the Map side already had to fix. Act only on a
         // share we actually hold.
         if (!inboundViews.containsKey(shareId) && !keyStore.contains(shareId)) return
+        if (outbound.containsKey(shareId)) { scope.launch { stopShare(shareId) }; return }
         keyStore.edit().remove(shareId).apply()
-        inboundViews[shareId]?.let { inboundViews[shareId] = it.copy(endedExplicit = true) }
+        inboundViews[shareId]?.let { inboundViews[shareId] = it.copy(endedExplicit = true, stoppedBeforeExpiry = it.stoppedBeforeExpiry || (!it.endedExplicit && System.currentTimeMillis() < it.expiresAt)) }
         scope.launch { withContext(Dispatchers.IO) { runCatching { dao.markEnded(shareId, nowSec()) } } }
     }
 
@@ -395,9 +447,11 @@ object LocationShareEngine {
     fun refresh(context: Context) {
         init(context)
         scope.launch {
+            hydrateViews()
+            retryPendingStops()
             val res = runCatching { service.listShares() }.getOrNull() ?: return@launch
             for (s in res.outbound) {
-                if (outbound.containsKey(s.share_id)) continue
+                if (outbound.containsKey(s.share_id) || keyStore.contains(pendingStopPrefix() + s.share_id)) continue
                 val keyB64 = keyStore.getString(s.share_id, null) ?: continue
                 val convId = s.conversation_id ?: continue
                 val expiresAt = parseIso(s.expires_at)
@@ -409,27 +463,52 @@ object LocationShareEngine {
                 // surviving key) leaves no route at all; the share is still registered so
                 // Stop does the WS stop + endShare, and sendControl logs what it can't send.
                 val row = runCatching { withContext(Dispatchers.IO) { dao.share(s.share_id) } }.getOrNull()
+                if (row?.endedAt != null || expiresAt <= System.currentTimeMillis()) continue
                 val peer = row?.peerUserId
-                // Reconstructed context: Stop works (loc_stop + endShare). We do NOT resume
-                // emission here — one emitting device per share, and the timer still guards it.
+                // The local key and routing row identify this device's share. Restore its
+                // sequence before restarting updates while the chat is visible.
                 outbound[s.share_id] = Outbound(
                     shareId = s.share_id, conversationId = convId,
                     isGroup = row != null && peer == null, peerUserId = peer,
                     recipientIds = s.target_user_ids, keyB64 = keyB64, expiresAt = expiresAt,
-                    cadenceSeconds = LIVE_CADENCE_SECONDS, liveStartSent = true,
+                    cadenceSeconds = LIVE_CADENCE_SECONDS,
+                    seq = maxOf(System.currentTimeMillis(), (inboundViews[s.share_id]?.lastFix?.seq ?: 0) + 1),
                 )
                 if (outboundActive.none { it.shareId == s.share_id })
                     outboundActive.add(OutboundShareView(s.share_id, convId, expiresAt))
             }
             monitorExpiry()
+            if (outbound.isNotEmpty() && LocationPermissions.hasForeground(context)) {
+                runCatching {
+                    LocationForegroundService.start(context)
+                    provider.startLive(onError = { stopAllFromSystem() }) { onFix(it) }
+                }.onFailure { stopAllFromSystem() }
+            }
             for (s in res.inbound) {
                 val keyB64 = keyStore.getString(s.share_id, null) ?: continue
                 if (inboundViews.containsKey(s.share_id)) continue
                 val last = runCatching { withContext(Dispatchers.IO) { dao.lastFix(s.share_id) } }.getOrNull()
                 val fix = last?.let { LocationFix(it.shareId, it.senderUserId, it.lat, it.lon, it.acc, it.seq, it.fixedAt * 1000) }
+                val row = withContext(Dispatchers.IO) { dao.share(s.share_id) }
+                if (row?.endedAt != null) continue
                 inboundViews[s.share_id] = LiveShareView(s.share_id, s.owner_user_id, parseIso(s.expires_at), LIVE_CADENCE_SECONDS, fix, endedExplicit = false)
                 s.conversation_id?.let { inboundConversation[s.share_id] = it }
             }
+        }
+    }
+
+    /** Restore the most recent fix and ended state before relying on a network refresh. */
+    private suspend fun hydrateViews() {
+        val rows = withContext(Dispatchers.IO) { dao.allConversationShares() }
+        for (row in rows) {
+            if (inboundViews.containsKey(row.id)) continue
+            val last = withContext(Dispatchers.IO) { dao.lastFix(row.id) }
+            if (inboundViews.containsKey(row.id)) continue
+            val fix = last?.let { LocationFix(it.shareId, it.senderUserId, it.lat, it.lon, it.acc, it.seq, it.fixedAt * 1000) }
+            inboundViews[row.id] = LiveShareView(row.id,
+                if (row.direction == "out") tokens.userId ?: "" else row.peerUserId ?: "",
+                row.expiresAt * 1000, row.cadenceSeconds, fix, row.endedAt != null, row.endedAt?.let { it < row.expiresAt } == true)
+            row.conversationId?.let { inboundConversation[row.id] = it }
         }
     }
 
@@ -438,16 +517,10 @@ object LocationShareEngine {
     private suspend fun sendControl(conv: ShareTarget, env: LocationEnvelope) {
         val json = ApiClient.json.encodeToString(LocationEnvelope.serializer(), env)
         val peer = conv.peerUserId
-        if (!conv.isGroup && peer == null) {
-            // Never silent: durability is the whole reason this path exists (a live_stop must
-            // reach an OFFLINE recipient), so a control we cannot route has to leave a trace.
-            Log.w(TAG, "location control k=${env.k} NOT SENT: no 1:1 peer for conv=${conv.conversationId}")
-            return
-        }
-        runCatching {
-            if (conv.isGroup) group.sendGroupLocationControl(conv.conversationId, json)
-            else chat.sendLocationControl(json, conv.conversationId, peer!!)
-        }.onFailure { Log.e(TAG, "location control send failed k=${env.k}", it) }
+        check(conv.isGroup || peer != null) { "Conversation is not ready. Please try again." }
+        if (conv.isGroup) group.sendGroupLocationControl(conv.conversationId, json)
+        else chat.sendLocationControl(json, conv.conversationId, peer!!)
+
     }
 
     // MARK: - Reads for the UI
@@ -471,11 +544,14 @@ object LocationShareEngine {
     }
 
     /** Whether shareId is one of MY active outbound shares (drives the Stop button on my bubble). */
-    fun isMineActive(shareId: String?): Boolean = shareId != null && outbound.containsKey(shareId)
+    fun isMineActive(shareId: String?): Boolean = shareId != null && outboundActive.any { it.shareId == shareId && it.expiresAt > System.currentTimeMillis() }
 
     private fun parseEnvelope(json: String): LocationEnvelope? =
         runCatching { ApiClient.json.decodeFromString(LocationEnvelope.serializer(), json) }
             .getOrNull()?.takeIf { it.vloc == LocationEnvelope.VLOC }
+
+    private fun validCoordinate(lat: Double, lon: Double) =
+        lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0
 
     private fun round5(d: Double): Double = Math.round(d * 1e5) / 1e5
     private fun nowSec(): Long = System.currentTimeMillis() / 1000

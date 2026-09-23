@@ -57,6 +57,7 @@ data class StoryRow(
     @PrimaryKey @ColumnInfo(name = "id") val id: String,
     @ColumnInfo(name = "author_id") val authorId: String,
     @ColumnInfo(name = "is_mine") val isMine: Boolean = false,
+    @ColumnInfo(name = "kept", defaultValue = "0") val kept: Boolean = false,
     /** Epoch SECONDS. */
     @ColumnInfo(name = "created_at") val createdAt: Long,
     /** Epoch SECONDS. Server-computed `created_at + 24h`; the envelope's claim is only a fallback. */
@@ -137,11 +138,17 @@ abstract class StoryDao {
     abstract fun observeById(id: String): kotlinx.coroutines.flow.Flow<StoryRow?>
 
     /** Rows the local sweep must drop, so their cached plaintext files can be deleted too. */
-    @Query("SELECT * FROM stories WHERE expires_at <= :nowSeconds")
+    @Query("SELECT * FROM stories WHERE expires_at <= :nowSeconds AND NOT (is_mine = 1 AND kept = 1)")
     abstract fun expired(nowSeconds: Long): List<StoryRow>
 
-    @Query("DELETE FROM stories WHERE expires_at <= :nowSeconds")
+    @Query("DELETE FROM stories WHERE expires_at <= :nowSeconds AND NOT (is_mine = 1 AND kept = 1)")
     abstract fun deleteExpired(nowSeconds: Long)
+
+    @Query("SELECT * FROM stories WHERE is_mine = 1 AND kept = 1 AND author_id = :owner AND expires_at <= :nowSeconds ORDER BY created_at DESC")
+    abstract fun kept(owner: String, nowSeconds: Long): List<StoryRow>
+
+    @Query("UPDATE stories SET kept = 1, local_path = :path WHERE id = :id AND is_mine = 1 AND author_id = :owner")
+    abstract fun keep(id: String, owner: String, path: String): Int
 
     @Query("DELETE FROM stories WHERE id = :id")
     abstract fun delete(id: String)
@@ -194,7 +201,7 @@ abstract class StoryDao {
     @Query("UPDATE stories SET viewed_at = :atSeconds WHERE id = :id AND viewed_at IS NULL")
     abstract fun markViewed(id: String, atSeconds: Long)
 
-    @Query("UPDATE stories SET local_path = :path, download_state = :state WHERE id = :id")
+    @Query("UPDATE stories SET local_path = :path, download_state = :state WHERE id = :id AND kept = 0")
     abstract fun setDownload(id: String, path: String?, state: String)
 
     @Query("UPDATE stories SET upload_state = :state WHERE id = :id")

@@ -15,6 +15,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -134,6 +136,7 @@ fun CommunitiesHomeView(
         return
     }
 
+    val homeContent: @Composable () -> Unit = {
     Column(Modifier.fillMaxSize().background(VoiidColor.background).voiidPullRefresh(pull, VoiidColor.primary)) {
         Row(
             Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp),
@@ -161,20 +164,20 @@ fun CommunitiesHomeView(
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp)
                 .clip(RoundedCornerShape(16.dp)).background(VoiidColor.surfaceCard)
                 .softClickable { haptics.tap(); query = ""; discovering = true }
-                .semantics { contentDescription = "Discover communities. Browse public communities" }
+                .semantics { contentDescription = "Discover communities. Find people building what you build" }
                 .padding(16.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Outlined.Groups, null, tint = VoiidColor.primary, modifier = Modifier.size(28.dp))
+                Icon(Icons.Outlined.Explore, null, tint = VoiidColor.primary, modifier = Modifier.size(28.dp))
                 Column(Modifier.weight(1f)) {
                     Text("Discover communities", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-                    Text("Browse public communities", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                    Text("Find people building what you build", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
                 }
                 Text("›", color = VoiidColor.textSecondary, style = VoiidFont.rounded(24))
             }
         }
         androidx.activity.compose.BackHandler(enabled = discovering) { discovering = false; query = "" }
 
-        BasicTextField(
+        if (discovering) BasicTextField(
             value = query, onValueChange = { query = it },
             singleLine = true,
             textStyle = TextStyle(color = VoiidColor.textPrimary),
@@ -219,12 +222,19 @@ fun CommunitiesHomeView(
             }
         }
     }
+    }
+    if (discovering) {
+        com.voiid.app.ui.components.VoiidSheet(visible = true,
+            onDismiss = { discovering = false; query = "" },
+            detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large), showHandle = true) { homeContent() }
+    } else homeContent()
+
 }
 
 @Composable
 private fun CommunityRow(card: CommunityService.CommunityCard, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.lg))
+        Modifier.fillMaxWidth().clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
             .background(VoiidColor.surfaceCard).softClickable(onClick = onClick).padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -232,13 +242,13 @@ private fun CommunityRow(card: CommunityService.CommunityCard, onClick: () -> Un
         Box(
             Modifier.size(52.dp).clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.fieldFill),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Outlined.Groups, null, tint = VoiidColor.primary) }
+        ) { Text(AvatarPalette.initialsFor(card.name ?: card.handle), style = VoiidFont.rounded(18, FontWeight.Bold), color = VoiidColor.accentInk) }
 
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(card.name ?: "@${card.handle}",
                     style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (card.official == true) Pill("Official", fill = VoiidColor.accentTint, textColor = VoiidColor.accentInk)
+                if (card.official == true) Icon(Icons.Default.Verified, "Verified community", Modifier.size(16.dp), tint = VoiidColor.info)
                 if (card.isMember) {
                     Text("joined", style = VoiidFont.rounded(10, FontWeight.SemiBold),
                         color = VoiidColor.primary,
@@ -249,6 +259,7 @@ private fun CommunityRow(card: CommunityService.CommunityCard, onClick: () -> Un
                     Text("requested", style = VoiidFont.rounded(10), color = VoiidColor.textSecondary)
                 }
             }
+            Text("@${card.handle}", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
             card.description?.takeIf { it.isNotBlank() }?.let {
                 Text(it, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary, maxLines = 2)
             }
@@ -409,7 +420,7 @@ internal fun CommunityDetailView(
             ) {
                 Text(state.name.ifEmpty { "@${state.handle}" },
                     style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
-                if (state.official == true) Pill("Official", fill = VoiidColor.accentTint, textColor = VoiidColor.accentInk)
+                if (state.official == true) Icon(Icons.Default.Verified, "Verified community", Modifier.size(16.dp), tint = VoiidColor.info)
                 if (amHost) {
                     Pill("HOST", fill = VoiidColor.accent, textColor = VoiidColor.textOnAccent,
                         fontSize = 9.5f, hPad = 6.dp, vPad = 2.dp)

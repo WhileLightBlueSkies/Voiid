@@ -121,7 +121,6 @@ struct PermissionsScreen: View {
             }
             .ignoresSafeArea(edges: .bottom)
         }
-        .preferredColorScheme(.dark)
         // The wordmark is the screen's title, so the bar carries no duplicate — only the back
         // button. Inline keeps the bar the height of that control alone.
         .navigationBarTitleDisplayMode(.inline)

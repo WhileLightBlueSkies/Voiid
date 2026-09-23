@@ -150,7 +150,6 @@ struct PhoneScreen: View {
             }
             .ignoresSafeArea(edges: .bottom)
         }
-        .preferredColorScheme(.dark)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .sheet(isPresented: $showingCountries) {

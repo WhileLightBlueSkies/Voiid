@@ -44,3 +44,27 @@ Device acceptance still required:
 - Stop offline, restart/reconnect, stop all, revoke location permission, and expiry.
 - Extension reaches recipient; replay cannot move the marker backwards.
 - Reduced accuracy, large text, light/dark, and VoiceOver on the redesigned sheet.
+
+Conversation map checks (no app build):
+
+```sh
+xcrun swiftc -module-cache-path /private/tmp/voiid-conversation-check-cache \
+  apps/ios/Voiid/Voiid/Models/LocationModels.swift \
+  apps/ios/checks/location/ConversationMapCheck.swift -o /private/tmp/voiid-conversation-map-check
+/private/tmp/voiid-conversation-map-check
+python3 apps/ios/checks/location/store_check.py
+```
+
+Eight selection checks cover incoming + outgoing shares, direct/group isolation,
+selected-share deduplication, stale participants, ended peers and the opened share's
+final position. Five SQLite checks exercise the actual inbound upsert SQL, including
+extension replay, owner binding and stopped-share preservation during history refresh.
+
+The iOS conversation viewer now includes this device's outgoing shares even when opened
+from another member's bubble. It fits all participants until a manual pan, and recenters
+on all participants. A member awaiting their first fix can open a map of other sharing
+members, without attributing another member's coordinates to the waiting member.
+
+Cross-device acceptance still required: open either user's bubble while both an Android
+and iOS device share; repeat in a group with three members; move a distant member; pan
+and recenter; stop one participant; confirm unrelated chats never appear on that map.

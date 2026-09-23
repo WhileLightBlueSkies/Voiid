@@ -43,15 +43,26 @@ struct ContentView: View {
     /// one sheet no matter which surface asked for it.
     @StateObject private var social = SocialEngine()
 
+    #if DEBUG
+    @State private var showRestoreDesign = ProcessInfo.processInfo.arguments.contains("--preview-restore-design")
+    #endif
+
     var body: some View {
         Group {
             switch session.route {
+            case .recovery:
+                RestoreMessagesView(meta: BackupMeta(download_url: "", size_bytes: 0, updated_at: "")) {
+                    session.completeOnboarding()
+                }
             case .onboarding:
                 OnboardingFlow()
             case .main:
                 RootTabView()
             }
         }
+        #if DEBUG
+        .fullScreenCover(isPresented: $showRestoreDesign) { RestoreDesignPreview() }
+        #endif
         .environmentObject(social)
         // LOADED ONCE, AT THE ROOT, for the same reason the engine lives here.
         //

@@ -27,14 +27,14 @@ import java.util.UUID
 
 // MARK: - Session / onboarding
 
-enum class AppRoute { ONBOARDING, MAIN }
+enum class AppRoute { ONBOARDING, RECOVERY, MAIN }
 
 class AppSession(app: Application) : AndroidViewModel(app) {
     private val appContext: android.content.Context = app.applicationContext
     val auth = AuthService(app)
 
     // Resume straight to the app if we already hold a session token.
-    var route by mutableStateOf(if (auth.isAuthenticated) AppRoute.MAIN else AppRoute.ONBOARDING)
+    var route by mutableStateOf(if (auth.needsRecovery()) AppRoute.RECOVERY else if (auth.isAuthenticated) AppRoute.MAIN else AppRoute.ONBOARDING)
         private set
     // Empty until the REAL profile loads (loadProfile → ProfileService). Never a dummy
     // "You / +91 …" placeholder that could flash before the real data arrives.
@@ -119,6 +119,7 @@ class AppSession(app: Application) : AndroidViewModel(app) {
 
     /** Called at the end of onboarding once a real session token exists. */
     fun completeOnboarding() {
+        auth.finishRecovery()
         route = AppRoute.MAIN
         loadProfile()
     }

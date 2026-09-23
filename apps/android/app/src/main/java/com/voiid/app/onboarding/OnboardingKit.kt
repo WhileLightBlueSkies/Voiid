@@ -297,11 +297,11 @@ fun OnboardingRow(
 
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidBrand.text)
-            Text(
-                subtitle,
-                style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim,
-                maxLines = if (subtitleWraps) Int.MAX_VALUE else 1,
-            )
+            if (subtitleWraps) {
+                Text(subtitle, style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim)
+            } else {
+                OnboardingFittedText(subtitle, VoiidFont.rounded(12.5f), VoiidBrand.textDim, 0.75f)
+            }
         }
 
         when {
@@ -363,13 +363,8 @@ fun OnboardingPrivacyPanel(
         Icon(icon, null, tint = VoiidBrand.lime, modifier = Modifier.size(20.dp))
 
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                headline,
-                style = VoiidFont.rounded(14, FontWeight.SemiBold),
-                color = VoiidBrand.text,
-                maxLines = 1,
-            )
-            Text(detail, style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim)
+            OnboardingFittedText(headline, VoiidFont.rounded(14, FontWeight.SemiBold), VoiidBrand.text, 0.8f)
+            Text(detail, style = VoiidFont.subhead, color = VoiidBrand.textDim)
         }
     }
 }
@@ -430,6 +425,7 @@ fun OnboardingKitButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     busy: Boolean = false,
+    usesBrandGradient: Boolean = false,
     onClick: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
@@ -443,9 +439,7 @@ fun OnboardingKitButton(
             .height(56.dp)
             .alpha(alpha)
             .clip(CircleShape)
-            .background(
-                Brush.linearGradient(listOf(VoiidBrand.limeBright, VoiidBrand.lime))
-            )
+            .background(if (usesBrandGradient) Brush.linearGradient(listOf(VoiidBrand.limeBright, VoiidBrand.lime)) else SolidColor(VoiidBrand.lime))
             .pressableClickable(enabled = enabled && !busy) { haptics.success(); onClick() },
         contentAlignment = Alignment.Center,
     ) {
@@ -658,5 +652,25 @@ fun OnboardingScaffold(
             content = content,
         )
         footer?.let { OnboardingFooter(content = it) }
+    }
+}
+
+/** Mirrors iOS minimumScaleFactor; wrap instead of clipping at large accessibility sizes. */
+@Composable
+private fun OnboardingFittedText(text: String, style: TextStyle, color: Color, minimumScale: Float) {
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val width = with(density) { maxWidth.roundToPx() }
+        val fitted = remember(text, style, width, density.fontScale) {
+            var candidate = style
+            for (step in 0..10) {
+                candidate = style.copy(fontSize = style.fontSize * (1f - (1f - minimumScale) * step / 10f))
+                val layout = measurer.measure(text, candidate, softWrap = false)
+                if (layout.size.width <= width) break
+            }
+            candidate
+        }
+        Text(text, style = if (density.fontScale > 1.3f) style else fitted, color = color)
     }
 }

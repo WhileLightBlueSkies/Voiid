@@ -110,24 +110,22 @@ struct OTPScreen: View {
                         .padding(.top, VoiidSpacing.lg)
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
-                .padding(.bottom, 170)
+                .padding(.bottom, VoiidSpacing.lg)
             }
             .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
             .onTapGesture { focused = false }
 
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 OnboardingFooter {
-                    OnboardingKitButton(title: "Verify & Continue",
-                                        enabled: isComplete && !verifying) {
+                    OnboardingKitButton(title: verifying ? "Verifying…" : "Verify & Continue",
+                                        enabled: isComplete && !verifying && !resending, cornerRadius: 16) {
                         focused = false
                         Task { await verify() }
                     }
                 }
             }
-            .ignoresSafeArea(edges: .bottom)
         }
-        .preferredColorScheme(.dark)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
@@ -388,7 +386,7 @@ struct OTPScreen: View {
     /// Verify the code with Firebase, then exchange the Firebase ID token for our
     /// JWT. (Firebase sent the SMS on the previous screen.)
     private func verify() async {
-        guard !verifying else { return }
+        guard isComplete, !verifying, !resending else { return }
         verifying = true; errorText = nil
         do {
             let idToken = try await FirebasePhoneAuth.verify(verificationID: activeVerificationID,
@@ -408,12 +406,7 @@ struct OTPScreen: View {
                 // device doesn't already hold the master secret (fresh install wiped
                 // the E2E keychain), offer restore BEFORE entering the app. No backup
                 // (or already restored) → proceed straight through.
-                if !BackupManager.shared.hasLocalSecret,
-                   let meta = try? await BackupService.shared.fetchBackupMeta() {
-                    restoreMeta = meta
-                } else {
-                    onExistingUser()
-                }
+                restoreMeta = BackupMeta(download_url: "", size_bytes: 0, updated_at: "")
             } else {
                 onContinue()
             }

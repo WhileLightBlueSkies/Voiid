@@ -207,25 +207,25 @@ fun OnboardingFlow(session: AppSession) {
 @Composable
 fun SplashScreen() {
     val cfg = LocalConfiguration.current
-    val ellipse = (cfg.screenWidthDp * (325f / 402f)).dp
-    var appear by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (appear) 1f else 0.92f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessLow),
-        label = "splashScale",
-    )
-    val opacity by animateFloatAsState(
-        targetValue = if (appear) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessLow),
-        label = "splashOpacity",
-    )
-    LaunchedEffect(Unit) { appear = true }
-
-    Box(Modifier.fillMaxSize().background(VoiidColor.background), contentAlignment = Alignment.Center) {
-        LogoMark(
-            size = ellipse,
-            modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale; alpha = opacity },
-        )
+    val markSize = (minOf(cfg.screenWidthDp, cfg.screenHeightDp) * (325f / 402f) * 0.42f).dp
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.DisposableEffect(view) {
+        val activity = view.context as? android.app.Activity
+        val controller = activity?.let { androidx.core.view.WindowCompat.getInsetsController(it.window, view) }
+        val previousStatus = controller?.isAppearanceLightStatusBars
+        val previousNavigation = controller?.isAppearanceLightNavigationBars
+        controller?.isAppearanceLightStatusBars = false
+        controller?.isAppearanceLightNavigationBars = false
+        onDispose {
+            previousStatus?.let { controller?.isAppearanceLightStatusBars = it }
+            previousNavigation?.let { controller?.isAppearanceLightNavigationBars = it }
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Color(0xFF0B0B0B)), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.28.dp)) {
+            Image(painterResource(R.drawable.voiid_launch_mark), contentDescription = null, modifier = Modifier.size(markSize), contentScale = ContentScale.Fit)
+            BrandWordmark(size = 34, color = Color.White)
+        }
     }
 }
 

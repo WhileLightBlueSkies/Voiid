@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -65,7 +66,7 @@ import kotlinx.coroutines.launch
 /** Group info (WhatsApp-style) — port of iOS `GroupInfoView.swift`. Backed by REAL group
  *  membership from the server; add/remove are wired to the MLS [GroupEngine] via ChatStore. */
 @Composable
-fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatStore, onBack: () -> Unit) {
+fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatStore, onBack: () -> Unit, onStartCall: (CallKind) -> Unit) {
     BackHandler { onBack() }
     val haptics = LocalVoiidHaptics.current
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -119,15 +120,12 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
         ) {
             // Header: photo (+ camera badge), editable name, "Group · N members"
             Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(contentAlignment = Alignment.BottomEnd) {
-                    Box(
-                        Modifier.size(88.dp).clip(CircleShape).background(VoiidColor.fieldFill)
-                            .clickable { haptics.tap(); viewPhoto = true },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        VoiidWordmark(fontSize = 26, alpha = 0.25f)
+                Box(Modifier.size(100.dp)) {
+                    members.take(3).forEachIndexed { index, member ->
+                        ProfileAvatar(photoUrl = member.photoName, name = member.name, size = 54.dp,
+                            modifier = Modifier.offset(x = (if (index == 0) 23 else if (index == 1) 0 else 46).dp,
+                                y = (if (index == 0) 0 else 42).dp).border(2.dp, VoiidColor.background, CircleShape))
                     }
-
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -136,6 +134,17 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
                 Text("Group · ${members.size} members", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
             }
 
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Message", "Voice", "Video").forEachIndexed { index, label ->
+                    Box(Modifier.weight(1f).clip(RoundedCornerShape(16.dp)).background(VoiidColor.surfaceCard)
+                        .border(1.dp, VoiidColor.divider, RoundedCornerShape(16.dp))
+                        .clickable { haptics.tap(); if (index == 0) onBack() else onStartCall(if (index == 1) CallKind.VOICE else CallKind.VIDEO) }
+                        .padding(vertical = 16.dp), Alignment.Center) {
+                        Text(label, style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.accentInk)
+                    }
+                }
+            }
+            Text("Private group · End-to-end encrypted", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
             // Shared media — REAL recent photos from the message store (never DummyData).
             val recentPhotos = remember(conversation.id) {
                 com.voiid.app.net.ChatEngine.get(context).messages(conversation.id)
@@ -343,7 +352,7 @@ private fun MemberRow(m: VMember, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        VoiidAvatar(size = 42.dp, modifier = Modifier.clip(CircleShape))
+        ProfileAvatar(photoUrl = m.photoName, name = m.name, size = 42.dp)
         Column(Modifier.weight(1f)) {
             Text(if (m.isYou) "You" else m.name, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
             m.statusText?.let { Text(it, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary) }
@@ -353,12 +362,12 @@ private fun MemberRow(m: VMember, onClick: () -> Unit) {
         if (m.role != MemberRole.MEMBER) {
             val isOwner = m.role == MemberRole.OWNER
             Text(
-                if (isOwner) "owner" else "admin",
+                if (isOwner) "Owner" else "Admin",
                 style = VoiidFont.rounded(11, FontWeight.Medium),
-                color = if (isOwner) VoiidColor.textOnPrimary else VoiidColor.primary,
+                color = VoiidColor.accentInk,
                 modifier = Modifier
                     .clip(RoundedCornerShape(999.dp))
-                    .background(if (isOwner) VoiidColor.primary else VoiidColor.accent.copy(alpha = 0.4f))
+                    .border(1.dp, VoiidColor.primary.copy(alpha = 0.6f), CircleShape)
                     .padding(horizontal = 8.dp, vertical = 3.dp),
             )
         }

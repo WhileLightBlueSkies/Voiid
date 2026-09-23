@@ -8,14 +8,14 @@
 //  them ever see the master secret or the plaintext:
 //
 //    - `.server`      → our R2-backed backend (BackupService), the always-available
-//                       default. Never regresses if the user has no Google/iCloud.
+//                       option. Users can leave it off.
 //    - `.iCloud`      → the app's private iCloud Documents container
 //                       (ICloudBackupService). Apple only stores ciphertext.
 //    - `.googleDrive` → the user's own Drive `appDataFolder`
 //                       (GoogleDriveBackupService). Google only stores ciphertext.
 //
 //  Each destination is an opt-in the user toggles independently in Backup &
-//  Recovery settings; `.server` stays on so nothing regresses. `BackupManager`
+//  Recovery settings; every location, including `.server`, is optional. `BackupManager`
 //  fans the same blob out to every enabled destination and, on restore, prefers
 //  whichever destination holds the newest snapshot.
 //
@@ -48,7 +48,7 @@ enum BackupDestination: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The server destination is the always-on default and can't be turned off.
+    /// Identifies the Voiid-hosted destination; it can be independently disabled.
     var isServer: Bool { self == .server }
 }
 

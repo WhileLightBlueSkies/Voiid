@@ -104,23 +104,39 @@ fun LocationDetailView(ref: ChatEngine.LocationRef, conversationId: String? = nu
         else -> listOfNotNull(LocationShareEngine.inbound(ref.shareId))
     }
     // The share this bubble opened, kept first so the header describes the right person.
-    val primary = shares.firstOrNull { it.shareId == ref.shareId } ?: shares.firstOrNull()
+    val primary = LocationShareEngine.inbound(ref.shareId)
 
     // Most current coordinate: the live fix if the stream has produced one, else the
     // coordinate the message itself carried.
     val lat = primary?.lastFix?.lat ?: ref.lat
     val lon = primary?.lastFix?.lon ?: ref.lon
-    if (lat == null || lon == null) { onClose(); return }
 
-    val state = primary?.state(now) ?: if (isLive) ShareState.ENDED else null
 
-    Column(Modifier.fillMaxSize().background(VoiidColor.background)) {
+    val state = primary?.state(now) ?: if (isLive) {
+        if (now >= (ref.expiresAt ?: 0)) ShareState.ENDED else ShareState.STALE
+    } else null
+
+    Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
+        Box(Modifier.fillMaxSize()) {
+            if (lat == null || lon == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(if (state == ShareState.ENDED) "Live location ended" else "Waiting for the first location update…",
+                        style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
+                }
+            } else if (!BuildConfig.MAPS_CONFIGURED) {
+                MapUnavailableCard(Modifier.fillMaxSize(), lat, lon)
+            } else {
+                LiveDetailMap(shares = (listOfNotNull(primary) + shares).distinctBy { it.shareId }, fallback = LatLng(lat, lon), state = state, now = now)
+            }
+        }
+
         Row(
-            Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp).fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp)).background(VoiidColor.surfaceCard.copy(alpha = 0.96f)).padding(8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(Icons.Default.Close, "Close", tint = VoiidColor.textPrimary, modifier = Modifier.size(26.dp).clickable { onClose() })
+            Icon(Icons.Default.Close, "Close", tint = VoiidColor.textPrimary, modifier = Modifier.size(48.dp).clickable { onClose() }.padding(11.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     ref.label?.ifBlank { null } ?: if (isLive) "Live location" else "Location",
@@ -137,18 +153,13 @@ fun LocationDetailView(ref: ChatEngine.LocationRef, conversationId: String? = nu
             if (isLive && state != null) LiveDot(state)
         }
 
-        Box(Modifier.fillMaxWidth().weight(1f)) {
-            if (!BuildConfig.MAPS_CONFIGURED) {
-                MapUnavailableCard(Modifier.fillMaxSize(), lat, lon)
-            } else {
-                LiveDetailMap(shares = shares, fallback = LatLng(lat, lon), state = state, now = now)
-            }
-        }
 
         Column(
-            Modifier.fillMaxWidth().background(VoiidColor.surfaceCard).navigationBarsPadding().padding(16.dp),
+            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp).fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp)).background(VoiidColor.surfaceCard.copy(alpha = 0.96f)).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            if (lat != null && lon != null) {
             Text("%.5f, %.5f".format(lat, lon), style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.textSecondary)
             // Honesty line (docs/LOCATION.md §10): a phone GPS fix is not a pinpoint, and a
             // reader who treats it as one can walk to the wrong door. Prefer the accuracy the
@@ -161,6 +172,12 @@ fun LocationDetailView(ref: ChatEngine.LocationRef, conversationId: String? = nu
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 DetailAction(Icons.Default.Map, "Open in Maps", Modifier.weight(1f)) { openInMaps(context, lat, lon, ref.label) }
                 DetailAction(Icons.Default.Directions, "Directions", Modifier.weight(1f)) { openDirections(context, lat, lon, ref.label) }
+            }
+            }
+            if (LocationShareEngine.isMineActive(ref.shareId)) {
+                DetailAction(Icons.Default.Close, "Stop sharing", Modifier.fillMaxWidth()) {
+                    ref.shareId?.let { LocationShareEngine.stopShareUi(it) }
+                }
             }
         }
     }
@@ -213,7 +230,9 @@ private fun LiveDetailMap(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = camera,
             uiSettings = MapUiSettings(zoomControlsEnabled = false, compassEnabled = false, mapToolbarEnabled = false),
-            properties = com.google.maps.android.compose.MapProperties(mapType = MapType.NORMAL),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 110.dp, bottom = 210.dp),
+            properties = com.google.maps.android.compose.MapProperties(mapType = MapType.NORMAL, isBuildingEnabled = false,
+                mapStyleOptions = rememberLocationMapStyle()),
         ) {
             if (points.isEmpty()) {
                 MarkerComposable(state = MarkerState(position = fallback)) {
@@ -222,12 +241,12 @@ private fun LiveDetailMap(
             } else {
                 for ((share, target) in points) {
                     val s = share.state(now)
-                    AnimatedAvatarMarker(
+                    androidx.compose.runtime.key(share.shareId) { AnimatedAvatarMarker(
                         target = target,
                         userId = share.ownerUserId,
                         stale = s == ShareState.STALE,
                         ended = s == ShareState.ENDED,
-                    )
+                    ) }
                 }
             }
         }
@@ -237,8 +256,8 @@ private fun LiveDetailMap(
             Box(
                 Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(16.dp)
-                    .size(44.dp)
+                    .padding(end = 20.dp, bottom = 220.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
                     .background(VoiidColor.surfaceCard)
                     .clickable { userPanned = false },
@@ -269,9 +288,11 @@ private fun AnimatedAvatarMarker(target: LatLng, userId: String?, stale: Boolean
         }
     }
     val pos = LatLng(latAnim.value.toDouble(), lonAnim.value.toDouble())
+    val marker = remember { MarkerState(position = pos) }
+    marker.position = pos
     MarkerComposable(
         keys = arrayOf(userId ?: "", stale, ended),
-        state = MarkerState(position = pos),
+        state = marker,
         title = userId?.let { UserDirectory.displayName(it) },
     ) {
         AvatarPin(userId = userId, stale = stale, ended = ended)
@@ -300,9 +321,9 @@ private fun liveSubtitle(state: ShareState?, share: LiveShareView?, expiresAt: L
     val fixedAt = share?.lastFix?.fixedAt
     parts.add(
         when {
+            fixedAt == null -> "waiting for first fix"
             state == ShareState.STALE -> "may have lost signal"
-            fixedAt != null -> "updated ${humanAge(now - fixedAt)}"
-            else -> "waiting for first fix"
+            else -> "updated ${humanAge(now - fixedAt)}"
         },
     )
     return parts.joinToString(" · ")

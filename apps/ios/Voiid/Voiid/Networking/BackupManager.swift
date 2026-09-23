@@ -33,6 +33,7 @@ final class BackupManager: ObservableObject {
     static let shared = BackupManager()
     private init() {}
 
+    @Published private(set) var progressLabel = "Preparing backup…"
     private let recovery = RecoveryService.shared
     private let backup = BackupService.shared
 
@@ -156,48 +157,45 @@ final class BackupManager: ObservableObject {
         return last.addingTimeInterval(backupFrequency.interval)
     }
 
-    /// UserDefaults key for the set of user-enabled optional destinations. `.server` is
-    /// implicit-on and never stored.
+    /// Account-scoped destination preferences; the explicit key stores all choices, including none.
     private static var enabledKey: String { "voiid.backup.enabledDestinations.\(TokenStore.shared.userId ?? "signed-out")" }
 
-    /// Destinations the user has opted into, in addition to the always-on server. Published
-    /// so the settings UI reacts. `.server` is always considered enabled.
+    /// Publish changes so all destination toggles and backup actions update together.
     @Published private var enabledRevision = 0
     var optionalEnabled: Set<BackupDestination> {
         get { Self.loadEnabled() }
         set {
-            UserDefaults.standard.set(newValue.map(\.rawValue), forKey: Self.enabledKey)
+            UserDefaults.standard.set(newValue.map(\.rawValue), forKey: Self.enabledKey + ".explicit")
             enabledRevision += 1
         }
     }
 
     private static func loadEnabled() -> Set<BackupDestination> {
-        let raw = UserDefaults.standard.stringArray(forKey: enabledKey) ?? []
-        return Set(raw.compactMap { BackupDestination(rawValue: $0) }).intersection([.iCloud])
+        let defaults = UserDefaults.standard
+        let choiceKey = enabledKey + ".explicit"
+        if let saved = defaults.stringArray(forKey: choiceKey) {
+            return Set(saved.compactMap(BackupDestination.init(rawValue:))).intersection([.server, .iCloud])
+        }
+        // Preserve existing installations' destinations; new setup begins with no selection.
+        let legacy = Set((defaults.stringArray(forKey: enabledKey) ?? []).compactMap(BackupDestination.init(rawValue:)))
+        let migrated = E2EManager.shared.masterSecret() == nil ? legacy : legacy.union([.server])
+        defaults.set(migrated.map(\.rawValue), forKey: choiceKey)
+        return migrated.intersection([.server, .iCloud])
     }
 
-    /// Every destination the blob should currently be written to.
-    var enabledDestinations: Set<BackupDestination> { optionalEnabled.union([.server]) }
+    var enabledDestinations: Set<BackupDestination> { optionalEnabled }
+    func isEnabled(_ destination: BackupDestination) -> Bool { enabledDestinations.contains(destination) }
 
-    func isEnabled(_ destination: BackupDestination) -> Bool {
-        destination.isServer || optionalEnabled.contains(destination)
-    }
-
-    /// Turn an optional destination on/off. Persists the choice. The server can't be disabled.
-    /// Enabling triggers an immediate backup to that destination if backup is already set up;
-    /// a failure there is surfaced to the caller but never disturbs the other destinations.
     func setEnabled(_ destination: BackupDestination, _ on: Bool) async throws {
-        guard !destination.isServer else { return }
-        guard destination == .iCloud else {
+        guard destination == .server || destination == .iCloud else {
             throw APIError.http(status: 400, message: "Use iCloud for cloud backups on iPhone.")
         }
-        if on, let secret = E2EManager.shared.masterSecret() {
-            let plaintext = try ChatEngine.shared.exportStore()
-            let blob = try encryptBackup(secret: secret, plaintext: plaintext)
-            try await service(for: destination).uploadBackup(blob)
+        if on && destination == .iCloud && !ICloudBackupService.shared.isAvailable {
+            throw APIError.http(status: 400, message: "Sign in to iCloud in Settings first.")
         }
-        if on { optionalEnabled.insert(destination) } else { optionalEnabled.remove(destination) }
-        UserDefaults.standard.set(optionalEnabled.map(\.rawValue), forKey: Self.enabledKey)
+        var choices = enabledDestinations
+        if on { choices.insert(destination) } else { choices.remove(destination) }
+        optionalEnabled = choices
     }
 
     // MARK: - Setup
@@ -215,8 +213,13 @@ final class BackupManager: ObservableObject {
     /// persist the secret locally, then take a first backup. Idempotent enough to
     /// retry on transient failure.
     func commitSetup(secret: Data, pin: String) async throws {
-        if E2EManager.shared.masterSecret() != secret, try await status() != nil {
-            throw APIError.http(status: 409, message: "A backup already exists. Restore it before setting up a new backup.")
+        guard !enabledDestinations.isEmpty else { throw APIError.http(status: 400, message: "Choose a backup location first.") }
+        if E2EManager.shared.masterSecret() != secret {
+            let serverCopy = try await status()
+            let cloudCopy = ICloudBackupService.shared.isAvailable ? try await service(for: .iCloud).fetchSnapshot() : nil
+            if serverCopy != nil || cloudCopy != nil {
+                throw APIError.http(status: 409, message: "A backup already exists. Restore it before setting up a new backup.")
+            }
         }
         let wrapped = try wrapMasterSecretWithPin(secret: secret, pin: pin)
         try await recovery.putKey(wrapped)
@@ -235,30 +238,36 @@ final class BackupManager: ObservableObject {
     /// do NOT disturb the server backup or crash. If the server is disabled (user chose only
     /// iCloud/Drive) and every enabled destination fails, the first failure is thrown.
     func backupNow() async throws {
+        let destinations = enabledDestinations
+        guard !destinations.isEmpty else { throw APIError.http(status: 400, message: "Backup is off. Choose a location first.") }
         guard let secret = E2EManager.shared.masterSecret() else {
             throw APIError.http(status: 412, message: "Set up backup before backing up.")
         }
+        progressLabel = "Encrypting your chats…"
         let plaintext = try ChatEngine.shared.exportStore()
         // The blob is ALWAYS the encryptBackup ciphertext — identical bytes to every
         // destination. Google/Apple/our server only ever see this.
-        let blob = try encryptBackup(secret: secret, plaintext: plaintext)
+        let blob = try await Task.detached(priority: .userInitiated) { try encryptBackup(secret: secret, plaintext: plaintext) }.value
 
         var failures: [BackupDestination: Error] = [:]
-        for destination in enabledDestinations {
-            do { try await service(for: destination).uploadBackup(blob) }
+        for destination in destinations.sorted(by: { $0.rawValue < $1.rawValue }) {
+            do {
+                progressLabel = "Uploading to \(destination == .server ? "Voiid server" : "iCloud")…"
+                try await service(for: destination).uploadBackup(blob)
+            }
             catch { failures[destination] = error }
         }
 
-        if isEnabled(.server), let serverError = failures[.server] {
+        if destinations.contains(.server), let serverError = failures[.server] {
             throw serverError            // server is the default; its failure is real.
         }
-        if !isEnabled(.server), failures.count == enabledDestinations.count,
+        if !destinations.contains(.server), failures.count == destinations.count,
            let firstError = failures.values.first {
             throw firstError             // no server fallback and everything failed.
         }
         if !failures.isEmpty {
             let names = failures.keys.map(\.title).sorted().joined(separator: ", ")
-            throw APIError.http(status: 503, message: "Server backup saved, but these copies failed: \(names). Retry to update them.")
+            throw APIError.http(status: 503, message: "Backup failed for these locations: \(names). Retry to update them.")
         }
     }
 
@@ -307,6 +316,16 @@ final class BackupManager: ObservableObject {
         try await recovery.putKey(wrapped)
     }
 
+    /// Device-local, account-scoped completion; never mark a skipped or failed restore.
+    var lastCompletedRestore: Date? {
+        guard let account = TokenStore.shared.userId else { return nil }
+        return UserDefaults.standard.object(forKey: "voiid.restore.completed.\(account)") as? Date
+    }
+
+    var pendingRestoreSource: BackupDestination? {
+        UserDefaults.standard.string(forKey: "voiid.restore.source.\(TokenStore.shared.userId ?? "")").flatMap(BackupDestination.init(rawValue:))
+    }
+
     // MARK: - Login restore
 
     /// Restore via PIN. Fetches the wrap (may throw `RecoveryError.locked`/`.notSet`),
@@ -316,38 +335,59 @@ final class BackupManager: ObservableObject {
     /// before the error is re-thrown, and the caller shows the message.
     /// - Parameter source: which destination to pull the sealed blob from (default `.server`).
     ///   The PIN wrap always comes from the server recovery lock regardless of `source`.
-    func restoreWithPin(_ pin: String, from source: BackupDestination = .server) async throws {
+    func restoreWithPin(_ pin: String, from source: BackupDestination = .server, onProgress: (Int) -> Void = { _ in }) async throws {
+        _ = enabledDestinations // Resolve migration before saving a restored key.
+        onProgress(0)
+        let secret = try await unlockBackupPin(pin)
+        try await restore(with: secret, from: source, onProgress: onProgress)
+    }
+
+    /// Authenticate before presenting backup selection; keep the key in memory only.
+    func unlockBackupPin(_ pin: String) async throws -> Data {
         // `getKey` can throw before we ever attempt an unwrap (locked / not-set /
         // transport) — those are NOT failed PIN attempts, so don't report them.
         let wrapped = try await recovery.getKey()
         let secret: Data
         do {
-            secret = try unwrapMasterSecretWithPin(wrapped: wrapped, pin: pin)
+            secret = try await Task.detached(priority: .userInitiated) { try unwrapMasterSecretWithPin(wrapped: wrapped, pin: pin) }.value
         } catch {
             await recovery.reportAttempt(success: false)
             throw BackupRestoreError.wrongPin
         }
         await recovery.reportAttempt(success: true)
-        try await restore(with: secret, from: source)
+        return secret
     }
 
     /// Restore via the 24-word recovery phrase. `phraseToMasterSecret` validates the
     /// BIP39 phrase (throws on an invalid one), then we restore as usual. No PIN
     /// attempt is reported (the phrase path doesn't touch the server lock).
-    func restoreWithPhrase(_ phrase: String, from source: BackupDestination = .server) async throws {
+    func restoreWithPhrase(_ phrase: String, from source: BackupDestination = .server, onProgress: (Int) -> Void = { _ in }) async throws {
+        _ = enabledDestinations // Resolve migration before saving a restored key.
+        onProgress(0)
         let secret: Data
         do { secret = try phraseToMasterSecret(phrase: phrase.trimmingCharacters(in: .whitespacesAndNewlines)) }
         catch { throw BackupRestoreError.invalidPhrase }
-        try await restore(with: secret, from: source)
+        try await restore(with: secret, from: source, onProgress: onProgress)
     }
 
     /// Shared tail of both restore paths: download the sealed blob, decrypt it with
     /// the recovered secret (throws if the secret is wrong — GCM auth), merge the
     /// messages into the local store, and persist the secret so future backups work.
-    private func restore(with secret: Data, from source: BackupDestination = .server) async throws {
+    func restore(with secret: Data, from source: BackupDestination = .server, onProgress: (Int) -> Void) async throws {
+        _ = enabledDestinations // Resolve migration before saving a restored key.
+        UserDefaults.standard.set(source.rawValue, forKey: "voiid.restore.source.\(TokenStore.shared.userId ?? "")")
+        onProgress(1)
         let blob = try await service(for: source).downloadBackup()
-        let plaintext = try decryptBackup(secret: secret, blob: blob)
+        onProgress(2)
+        let plaintext = try await Task.detached(priority: .userInitiated) { try decryptBackup(secret: secret, blob: blob) }.value
+        onProgress(3)
         try await ChatEngine.shared.importStore(plaintext)
+        onProgress(4)
         try saveSecret(secret)
+        if let account = TokenStore.shared.userId {
+            UserDefaults.standard.set(Date(), forKey: "voiid.restore.completed.\(account)")
+            // Commit routing at the successful restore boundary, before any UI delay/dismissal.
+            UserDefaults.standard.set(true, forKey: "voiid.recovery.ready.\(account)")
+        }
     }
 }

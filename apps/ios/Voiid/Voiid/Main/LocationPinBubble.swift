@@ -20,6 +20,7 @@
 
 import SwiftUI
 import MapKit
+import Combine
 
 /// Display-only preference: load map tiles (default ON). The Settings toggle that writes
 /// it lives on the Privacy screen (feature B); reading it here keeps feature A honest.
@@ -44,16 +45,16 @@ final class MapSnapshotCache {
     }
 
     func snapshot(_ coord: CLLocationCoordinate2D, meters: Double = 600,
-                  size: CGSize, completion: @escaping (UIImage?) -> Void) {
-        let k = key(coord, meters: meters)
+                  size: CGSize, style: UIUserInterfaceStyle, completion: @escaping (UIImage?) -> Void) {
+        let k = "\(key(coord, meters: meters))-\(style.rawValue)-\(size.width)x\(size.height)" as NSString
         if let cached = cache.object(forKey: k) { completion(cached); return }
         let options = MKMapSnapshotter.Options()
         options.region = MKCoordinateRegion(center: coord, latitudinalMeters: meters,
                                             longitudinalMeters: meters)
         options.size = size
         options.pointOfInterestFilter = .excludingAll   // calm, on-brand, no POIs
-        // The app is pinned to light; render the light map deterministically.
-        options.traitCollection = UITraitCollection(userInterfaceStyle: .light)
+        // Cache light and dark maps independently.
+        options.traitCollection = UITraitCollection(userInterfaceStyle: style)
         MKMapSnapshotter(options: options).start(with: .global()) { [weak self] snap, _ in
             guard let img = snap?.image else { DispatchQueue.main.async { completion(nil) }; return }
             self?.cache.setObject(img, forKey: k)
@@ -70,6 +71,8 @@ struct LocationPinBubble: View {
     var conversationId: String?
     @ObservedObject private var engine = LocationShareEngine.shared
     @State private var showDetail = false
+    @State private var now = Date()
+    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var isLive: Bool { ref.locationKind == .live_start }
 
@@ -85,8 +88,24 @@ struct LocationPinBubble: View {
         return nil
     }
 
+    /// A newly opened share may still be locating while other members already have fixes.
+    /// Let their map render without pretending their coordinate belongs to this share.
+    private var detailCoordinate: CLLocationCoordinate2D? {
+        if let coordinate { return coordinate }
+        guard isLive, let conversationId else { return nil }
+        let ids = LocationStore.activeInbound(conversationId: conversationId).map(\.shareId)
+            + engine.outboundShares.filter { $0.conversationId == conversationId }.map(\.id)
+        for id in ids {
+            if let fix = engine.lastFix(shareId: id) {
+                return CLLocationCoordinate2D(latitude: fix.lat, longitude: fix.lon)
+            }
+        }
+        return nil
+    }
+
     private var state: ShareState {
         guard isLive, let sid = ref.shareId else { return .live }
+        _ = now // Refresh the derived expiry state even without an incoming fix.
         return engine.shareState(shareId: sid, expiresAt: ref.expiresAtDate,
                                  cadence: ref.cadence ?? 15)
     }
@@ -94,17 +113,34 @@ struct LocationPinBubble: View {
     var body: some View {
         Button { showDetail = true } label: { card }
             .buttonStyle(.plain)
+            .onReceive(ticker) { now = $0 }
             .fullScreenCover(isPresented: $showDetail) {
-                if let coordinate {
-                    LocationDetailView(coordinate: coordinate, label: ref.label, live: isLive,
+                if let detailCoordinate {
+                    LocationDetailView(coordinate: detailCoordinate, label: ref.label, live: isLive,
                                        state: state, shareId: ref.shareId,
                                        conversationId: conversationId,
-                                       accuracy: currentAccuracy)
+                                       accuracy: currentAccuracy, hasInitialCoordinate: coordinate != nil)
+                } else {
+                    NavigationStack {
+                        ContentUnavailableView(state == .ended ? "Live location ended" : "Waiting for location",
+                            systemImage: state == .ended ? "location.slash" : "location",
+                            description: Text(state == .ended ? "This location is no longer being shared." : "The map will appear when the first update arrives."))
+                            .toolbar {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button("Close", systemImage: "xmark") { showDetail = false }
+                                        .labelStyle(.iconOnly)
+                                }
+                            }
+                    }
+                    .tint(VoiidColor.textPrimary)
                 }
             }
     }
 
-    private var card: some View {
+    @ViewBuilder private var card: some View {
+        if isLive && state == .ended {
+            endedCard
+        } else {
         VStack(alignment: .leading, spacing: 0) {
             thumbnail
             footer
@@ -113,6 +149,33 @@ struct LocationPinBubble: View {
         .background(VoiidColor.surfaceCard)
         .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md).stroke(VoiidColor.fieldBorder, lineWidth: 1))
+        }
+    }
+
+    private var endedCard: some View {
+        let stopped = ref.shareId.map { LocationStore.wasStoppedBeforeExpiry($0) } ?? false
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "location.slash.fill")
+                    .font(VoiidFont.rounded(19, .medium))
+                    .foregroundStyle(VoiidColor.accentInk)
+                    .frame(width: 44, height: 44)
+                    .background(VoiidColor.primary.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(stopped ? "Live location stopped" : "Live location ended")
+                        .font(VoiidFont.rounded(15, .semibold)).foregroundStyle(VoiidColor.textPrimary)
+                    Text("This location is no longer updating.")
+                        .font(VoiidFont.rounded(12, .regular)).foregroundStyle(VoiidColor.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text(stopped ? "Sharing was stopped" : "The sharing time has ended")
+                .font(VoiidFont.rounded(10, .medium)).foregroundStyle(VoiidColor.textSecondary)
+        }
+        .padding(14)
+        .frame(width: 260)
+        .background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 19, style: .continuous).stroke(VoiidColor.fieldBorder, lineWidth: 1))
     }
 
     // MARK: - Thumbnail (or coordinate-card fallback)
@@ -153,7 +216,7 @@ struct LocationPinBubble: View {
                 Text(String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude))
                     .font(VoiidFont.rounded(11, .medium)).foregroundColor(VoiidColor.textSecondary)
             } else {
-                Text("Waiting for location…")
+                Text(state == .ended ? "Live location ended" : "Waiting for location…")
                     .font(VoiidFont.rounded(11, .regular)).foregroundColor(VoiidColor.textSecondary)
             }
         }
@@ -198,7 +261,7 @@ struct LocationPinBubble: View {
     }
 
     private var footerTitle: String {
-        if isLive { return state == .ended ? "Live location" : "Live location" }
+        if isLive { return "Live location" }
         return ref.label?.isEmpty == false ? ref.label! : "Location"
     }
 
@@ -207,7 +270,7 @@ struct LocationPinBubble: View {
             switch state {
             case .live:  return "Live until \(clock(ref.expiresAtDate))"
             case .stale: return "May have lost signal · until \(clock(ref.expiresAtDate))"
-            case .ended: return "ended \(clock(endedClock))"
+            case .ended: return "Live location ended"
             }
         }
         // Accuracy is no longer folded in here — it has its own always-visible line in the
@@ -237,6 +300,7 @@ struct LocationPinBubble: View {
 
 /// A single locally-rendered map snapshot as a SwiftUI image (async, cached).
 private struct MapThumbnail: View {
+    @Environment(\.colorScheme) private var colorScheme
     let coordinate: CLLocationCoordinate2D
     var desaturated: Bool = false
     @State private var image: UIImage?
@@ -251,8 +315,8 @@ private struct MapThumbnail: View {
             }
         }
         .frame(width: 220, height: 120)
-        .task(id: "\(coordinate.latitude),\(coordinate.longitude)") {
-            MapSnapshotCache.shared.snapshot(coordinate, size: CGSize(width: 220, height: 120)) { img in
+        .task(id: "\(coordinate.latitude),\(coordinate.longitude),\(colorScheme)") {
+            MapSnapshotCache.shared.snapshot(coordinate, size: CGSize(width: 220, height: 120), style: colorScheme == .dark ? .dark : .light) { img in
                 image = img
             }
         }

@@ -113,31 +113,37 @@ struct AppWalkthroughView: View {
                 if let target = targetInfo {
                     WalkthroughPulseRing(target: target)
                         .id("pulse_\(target.id)")
+                        .allowsHitTesting(false)
                 }
 
-                // 3. Skip Button (Top trailing)
+                // Keep Skip above the full-size tooltip layout so it always receives taps.
+                cardView(target: targetInfo, screenWidth: screenWidth, screenHeight: screenHeight)
+
                 VStack {
                     HStack {
                         Spacer()
-                        Button("Skip") {
+                        Button {
                             Haptics.tap()
                             controller.skip()
+                        } label: {
+                            Text("Skip")
+                                .font(VoiidFont.rounded(15, .semibold))
+                                .foregroundStyle(.white)
+                                .frame(minWidth: 72, minHeight: 44)
+                                .background(Color.black.opacity(0.45), in: Capsule())
+                                .contentShape(Capsule())
                         }
-                        .font(VoiidFont.rounded(15, .semibold))
-                        .foregroundStyle(Color.white.opacity(0.85))
-                        .frame(minWidth: 44, minHeight: 44)
-                        .padding(.top, max(geo.safeAreaInsets.top, 20))
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Skip walkthrough")
+                        .padding(.top, 12)
                         .padding(.trailing, 18)
                     }
                     Spacer()
                 }
-
-                // 4. Directional Speech Bubble Tooltip Card
-                cardView(target: targetInfo, screenWidth: screenWidth, screenHeight: screenHeight)
+                .zIndex(10)
             }
             .frame(width: screenWidth, height: screenHeight)
         }
-        .ignoresSafeArea()
         .animation(reduceMotion ? .easeOut(duration: 0.18)
                                 : .spring(response: 0.28, dampingFraction: 0.9),
                    value: controller.currentIndex)

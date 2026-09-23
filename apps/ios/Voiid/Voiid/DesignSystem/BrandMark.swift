@@ -219,7 +219,7 @@ struct VoiidLockup: View {
     /// letters with two lime tittles — the dots are the only accent, and a lime word throws that
     /// contrast away. Every lockup placement in the app sits on the near-black ground, so white
     /// is the right default; a call site on a light ground passes ink explicitly.
-    var wordColor: Color = .white
+    var wordColor: Color = VoiidColor.textPrimary
 
     var body: some View {
         VStack(spacing: markSize * 0.12) {

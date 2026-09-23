@@ -99,12 +99,13 @@
 
         <activity
             android:name=".MainActivity"
+            android:screenOrientation="portrait"
             android:exported="true"
             android:launchMode="singleTop"
             android:supportsPictureInPicture="true"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density"
             android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.Voiid">
+            android:theme="@style/Theme.Voiid.Launch">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -154,7 +155,7 @@
              It is NEVER committed. An ABSENT key resolves to an empty string here, and the
              UI refuses to instantiate GoogleMap when BuildConfig.MAPS_CONFIGURED is false —
              rendering an explicit "Maps aren't set up" card instead of the SDK's silent grey
-             tile grid. The key must be restricted in Google Cloud to package com.voiid.app,
+             tile grid. The key must be restricted in Google Cloud to package in.voiid.app,
              the release + debug signing SHA-1s, and the Maps SDK for Android API only. -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
@@ -212,14 +213,6 @@
         <receiver
             android:name=".net.LocationActionReceiver"
             android:exported="false" />
-
-        <!-- Google Maps SDK key. BUILD-TIME secret from the developer (local.properties /
-             -PMAPS_API_KEY / MAPS_API_KEY env), NEVER committed. An absent key is a supported
-             state: MAPS_CONFIGURED gates GoogleMap instantiation so the UI shows an explicit
-             "Maps aren't set up" card and location sharing still works. -->
-        <meta-data
-            android:name="com.google.android.geo.API_KEY"
-            android:value="${MAPS_API_KEY}" />
 
         <!-- ===== Telecom =======================================================
              The self-managed ConnectionService Telecom binds when it takes ownership of a

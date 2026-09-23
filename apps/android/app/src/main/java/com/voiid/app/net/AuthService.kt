@@ -19,6 +19,10 @@ import kotlinx.serialization.Serializable
 data class AuthResponse(val token: String, val user_id: String, val profile_complete: Boolean = false)
 
 class AuthService(context: Context) {
+    private val completion = context.applicationContext.getSharedPreferences("voiid_onboarding_completion", Context.MODE_PRIVATE)
+    fun needsRecovery(): Boolean = isAuthenticated && !completion.getBoolean("ready.${userId}", false)
+    fun finishRecovery() { check(completion.edit().putBoolean("ready.${userId}", true).commit()) }
+
     private val tokens = TokenStore.get(context)
     private val api = ApiClient(tokens)
 
@@ -32,6 +36,7 @@ class AuthService(context: Context) {
             FirebaseLoginBody.serializer(), FirebaseLoginBody(idToken)
         )
         val res: AuthResponse = api.requestAs("POST", "auth/firebase", jsonBody = body, auth = false)
+        check(completion.edit().putBoolean("ready.${res.user_id}", !res.profile_complete).commit())
         tokens.jwt = res.token
         tokens.userId = res.user_id
         return res.profile_complete

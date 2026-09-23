@@ -52,7 +52,9 @@ class BackupManager(context: Context) {
      * we save locally only after the key upload succeeds).
      */
     suspend fun finalizeSetup(secret: ByteArray, pin: String) {
-        if (store.loadMasterSecret()?.contentEquals(secret) != true && backup.fetchBackupMeta() != null) {
+        if (!hasDestination()) throw ApiError.Http(0, "Choose a backup location first.")
+        if (store.loadMasterSecret()?.contentEquals(secret) != true &&
+            (backup.fetchBackupMeta() != null || (drive.isSignedIn() && drive.fetchBackupMeta() != null))) {
             throw ApiError.Http(409, "A backup already exists. Restore it before setting up a new backup.")
         }
         val wrapped = wrapMasterSecretWithPin(secret, pin)
@@ -62,26 +64,37 @@ class BackupManager(context: Context) {
     }
 
     /** Encrypt the current message store under the local secret and upload it. */
-    suspend fun backupNow() {
+    suspend fun backupNow(onProgress: (String) -> Unit = {}) {
         val secret = store.loadMasterSecret()
             ?: throw ApiError.Http(0, "Set up backup first.")
-        runBackup(secret)
+        runBackup(secret, onProgress)
     }
 
-    private suspend fun runBackup(secret: ByteArray) {
-        val blob = encryptBackup(secret, engine.exportStore())
-        // Server is the always-available default destination.
-        backup.uploadBackup(blob)
-        // Google Drive is an ADDITIONAL, opt-in destination for the SAME ciphertext.
-        // Defensive: a Drive failure (token expired, offline, revoked grant) must never
-        // break or roll back the server backup — swallow it here. The explicit
-        // enable/backup entry points below surface Drive errors to the user directly.
-        if (store.isDriveEnabled()) {
-            try { drive.uploadBackup(blob) }
+    private suspend fun runBackup(secret: ByteArray, onProgress: (String) -> Unit = {}) {
+        val useServer = store.isServerEnabled()
+        val useDrive = store.isDriveEnabled()
+        if (!useServer && !useDrive) throw ApiError.Http(0, "Choose a backup location first.")
+        onProgress("Encrypting your chats…")
+        val plaintext = engine.exportStore()
+        val blob = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { encryptBackup(secret, plaintext) }
+        val failures = mutableListOf<String>()
+        if (useServer) {
+            try { onProgress("Uploading to Voiid server…"); backup.uploadBackup(blob) }
             catch (e: kotlinx.coroutines.CancellationException) { throw e }
-            catch (e: Exception) { throw ApiError.Http(503, "Server backup saved, but Google Drive failed. Retry to update that copy.") }
+            catch (e: Exception) { failures += "Voiid server" }
         }
+        if (useDrive) {
+            try { onProgress("Uploading to Google Drive…"); drive.uploadBackup(blob) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { failures += "Google Drive" }
+        }
+        if (failures.isNotEmpty()) throw ApiError.Http(503, "Backup failed for ${failures.joinToString()}. Retry to update those copies.")
     }
+
+    fun isServerEnabled() = store.isServerEnabled()
+    fun setServerEnabled(enabled: Boolean) = store.setServerEnabled(enabled)
+    fun pendingRestoreSource(): RestoreSource? = store.pendingRestoreSource()?.let { runCatching { RestoreSource.valueOf(it) }.getOrNull() }
+    fun hasDestination() = isServerEnabled() || isDriveEnabled()
 
     // MARK: - Google Drive destination
 
@@ -99,16 +112,11 @@ class BackupManager(context: Context) {
         if (drive.isSignedIn()) runCatching { drive.fetchBackupMeta() }.getOrNull() else null
 
     /**
-     * Turn on the Drive destination: encrypt the current store and push the SAME blob to
-     * Drive, then persist the opt-in. Surfaces auth/transfer errors to the caller (unlike
-     * the silent Drive leg of [runBackup]) so the UI can report a failed sign-in/upload.
-     * Requires backup to already be set up (a master secret exists locally).
+     * Persist the authenticated Drive choice, including before initial backup setup.
+     * Actual transfers run through backupNow/finalizeSetup and report their outcome.
      */
     suspend fun enableDriveBackup() {
-        val secret = store.loadMasterSecret()
-            ?: throw ApiError.Http(0, "Set up backup first.")
-        val blob = encryptBackup(secret, engine.exportStore())
-        drive.uploadBackup(blob)
+        check(drive.isSignedIn()) { "Sign in to Google Drive first." }
         store.setDriveEnabled(true)
     }
 
@@ -139,19 +147,20 @@ class BackupManager(context: Context) {
      * wrong PIN → reported as a failed attempt), then downloads + decrypts + imports the
      * backup and persists the secret locally. Returns [RestoreOutcome].
      */
-    suspend fun restoreWithPin(pin: String, source: RestoreSource = RestoreSource.SERVER): RestoreOutcome {
+    suspend fun restoreWithPin(pin: String, source: RestoreSource = RestoreSource.SERVER, onProgress: (Int) -> Unit = {}): RestoreOutcome {
+        onProgress(0)
         when (val res = recovery.getKey()) {
             is RecoveryService.KeyResult.NotSet -> return RestoreOutcome.NoRecoveryKey
             is RecoveryService.KeyResult.Locked -> return RestoreOutcome.Locked(res.retryAfterSeconds)
             is RecoveryService.KeyResult.Found -> {
                 val secret = try {
-                    unwrapMasterSecretWithPin(res.wrapped, pin)
-                } catch (e: Exception) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { unwrapMasterSecretWithPin(res.wrapped, pin) }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                     recovery.reportAttempt(false)
                     return RestoreOutcome.WrongPin
                 }
                 recovery.reportAttempt(true)
-                applyRestore(secret, source)
+                applyRestore(secret, source, onProgress)
                 return RestoreOutcome.Success
             }
         }
@@ -161,20 +170,25 @@ class BackupManager(context: Context) {
      * Restore using the 24-word recovery phrase. Validates the phrase (BIP39) via
      * [phraseToMasterSecret] — throws [uniffi.voiid.E2eFfiException] on an invalid phrase.
      */
-    suspend fun restoreWithPhrase(phrase: String, source: RestoreSource = RestoreSource.SERVER): RestoreOutcome {
+    suspend fun restoreWithPhrase(phrase: String, source: RestoreSource = RestoreSource.SERVER, onProgress: (Int) -> Unit = {}): RestoreOutcome {
         val secret = phraseToMasterSecret(phrase.trim())   // throws on invalid phrase
-        applyRestore(secret, source)
+        applyRestore(secret, source, onProgress)
         return RestoreOutcome.Success
     }
 
     /** Download (from [source]) → decrypt → import the backup and persist the secret locally. */
-    private suspend fun applyRestore(secret: ByteArray, source: RestoreSource) {
+    private suspend fun applyRestore(secret: ByteArray, source: RestoreSource, onProgress: (Int) -> Unit) {
+        store.setPendingRestoreSource(source.name)
+        onProgress(1)
         val blob = when (source) {
             RestoreSource.SERVER -> backup.downloadBackup()
             RestoreSource.DRIVE -> drive.downloadBackup()
         }
-        val plaintext = decryptBackup(secret, blob)   // throws if secret doesn't match the blob
+        onProgress(2)
+        val plaintext = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { decryptBackup(secret, blob) }   // throws if secret doesn't match the blob
+        onProgress(3)
         engine.importStore(plaintext)
+        onProgress(4)
         store.saveMasterSecret(secret)
     }
 

@@ -452,20 +452,20 @@ class GroupEngine private constructor(context: Context) {
             val m = ensureMemberLocked()
             flushCommunityOutboxLocked(m, conversationId)
             val gid = groupIds[conversationId] ?: run {
-                Log.w("VOIID", "MLS: location send — no local group for conv=$conversationId"); return@withLock
+                error("Group is not ready to send location. Please sync and try again.")
             }
             val session = m.loadGroup(gid)
             val ciphertext = session.encrypt(m, envelopeJson.toByteArray())
             persistMemberLocked(m)   // encrypt advanced the ratchet → state changed
             val ctB64 = Base64.encodeToString(ciphertext, Base64.NO_WRAP)
             val targets = resolveGroupTargetDevices(conversationId)
-            if (targets.isEmpty()) { Log.w("VOIID", "MLS: location send — no target devices"); return@withLock }
+            check(targets.isNotEmpty()) { "No recipient devices available." }
             val bundle = targets.map { DeviceCiphertext(it.deviceId, ctB64) }
             val body = ApiClient.json.encodeToString(
                 SendBundleBody.serializer(),
                 SendBundleBody(conversationId, e2e.deviceId, bundle, content_type = "group"))
-            runCatching { api.request("POST", "messages/send", jsonBody = body) }
-                .onFailure { Log.e("VOIID", "MLS: group location send failed", it) }
+            api.request("POST", "messages/send", jsonBody = body)
+            Unit
         }
     }
 

@@ -104,7 +104,7 @@ private val restoreStages = listOf(
     RestoreStage("download", "Downloading", Icons.Outlined.CloudDownload),
     RestoreStage("decrypt", "Decrypting on device", Icons.Outlined.LockOpen),
     RestoreStage("merge", "Restoring your chats", Icons.Outlined.QuestionAnswer),
-    RestoreStage("keys", "Re-establishing keys", Icons.Outlined.Shield),
+    RestoreStage("keys", "Saving recovery key", Icons.Outlined.Shield),
 )
 
 @Composable
@@ -129,6 +129,14 @@ fun RestoreFlow(    session: AppSession,
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
+    var confirmSkip by remember { mutableStateOf(false) }
+    if (confirmSkip) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { confirmSkip = false },
+        title = { Text("Continue without restoring?") },
+        text = { Text("Previous chats will not be restored on this device. Your saved backups will stay in their current locations.") },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = { confirmSkip = false; onSkip() }) { Text("Continue without restoring") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmSkip = false }) { Text("Cancel") } },
+    )
     fun finish() = onDone()
 
     // Load all available destinations; newest first. Server is checked directly; Drive joins
@@ -156,7 +164,7 @@ fun RestoreFlow(    session: AppSession,
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
         candidates = loadCandidates()
-        source = candidates.firstOrNull()?.source ?: BackupManager.RestoreSource.SERVER
+        source = manager.pendingRestoreSource()?.takeIf { saved -> candidates.any { it.source == saved } } ?: candidates.firstOrNull()?.source ?: BackupManager.RestoreSource.SERVER
         loadingCandidates = false
     }
 
@@ -189,8 +197,8 @@ fun RestoreFlow(    session: AppSession,
                 // to track internals.
                 stageIndex = 1
                 val outcome = when (cred) {
-                    is Credential.Pin -> manager.restoreWithPin(cred.value, source)
-                    is Credential.Phrase -> manager.restoreWithPhrase(cred.value, source)
+                    is Credential.Pin -> manager.restoreWithPin(cred.value, source) { stageIndex = it }
+                    is Credential.Phrase -> manager.restoreWithPhrase(cred.value, source) { stageIndex = it }
                 }
                 when (outcome) {
                     is BackupManager.RestoreOutcome.Success -> {
@@ -235,7 +243,7 @@ fun RestoreFlow(    session: AppSession,
     fun unlock(c: Credential) {
         credential = c
         error = null
-        if (candidates.size > 1) step = RestoreStep.CHOOSE else begin()
+        step = RestoreStep.CHOOSE
     }
 
     when (step) {
@@ -246,7 +254,7 @@ fun RestoreFlow(    session: AppSession,
             error = error,
             onSubmit = { unlock(Credential.Pin(pin)) },
             onRecoveryPhrase = { error = null; step = RestoreStep.PHRASE },
-            onSkip = onSkip,
+            onSkip = { confirmSkip = true },
         )
         RestoreStep.PHRASE -> RestorePhrasePage(
             value = phrase,
@@ -266,8 +274,16 @@ fun RestoreFlow(    session: AppSession,
                 error = null
                 driveSignInLauncher.launch(manager.driveSignInClient().signInIntent)
             },
+            onRefresh = {
+                scope.launch {
+                    loadingCandidates = true
+                    candidates = loadCandidates()
+                    source = candidates.firstOrNull()?.source ?: source
+                    loadingCandidates = false
+                }
+            },
             onRestore = { begin() },
-            onSetUpAsNew = { haptics.tap(); onSkip() },
+            onSetUpAsNew = { haptics.tap(); confirmSkip = true },
         )
         RestoreStep.RESTORING -> RestoreStagingPage(
             stageIndex = stageIndex,
@@ -275,12 +291,12 @@ fun RestoreFlow(    session: AppSession,
             error = error.takeIf { !busy },
             busy = busy,
             onRetry = { begin() },
-            onSkip = { haptics.tap(); onSkip() },
+            onSkip = { haptics.tap(); confirmSkip = true },
         )
     }
 }
 
-// MARK: - 1. Unlock (exactly six digits)
+// MARK: - 1. Unlock (exactly eight digits)
 
 @Composable
 private fun RestoreUnlockPage(
@@ -292,7 +308,7 @@ private fun RestoreUnlockPage(
     onRecoveryPhrase: () -> Unit,
     onSkip: () -> Unit,
 ) {
-    val complete = pin.length in 4..RESTORE_PIN_MAX
+    val complete = pin.length == RESTORE_PIN_MAX
     OnbScaffold(showBack = false, onBack = {}) {
         Spacer(Modifier.weight(0.6f))
         Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
@@ -303,7 +319,7 @@ private fun RestoreUnlockPage(
                 style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
             Spacer(Modifier.height(14.dp))
             Text(
-                "Backup from ${formatUpdatedAt(meta.updated_at)} · ${formatSize(meta.size_bytes)}",
+                if (meta.size_bytes > 0) "Backup from ${formatUpdatedAt(meta.updated_at)} · ${formatSize(meta.size_bytes)}" else "Choose a backup location after entering your PIN.",
                 style = VoiidFont.rounded(13), color = VoiidColor.primary,
             )
         }
@@ -329,7 +345,7 @@ private fun RestoreUnlockPage(
             style = VoiidFont.rounded(15, FontWeight.Medium), color = VoiidColor.primary,
             modifier = Modifier.padding(bottom = 4.dp)
                 .noRippleClickable { onRecoveryPhrase() })
-        Text("Set up as new instead",
+        Text("Continue without restoring",
             style = VoiidFont.rounded(15), color = VoiidColor.textSecondary,
             modifier = Modifier.padding(bottom = 32.dp).noRippleClickable { onSkip() })
     }
@@ -338,50 +354,7 @@ private fun RestoreUnlockPage(
 /** Six separate masked boxes over one invisible field — mirrors the iOS unlock field. */
 @Composable
 private fun RestorePinField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
-    val focus = androidx.compose.ui.platform.LocalFocusManager.current
-    BasicTextField(
-        value = value,
-        onValueChange = {
-            onChange(it.filter { c -> c in '0'..'9' }.take(RESTORE_PIN_MAX))
-            if (it.length >= RESTORE_PIN_MAX) focus.clearFocus()
-        },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-        textStyle = TextStyle(color = Color.Transparent),
-        cursorBrush = SolidColor(Color.Transparent),
-        modifier = modifier.fillMaxWidth(),
-        decorationBox = { inner ->
-            Box(contentAlignment = Alignment.Center) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    repeat(RESTORE_PIN_MAX) { i ->
-                        val filled = i < value.length
-                        Box(
-                            Modifier
-                                .weight(1f).height(56.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(VoiidColor.fieldFill)
-                                .border(
-                                    if (i == value.length) 2.dp else 1.dp,
-                                    if (i == value.length) VoiidColor.primary else VoiidColor.fieldBorder,
-                                    RoundedCornerShape(12.dp),
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            if (filled) {
-                                Box(Modifier.size(9.dp).clip(CircleShape).background(VoiidColor.textPrimary))
-                            } else {
-                                Box(
-                                    Modifier.size(width = 16.dp, height = 2.dp)
-                                        .clip(RoundedCornerShape(1.dp))
-                                        .background(VoiidColor.textSecondary.copy(alpha = 0.5f))
-                                )
-                            }
-                        }
-                    }
-                }
-                Box(Modifier.matchParentSize()) { inner() }
-            }
-        },
-    )
+    com.voiid.app.main.PinField(value = value, onValueChange = onChange, modifier = modifier)
 }
 
 // MARK: - 2. Recovery phrase
@@ -449,12 +422,13 @@ private fun RestoreChoosePage(
     error: String?,
     onSelect: (BackupManager.RestoreSource) -> Unit,
     onDriveSignIn: () -> Unit,
+    onRefresh: () -> Unit,
     onRestore: () -> Unit,
     onSetUpAsNew: () -> Unit,
 ) {
     OnbScaffold(showBack = false, onBack = {}) {
         Spacer(Modifier.height(32.dp))
-        Text("Identity confirmed", style = VoiidFont.rounded(28, FontWeight.Bold),
+        Text("Restore your chats", style = VoiidFont.rounded(28, FontWeight.Bold),
             color = VoiidColor.textPrimary, modifier = Modifier.padding(horizontal = 24.dp))
         Text("Choose which backup to restore on this device.",
             style = VoiidFont.rounded(15), color = VoiidColor.textSecondary,
@@ -480,12 +454,6 @@ private fun RestoreChoosePage(
                             modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 10.dp),
                         )
                     }
-                    if (candidates.none { it.source == BackupManager.RestoreSource.DRIVE }) {
-                        Text("Add Google Drive backup",
-                            style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.primary,
-                            modifier = Modifier.padding(horizontal = 24.dp).padding(top = 4.dp)
-                                .noRippleClickable { onDriveSignIn() })
-                    }
                     Spacer(Modifier.height(12.dp))
                     NoteCard(
                         "Restore the newest one",
@@ -493,6 +461,14 @@ private fun RestoreChoosePage(
                     )
                 }
             }
+                    if (candidates.none { it.source == BackupManager.RestoreSource.DRIVE }) {
+                        Text("Add Google Drive backup",
+                            style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.primary,
+                            modifier = Modifier.padding(horizontal = 24.dp).padding(top = 4.dp)
+                                .noRippleClickable { onDriveSignIn() })
+                    }
+            Text("Check again", style = VoiidFont.rounded(14), color = VoiidColor.accentInk,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp).noRippleClickable { if (!loading && !busy) onRefresh() })
             error?.let {
                 Spacer(Modifier.height(10.dp))
                 Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error,
@@ -506,7 +482,7 @@ private fun RestoreChoosePage(
             enabled = candidates.isNotEmpty() && !busy,
             modifier = Modifier.padding(horizontal = 24.dp),
         ) { onRestore() }
-        Text("Set up as new instead",
+        Text("Continue without restoring",
             style = VoiidFont.rounded(15), color = VoiidColor.textSecondary,
             modifier = Modifier.padding(top = 12.dp, bottom = 32.dp).noRippleClickable { onSetUpAsNew() })
     }

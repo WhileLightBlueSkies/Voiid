@@ -1,18 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!--
-      PEACOCK TEAL brand tokens, DARK. Mirrors ui/theme/Color.kt (VoiidPalette *Dark values).
-      Without this file the launch window paints the LIGHT ground for a frame before Compose
-      takes over — a white flash on every cold start in dark mode, which against the near-black
-      ground is the most jarring version of that bug.
-
-      voiid_primary LIFTS to #68B8BD here, matching PrimaryDark: #13828C on #080C0E is too dark
-      to read, so the dark theme uses the lifted teal wherever the brand is text or a glyph.
-      voiid_accent stays #13828C because an accent is a FILL and its white label carries the
-      contrast.
-    -->
-    <color name="voiid_primary">#68B8BD</color>       <!-- lifted teal, for the dark ground -->
-    <color name="voiid_accent">#13828C</color>        <!-- fill; label is white -->
-    <color name="voiid_background">#080C0E</color>
-    <color name="voiid_field_fill">#111719</color>
+    <!-- Native resources match the current iOS and Compose dark palette.
+         The branded launch screen uses its own fixed launch colour. -->
+    <color name="voiid_primary">#13828C</color>
+    <color name="voiid_accent">#13828C</color>
+    <color name="voiid_background">#14191C</color>
+    <color name="voiid_field_fill">#1B2226</color>
 </resources>

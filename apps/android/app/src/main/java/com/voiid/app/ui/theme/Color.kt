@@ -137,7 +137,7 @@ object VoiidColor {
     /// Selected/tinted background wash behind selected rows (iOS `accentTint`).
     val accentTint: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.TintLight, VoiidPalette.TintDark)
     /// Ink used ON the accent tint (iOS `accentInk`).
-    val accentInk: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.InkLight, VoiidPalette.InkDark)
+    val accentInk: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.AccentInkLight, VoiidPalette.AccentInkDark)
     val info: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.MapLight, VoiidPalette.MapDark)
 
     /** Retained for call sites predating theme-aware tokens; now simply the primary text. */
@@ -170,7 +170,7 @@ object VoiidPalette {
     // the single biggest behavioural difference from the lime palette: code that assumed
     // "primary is ink in light mode" is now wrong.
     val PrimaryLight = Color(0xFF13828C)     // Peacock teal — legible as text on light
-    val PrimaryDark = Color(0xFF78AAAD)      // lifted, so it holds up on the dark ground
+    val PrimaryDark = Color(0xFF13828C)      // Fixed Tide fill; use accentInk for text on dark surfaces
     val BackgroundLight = Color(0xFFF6F8F8)
     val BackgroundDark = Color(0xFF14191C)
     val SurfaceLight = Color(0xFFFFFFFF)

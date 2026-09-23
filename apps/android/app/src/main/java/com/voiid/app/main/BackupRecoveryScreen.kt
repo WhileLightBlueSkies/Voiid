@@ -36,6 +36,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -82,6 +84,7 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
     var statusError by remember { mutableStateOf<String?>(null) }
     // Outcome feedback: errors surface next to the action; successes flash a toast.
     var actionError by remember { mutableStateOf<String?>(null) }
+    var progress by remember { mutableStateOf("Preparing backup…") }
     var backingUp by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
     val haptics = LocalVoiidHaptics.current
@@ -95,13 +98,14 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
     }
 
     // Google Drive (additional, opt-in destination).
-    var driveEnabled by remember { mutableStateOf(manager.isDriveEnabled() && manager.isDriveSignedIn()) }
+    var serverEnabled by remember { mutableStateOf(manager.isServerEnabled()) }
+    var driveEnabled by remember { mutableStateOf(manager.isDriveEnabled()) }
     var driveMeta by remember { mutableStateOf<GoogleDriveBackupService.DriveBackupMeta?>(null) }
     var driveBusy by remember { mutableStateOf(false) }
     var driveError by remember { mutableStateOf<String?>(null) }
 
     suspend fun reloadDrive() {
-        driveEnabled = manager.isDriveEnabled() && manager.isDriveSignedIn()
+        driveEnabled = manager.isDriveEnabled()
         driveMeta = if (driveEnabled) runCatching { manager.fetchDriveMeta() }.getOrNull() else null
     }
 
@@ -115,7 +119,7 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
             .onFailure { statusError = it.message ?: "Couldn't reach the backup service." }
         setUp = manager.isSetUp()
         loadingMeta = false
-        if (result.isSuccess) reloadDrive()
+        reloadDrive()
     }
 
     LaunchedEffect(Unit) { reloadMeta() }
@@ -151,6 +155,8 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
 
     when (screen) {
         Screen.HOME -> BackupHome(
+            serverEnabled = serverEnabled,
+            onServerChange = { manager.setServerEnabled(it); serverEnabled = it },
             setUp = setUp,
             loadingMeta = loadingMeta,
             meta = meta,
@@ -158,6 +164,7 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
             actionError = actionError,
             toast = toast,
             backingUp = backingUp,
+            progress = progress,
             driveEnabled = driveEnabled,
             driveMeta = driveMeta,
             driveBusy = driveBusy,
@@ -179,7 +186,7 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
                     scope.launch {
                         // NOT silent: success flashes a confirmation and refreshes; failure
                         // surfaces an actionable error with the error haptic. Mirrors iOS.
-                        runCatching { manager.backupNow() }
+                        runCatching { manager.backupNow { progress = it } }
                             .onSuccess {
                                 flash("Backed up")
                                 scope.launch { reloadMeta() }
@@ -216,6 +223,8 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
 
 @Composable
 private fun BackupHome(
+    serverEnabled: Boolean,
+    onServerChange: (Boolean) -> Unit,
     setUp: Boolean,
     loadingMeta: Boolean,
     meta: BackupService.BackupMeta?,
@@ -223,6 +232,7 @@ private fun BackupHome(
     actionError: String?,
     toast: String?,
     backingUp: Boolean,
+    progress: String,
     driveEnabled: Boolean,
     driveMeta: GoogleDriveBackupService.DriveBackupMeta?,
     driveBusy: Boolean,
@@ -235,6 +245,9 @@ private fun BackupHome(
     onViewPhrase: () -> Unit,
     onChangePin: () -> Unit,
 ) {
+    val latestBackup = listOfNotNull(meta, driveMeta?.let {
+        BackupService.BackupMeta(size_bytes = it.sizeBytes, updated_at = it.modifiedTime)
+    }).maxByOrNull { runCatching { java.time.Instant.parse(it.updated_at).toEpochMilli() }.getOrDefault(0) }
     BackupScaffold(title = "Backup & Recovery", onBack = onBack) {
         // Outcome toast — auto-dismisses; sits at the top where it reads as a receipt.
         if (toast != null) {
@@ -266,10 +279,14 @@ private fun BackupHome(
         ) {
             when {
                 loadingMeta -> Text("Checking backup…", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
-                setUp && meta != null -> {
+                !serverEnabled && !driveEnabled -> {
+                    Text("Backup off", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                    Text("Choose a location below to turn backup on.", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                }
+                setUp && latestBackup != null -> {
                     Text("Backup on", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.success)
                     Spacer(Modifier.height(4.dp))
-                    Text("Last backup: ${formatUpdatedAt(meta.updated_at)} · ${formatSize(meta.size_bytes)}",
+                    Text("Last backup: ${formatUpdatedAt(latestBackup.updated_at)} · ${formatSize(latestBackup.size_bytes)}",
                         style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
                 }
                 setUp -> {
@@ -294,10 +311,19 @@ private fun BackupHome(
 
         Spacer(Modifier.height(24.dp))
 
+        Text("Backup locations", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        Text("Choose Voiid server, Google Drive, both, or neither. Turning a location off keeps existing backups.",
+            style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Voiid server", Modifier.weight(1f), color = VoiidColor.textPrimary)
+            androidx.compose.material3.Switch(checked = serverEnabled, onCheckedChange = onServerChange, enabled = !backingUp)
+        }
+        DriveBackupSection(driveEnabled, driveMeta, driveBusy || backingUp, driveError, onEnableDrive, onDisableDrive)
+        Spacer(Modifier.height(24.dp))
         if (!setUp) {
-            BackupButton("Set up backup", enabled = true, onClick = onSetup)
+            BackupButton("Set up backup", enabled = serverEnabled || driveEnabled, onClick = onSetup)
         } else {
-            BackupButton(if (backingUp) "Backing up…" else "Back up now", enabled = !backingUp, onClick = onBackupNow)
+            BackupButton(if (backingUp) progress else "Back up now", enabled = !backingUp && (serverEnabled || driveEnabled), onClick = onBackupNow)
             actionError?.let {
                 Spacer(Modifier.height(8.dp))
                 Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
@@ -307,15 +333,7 @@ private fun BackupHome(
             Spacer(Modifier.height(12.dp))
             BackupSecondaryButton("Change PIN", onClick = onChangePin)
 
-            Spacer(Modifier.height(28.dp))
-            DriveBackupSection(
-                enabled = driveEnabled,
-                meta = driveMeta,
-                busy = driveBusy,
-                error = driveError,
-                onEnable = onEnableDrive,
-                onDisable = onDisableDrive,
-            )
+
         }
     }
 }
@@ -337,7 +355,7 @@ private fun DriveBackupSection(
         Spacer(Modifier.height(6.dp))
         Text(
             "Keep the same end-to-end encrypted backup in your own private Google Drive folder " +
-                "as an extra copy. Google only ever sees ciphertext — never your messages or key.",
+                "as your backup location. Google only ever sees ciphertext — never your messages or key.",
             style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
         )
         Spacer(Modifier.height(12.dp))
@@ -522,6 +540,7 @@ internal fun BackupScaffold(
     title: String,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    actions: (@Composable () -> Unit)? = null,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
@@ -555,7 +574,7 @@ internal fun BackupScaffold(
             )
             // Balances the chevron so the title is centred on the SCREEN, not on the
             // space left over beside it.
-            Spacer(Modifier.width(38.dp))
+            if (actions != null) actions() else Spacer(Modifier.width(38.dp))
         }
         Column(
             Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())
@@ -609,7 +628,7 @@ internal fun PinEntryScreen(
     onSubmit: () -> Unit,
     footer: (@Composable () -> Unit)? = null,
 ) {
-    BackupScaffold(title = title, onBack = onBack) {
+    BackupScaffold(title = title, onBack = onBack, modifier = Modifier.imePadding()) {
         Spacer(Modifier.height(8.dp))
         Text(subtitle, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
         Spacer(Modifier.height(28.dp))
@@ -625,27 +644,43 @@ internal fun PinEntryScreen(
 }
 
 @Composable
-private fun PinField(value: String, onValueChange: (String) -> Unit) {
-    val shape = RoundedCornerShape(VoiidRadius.pill)
+internal fun PinField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(16.dp)
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    var focused by remember { mutableStateOf(false) }
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("8-digit PIN", style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.textSecondary)
+        Text("${value.length} / $VOIID_PIN_LENGTH", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+    }
     BasicTextField(
         value = value,
-        onValueChange = onValueChange,
+        onValueChange = { onValueChange(it.filter { digit -> digit in '0'..'9' }.take(VOIID_PIN_LENGTH)) },
         singleLine = true,
-        textStyle = VoiidFont.rounded(20, FontWeight.SemiBold).merge(TextStyle(color = VoiidColor.textPrimary, textAlign = TextAlign.Center)),
+        textStyle = VoiidFont.rounded(24, FontWeight.SemiBold).merge(TextStyle(color = VoiidColor.textPrimary, textAlign = TextAlign.Center)),
         cursorBrush = SolidColor(VoiidColor.primary),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { focus.clearFocus() }),
         visualTransformation = PasswordVisualTransformation(),
-        modifier = Modifier.fillMaxWidth().height(56.dp).clip(shape)
-            .background(VoiidColor.fieldFill).border(1.dp, VoiidColor.fieldBorder, shape),
+        modifier = Modifier.fillMaxWidth().height(64.dp).onFocusChanged { focused = it.isFocused }.clip(shape)
+            .background(VoiidColor.fieldFill).border(if (focused) 1.5.dp else 1.dp, if (focused) VoiidColor.accent else VoiidColor.fieldBorder, shape),
         decorationBox = { inner ->
             Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp), contentAlignment = Alignment.Center) {
                 if (value.isEmpty()) {
-                    Text("PIN", style = VoiidFont.rounded(18), color = VoiidColor.placeholder)
+                    Text("Enter 8 digits", style = VoiidFont.rounded(18), color = VoiidColor.placeholder)
                 }
                 inner()
             }
         },
     )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        repeat(VOIID_PIN_LENGTH) { index ->
+            Box(Modifier.weight(1f).height(3.dp).background(
+                if (index < value.length) VoiidColor.accent else VoiidColor.fieldBorder, RoundedCornerShape(2.dp)))
+        }
+    }
+
+    }
 }
 
 /** Recovery-phrase display + "I've written it down" confirmation (setup step). */

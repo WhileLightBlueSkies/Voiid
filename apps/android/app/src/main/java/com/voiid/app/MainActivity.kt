@@ -59,9 +59,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var pip: CallPipController
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // The starting window is always dark; content keeps the saved appearance.
+        setTheme(R.style.Theme_Voiid)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        requestCallPermissions()
         pip = CallPipController(this).also {
             it.onRestoreInstanceState(savedInstanceState)
             it.attach(this)
@@ -221,39 +222,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Ensure mic/camera/notification permissions for 1:1 voice & video calls. */
-    private fun requestCallPermissions() {
-        val perms = mutableListOf(
-            android.Manifest.permission.RECORD_AUDIO,
-            android.Manifest.permission.CAMERA,
-            // Contact-card integration: the "Voice call (Voiid)" / "Video call (Voiid)" rows
-            // are RawContacts we write into the address book. Same CONTACTS group as the
-            // already-requested READ_CONTACTS, so it normally rides along silently; a refusal
-            // means no rows and nothing else. Re-asked here (as well as on the onboarding
-            // permissions screen) so users who installed before this feature existed get the
-            // chance to grant it. MANAGE_OWN_CALLS and FOREGROUND_SERVICE_PHONE_CALL are
-            // install-time and need no code.
-            android.Manifest.permission.WRITE_CONTACTS,
-        )
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            perms.add(android.Manifest.permission.POST_NOTIFICATIONS)
-        }
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            // API 31+: AudioManager.setCommunicationDevice() needs BLUETOOTH_CONNECT to move
-            // call audio onto a Bluetooth headset. Without it, a headset connected mid-call is
-            // silently ignored and audio stays on the earpiece/speaker.
-            perms.add(android.Manifest.permission.BLUETOOTH_CONNECT)
-        }
-        val missing = perms.filter {
-            androidx.core.content.ContextCompat.checkSelfPermission(this, it) !=
-                android.content.pm.PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isEmpty()) return
-        val launcher = registerForActivityResult(
-            androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
-        ) { /* calls re-check permission at start; nothing to do here */ }
-        runCatching { launcher.launch(missing.toTypedArray()) }
-    }
+
 }
 
 @Composable
@@ -315,6 +284,10 @@ private fun VoiidRoot() {
 
     Crossfade(targetState = session.route, animationSpec = tween(350), label = "rootRoute") { route ->
         when (route) {
+            AppRoute.RECOVERY -> com.voiid.app.onboarding.RestoreFlow(
+                session = session, meta = com.voiid.app.net.BackupService.BackupMeta(),
+                onDone = { session.completeOnboarding() }, onSkip = { session.completeOnboarding() },
+            )
             AppRoute.ONBOARDING -> OnboardingFlow(session)
             AppRoute.MAIN -> MainScreen(session, chat, ai, clips, stories)
         }

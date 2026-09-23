@@ -28,6 +28,13 @@ class RecoveryStore private constructor(context: Context) {
 
     private val prefs = SecurePrefs.open(context, "voiid_recovery")
 
+    init {
+        // Freeze migration before a restore saves its key: restoring must not opt into uploads.
+        if (!prefs.contains("server_backup_enabled")) {
+            check(prefs.edit().putBoolean("server_backup_enabled", prefs.contains(KEY_MASTER_SECRET)).commit())
+        }
+    }
+
     /** True once backup has been set up (or restored) on this device. */
     fun hasMasterSecret(): Boolean = prefs.contains(KEY_MASTER_SECRET)
 
@@ -49,7 +56,17 @@ class RecoveryStore private constructor(context: Context) {
         prefs.edit().putBoolean(KEY_DRIVE_ENABLED, enabled).apply()
     }
 
+    fun isServerEnabled(): Boolean = prefs.getBoolean("server_backup_enabled", hasMasterSecret())
+    fun setServerEnabled(enabled: Boolean) {
+        check(prefs.edit().putBoolean("server_backup_enabled", enabled).commit())
+    }
+
+    fun pendingRestoreSource(): String? = prefs.getString("pending_restore_source", null)
+    fun setPendingRestoreSource(source: String?) {
+        check(prefs.edit().putString("pending_restore_source", source).commit())
+    }
+
     fun clear() {
-        prefs.edit().remove(KEY_MASTER_SECRET).remove(KEY_DRIVE_ENABLED).apply()
+        prefs.edit().remove(KEY_MASTER_SECRET).remove(KEY_DRIVE_ENABLED).remove("server_backup_enabled").remove("pending_restore_source").apply()
     }
 }

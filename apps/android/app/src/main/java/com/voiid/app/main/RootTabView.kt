@@ -235,6 +235,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
     val creators: com.voiid.app.model.SocialStore =
         androidx.lifecycle.viewmodel.compose.viewModel()
     var showHandleSheet by remember { mutableStateOf(false) }
+    var openProfileAfterSetup by remember { mutableStateOf(false) }
     /** The creator page open on top of the grid, by handle. */
     var openCreator by remember { mutableStateOf<String?>(null) }
     // Stories viewer + composer are full-screen overlay siblings (they must cover the tab bar),
@@ -334,22 +335,43 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
     val callState by com.voiid.app.net.CallManager.state.collectAsState()
     // Group calls run on the LiveKit SFU (GroupCallManager); 1:1 stays peer-to-peer.
     val groupCallState by com.voiid.app.net.GroupCallManager.state.collectAsState()
-    // A tapped "join group call" notification → join the room.
-    val pendingGroupCall by com.voiid.app.net.DeepLinkRouter.pendingGroupCall.collectAsState()
-    androidx.compose.runtime.LaunchedEffect(pendingGroupCall) {
-        pendingGroupCall?.let {
-            com.voiid.app.net.GroupCallManager.join(
-                context, it.conversationId, "Group call",
-                if (it.video) CallKind.VIDEO else CallKind.VOICE,
-            )
-            com.voiid.app.net.DeepLinkRouter.consumeGroupCall()
-        }
-    }
-    val startCall: (CallRequest) -> Unit = { req ->
+    val dispatchCall: (CallRequest) -> Unit = { req ->
         if (req.isGroup) {
             com.voiid.app.net.GroupCallManager.join(context, req.conversationId, req.title, req.kind)
         } else if (!req.peerUserId.isNullOrBlank()) {
             com.voiid.app.net.CallManager.startOutgoing(req.conversationId, req.peerUserId, req.title, req.kind)
+        }
+    }
+
+    var permissionCall by remember { mutableStateOf<CallRequest?>(null) }
+    fun requiredCallPermissions(req: CallRequest): List<String> = buildList {
+        add(android.Manifest.permission.RECORD_AUDIO)
+        if (req.kind == CallKind.VIDEO) add(android.Manifest.permission.CAMERA)
+    }
+    fun granted(permission: String) = androidx.core.content.ContextCompat.checkSelfPermission(context, permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    val callPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val request = permissionCall
+        permissionCall = null
+        if (request != null) {
+            if (requiredCallPermissions(request).all { granted(it) }) dispatchCall(request)
+            else android.widget.Toast.makeText(context, "Allow microphone access, and camera access for video, to start this call.", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+    val startCall: (CallRequest) -> Unit = { req ->
+        if (permissionCall == null) {
+            val missing = requiredCallPermissions(req).filterNot { granted(it) }
+            if (missing.isEmpty()) dispatchCall(req)
+            else { permissionCall = req; callPermissionLauncher.launch(missing.toTypedArray()) }
+        }
+    }
+    val pendingGroupCall by com.voiid.app.net.DeepLinkRouter.pendingGroupCall.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(pendingGroupCall) {
+        pendingGroupCall?.let {
+            startCall(CallRequest("Group call", true, emptyList(), null,
+                if (it.video) CallKind.VIDEO else CallKind.VOICE, it.conversationId))
+            com.voiid.app.net.DeepLinkRouter.consumeGroupCall()
         }
     }
 
@@ -472,7 +494,15 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                                 com.voiid.app.net.DeepLinkRouter.openGameMatch(inv.match_id, inv.slug)
                             },
                         )
-                        Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
+                        Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall,
+                            onOpenSocialProfile = {
+                                gamesScope.launch {
+                                    val profile = creators.ensureMeLoaded()
+                                    if (profile != null) openCreator = profile.handle
+                                    else if (creators.hasLoadedMe) { openProfileAfterSetup = true; showHandleSheet = true }
+                                    else android.widget.Toast.makeText(context, "Couldn’t load your social profile. Please try again.", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            })
                         Tab.AI -> AIChatView(ai)
                         Tab.STORIES -> com.voiid.app.main.stories.StoriesHomeView(
                             stories,
@@ -1051,12 +1081,13 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
     if (showHandleSheet) {
         com.voiid.app.main.clips.SocialSetupSheet(
             creators = creators,
-            onCreated = {
+            onCreated = { profile ->
                 // Whatever raised the gate can now proceed: either finish an upload parked at
                 // the commit step, or open the composer that was blocked.
-                if (clips.hasPendingCommits) clips.retryPendingCommits() else showNewClip = true
+                if (openProfileAfterSetup) { openProfileAfterSetup = false; openCreator = profile.handle }
+                else if (clips.hasPendingCommits) clips.retryPendingCommits() else showNewClip = true
             },
-            onDismiss = { showHandleSheet = false },
+            onDismiss = { showHandleSheet = false; openProfileAfterSetup = false },
         )
     }
     if (showMyClips) {

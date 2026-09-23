@@ -45,6 +45,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.CircularProgressIndicator
 import com.voiid.app.model.AppSession
 import com.voiid.app.net.DpdpService
@@ -222,7 +226,12 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
         }
     }
 
-    BackupScaffold(title = "Edit profile", onBack = onBack) {
+    BackupScaffold(title = "Edit profile", onBack = onBack, actions = {
+        androidx.compose.material3.TextButton(onClick = { save() }, enabled = canSave) {
+            Text(if (saving) "Saving…" else "Save", style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                color = if (canSave) VoiidColor.accentInk else VoiidColor.textSecondary)
+        }
+    }) {
         Spacer(Modifier.height(8.dp))
 
         // Avatar change section
@@ -290,12 +299,12 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
             }
         }
 
-        FieldCard("Bio", footer = "A short line people see on your profile (${bio.length}/140).") {
+        FieldCard("About", footer = "A short line people see on your profile (${bio.length}/140).") {
             ProfileField(value = bio, placeholder = "Add a few words about you", onValueChange = { bio = it.take(140); saved = false })
         }
 
         if (session.profile.phoneNumber.isNotBlank()) {
-            FieldCard("Phone number", footer = "Your phone number is tied to your cryptographic identity.") {
+            FieldCard("Phone", footer = "Your phone number is tied to your cryptographic identity.") {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -308,7 +317,7 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
         }
 
         // Danger zone — exact match to iOS EditProfileView.swift dangerZone
-        FieldCard("Danger zone") {
+        FieldCard("Danger zone", footer = "Deleting opens an account erasure request and removes this phone’s messages and keys when you are signed out.") {
             Row(
                 Modifier.fillMaxWidth()
                     .softClickable { haptics.rigid(); confirmDelete = true }
@@ -326,21 +335,6 @@ fun EditProfileScreen(session: AppSession, onBack: () -> Unit) {
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
         }
 
-        Spacer(Modifier.height(12.dp))
-        Box(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(VoiidRadius.lg))
-                .background(if (canSave) VoiidColor.primary else VoiidColor.fieldFill)
-                .softClickable(enabled = canSave) { save() }
-                .padding(vertical = 14.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                if (saving) "Saving…" else if (saved) "Saved" else "Save",
-                style = VoiidFont.rounded(16, FontWeight.SemiBold),
-                color = if (canSave) VoiidColor.textOnPrimary else VoiidColor.textSecondary,
-            )
-        }
         Spacer(Modifier.height(24.dp))
     }
 
@@ -461,7 +455,7 @@ fun MyQrCodeScreen(session: AppSession, onBack: () -> Unit) {
         ) {
             Box(
                 Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(VoiidRadius.lg))
+                    .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                     .background(androidx.compose.ui.graphics.Color.White)
                     .padding(20.dp),
                 contentAlignment = Alignment.Center,
@@ -534,9 +528,9 @@ private fun PinCard() {
         )
         Column(
             Modifier.fillMaxWidth()
-                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                 .background(VoiidColor.surfaceCard)
-                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+                .border(1.dp, VoiidColor.divider, com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                 .padding(16.dp),
         ) {
             when {
@@ -633,9 +627,9 @@ fun ShareProfileScreen(session: AppSession, onBack: () -> Unit) {
         ) {
             Column(
                 Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(VoiidRadius.lg))
+                    .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                     .background(VoiidColor.surfaceCard)
-                    .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+                    .border(1.dp, VoiidColor.divider, com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -702,9 +696,9 @@ private fun ActionButton(
 ) {
     Row(
         modifier
-            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
             .background(VoiidColor.surfaceCard)
-            .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+            .border(1.dp, VoiidColor.divider, com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
             .softClickable { onClick() }
             .padding(vertical = 13.dp),
         horizontalArrangement = Arrangement.Center,
@@ -719,16 +713,27 @@ private fun ActionButton(
 @Composable
 private fun FieldCard(header: String, footer: String? = null, content: @Composable () -> Unit) {
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(header, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
-            modifier = Modifier.padding(start = 4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val icon = when (header) {
+                "Name" -> Icons.Default.Person
+                "Username" -> Icons.Default.AlternateEmail
+                "About" -> Icons.Default.Info
+                "Phone" -> Icons.Default.Phone
+                else -> Icons.Default.Delete
+            }
+            Box(Modifier.size(30.dp).clip(CircleShape).background(VoiidColor.accentTint), Alignment.Center) {
+                Icon(icon, null, Modifier.size(15.dp), tint = if (header == "Danger zone") VoiidColor.error else VoiidColor.accentInk)
+            }
+            Text(header, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+        }
         Column(
             Modifier.fillMaxWidth()
-                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
                 .background(VoiidColor.surfaceCard)
-                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg)),
+                .border(1.dp, VoiidColor.divider, com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg)),
         ) { content() }
         if (footer != null) {
             Text(footer, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,

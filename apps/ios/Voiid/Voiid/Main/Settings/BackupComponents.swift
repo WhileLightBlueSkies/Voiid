@@ -75,29 +75,57 @@ enum PinRules {
 
 /// A single secure numeric field, filtered to `PinRules.maxLen` digits. Used as the
 /// building block for both PIN entry variants.
-private struct PinField: View {
+struct PinField: View {
     let placeholder: String
     @Binding var text: String
+    var externalFocus: FocusState<Bool>.Binding? = nil
     @FocusState private var focused: Bool
+    private var focus: FocusState<Bool>.Binding { externalFocus ?? $focused }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(placeholder == "Confirm PIN" ? "Confirm 8-digit PIN" : "8-digit PIN")
+                    .font(VoiidFont.rounded(14, .medium))
+                Spacer()
+                Text("\(text.count) / \(PinRules.maxLen)").font(VoiidFont.rounded(13)).monospacedDigit()
+            }
+            .foregroundColor(VoiidColor.textSecondary)
         SecureField("", text: $text, prompt:
-            Text(placeholder).foregroundColor(VoiidColor.placeholder))
-            .font(VoiidFont.body)
+            Text("Enter 8 digits").foregroundColor(VoiidColor.placeholder))
+            .font(VoiidFont.rounded(24, .semibold))
             .keyboardType(.numberPad)
-            .textContentType(.oneTimeCode)
-            .focused($focused)
+            .textContentType(.password)
+            .privacySensitive()
+            .multilineTextAlignment(.center)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    if focus.wrappedValue {
+                        Spacer()
+                        Button("Done") { focus.wrappedValue = false }.tint(VoiidColor.accent)
+                    }
+                }
+            }
+            .focused(focus)
             .foregroundColor(VoiidColor.textPrimary)
             .onChange(of: text) { _, v in
-                let digits = String(v.filter(\.isNumber).prefix(PinRules.maxLen))
+                let digits = String(v.filter { $0 >= "0" && $0 <= "9" }.prefix(PinRules.maxLen))
                 if digits != text { text = digits }
+                if digits.count == PinRules.maxLen { focus.wrappedValue = false }
             }
             .padding(.horizontal, VoiidSpacing.md)
-            .frame(height: 61)
+            .frame(height: 64)
             .background(VoiidColor.fieldFill)
-            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-                .stroke(focused ? VoiidColor.primary : VoiidColor.fieldBorder, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(focus.wrappedValue ? VoiidColor.primary : VoiidColor.fieldBorder, lineWidth: focus.wrappedValue ? 1.5 : 1))
+            HStack(spacing: 6) {
+                ForEach(0..<PinRules.maxLen, id: \.self) { index in
+                    Capsule().fill(index < text.count ? VoiidColor.accent : VoiidColor.fieldBorder).frame(height: 3)
+                }
+            }
+            .accessibilityHidden(true)
+        }
     }
 }
 
@@ -107,35 +135,55 @@ struct PinChooseView: View {
     let title: String
     let subtitle: String
     var errorText: String?
+    var submitTitle: String = "Continue"
+    var busy: Bool = false
     let onSubmit: (String) -> Void
 
     @State private var pin = ""
     @State private var confirm = ""
-    @State private var mismatch = false
+    @FocusState private var pinFocused: Bool
+    @FocusState private var confirmFocused: Bool
 
-    private var canSubmit: Bool { PinRules.validNew(pin) && pin == confirm }
+    private var canSubmit: Bool { PinRules.validNew(pin) && pin == confirm && !busy }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-            Text(title).font(VoiidFont.title).foregroundColor(VoiidColor.textPrimary)
-            Text(subtitle).font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
-
-            PinField(placeholder: "PIN (\(PinRules.maxLen) digits)", text: $pin)
-            PinField(placeholder: "Confirm PIN", text: $confirm)
-
-            if mismatch { fieldError("PINs don’t match.") }
-            if !pin.isEmpty, let reason = PinRules.rejectionReason(pin) { fieldError(reason) }
-            if let errorText { fieldError(errorText) }
-
-            Spacer()
-
-            VoiidPrimaryButton(title: "Continue", enabled: canSubmit) {
-                guard canSubmit else { mismatch = pin != confirm; return }
-                Haptics.tap(); onSubmit(pin)
+        ScrollView {
+            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                Text(title).font(VoiidFont.title).foregroundColor(VoiidColor.textPrimary)
+                Text(subtitle).font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
+                PinField(placeholder: "PIN", text: $pin, externalFocus: $pinFocused)
+                PinField(placeholder: "Confirm PIN", text: $confirm, externalFocus: $confirmFocused)
+                if confirm.count == PinRules.maxLen && pin != confirm { fieldError("PINs don’t match.") }
+                if pin.count == PinRules.maxLen, let reason = PinRules.rejectionReason(pin) { fieldError(reason) }
+                if let errorText { fieldError(errorText) }
             }
+            .disabled(busy)
+            .padding(VoiidSpacing.lg)
         }
-        .padding(VoiidSpacing.lg)
-        .onChange(of: confirm) { _, _ in if mismatch { mismatch = false } }
+        .scrollDismissesKeyboard(.interactively)
+        .onTapGesture { pinFocused = false; confirmFocused = false }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Button {
+                guard canSubmit else { return }
+                pinFocused = false; confirmFocused = false
+                Haptics.tap(); onSubmit(pin)
+            } label: {
+                HStack(spacing: 10) {
+                    if busy { ProgressView().tint(VoiidColor.textOnPrimary) }
+                    Text(busy ? "Saving PIN…" : submitTitle).font(VoiidFont.headline)
+                }
+                .foregroundColor(VoiidColor.textOnPrimary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 56)
+                .background(VoiidColor.primary.opacity(canSubmit || busy ? 1 : 0.5), in: Capsule())
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSubmit)
+            .padding(.horizontal, VoiidSpacing.lg)
+            .padding(.vertical, VoiidSpacing.md)
+            .background(VoiidColor.background)
+        }
     }
 
     private func fieldError(_ t: String) -> some View {
@@ -155,6 +203,7 @@ struct PinEntryView: View {
     @State private var pin = ""
 
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
             Text(title).font(VoiidFont.title).foregroundColor(VoiidColor.textPrimary)
             Text(subtitle).font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
@@ -170,6 +219,7 @@ struct PinEntryView: View {
             }
         }
         .padding(VoiidSpacing.lg)
+        }
     }
 }
 

@@ -95,18 +95,21 @@ fun LocationMap(
         MapUnavailableCard(modifier, lat, lon)
         return
     }
-    var failed by remember(lat, lon) { mutableStateOf(false) }
-    var loaded by remember(lat, lon) { mutableStateOf(false) }
-    // Runtime gate for the more common real failure: a key that EXISTS but is restricted to the
-    // wrong package/SHA-1 renders grey tiles. Watchdog swaps in the coordinate card.
-    LaunchedEffect(lat, lon) {
+    var loaded by remember { mutableStateOf(false) }
+    var slow by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(6_000)
-        if (!loaded) failed = true
+        if (!loaded) slow = true
     }
-    if (failed) { MapUnavailableCard(modifier, lat, lon, wrongKey = true); return }
-
+    // Keep the SDK view alive on slow networks so a late tile response can recover.
     Box(modifier) {
         val camera = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(LatLng(lat, lon), 15f) }
+        val marker = remember { MarkerState(position = LatLng(lat, lon)) }
+        LaunchedEffect(lat, lon) {
+            val point = LatLng(lat, lon)
+            marker.position = point
+            camera.position = CameraPosition.fromLatLngZoom(point, camera.position.zoom)
+        }
         GoogleMap(
             modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(VoiidRadius.md)),
             cameraPositionState = camera,
@@ -121,13 +124,15 @@ fun LocationMap(
                 // The in-chat bubble used NO style at all — a stock Google basemap sitting
                 // inside a Peacock transcript, and a glaring white rectangle in dark mode.
                 // Same two styles the Map tab uses, so a pin looks identical in both places.
-                mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(
-                    if (LocalVoiidDark.current) VOIID_MAP_STYLE_DARK else VOIID_MAP_STYLE_LIGHT,
-                ),
+                mapStyleOptions = rememberLocationMapStyle(),
             ),
-            onMapLoaded = { loaded = true },
+            onMapLoaded = { loaded = true; slow = false },
         ) {
-            Marker(state = MarkerState(position = LatLng(lat, lon)))
+            Marker(state = marker)
+        }
+        if (slow && !loaded) {
+            Text("Map is taking longer to load", style = VoiidFont.rounded(11), color = VoiidColor.textSecondary,
+                modifier = Modifier.align(Alignment.BottomCenter).background(VoiidColor.surfaceCard).padding(8.dp))
         }
         if (desaturated) {
             // Stale marker: dim the last-known map so "lost signal" reads differently from live.
@@ -169,12 +174,11 @@ fun MapUnavailableCard(modifier: Modifier = Modifier, lat: Double? = null, lon: 
     ) {
         Icon(Icons.Default.Map, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(28.dp))
         Text(
-            if (wrongKey) "Map failed to load" else "Maps aren’t set up in this build",
+            if (wrongKey) "Map couldn’t load" else "Map preview unavailable",
             style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textPrimary,
         )
         Text(
-            if (wrongKey) "Check the API key’s restrictions."
-            else "Add MAPS_API_KEY to local.properties and rebuild — see docs/LOCATION.md.",
+            "You can still share a location or open it in your maps app.",
             style = VoiidFont.rounded(11), color = VoiidColor.textSecondary,
         )
         if (lat != null && lon != null) {
@@ -195,7 +199,12 @@ fun MapUnavailableCard(modifier: Modifier = Modifier, lat: Double? = null, lon: 
 fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
     val ref = message.location ?: return
     val engine = com.voiid.app.net.LocationShareEngine
-    val now = System.currentTimeMillis()
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(ref.shareId) {
+        if (ref.kind == com.voiid.app.model.LocationEnvelope.K_LIVE_START) {
+            while (true) { kotlinx.coroutines.delay(1_000); now = System.currentTimeMillis() }
+        }
+    }
     var showDetail by remember { mutableStateOf(false) }
 
     if (showDetail) {
@@ -209,7 +218,7 @@ fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
 
     val isLive = ref.kind == com.voiid.app.model.LocationEnvelope.K_LIVE_START
     // Recipient live view (fix stream); for my own bubble this is null and we drive off expiresAt.
-    val inbound = if (isLive && !message.isMine) engine.inbound(ref.shareId) else null
+    val inbound = if (isLive) engine.inbound(ref.shareId) else null
     val state = when {
         !isLive -> null
         inbound != null -> inbound.state(now)
@@ -225,7 +234,29 @@ fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
     val ended = state == com.voiid.app.model.ShareState.ENDED
     val hasCoord = lat != null && lon != null
 
-    Column(Modifier.width(220.dp).clip(RoundedCornerShape(VoiidRadius.md)).clickable { if (hasCoord) showDetail = true }) {
+    if (ended) {
+        val stopped = inbound?.stoppedBeforeExpiry == true
+        val shape = RoundedCornerShape(19.dp)
+        Column(Modifier.width(260.dp).clip(shape).background(VoiidColor.surfaceCard)
+            .border(1.dp, VoiidColor.fieldBorder, shape).clickable { showDetail = true }.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(VoiidColor.accentTint), Alignment.Center) {
+                    Icon(Icons.Default.LocationOff, null, Modifier.size(19.dp), tint = VoiidColor.accentInk)
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(if (stopped) "Live location stopped" else "Live location ended",
+                        style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                    Text("This location is no longer updating.", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+                }
+            }
+            Text(if (stopped) "Sharing was stopped" else "The sharing time has ended",
+                style = VoiidFont.rounded(10, FontWeight.Medium), color = VoiidColor.textSecondary)
+        }
+        return
+    }
+
+    Column(Modifier.width(220.dp).clip(RoundedCornerShape(VoiidRadius.md)).clickable { showDetail = true }) {
         if (hasCoord) {
             LocationMap(
                 lat = lat, lon = lon, lite = true,
@@ -240,7 +271,7 @@ fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
             Box(
                 Modifier.fillMaxWidth().height(140.dp).background(VoiidColor.fieldFill),
                 contentAlignment = Alignment.Center,
-            ) { Text("Locating…", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary) }
+            ) { Text(if (ended) "Live location ended" else "Waiting for location…", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary) }
         }
         Row(
             Modifier.fillMaxWidth().background(VoiidColor.surfaceCard).padding(horizontal = 10.dp, vertical = 8.dp),
@@ -257,7 +288,8 @@ fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
                     style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1,
                 )
                 val sub = when {
-                    isLive && ended -> "ended ${VoiidDate.bubbleTime(ref.expiresAt ?: message.createdAt)}"
+                    isLive && ended -> "Live location ended"
+                    isLive && fix == null && !hasCoord -> "Waiting for first update"
                     isLive && state == com.voiid.app.model.ShareState.STALE -> "may have lost signal"
                     isLive -> "Live · ${minutesLeft(ref.expiresAt, now)} left"
                     else -> "Tap to open"

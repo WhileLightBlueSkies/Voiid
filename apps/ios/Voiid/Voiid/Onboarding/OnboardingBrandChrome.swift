@@ -24,14 +24,10 @@ import SwiftUI
 
 /// The brand ground for onboarding: Voiid Black, fixed in both themes.
 enum OnboardingBrand {
-    static let ground = Color(hex: 0x0B0B0B)
-    /// The card behind a group of rows.
-    static let card = Color(hex: 0x121212)
-    /// A row inside that card, one step up so it separates from the card it sits on.
-    static let row = Color(hex: 0x181818)
-    /// Hairlines. White at low alpha rather than a grey token — it stays correct if the
-    /// surfaces beneath it are ever re-tuned.
-    static let hairline = Color.white.opacity(0.07)
+    static let ground = VoiidBrand.ground
+    static let card = VoiidBrand.card
+    static let row = VoiidBrand.row
+    static let hairline = VoiidBrand.hairline
 }
 
 // MARK: - Mark, glow, horizon
@@ -167,7 +163,7 @@ struct OnboardingTopBar: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundColor(VoiidColor.textPrimary)
                 .frame(width: 44, height: 44)
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+                .overlay(Circle().strokeBorder(VoiidBrand.fieldEdge, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -220,7 +216,7 @@ struct OnboardingTrustStrip: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+                .strokeBorder(VoiidBrand.hairline, lineWidth: 1)
         )
     }
 }
@@ -274,7 +270,7 @@ struct OnboardingCard<Content: View>: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+                    .strokeBorder(VoiidBrand.hairline, lineWidth: 1)
             )
     }
 }
@@ -297,11 +293,11 @@ struct OnboardingGlyphTile: View {
             .frame(width: size, height: size)
             .background(
                 RoundedRectangle(cornerRadius: size * 0.29, style: .continuous)
-                    .fill(Color.white.opacity(0.04))
+                    .fill(VoiidBrand.row)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: size * 0.29, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+                    .strokeBorder(VoiidBrand.hairline, lineWidth: 1)
             )
     }
 }

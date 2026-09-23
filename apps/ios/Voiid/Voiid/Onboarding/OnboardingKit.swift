@@ -32,64 +32,20 @@ import SwiftUI
 /// resolves per theme and is right for the app proper; `VoiidBrand.ground` is always Voiid Black
 /// and is right for onboarding, where the glow only exists on black.
 enum VoiidBrand {
-    /// Voiid Black — the ground for every committed-dark screen.
-    static let ground = Color(hex: 0x0B0B0B)
-    /// A card sitting on the ground.
-    static let card = Color(hex: 0x121212)
-    /// A row inside a card, one step up so it separates from what it sits on.
-    static let row = Color(hex: 0x181818)
-    /// Hairlines. White at low alpha rather than a fixed grey, so they stay correct if the
-    /// surfaces beneath them are ever re-tuned.
-    static let hairline = Color.white.opacity(0.07)
-
-    /// Tide — the brand teal. The token names below still read `lime*` because they are the
-    /// SLOTS (fill / lit edge / lower stop / label), not the hue, and renaming them would
-    /// churn 60-odd onboarding call sites for no visual change. The values are the single
-    /// source of truth; `VoiidBrand` in the reference calls the same slots `cyan*`.
-    static let lime = Color(hex: 0x13828C)
-    /// The mark's lit top edge, and a pill's upper stop.
+    // Shared adaptive surfaces keep onboarding and the app in the same appearance.
+    static let ground = VoiidColor.background
+    static let card = VoiidColor.surfaceCard
+    static let row = VoiidColor.surfaceRaised
+    static let hairline = VoiidColor.divider
+    static let lime = VoiidColor.primary
     static let limeBright = Color(hex: 0x68B8BD)
-    /// A pill's lower stop.
     static let limeDeep = Color(hex: 0x0E6E77)
-
-    // ── TEXT ON THE COMMITTED-DARK GROUND ───────────────────────────────────────────
-    // These exist because this palette had NO text token, so every onboarding screen reached
-    // for `VoiidBrand.text` / `.textSecondary` instead — and those are THEME-AWARE:
-    // textPrimary is `dyn(0x101617, 0xF6F8F8)`, i.e. near-BLACK in light mode.
-    //
-    // Onboarding pins its own ground (`VoiidBrand.ground`, a fixed #0B0B0B) in BOTH themes.
-    // So on a phone in light mode those titles rendered near-black on near-black and were,
-    // in practice, invisible. The row SUBTITLES read fine because `textSecondary`'s light
-    // value happens to be mid-grey — which is exactly why the bug survived review: half the
-    // text on the screen looked correct.
-    //
-    // Fixed values, not `dyn`. A screen that pins its own ground must pin its own text, or
-    // it inherits a contrast decision made for a surface it does not have.
-
-    // ── FIELDS AND LINES ON THE SAME GROUND ─────────────────────────────────────────
-    // Same trap as the text tokens below, and the same fix. `VoiidBrand.field` is
-    // #EDF1F1 in light mode — a near-WHITE box, which on this near-black ground reads as a
-    // glaring slab rather than a recessed input. `fieldBorder` (#D7DEDF) is the same problem
-    // as a hairline, and `placeholder` (#899396) is tuned for contrast against white.
-    //
-    // Pinned to their dark values, so an input on a committed-dark screen looks like an input.
-
-    /// A text field's fill on this ground. `VoiidBrand.field`'s DARK value.
-    static let field = Color(hex: 0x111719)
-    /// A field's border, and any hairline that must read as a line rather than a glare.
-    static let fieldEdge = Color(hex: 0x263236)
-    /// Placeholder text inside a field on this ground.
-    static let placeholder = Color(hex: 0x6D787B)
-
-    /// Primary text on the committed-dark ground. `VoiidBrand.text`'s DARK value.
-    static let text = Color(hex: 0xF6F8F8)
-    /// Secondary text on the same ground. `VoiidBrand.textDim`'s DARK value.
-    static let textDim = Color(hex: 0xA6B0B2)
-
-    /// Text on a Tide fill. WHITE, and this INVERTS what lime required: lime was a light
-    /// fill needing a near-black label, Tide is a mid-tone where white wins (4.57:1 vs
-    /// 4.30:1). Every filled button, badge and pill label flips with it.
-    static let onLime = Color(hex: 0xFFFFFF)
+    static let field = VoiidColor.fieldFill
+    static let fieldEdge = VoiidColor.fieldBorder
+    static let placeholder = VoiidColor.placeholder
+    static let text = VoiidColor.textPrimary
+    static let textDim = VoiidColor.textSecondary
+    static let onLime = VoiidColor.textOnPrimary
 }
 
 // MARK: - Splash handoff
@@ -195,10 +151,10 @@ struct OnboardingHeader: View {
     @ViewBuilder
     private var wordmark: some View {
         if let logoNS {
-            BrandWordmark(size: Self.wordmarkSize, color: .white, dotColor: VoiidBrand.lime)
+            BrandWordmark(size: Self.wordmarkSize, color: VoiidBrand.text, dotColor: VoiidBrand.lime)
                 .matchedGeometryEffect(id: OnboardingHandoff.wordmarkID, in: logoNS)
         } else {
-            BrandWordmark(size: Self.wordmarkSize, color: .white, dotColor: VoiidBrand.lime)
+            BrandWordmark(size: Self.wordmarkSize, color: VoiidBrand.text, dotColor: VoiidBrand.lime)
         }
     }
 
@@ -386,6 +342,7 @@ struct OnboardingFooter<Content: View>: View {
 struct OnboardingKitButton: View {
     let title: String
     var enabled: Bool = true
+    var cornerRadius: CGFloat = 28
     let action: () -> Void
 
     var body: some View {
@@ -406,7 +363,7 @@ struct OnboardingKitButton: View {
             .frame(height: 56)
             .frame(maxWidth: .infinity)
             .background(
-                Capsule().fill(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(
                     LinearGradient(
                         colors: [VoiidBrand.limeBright, VoiidBrand.lime],
                         startPoint: .topLeading, endPoint: .bottomTrailing

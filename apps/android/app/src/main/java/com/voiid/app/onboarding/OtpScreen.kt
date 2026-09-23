@@ -172,8 +172,7 @@ fun OtpScreen(
                 // if a server backup exists, else through Verified into the app.
                 // New user → continue to Signup.
                 if (profileComplete) {
-                    val meta = runCatching { com.voiid.app.net.BackupManager(context).fetchMeta() }.getOrNull()
-                    if (meta != null) restoreMeta = meta else onVerifiedExistingUser()
+                    restoreMeta = com.voiid.app.net.BackupService.BackupMeta()
                 } else onContinue()
             } catch (e: Exception) {
                 errorText = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Invalid or expired code."

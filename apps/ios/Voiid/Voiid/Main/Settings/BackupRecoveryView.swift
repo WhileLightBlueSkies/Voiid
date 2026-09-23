@@ -23,6 +23,7 @@ struct BackupRecoveryView: View {
     @State private var actionError: String?
     @State private var toast: String?
 
+    @State private var showRestore = false
     @State private var showSetup = false
     @State private var showPhrase = false
     @State private var showChangePin = false
@@ -32,6 +33,19 @@ struct BackupRecoveryView: View {
     @State private var destSnapshots: [BackupDestination: BackupSnapshot] = [:]
     @State private var togglingDestination: BackupDestination?
     @State private var destError: String?
+
+    private var latestBackup: BackupMeta? {
+        var snapshots = Array(destSnapshots.values)
+        if let meta { snapshots.append(BackupSnapshot(sizeBytes: meta.size_bytes, modified: meta.updatedAtDate)) }
+        guard let latest = snapshots.max(by: { ($0.modified ?? .distantPast) < ($1.modified ?? .distantPast) }) else { return nil }
+        return BackupMeta(download_url: "", size_bytes: latest.sizeBytes,
+                          updated_at: latest.modified.map { ISO8601DateFormatter().string(from: $0) } ?? "")
+    }
+
+    private var hasRestorableBackup: Bool {
+        // New uploads are not a reason to restore again on a device already recovered.
+        latestBackup != nil && manager.lastCompletedRestore == nil
+    }
 
     private var isSetUp: Bool { manager.hasLocalSecret }
 
@@ -47,14 +61,21 @@ struct BackupRecoveryView: View {
                                         badge: (icon: "lock.fill", text: "End-to-end encrypted"))
 
                     statusCard
+                    if !loadingStatus, hasRestorableBackup {
+                        VoiidCardSection("Backup available", footer: "Restore saved chats using your backup PIN or recovery phrase. Your current chats are kept.") {
+                            actionRow(title: "Restore chats", system: "arrow.down.circle", enabled: !backingUp) {
+                                showRestore = true
+                            }
+                        }
+                    }
+                    destinationsCard.disabled(backingUp)
 
                     if isSetUp {
                         VoiidCardSection {
-                            actionRow(title: backingUp ? "Backing up…" : "Back up now",
-                                      system: "arrow.up.circle", enabled: !backingUp) { backUpNow() }
+                            actionRow(title: backingUp ? manager.progressLabel : "Back up now",
+                                      system: "arrow.up.circle", enabled: !backingUp && !manager.enabledDestinations.isEmpty) { backUpNow() }
                         }
                         scheduleCard
-                        destinationsCard
                         VoiidCardSection {
                             actionRow(title: "View recovery phrase", system: "key") { showPhrase = true }
                             VoiidRowDivider()
@@ -62,7 +83,7 @@ struct BackupRecoveryView: View {
                         }
                     } else {
                         VoiidCardSection {
-                            actionRow(title: "Set up backup", system: "checkmark.shield") { showSetup = true }
+                            actionRow(title: "Set up backup", system: "checkmark.shield", enabled: !manager.enabledDestinations.isEmpty) { showSetup = true }
                         }
                     }
 
@@ -92,6 +113,11 @@ struct BackupRecoveryView: View {
         .sheet(isPresented: $showSetup, onDismiss: { Task { await refreshStatus() } }) {
             BackupSetupFlow { showSetup = false; flash("Backup is set up") }
         }
+        .fullScreenCover(isPresented: $showRestore, onDismiss: { Task { await refreshStatus() } }) {
+            RestoreMessagesView(meta: latestBackup ?? BackupMeta(download_url: "", size_bytes: 0, updated_at: "")) {
+                showRestore = false
+            }
+        }
         .sheet(isPresented: $showPhrase) { RecoveryPhraseSheet() }
         .sheet(isPresented: $showChangePin) { ChangePinSheet { flash("PIN changed") } }
         .sheet(item: $schedulePicker) { page in
@@ -107,11 +133,11 @@ struct BackupRecoveryView: View {
                 VoiidRowIcon(systemName: isSetUp ? "checkmark.shield.fill" : "shield.slash")
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isSetUp ? "Backup is on" : "Backup is off")
+                    Text(isSetUp && !manager.enabledDestinations.isEmpty ? "Backup is on" : "Backup is off")
                         .font(.body)
                         .foregroundColor(VoiidColor.textPrimary)
 
-                    if let meta, !loadingStatus {
+                    if let meta = latestBackup, !loadingStatus {
                         Text("Last backup \(Self.relative(meta.updatedAtDate)) · \(Self.size(meta.size_bytes))")
                             .font(.footnote)
                             .foregroundColor(VoiidColor.textSecondary)
@@ -210,11 +236,11 @@ struct BackupRecoveryView: View {
     private var destinationsCard: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
             VoiidCardSection(
-                "Additional backup locations",
-                footer: "The same encrypted backup is copied to each location you turn on. "
-                      + "iCloud only stores the encrypted file — never your "
-                      + "PIN, phrase, or messages."
+                "Backup locations",
+                footer: "Choose Voiid server, iCloud, both, or neither. Turning a location off stops future uploads; existing backups stay there."
             ) {
+                destinationRow(.server, available: true, unavailableNote: "")
+                VoiidRowDivider()
                 destinationRow(.iCloud,
                                available: ICloudBackupService.shared.isAvailable,
                                unavailableNote: "Sign in to iCloud in Settings to enable.")
@@ -258,7 +284,7 @@ struct BackupRecoveryView: View {
                 ))
                 .labelsHidden()
                 .tint(VoiidColor.primary)
-                .disabled(!available)
+                .disabled(!available && !isOn)
             }
         }
         .padding(.horizontal, VoiidSpacing.md)
@@ -308,10 +334,11 @@ struct BackupRecoveryView: View {
 
     private func refreshStatus() async {
         loadingStatus = true; statusError = nil
+        meta = nil
         do { meta = try await manager.status() }
         catch { statusError = (error as? APIError)?.errorDescription ?? error.localizedDescription }
-        loadingStatus = false
         await refreshDestinations()
+        loadingStatus = false
     }
 
     private func backUpNow() {
@@ -503,7 +530,7 @@ struct BackupSetupFlow: View {
                 switch step {
                 case .pin:
                     PinChooseView(title: "Choose a backup PIN",
-                                  subtitle: "You’ll enter this PIN to restore your chats on a new device. 4–8 digits.",
+                                  subtitle: "You’ll enter this PIN to restore your chats on a new device. Use 8 digits.",
                                   errorText: errorText) { chosen in
                         beginPhrase(pin: chosen)
                     }
@@ -596,21 +623,20 @@ struct ChangePinSheet: View {
         NavigationStack {
             ZStack {
                 VoiidBackground()
-                if working {
-                    ProgressView().tint(VoiidColor.primary)
-                } else {
-                    PinChooseView(title: "Choose a new PIN",
-                                  subtitle: "Your recovery phrase and existing backup stay the same — only the PIN changes.",
-                                  errorText: errorText) { pin in change(to: pin) }
-                }
+                PinChooseView(title: "Choose a new PIN",
+                              subtitle: "Enter and confirm an 8-digit PIN. Your recovery phrase and saved chats stay the same.",
+                              errorText: errorText, submitTitle: "Set PIN", busy: working) { pin in change(to: pin) }
+
             }
             .navigationTitle("Change PIN")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(working) } }
         }
+        .interactiveDismissDisabled(working)
     }
 
     private func change(to pin: String) {
+        guard !working else { return }
         working = true; errorText = nil
         Task {
             do { try await BackupManager.shared.changePin(newPin: pin); onDone(); dismiss() }

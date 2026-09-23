@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,70 +51,41 @@ fun BrandWordmark(
     alpha: Float = 1f,
 ) {
     val sizeF = size.toFloat()
-    /**
-     * Dot diameter as a fraction of cap height, tuned against the rounded face's own tittle so
-     * the drawn dots read as belonging to the letters rather than floating above them.
-     */
-    val dotSize = (sizeF * 0.165f).dp
-    /**
-     * How far the dots sit above the stem, measured from the glyph's TOP edge — so a SMALLER
-     * number lifts the dot. At 0.30 they rested ON the stems and read as part of the letter;
-     * a tittle needs visible air under it to read as its own mark.
-     */
-    val dotRise = (sizeF * 0.10f).dp
-
-    val face = VoiidFont.rounded(size, FontWeight.Bold).copy(
-        // Negative and proportional: letters read progressively further apart as they grow,
-        // so one fixed letter-spacing is wrong at either end of the range.
-        letterSpacing = (-0.02f).em,
-    )
-
-    Row(
-        modifier
-            // OPTICAL centring, not geometric. `V` is a diagonal that leaves open space at its
-            // lower-left while `d` ends in a hard vertical stem, so the visual mass sits right
-            // of the box's midpoint even when the box is perfectly centred. Typographers
-            // correct this by eye; so does this.
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val fontPx = with(density) { size.sp.toPx() }
+    var layout by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null)
+    }
+    // Shape the entire word together: separate Text boxes lose tracking at the i/i boundary.
+    // Place each dot over its actual glyph and relative to the baseline, not the line-box top.
+    Text(
+        "Vo\u0131\u0131d",
+        style = VoiidFont.rounded(size, FontWeight.Bold).copy(
+            letterSpacing = (-0.02f).em,
+            platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
+        ),
+        color = color.copy(alpha = color.alpha * alpha),
+        maxLines = 1,
+        softWrap = false,
+        onTextLayout = { layout = it },
+        modifier = modifier
             .offset(x = -(sizeF * 0.022f).dp)
-            .clearAndSetSemantics { contentDescription = "Voiid" },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Glyph("Vo", face, color, alpha)
-        StemWithDot(face, color, dotColor, dotSize, dotRise, alpha)
-        StemWithDot(face, color, dotColor, dotSize, dotRise, alpha)
-        Glyph("d", face, color, alpha)
-    }
-}
-
-@Composable
-private fun Glyph(text: String, face: TextStyle, color: Color, alpha: Float) {
-    Text(text, style = face, color = color.copy(alpha = color.alpha * alpha))
-}
-
-/**
- * A dotless stem with its dot drawn above.
- *
- * The dot is positioned relative to the STEM rather than to the line, so the pair stays
- * locked to its letter when the type scales instead of drifting apart.
- */
-@Composable
-private fun StemWithDot(
-    face: TextStyle,
-    color: Color,
-    dotColor: Color,
-    dotSize: androidx.compose.ui.unit.Dp,
-    dotRise: androidx.compose.ui.unit.Dp,
-    alpha: Float,
-) {
-    Box(contentAlignment = Alignment.TopCenter) {
-        // U+0131 LATIN SMALL LETTER DOTLESS I.
-        Text("ı", style = face, color = color.copy(alpha = color.alpha * alpha))
-        Box(
-            Modifier
-                .offset(y = dotRise)
-                .size(dotSize)
-                .clip(CircleShape)
-                .background(dotColor.copy(alpha = dotColor.alpha * alpha))
-        )
-    }
+            .clearAndSetSemantics { contentDescription = "Voiid" }
+            .drawWithContent {
+                drawContent()
+                layout?.let { measured ->
+                    for (index in 2..3) {
+                        val glyph = measured.getBoundingBox(index)
+                        drawCircle(
+                            color = dotColor.copy(alpha = dotColor.alpha * alpha),
+                            radius = fontPx * 0.0825f,
+                            center = androidx.compose.ui.geometry.Offset(
+                                glyph.center.x,
+                                measured.firstBaseline - fontPx * 0.65f,
+                            ),
+                        )
+                    }
+                }
+            },
+    )
 }

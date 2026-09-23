@@ -391,6 +391,7 @@ fun ChatDetailView(
                         androidx.compose.material3.IconButton(onClick = { haptics.tap(); startCall(CallKind.VOICE) }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Default.Call, "Voice call", tint = VoiidColor.textPrimary, modifier = Modifier.size(20.dp))
                         }
+                        Box(Modifier.width(1.dp).height(20.dp).background(VoiidColor.divider))
                         androidx.compose.material3.IconButton(onClick = { haptics.tap(); startCall(CallKind.VIDEO) }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Default.Videocam, "Video call", tint = VoiidColor.textPrimary, modifier = Modifier.size(23.dp))
                         }
@@ -611,7 +612,7 @@ fun ChatDetailView(
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
             if (isGroup) {
-                GroupInfoView(conversation = conversation, chat = chat, onBack = { showDetails = false })
+                GroupInfoView(conversation = conversation, chat = chat, onBack = { showDetails = false }, onStartCall = { kind -> showDetails = false; startCall(kind) })
             } else if (isSelfChat) {
                 // ContactProfileView would open, find peerUserId == null, and render a
                 // profile of nobody. There is no second person to show.

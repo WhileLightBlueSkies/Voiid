@@ -70,7 +70,52 @@ object StoryLocalStore {
     fun invalidateAccount() { accountGeneration += 1 }
 
     suspend fun clearMediaForSignOut(context: Context) = withContext(Dispatchers.IO) {
-        mediaMutex.withLock { File(context.cacheDir, "stories").deleteRecursively() }
+        mediaMutex.withLock {
+            File(context.cacheDir, "stories").deleteRecursively()
+            File(context.noBackupFilesDir, "kept-moments").deleteRecursively()
+        }
+    }
+
+    suspend fun keptMoments(context: Context): List<Story> = withContext(Dispatchers.IO) {
+        val owner = com.voiid.app.net.TokenStore.get(context).userId ?: return@withContext emptyList()
+        dao(context).kept(owner, System.currentTimeMillis() / 1000).mapNotNull { it.toModel() }
+    }
+
+    suspend fun isKept(context: Context, id: String): Boolean = withContext(Dispatchers.IO) {
+        val row = dao(context).byId(id)
+        row?.kept == true && row.isMine && row.authorId == com.voiid.app.net.TokenStore.get(context).userId
+    }
+
+    suspend fun deleteKeptMoment(context: Context, id: String) = withContext(Dispatchers.IO) {
+        mediaMutex.withLock {
+            val row = dao(context).byId(id) ?: return@withLock
+            check(row.isMine && row.kept && row.authorId == com.voiid.app.net.TokenStore.get(context).userId)
+            check(row.expiresAt <= System.currentTimeMillis() / 1000)
+            row.localPath?.let { path -> check(!File(path).exists() || File(path).delete()) { "Couldn’t remove this file. Please try again." } }
+            dao(context).delete(id)
+            dao(context).deleteAudience(id)
+        }
+    }
+
+    /** Keep only an already-downloaded moment owned by this account. Never extends the audience's expiry. */
+    suspend fun keepMoment(context: Context, id: String, expectedGeneration: Long = accountGeneration) = withContext(Dispatchers.IO) {
+        mediaMutex.withLock {
+            check(expectedGeneration == accountGeneration) { "Your account changed. Please reopen this moment." }
+            val owner = com.voiid.app.net.TokenStore.get(context).userId ?: error("Sign in to keep a moment.")
+            val row = dao(context).byId(id) ?: error("This moment is no longer available.")
+            check(row.isMine && row.authorId == owner) { "Only your own moments can be kept." }
+            check(!id.startsWith("pending-") && row.uploadState != "uploading" && row.uploadState != "failed") { "Wait until this moment finishes posting." }
+            if (row.kept) return@withLock
+            val original = row.localPath?.let(::File)?.takeIf { it.isFile } ?: error("Wait for this moment to finish loading.")
+            val folder = File(context.noBackupFilesDir, "kept-moments").apply { mkdirs() }
+            val name = java.security.MessageDigest.getInstance("SHA-256").digest(id.toByteArray()).joinToString("") { "%02x".format(it) }
+            val target = File(folder, "$name.bin")
+            try {
+                original.copyTo(target, overwrite = true)
+                check(dao(context).keep(id, owner, target.absolutePath) == 1)
+                original.delete()
+            } catch (e: Exception) { target.delete(); throw e }
+        }
     }
 
     private val mediaMutex = kotlinx.coroutines.sync.Mutex()
@@ -79,6 +124,7 @@ object StoryLocalStore {
         mediaMutex.withLock {
             if (expectedGeneration != accountGeneration) return@withLock null
             val row = dao(context).byId(id) ?: return@withLock null
+            if (row.kept && row.isMine) return@withLock row.localPath
             if (row.expiresAt <= System.currentTimeMillis() / 1000) return@withLock null
             val file = File(mediaDir(context), "$id.bin")
             val atomic = android.util.AtomicFile(file)
