@@ -440,15 +440,18 @@
 .storyPhoneCol { position: relative; }
 .storyPhoneSticky {
   position: sticky;
-  top: calc(var(--header-height) + 24px);
+  /* Centred in the space under the header, whatever the window height. */
+  top: var(--header-height);
+  min-height: calc(100svh - var(--header-height));
+  justify-content: center;
+  padding-block: 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 18px;
 }
 .storyPhone {
-  width: min(330px, calc((100vh - var(--header-height) - 140px) * 0.46));
-  min-width: 240px;
+  width: clamp(270px, calc((100svh - var(--header-height) - 120px) * 0.46), 390px);
   filter: drop-shadow(0 30px 40px rgba(13, 20, 22, 0.18));
 }
 
@@ -980,7 +983,8 @@
     color: #fff;
     box-shadow: none;
   }
-  .storyPhone { width: min(300px, 76vw); min-width: 0; }
+  .storyPhoneSticky { min-height: 0; padding-block: 0; }
+  .storyPhone { width: min(360px, 86vw); margin-inline: auto; }
   .storyMobileCopy {
     display: flex;
     flex-direction: column;

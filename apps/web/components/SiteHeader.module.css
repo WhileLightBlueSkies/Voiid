@@ -481,43 +481,90 @@
 }
 
 /* =============================================================================
- * Phone layout (≤1020px). The open menu is a SHEET under the capsule: the capsule
- * squares its corners into a card, the list scrolls if it outgrows the screen,
- * every row is a 48px target (Material/Apple guidance), and the Features group
- * expands inline at full width instead of reusing the desktop popover's
- * centred-transform, which is what pushed it off the left edge.
+ * Phone layout (≤1020px) — an APP bar, not a shrunken desktop capsule.
+ *
+ * Closed: a slim dark-glass bar hugging the top (every page opens on night, and
+ * dark glass stays legible over the paper sections too). Open: the bar becomes a
+ * full-screen sheet — big 56px rows, Features as a two-column tile grid, the CTA
+ * pinned at the bottom — which is what native apps and the big product sites do.
  * ========================================================================== */
 @media (max-width: 1020px) {
+  .header {
+    inset-block-start: 0;
+    padding: max(8px, env(safe-area-inset-top)) 10px 0;
+    --color-text: #eefaf9;
+    --color-text-dim: rgba(222, 243, 241, 0.72);
+    --color-surface: rgba(255, 255, 255, 0.07);
+    --color-surface-2: rgba(255, 255, 255, 0.06);
+    --color-border: rgba(255, 255, 255, 0.12);
+    --color-divider: rgba(255, 255, 255, 0.1);
+    --color-primary-soft: #8ff5e4;
+  }
+
   .bar {
-    transition: border-radius 260ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 260ms ease-out;
+    min-height: 52px;
+    padding: 4px 4px 4px 16px;
+    border-radius: 18px;
+    background: rgba(3, 18, 20, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 10px 30px -14px rgba(0, 0, 0, 0.6);
+    color: #eefaf9;
   }
+
+  .toggle {
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #eefaf9;
+  }
+  .toggle .bars span { background: currentColor; }
+
+  /* ---- open: the full-screen sheet ---- */
   .header[data-nav-open='true'] .bar {
-    border-radius: 28px;
-    padding: 6px 6px 12px var(--space-md);
-    box-shadow: 0 24px 60px -20px rgba(13, 20, 22, 0.35), 0 0 0 1px var(--color-border);
-    background: rgba(255, 255, 255, 0.97);
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    align-content: flex-start;
+    border-radius: 0;
+    border: 0;
+    padding: max(12px, env(safe-area-inset-top)) 14px max(16px, env(safe-area-inset-bottom)) 26px;
+    background:
+      radial-gradient(70% 50% at 100% 0%, rgba(19, 130, 140, 0.55), transparent 70%),
+      radial-gradient(60% 40% at 0% 100%, rgba(94, 92, 230, 0.3), transparent 70%),
+      #031214;
+    animation: sheetIn 320ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  @keyframes sheetIn {
+    from { opacity: 0; transform: translateY(-12px); }
   }
 
-  .toggle { width: 44px; height: 44px; }
   .nav, .navInner, .list, .list > li, .menuWrapper { width: 100%; }
-  .navInner { align-items: stretch; }
-
+  .header[data-nav-open='true'] .nav { margin-block-start: 18px; }
   .navInner {
-    max-height: calc(100dvh - 110px);
+    align-items: stretch;
+    gap: 6px;
+    max-height: calc(100dvh - 100px);
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding-inline-end: 10px;
+    padding-inline-end: 12px;
   }
-  .header[data-nav-open='true'] .navInner { padding-block: 4px 2px; }
 
   .link {
-    min-height: 48px;
-    padding-inline: 14px;
-    font-size: 1.0625rem;
-    font-weight: var(--weight-semibold);
-    color: var(--color-text);
+    min-height: 58px;
+    padding-inline: 4px;
+    border-radius: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 1.6rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: #eefaf9;
+    background: transparent;
   }
+  .link:hover { background: transparent; color: #8ff5e4; }
+  .link[aria-current='page'] { background: transparent; color: #8ff5e4; }
   .menuTrigger { width: 100%; justify-content: space-between; }
+  .menuTriggerActive { background: transparent; color: #8ff5e4; }
 
   .menuPanel,
   .menuPanelOpen {
@@ -525,32 +572,61 @@
     transform: none;
     translate: none;
     width: 100%;
-    padding: 6px;
-    border-radius: 20px;
-    background: var(--color-surface-2);
+    margin: 8px 0 10px;
+    padding: 0;
     border: 0;
+    border-radius: 0;
+    background: transparent;
     box-shadow: none;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
   .menuPanel { display: none; }
   .menuPanelOpen { display: block; opacity: 1; pointer-events: auto; }
-  .menuPanelHeader { padding: 6px 8px 8px; }
+  .menuPanelHeader { display: none; }
 
-  .menuItem {
-    align-items: center;
-    min-height: 52px;
-    padding: 8px 10px;
+  .menuList {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
-  .menuItem:hover { transform: none; }
-  .menuIcon { width: 36px; height: 36px; border-radius: 10px; }
-  .menuLabel { font-size: 1rem; }
-  .badgeEncrypted,
-  .badgePublic { font-size: 0.72rem; padding: 2px 7px; }
+  .menuItem {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    min-height: 96px;
+    padding: 14px;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.06);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+  .menuItem:hover { transform: none; background: rgba(255, 255, 255, 0.1); }
+  .menuItem[aria-current='page'] { box-shadow: inset 0 0 0 1.5px #2ec5cf; }
+  .menuIcon {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    border: 0;
+    background: rgba(255, 255, 255, 0.92);
+  }
+  .menuLabelRow { flex-wrap: wrap; }
+  .menuLabel { font-size: 1.05rem; font-weight: 700; color: #eefaf9; }
+  .badgeEncrypted { font-size: 0.72rem; padding: 2px 7px; background: rgba(46, 197, 207, 0.16); color: #8ff5e4; }
+  .badgePublic { font-size: 0.72rem; padding: 2px 7px; background: rgba(245, 181, 68, 0.16); color: #ffd58a; }
 
   .cta {
-    min-height: 50px;
-    margin-top: 6px;
-    font-size: 1rem;
+    min-height: 56px;
+    margin-top: 18px;
+    justify-content: center;
+    font-size: 1.05rem;
+    color: #03201f;
+    background: linear-gradient(180deg, #a4fbe9, #3fd2d6);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3), 0 10px 30px -8px rgba(46, 197, 207, 0.6);
   }
+
+  /* The page behind a full-screen menu must not scroll. */
+  :global(html):has(.header[data-nav-open='true']) { overflow: hidden; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .header[data-nav-open='true'] .bar { animation: none; }
 }
