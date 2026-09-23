@@ -90,6 +90,8 @@
   list-style: none;
 }
 
+.mobileFeatures { display: none; }
+
 .link {
   display: inline-flex;
   align-items: center;
@@ -629,4 +631,92 @@
 
 @media (prefers-reduced-motion: reduce) {
   .header[data-nav-open='true'] .bar { animation: none; }
+}
+
+@media (max-width: 700px) {
+  .header {
+    padding: max(10px, env(safe-area-inset-top)) 14px 0;
+    --color-text: #0d1416;
+  }
+  .bar {
+    min-height: 60px;
+    padding: 6px 7px 6px 18px;
+    border: 1px solid var(--color-border);
+    border-radius: 22px;
+    background: color-mix(in srgb, #fff 94%, transparent);
+    box-shadow: var(--shadow-lift);
+    color: #0d1416;
+  }
+  .toggle {
+    width: 46px;
+    height: 46px;
+    border-radius: 16px;
+    background: var(--color-accent-quiet);
+    color: var(--color-primary-ink);
+  }
+  .header[data-nav-open='true'] .bar {
+    color: #eefaf9;
+  }
+  .header[data-nav-open='true'] { --color-text: #eefaf9; }
+  .header[data-nav-open='true'] .toggle {
+    background: rgba(255, 255, 255, 0.1);
+    color: #eefaf9;
+  }
+  .header[data-nav-open='true'] .nav {
+    height: calc(100dvh - 110px - env(safe-area-inset-top));
+    margin-block-start: 22px;
+    align-items: stretch;
+  }
+  .navInner {
+    max-height: 100%;
+    gap: 12px;
+    padding-inline-end: 8px;
+  }
+  .hasMenu { display: none; }
+  .mobileFeatures { display: block; }
+  .mobileNavLabel {
+    display: block;
+    padding: 4px 4px 14px;
+    color: #8ff5e4;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .mobileFeatureList {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    list-style: none;
+  }
+  .mobileFeatureLink {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 74px;
+    padding: 11px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.07);
+    color: #eefaf9;
+    font-size: 1rem;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .mobileFeatureLink[aria-current='page'] {
+    border-color: #8ff5e4;
+    background: rgba(143, 245, 228, 0.12);
+  }
+  .mobileFeatureIcon {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.94);
+  }
+  .mobileFeatureArrow { color: rgba(238, 250, 249, 0.55); }
+  .link { min-height: 54px; font-size: 1.25rem; }
+  .cta { margin-top: auto; }
 }
