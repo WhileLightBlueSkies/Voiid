@@ -36,6 +36,10 @@ jobs:
   verify:
     name: Quality gate
     uses: ./.github/workflows/ci.yml
+    # Server checks only: Node types and tests, migration replay, advisories, encryption
+    # core. The iOS/Android/web-companion builds run on the push's own CI, not here.
+    with:
+      server_only: true
 
   deploy:
     needs: verify

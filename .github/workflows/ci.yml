@@ -17,7 +17,15 @@ on:
   workflow_dispatch: {}
   # Called by the deploy workflows so the gate runs against the exact commit being
   # deployed, rather than trusting that some earlier run of CI covered it.
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      # The deploy ships the SERVER only (api, websocket, workers, games). The app and
+      # web-companion builds cannot affect what reaches the box, and the iOS build alone was
+      # ~24 of the gate's ~25 minutes. So a deploy skips them — they still run in full on
+      # every push and PR through the standalone triggers above, where a break still shows red.
+      server_only:
+        type: boolean
+        default: false
 
 concurrency:
   # Per ref, and DO cancel superseded runs — unlike a deploy, an obsolete CI run has no value
@@ -100,6 +108,8 @@ jobs:
   # preparation out of the existing Node-only suite so a clean npm test still works.
   web-companion:
     name: Web companion crypto and browser
+    # Skipped when the deploy calls this as a server-only gate — see `server_only`.
+    if: ${{ !inputs.server_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -400,6 +410,8 @@ jobs:
   # must not be exposed to pull requests from forks.
   android:
     name: Android lint, tests, debug build
+    # Skipped when the deploy calls this as a server-only gate — see `server_only`.
+    if: ${{ !inputs.server_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -515,6 +527,8 @@ jobs:
   # Simulator build only, CODE_SIGNING_ALLOWED=NO, so this needs no signing identity.
   ios:
     name: iOS simulator build
+    # Skipped when the deploy calls this as a server-only gate — see `server_only`.
+    if: ${{ !inputs.server_only }}
     runs-on: macos-15
     timeout-minutes: 60
     # macos-15 still defaults to Xcode 16.4, which cannot compile the app's iOS 26 APIs.
