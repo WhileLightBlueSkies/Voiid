@@ -9,9 +9,9 @@
 //
 
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import Shell, { type Me } from '../../../components/Shell';
+import { WithRecordId } from '../../../components/RecordId';
 import { PageHeader, Async, Pill, Stat, when, name, money } from '../../../components/ui';
 import { api } from '../../../lib/api';
 
@@ -39,11 +39,11 @@ const ORDER_TONE: Record<string, 'ok' | 'danger' | 'warning' | 'accent' | undefi
 };
 
 export default function EventDetail() {
-  return <Shell>{(me) => <Body me={me} />}</Shell>;
+  // The id comes from the address bar, not useParams() — see components/RecordId.tsx.
+  return <Shell>{(me) => <WithRecordId section="events" noun="event">{(id) => <Body key={id} me={me} id={id} />}</WithRecordId>}</Shell>;
 }
 
-function Body({ me }: { me: Me }) {
-  const { id } = useParams<{ id: string }>();
+function Body({ me, id }: { me: Me; id: string }) {
   const [busy, setBusy] = useState(false);
   const [writeError, setWriteError] = useState<string | null>(null);
   const [d, setD] = useState<Payload | null>(null);

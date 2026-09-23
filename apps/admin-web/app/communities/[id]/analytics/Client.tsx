@@ -9,9 +9,9 @@
 //
 
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import Shell from '../../../../components/Shell';
+import { WithRecordId } from '../../../../components/RecordId';
 import { PageHeader, Async, Pill, when, name } from '../../../../components/ui';
 import { AreaChart, BarRow, type Point } from '../../../../components/Chart';
 import { api } from '../../../../lib/api';
@@ -36,11 +36,11 @@ type Payload = {
 };
 
 export default function Analytics() {
-  return <Shell>{() => <Body />}</Shell>;
+  // The id comes from the address bar, not useParams() — see components/RecordId.tsx.
+  return <Shell>{() => <WithRecordId section="communities" noun="community">{(id) => <Body key={id} id={id} />}</WithRecordId>}</Shell>;
 }
 
-function Body() {
-  const { id } = useParams<{ id: string }>();
+function Body({ id }: { id: string }) {
   const [days, setDays] = useState(30);
   const [d, setD] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);

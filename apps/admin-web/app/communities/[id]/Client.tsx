@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import Shell, { type Me } from '../../../components/Shell';
+import { WithRecordId } from '../../../components/RecordId';
 import { PageHeader, Async, when, name } from '../../../components/ui';
 import { api } from '../../../lib/api';
 import { Card } from '../../../components/ui/card';
@@ -54,11 +54,11 @@ type Entitlement = {
 };
 
 export default function CommunityDetail() {
-  return <Shell>{(me) => <Body me={me} />}</Shell>;
+  // The id comes from the address bar, not useParams() — see components/RecordId.tsx.
+  return <Shell>{(me) => <WithRecordId section="communities" noun="community">{(id) => <Body key={id} me={me} id={id} />}</WithRecordId>}</Shell>;
 }
 
-function Body({ me }: { me: Me }) {
-  const { id } = useParams<{ id: string }>();
+function Body({ me, id }: { me: Me; id: string }) {
   const [d, setD] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
