@@ -4,10 +4,9 @@
 /*
  * Voiid Admin — internal operations console.
  *
- * LIGHT, soft-grey ground with white cards, black controls and a single mint-green accent.
- * The hierarchy is carried by three things only: white cards lift off the grey page, black
- * marks what is ACTIVE or primary, and green marks what is LIVE or good. Anything else stays
- * neutral, so the eye lands on the number rather than on the chrome around it.
+ * LIGHT, on the iOS app's own palette: a cool-grey page, white cards, and the Voiid Tide
+ * (#13828C) as the single brand colour for what is active, primary or live. Anything else
+ * stays neutral, so the eye lands on the number rather than on the chrome around it.
  *
  * Every page reads these tokens (var(--surface), .card, .panel, button) rather than raw
  * colours, which is what lets the whole console change skin in this one file.
@@ -15,64 +14,67 @@
 :root {
   color-scheme: light;
 
-  --bg: #eff1ee;              /* the page: grey with the faintest green cast */
-  --surface: #ffffff;         /* cards */
-  --surface-2: #f5f6f4;       /* wells, table hover, inputs at rest */
-  --surface-3: #eaece8;       /* pressed / empty track */
+  /* THE iOS PALETTE (DesignSystem/Theme.swift, light mode), so the console and the app it
+   * administers read as one product. Each value names its iOS token. */
 
-  --border: #e4e7e2;
-  --border-strong: #d3d7d0;
+  --bg: #edf1f1;              /* surfaceDeep — the page, so white cards lift off it */
+  --surface: #ffffff;         /* surfaceCard */
+  --surface-2: #f6f8f8;       /* background — wells, table hover */
+  --surface-3: #e6ecec;       /* a step below fieldFill: empty tracks */
 
-  --text: #0d0f0d;
-  --text-dim: #555b55;
-  --text-mute: #8b918a;
+  --border: #d7dedf;          /* divider / fieldBorder */
+  --border-strong: #c3cccd;
 
-  /* The primary FILL is black — the active nav pill, the main button, the send action.
-   * Green is never a button background: it is the "live" signal, and spending it on
-   * chrome would dilute what it means on a meter. */
-  --accent: #0f1110;
-  --accent-hover: #2b2f2c;
-  /* Green ink for text and links; the light mint cannot be read as text on white. */
-  --accent-ink: #1a8a3c;
-  --accent-quiet: rgba(126, 224, 134, 0.22);
+  --text: #101617;            /* textPrimary */
+  --text-dim: #5d696c;        /* textSecondary */
+  --text-mute: #899396;       /* placeholder */
 
-  --lime: #86e38c;            /* the signature mint: meters, highlights, the logo */
-  --lime-strong: #57cf63;
-  --lime-soft: #dcf8de;
+  /* THE TIDE. The one brand colour, as a fill: active nav, primary buttons, icon tiles.
+   * A mid-tone, so what sits ON it is white (textOnAccent), never black. */
+  --accent: #13828c;          /* accent */
+  --accent-hover: #0e6e77;    /* accentPressed */
+  /* Tide as text on white. The fill itself is 4.6:1 there; the pressed step reads better
+   * at the 11–12px this console uses for small labels. */
+  --accent-ink: #0e6e77;
+  --accent-quiet: rgba(19, 130, 140, 0.14);
 
-  /* Status is never carried by hue alone anywhere in this panel — always a word too. */
-  --ok: #1e9e4f;
-  --danger: #d93a3a;
-  --warning: #b98407;
-  --info: #2f6ed8;
+  --tide: #13828c;            /* focus rings, the live marker, switches that are on */
+  --tide-light: #68b8bd;      /* meters, avatars, the mark — carries DARK text */
+  --tide-soft: #d9eff0;       /* accentTint — a tinted surface behind dark content */
+
+  /* Status (success / error / warning / info). Green survives only here, as the app's own
+   * "success" — never as decoration. Always paired with a word. */
+  --ok: #238a58;
+  --danger: #d83a40;
+  --warning: #a16207;
+  --info: #1d4ed8;
   --attention: #e2701b;
 
   --radius: 12px;
   --radius-lg: 22px;
   --sidebar: 256px;
 
-  /* Soft, wide shadows: on a light ground elevation reads through shadow, not edge. */
-  --shadow-1: 0 1px 2px rgba(16, 24, 16, 0.04), 0 1px 1px rgba(16, 24, 16, 0.02);
-  --shadow-2: 0 18px 40px -16px rgba(16, 24, 16, 0.22), 0 2px 6px rgba(16, 24, 16, 0.05);
+  --shadow-1: 0 1px 2px rgba(16, 22, 23, 0.05), 0 1px 1px rgba(16, 22, 23, 0.02);
+  --shadow-2: 0 18px 40px -16px rgba(16, 22, 23, 0.24), 0 2px 6px rgba(16, 22, 23, 0.05);
 
   --row-h: 48px;
 
   /* THE SAME COLOURS, as HSL triplets, for Tailwind and shadcn. Change a colour here and
    * change its hex twin above — they are one decision. */
-  --bg-hsl: 100 10% 94%;
+  --bg-hsl: 180 12% 94%;
   --surface-hsl: 0 0% 100%;
-  --surface-2-hsl: 90 10% 96%;
-  --surface-3-hsl: 90 10% 92%;
-  --border-hsl: 96 9% 90%;
-  --text-hsl: 120 7% 5%;
-  --text-mute-hsl: 111 3% 55%;
-  --accent-hsl: 150 6% 6%;
-  --ok-hsl: 143 68% 37%;
-  --danger-hsl: 0 68% 54%;
-  --warning-hsl: 42 93% 38%;
-  --info-hsl: 218 68% 52%;
+  --surface-2-hsl: 180 12% 97%;
+  --surface-3-hsl: 180 14% 91%;
+  --border-hsl: 187 11% 86%;
+  --text-hsl: 189 18% 8%;
+  --text-mute-hsl: 194 6% 56%;
+  --accent-hsl: 185 76% 31%;
+  --ok-hsl: 151 60% 34%;
+  --danger-hsl: 358 67% 54%;
+  --warning-hsl: 35 92% 33%;
+  --info-hsl: 224 76% 48%;
   --attention-hsl: 26 79% 50%;
-  --lime-hsl: 124 62% 71%;
+  --tide-light-hsl: 184 39% 57%;
 }
 
 * { box-sizing: border-box; }
@@ -153,7 +155,7 @@ input, select, textarea {
 }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: var(--lime-strong);
+  border-color: var(--tide);
   box-shadow: 0 0 0 4px var(--accent-quiet);
 }
 input::placeholder, textarea::placeholder { color: var(--text-mute); }
@@ -169,13 +171,13 @@ select {
   background-position: right 14px center;
 }
 
-:focus-visible { outline: 2px solid var(--lime-strong); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--tide); outline-offset: 2px; }
 
 /* ── Surfaces ──────────────────────────────────────────────────────────────── */
 
 .card {
   background: var(--surface);
-  border: 1px solid rgba(15, 17, 16, 0.04);
+  border: 1px solid rgba(16, 22, 23, 0.04);
   border-radius: var(--radius-lg);
   padding: 20px;
   box-shadow: var(--shadow-1);
@@ -184,7 +186,7 @@ select {
 /* A card with its own titled header. */
 .panel {
   background: var(--surface);
-  border: 1px solid rgba(15, 17, 16, 0.04);
+  border: 1px solid rgba(16, 22, 23, 0.04);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-1);
   overflow: hidden;
@@ -276,10 +278,10 @@ tbody tr:hover { background: var(--surface-2); }
   border: 1px solid var(--border);
   white-space: nowrap;
 }
-.pill.ok        { color: var(--ok);        background: rgba(30, 158, 79, 0.09);  border-color: rgba(30, 158, 79, 0.18); }
+.pill.ok        { color: var(--ok);        background: rgba(35, 138, 88, 0.09); border-color: rgba(35, 138, 88, 0.2); }
 .pill.danger    { color: var(--danger);    background: rgba(217, 58, 58, 0.08);  border-color: rgba(217, 58, 58, 0.18); }
 .pill.warning   { color: var(--warning);   background: rgba(185, 132, 7, 0.09);  border-color: rgba(185, 132, 7, 0.2); }
-.pill.accent    { color: var(--accent-ink); background: var(--lime-soft);        border-color: rgba(87, 207, 99, 0.35); }
+.pill.accent    { color: var(--accent-ink); background: var(--tide-soft);        border-color: rgba(19, 130, 140, 0.3); }
 .pill.attention { color: var(--attention); background: rgba(226, 112, 27, 0.09); border-color: rgba(226, 112, 27, 0.2); }
 
 /* ── Notices ───────────────────────────────────────────────────────────────── */

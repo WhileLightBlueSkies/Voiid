@@ -35,17 +35,17 @@ export type Point = { day: string; value: number };
 /**
  * The series palette, in the order a chart should consume it.
  *
- * Ink first and mint second, the console's two marks; the rest are chosen to stay separable
- * on white AND when desaturated — which is both the colour-blind case and what happens when someone
+ * The iOS app's domain colours, Tide first — the same hue for the same idea on both
+ * surfaces. They stay separable on white AND when desaturated — which is both the colour-blind case and what happens when someone
  * prints a board pack in greyscale.
  */
 export const SERIES = [
-  '#0f1110',
-  '#4fc95b',
-  '#9aa09a',
-  '#2f6ed8',
-  '#e2701b',
-  '#b35fc4',
+  '#13828c', // domainChat — the Tide
+  '#7e22ce', // domainStories
+  '#1d4ed8', // domainMap
+  '#a16207', // domainPayments
+  '#15803d', // domainCalls
+  '#d83a40', // error red, last
 ] as const;
 
 const AXIS = {
@@ -59,7 +59,7 @@ const AXIS = {
 function ChartTooltip() {
   return (
     <Tooltip
-      cursor={{ fill: 'rgba(15,17,16,0.04)' }}
+      cursor={{ fill: 'rgba(16,22,23,0.04)' }}
       contentStyle={{
         background: 'var(--surface)',
         border: '1px solid var(--border)',

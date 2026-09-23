@@ -21,7 +21,7 @@ export default {
         // migration safe rather than a two-theme mess.
         border: 'hsl(var(--border-hsl))',
         input: 'hsl(var(--border-hsl))',
-        ring: 'hsl(var(--lime-hsl))',
+        ring: 'hsl(var(--tide-light-hsl))',
         background: 'hsl(var(--bg-hsl))',
         foreground: 'hsl(var(--text-hsl))',
         primary: {
@@ -59,7 +59,7 @@ export default {
         warning: 'hsl(var(--warning-hsl))',
         attention: 'hsl(var(--attention-hsl))',
         info: 'hsl(var(--info-hsl))',
-        lime: 'hsl(var(--lime-hsl))',
+        tide: 'hsl(var(--tide-light-hsl))',
       },
       borderRadius: {
         // Soft and generous: cards at 20, controls at 12, chips at 8. Primary buttons go

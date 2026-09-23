@@ -12,10 +12,10 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: 'border-transparent bg-[var(--lime-soft)] text-[color:var(--accent-ink)]',
+        default: 'border-transparent bg-[var(--tide-soft)] text-[color:var(--accent-ink)]',
         secondary: 'border-border bg-secondary text-[color:var(--text-dim)]',
         destructive: 'border-transparent bg-[rgba(217,58,58,0.09)] text-[color:var(--danger)]',
-        ok: 'border-transparent bg-[rgba(30,158,79,0.1)] text-[color:var(--ok)]',
+        ok: 'border-transparent bg-[rgba(35,138,88,0.1)] text-[color:var(--ok)]',
         warning: 'border-transparent bg-[rgba(185,132,7,0.1)] text-[color:var(--warning)]',
         attention: 'border-transparent bg-[rgba(226,112,27,0.1)] text-[color:var(--attention)]',
         outline: 'border-border text-[color:var(--text-dim)]',

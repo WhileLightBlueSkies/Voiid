@@ -261,7 +261,7 @@ function Tile({ label, value, sub, icon: Icon, tone }: {
   return (
     <div className="flex items-center gap-3.5 rounded-[22px] bg-card p-4 shadow-[var(--shadow-1)] ring-1 ring-black/[0.04]">
       <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-full ${
-        tone === 'live' ? 'bg-[var(--lime)] text-[var(--text)]' : 'bg-[var(--surface-2)] text-[var(--text)]'
+        tone === 'live' ? 'bg-[var(--tide-light)] text-[var(--text)]' : 'bg-[var(--surface-2)] text-[var(--text)]'
       }`}>
         <Icon size={18} strokeWidth={2.1} />
       </span>
@@ -302,7 +302,7 @@ function GameCard({ game, readOnly, busy, onChange }: {
       {/* ── Identity ── */}
       <header className="flex items-start gap-3.5">
         <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-[16px] ${
-          pulled ? 'bg-[var(--surface-2)] text-[var(--text-mute)]' : 'bg-[var(--accent)] text-[var(--lime)]'
+          pulled ? 'bg-[var(--surface-2)] text-[var(--text-mute)]' : 'bg-[var(--accent)] text-white'
         }`}>
           <Icon size={22} strokeWidth={2} />
         </span>
@@ -344,7 +344,7 @@ function GameCard({ game, readOnly, busy, onChange }: {
                   !on && disabled ? 'opacity-50' : '',
                 ].join(' ')}
               >
-                <s.icon size={14} className={on && s.value === 'live' ? 'text-[var(--lime)]' : ''} />
+                <s.icon size={14} className={on && s.value === 'live' ? 'text-white' : ''} />
                 {s.label}
               </button>
             );
@@ -417,7 +417,7 @@ function StatusBadge({ game }: { game: Game }) {
   const [text, cls, dot] = !game.enabled
     ? ['Pulled', 'bg-[rgba(217,58,58,0.09)] text-[var(--danger)]', 'bg-[var(--danger)]']
     : game.release_state === 'live'
-      ? ['Live', 'bg-[var(--lime-soft)] text-[var(--accent-ink)]', 'bg-[var(--lime-strong)]']
+      ? ['Live', 'bg-[var(--tide-soft)] text-[var(--accent-ink)]', 'bg-[var(--tide)]']
       : game.release_state === 'announced'
         ? ['Announced', 'bg-[rgba(185,132,7,0.1)] text-[var(--warning)]', 'bg-[var(--warning)]']
         : ['Hidden', 'bg-[var(--surface-2)] text-[var(--text-dim)]', 'bg-[var(--text-mute)]'];
@@ -505,7 +505,7 @@ function Switch({ checked, disabled, label, onChange }: {
       onClick={() => onChange(!checked)}
       className={[
         'relative h-7 w-12 shrink-0 rounded-full p-0 transition-colors duration-200',
-        checked ? 'bg-[var(--lime-strong)] hover:bg-[var(--lime-strong)]' : 'bg-[var(--border-strong)] hover:bg-[var(--border-strong)]',
+        checked ? 'bg-[var(--tide)] hover:bg-[var(--tide)]' : 'bg-[var(--border-strong)] hover:bg-[var(--border-strong)]',
       ].join(' ')}
     >
       <span

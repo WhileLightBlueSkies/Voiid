@@ -12,7 +12,7 @@
 
 export type CountryShare = { code: string; name: string; users: number; share: number };
 
-const PALETTE = ['var(--accent)', 'var(--lime-strong)', '#9aa09a', '#2f6ed8', '#e2701b', '#b35fc4'];
+const PALETTE = ['#13828c', '#68b8bd', '#1d4ed8', '#7e22ce', '#a16207', '#d83a40'];
 
 /** Regional-indicator flag from an ISO alpha-2 code. */
 function flag(code: string): string {

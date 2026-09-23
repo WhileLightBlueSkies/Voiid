@@ -135,7 +135,7 @@ function Body({ me }: { me: Me }) {
                 <Meter
                   total={n(s.users)}
                   segments={[
-                    { value: n(s.users_24h), color: 'var(--lime)', label: 'Joined in the last 24h' },
+                    { value: n(s.users_24h), color: 'var(--tide-light)', label: 'Joined in the last 24h' },
                     { value: Math.max(sum('users') - n(s.users_24h), 0), color: 'var(--accent)', label: `Joined earlier in ${shortRange(range)}` },
                   ]}
                 />
@@ -166,7 +166,7 @@ function Body({ me }: { me: Me }) {
                   total={n(s.clips)}
                   segments={[
                     { value: n(s.clips_removed), color: 'var(--accent)', label: 'Removed' },
-                    { value: n(s.clips_24h), color: 'var(--lime)', label: 'Posted in the last 24h' },
+                    { value: n(s.clips_24h), color: 'var(--tide-light)', label: 'Posted in the last 24h' },
                   ]}
                 />
               </Card>
@@ -338,28 +338,28 @@ function InsightStack({ insights, loading }: { insights: Insight[]; loading: boo
       <div className="relative min-w-0 flex-1">
         {/* The two sheets behind the card are depth, not content: they say "there are more". */}
         <div aria-hidden className="absolute inset-y-6 right-0 w-1/2 rounded-[26px] opacity-45"
-             style={{ background: 'linear-gradient(135deg, #d4f7d6, #a6ebab)' }} />
+             style={{ background: 'linear-gradient(135deg, #e3f3f4, #a9d6d9)' }} />
         <div aria-hidden className="absolute inset-y-3 right-4 w-2/3 rounded-[26px] opacity-70 sm:right-6"
-             style={{ background: 'linear-gradient(135deg, #c3f3c6, #97e79d)' }} />
+             style={{ background: 'linear-gradient(135deg, #d9eff0, #8cc7cb)' }} />
 
         <div
-          className="relative mr-8 overflow-hidden rounded-[26px] p-6 pr-8 shadow-[0_24px_48px_-24px_rgba(60,160,70,0.55)] sm:mr-12"
-          style={{ background: 'linear-gradient(140deg, #c8f5cb 0%, #93e699 52%, #7fdf87 100%)' }}
+          className="relative mr-8 overflow-hidden rounded-[26px] p-6 pr-8 shadow-[0_24px_48px_-24px_rgba(19,130,140,0.5)] sm:mr-12"
+          style={{ background: 'linear-gradient(140deg, #d9eff0 0%, #9fd3d7 52%, #68b8bd 100%)' }}
         >
           {/* A soft light source top-left so the card reads as glass rather than a flat fill. */}
           <div aria-hidden className="pointer-events-none absolute inset-0"
                style={{ background: 'radial-gradient(420px circle at 12% 0%, rgba(255,255,255,0.65), transparent 55%)' }} />
           <div className="relative">
-            <div className="mb-5 flex items-center gap-2 text-sm font-semibold text-[#0f1110]">
-              <Zap size={15} fill="#0f1110" />
+            <div className="mb-5 flex items-center gap-2 text-sm font-semibold text-[#101617]">
+              <Zap size={15} fill="#101617" />
               {cur?.lead ?? 'Platform insight'}
               {cur?.href && (
-                <Link href={cur.href} aria-label="Open" className="ml-auto grid h-8 w-8 place-items-center rounded-full text-[#0f1110] transition-colors hover:bg-white/40">
+                <Link href={cur.href} aria-label="Open" className="ml-auto grid h-8 w-8 place-items-center rounded-full text-[#101617] transition-colors hover:bg-white/40">
                   <ArrowUpRight size={17} />
                 </Link>
               )}
             </div>
-            <p key={i} className="m-0 min-h-[84px] text-[21px] leading-[1.35] tracking-[-0.02em] text-[#0f1110] animate-in fade-in-0 slide-in-from-bottom-1 duration-500 [&_b]:font-semibold sm:text-[24px]">
+            <p key={i} className="m-0 min-h-[84px] text-[21px] leading-[1.35] tracking-[-0.02em] text-[#101617] animate-in fade-in-0 slide-in-from-bottom-1 duration-500 [&_b]:font-semibold sm:text-[24px]">
               {loading && !cur ? <span className="opacity-50">Reading the numbers…</span> : cur?.body ?? 'Nothing to report yet.'}
             </p>
           </div>
@@ -450,7 +450,7 @@ function Meter({ total, segments }: {
       ))}
       <div className="relative flex-1 rounded-[8px] bg-[var(--surface-2)]">
         <div className="ticks absolute inset-y-1.5 left-2 right-0" />
-        {shown.length > 0 && <div className="absolute inset-y-0 left-0 w-[2px] rounded-full bg-[var(--lime-strong)]" />}
+        {shown.length > 0 && <div className="absolute inset-y-0 left-0 w-[2px] rounded-full bg-[var(--tide)]" />}
       </div>
     </div>
   );
@@ -468,7 +468,7 @@ function Gauge({ pct: p, caption }: { pct: number; caption: string }) {
         <path d="M16 100 A84 84 0 0 1 184 100" fill="none" stroke="var(--surface-3)" strokeWidth="8" strokeLinecap="round" />
         <path d="M16 100 A84 84 0 0 1 184 100" fill="none" stroke="var(--accent)" strokeWidth="8" strokeLinecap="round"
               pathLength={100} strokeDasharray={`${f * 100} 100`} className="transition-[stroke-dasharray] duration-700" />
-        <circle cx={x} cy={y} r="7" fill="var(--lime-strong)" stroke="#fff" strokeWidth="3" />
+        <circle cx={x} cy={y} r="7" fill="var(--tide-light)" stroke="#fff" strokeWidth="3" />
       </svg>
       <div className="absolute inset-x-0 bottom-0 text-center">
         <div className="num text-[44px] font-normal leading-none !tracking-[-0.035em]">
@@ -526,7 +526,7 @@ function TrendCard({ icon, title, href, className, data, corners, big }: {
                 tickFormatter={shortDay}
               />
               <Tooltip
-                cursor={{ fill: 'rgba(15,17,16,0.04)' }}
+                cursor={{ fill: 'rgba(16,22,23,0.04)' }}
                 contentStyle={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 12, fontSize: 12, padding: '8px 10px', boxShadow: 'var(--shadow-2)' }}
                 labelStyle={{ color: 'var(--text-dim)', marginBottom: 4, fontSize: 11 }}
                 itemStyle={{ color: 'var(--text)', padding: 0 }}
@@ -534,10 +534,10 @@ function TrendCard({ icon, title, href, className, data, corners, big }: {
                 labelFormatter={(d) => shortDay(String(d))}
               />
               <Bar dataKey="value" radius={[3, 3, 3, 3]} maxBarSize={6} isAnimationActive={false}>
-                {rows.map((_, i) => <Cell key={i} fill={i >= recentFrom ? 'var(--accent)' : '#cfd3cd'} />)}
+                {rows.map((_, i) => <Cell key={i} fill={i >= recentFrom ? 'var(--accent)' : '#c9d3d4'} />)}
               </Bar>
               <Line dataKey="avg" type="monotone" stroke="var(--accent)" strokeWidth={1.4} dot={false} isAnimationActive={false} />
-              <ReferenceLine x={rows[rows.length - 1].day} stroke="var(--lime-strong)" strokeWidth={2} />
+              <ReferenceLine x={rows[rows.length - 1].day} stroke="var(--tide-light)" strokeWidth={2} />
             </ComposedChart>
           </ResponsiveContainer>
         )}
@@ -566,7 +566,7 @@ function Attention({ s, can }: { s: Stats; can: (href: string) => boolean }) {
       </div>
 
       <div className="mb-4 flex items-center gap-3 rounded-[18px] bg-[var(--surface-2)] p-3.5">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[14px] bg-[var(--lime)]">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[14px] bg-[var(--tide-light)]">
           {urgent === 0 ? <CheckCircle2 size={19} /> : <span className="num text-[16px] font-semibold">{urgent}</span>}
         </span>
         <div className="leading-snug">
@@ -591,7 +591,7 @@ function Attention({ s, can }: { s: Stats; can: (href: string) => boolean }) {
               </span>
               <span className="num tabular flex items-center gap-1.5 text-[16px] font-medium"
                     style={{ color: it.tone === 'danger' ? 'var(--danger)' : it.tone === 'attention' ? 'var(--attention)' : 'var(--text)' }}>
-                {it.tone === 'ok' && <span className="h-2 w-2 rounded-full bg-[var(--lime-strong)]" aria-hidden />}
+                {it.tone === 'ok' && <span className="h-2 w-2 rounded-full bg-[var(--tide)]" aria-hidden />}
                 {it.value.toLocaleString()}
               </span>
             </>
@@ -621,7 +621,7 @@ function Module({ icon: Icon, title, href, rows, note }: {
   return (
     <div className="flex flex-col rounded-[22px] bg-card p-5 shadow-[var(--shadow-1)] ring-1 ring-black/[0.04]">
       <div className="mb-3 flex items-center gap-3">
-        <span className="grid h-9 w-9 place-items-center rounded-full bg-[var(--accent)] text-[var(--lime)]">
+        <span className="grid h-9 w-9 place-items-center rounded-full bg-[var(--accent)] text-white">
           <Icon size={16} strokeWidth={2.1} />
         </span>
         <div className="text-[15px] font-semibold">{title}</div>

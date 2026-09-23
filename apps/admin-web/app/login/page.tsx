@@ -72,8 +72,8 @@ export default function Login() {
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            'radial-gradient(760px circle at 18% 8%, rgba(134,227,140,0.35), transparent 62%),' +
-            'radial-gradient(680px circle at 84% 92%, rgba(134,227,140,0.18), transparent 60%)',
+            'radial-gradient(760px circle at 18% 8%, rgba(19,130,140,0.18), transparent 62%),' +
+            'radial-gradient(680px circle at 84% 92%, rgba(104,184,189,0.18), transparent 60%)',
         }}
       />
       {/* A faint grid. It gives the empty field a sense of scale — the difference between
@@ -84,8 +84,8 @@ export default function Login() {
         className="pointer-events-none absolute inset-0 opacity-[0.35]"
         style={{
           backgroundImage:
-            'linear-gradient(rgba(15,17,16,0.05) 1px, transparent 1px),' +
-            'linear-gradient(90deg, rgba(15,17,16,0.05) 1px, transparent 1px)',
+            'linear-gradient(rgba(16,22,23,0.05) 1px, transparent 1px),' +
+            'linear-gradient(90deg, rgba(16,22,23,0.05) 1px, transparent 1px)',
           backgroundSize: '52px 52px',
           maskImage: 'radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 78%)',
           WebkitMaskImage: 'radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 78%)',

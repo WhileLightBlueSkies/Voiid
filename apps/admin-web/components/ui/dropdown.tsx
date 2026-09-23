@@ -172,9 +172,9 @@ export function Dropdown<V extends string | number>({
         className={cn(
           'group inline-flex items-center gap-2 text-left text-sm font-medium text-[color:var(--text)]',
           'bg-card shadow-[var(--shadow-1)] ring-1 ring-[var(--border)] transition-[box-shadow,background] duration-150',
-          'hover:bg-card hover:ring-[var(--border-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--lime-strong)]',
+          'hover:bg-card hover:ring-[var(--border-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--tide)]',
           'disabled:cursor-not-allowed disabled:opacity-50',
-          open && 'ring-2 ring-[var(--lime-strong)] hover:ring-[var(--lime-strong)]',
+          open && 'ring-2 ring-[var(--tide)] hover:ring-[var(--tide)]',
           variant === 'pill' ? 'h-10 rounded-full pl-4 pr-3' : 'h-11 w-full rounded-[12px] pl-3.5 pr-3',
           className,
         )}
@@ -232,7 +232,7 @@ export function Dropdown<V extends string | number>({
                 </span>
                 <span className={cn(
                   'grid h-5 w-5 shrink-0 place-items-center rounded-full transition-opacity',
-                  isSel ? 'bg-[var(--lime)] text-[color:var(--text)] opacity-100' : 'opacity-0',
+                  isSel ? 'bg-[var(--tide-light)] text-[color:var(--text)] opacity-100' : 'opacity-0',
                 )}>
                   <Check size={12} strokeWidth={3} />
                 </span>
