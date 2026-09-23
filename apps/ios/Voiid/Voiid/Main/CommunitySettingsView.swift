@@ -90,13 +90,13 @@ private enum CommunitySettingsLimits {
     static let rules = 20
 }
 
-/// The same six the create wizard offers (`CommunityCreateFlow`), so a host does not see one
+/// The same list the create flow offers (`CommunityCategory`), so a host does not see one
 /// set of categories at creation and a different set here.
 ///
 /// The column is FREE TEXT and the server accepts any string, so this list is a convenience
 /// and not a validation: a community whose category came from an older build, or from another
 /// client, keeps it and is shown it. `custom` below is what carries that case.
-private let communityCategories = ["Design", "Tech", "Gaming", "Music", "Sport", "Local"]
+private let communityCategories = CommunityCategory.all
 
 /// The three real values of `communities.join_policy` — and ONE unavailable fourth.
 ///

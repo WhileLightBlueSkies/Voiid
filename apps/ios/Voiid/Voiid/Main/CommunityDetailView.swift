@@ -28,6 +28,8 @@ struct CommunityDetailView: View {
     @State private var confirmLeave = false
     @State private var showInbox = false
     @State private var adminCard: CommunityService.CommunityCard?
+    /// Settings opened straight from the setup card's "rules" task, skipping the admin panel.
+    @State private var settingsCard: CommunityService.CommunityCard?
     @State private var tab: CommunityTab = .home
     @State private var openConversation: VConversation?
     @State private var notificationMode: String?
@@ -127,6 +129,9 @@ struct CommunityDetailView: View {
         // only proof we have one is the card that produced the menu the host just tapped.
         .sheet(item: $adminCard) { c in
             CommunityAdminPanel(communityId: c.id, communityName: c.name, isOwner: isOwner(c), communityCard: c, onSettingsSaved: { card = $0; Task { await load() } })
+        }
+        .sheet(item: $settingsCard) { c in
+            CommunitySettingsView(card: c, onSaved: { card = $0 })
         }
         .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
         // A FAILED ACTION HAD NOWHERE TO GO. `error` is rendered only in the no-card branch,
@@ -459,7 +464,19 @@ struct CommunityDetailView: View {
                     // tab the bar above no longer offers a way back from.
                     switch (CommunityTab.visible(isManager: isOwner(c) || c.isManager).contains(tab) ? tab : .home) {
                     case .home:
-                        CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager, canPost: c.can_post == true)
+                        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                            // What the two-step create flow left for later. Owner only: these
+                            // are decisions about what the community IS.
+                            if isOwner(c) {
+                                CommunitySetupCard(
+                                    card: c,
+                                    onUpdated: { card = $0 },
+                                    onAddSpaces: { withAnimation(.easeOut(duration: 0.2)) { tab = .spaces } },
+                                    onSetRules: { settingsCard = c },
+                                    onInvite: { showInvite = true })
+                            }
+                            CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager, canPost: c.can_post == true)
+                        }
                     case .spaces:
                         CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c) || c.isManager,
                                            openConversation: $openConversation)

@@ -121,7 +121,7 @@ fun CommunitiesHomeView(
         return
     }
 
-    // WIRED. This used to fire a tap haptic and nothing else. Now it opens the five-step
+    // WIRED. This used to fire a tap haptic and nothing else. Now it opens the two-step
     // create flow; the SERVER's card comes back (id + handle are the server's to confirm).
     if (showCreate) {
         CommunityCreateFlow(
@@ -577,6 +577,19 @@ internal fun CommunityDetailView(
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                 when (tab) {
                     CommunityTab.HOME -> {
+                        // What the two-step create flow left for later. Owner only: these are
+                        // decisions about what the community IS.
+                        if (amHost) {
+                            CommunitySetupCard(
+                                card = state,
+                                service = service,
+                                onUpdated = { state = it },
+                                onAddSpaces = { tab = CommunityTab.SPACES },
+                                onSetRules = { showSettings = true },
+                                onInvite = { showInvite = true },
+                            )
+                            Spacer(Modifier.height(VoiidSpacing.md))
+                        }
                         if (!amHost) {
                             MessageHostButton(
                                 communityId = state.id,

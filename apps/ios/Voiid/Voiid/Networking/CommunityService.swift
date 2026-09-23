@@ -423,11 +423,21 @@ final class CommunityService {
     /// rules or extra Spaces is a real community, not an incomplete one.
     struct RuleInput: Encodable { let title: String; let detail: String? }
 
+    /// Whether a community may claim `handle`. ADVISORY — the create route re-checks under the
+    /// real constraint, because someone can take the name between this answer and the insert.
+    /// `reason` is "format" or "taken" when unavailable.
+    struct HandleAvailability: Decodable { let available: Bool; let reason: String? }
+    func handleAvailable(_ handle: String) async throws -> HandleAvailability {
+        let esc = handle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? handle
+        return try await api.request("GET", "communities/handle-available?handle=\(esc)")
+    }
+
     func create(handle: String, name: String, description: String?,
                 joinPolicy: String = "open",
                 discoverable: Bool = true,
                 category: String? = nil,
                 membersCanInvite: Bool = true,
+                avatarKey: String? = nil,
                 extraChannels: [String] = [],
                 rules: [RuleInput] = []) async throws -> CommunityCard {
         struct Body: Encodable {
@@ -435,6 +445,7 @@ final class CommunityService {
             let handle: String
             let name: String
             let description: String?
+            let avatar_r2_key: String?
             let join_policy: String
             let discoverable: Bool
             let category: String?
@@ -447,7 +458,7 @@ final class CommunityService {
         let env: Envelope = try await api.request(
             "POST", "communities",
             body: Body(id: UUID().uuidString.lowercased(), handle: handle,
-                       name: name, description: description,
+                       name: name, description: description, avatar_r2_key: avatarKey,
                        join_policy: joinPolicy, discoverable: discoverable,
                        category: category, members_can_invite: membersCanInvite,
                        extra_channels: extraChannels, rules: rules))

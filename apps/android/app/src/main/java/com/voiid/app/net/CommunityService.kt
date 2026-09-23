@@ -213,6 +213,19 @@ class CommunityService(context: Context) {
 
     data class RuleInput(val title: String, val detail: String?)
 
+    /** `reason` is "format" or "taken" when unavailable. */
+    @Serializable
+    data class HandleAvailability(val available: Boolean = false, val reason: String? = null)
+
+    /**
+     * Whether a community may claim [handle]. ADVISORY — mirrors iOS `handleAvailable`. The
+     * create route re-checks under the real constraint, because someone can take the name
+     * between this answer and the insert.
+     */
+    suspend fun handleAvailable(handle: String): HandleAvailability =
+        api.requestAs("GET", "communities/handle-available?handle=" +
+            java.net.URLEncoder.encode(handle, "UTF-8"))
+
     /**
      * Create one. `handle` shares a single namespace with usernames and creator handles
      * (029/030), so the server may refuse it as taken — surfaced rather than pre-checked,

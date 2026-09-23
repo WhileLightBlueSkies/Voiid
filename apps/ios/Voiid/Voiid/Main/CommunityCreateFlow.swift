@@ -2,687 +2,726 @@
 //  CommunityCreateFlow.swift
 //  Voiid
 //
-//  Creating a community — five steps. Ported from the reference's CreateCommunityFlow.
+//  Creating a community — two steps. Ported from the reference's CreateCommunityFlow.
 //
-//  ── ONE SHEET, NOT FIVE PUSHES ──────────────────────────────────────────────────
-//  The whole wizard lives in a single sheet whose CONTENT swaps per step, rather than a
-//  NavigationStack pushing five screens. The progress bar and footer stay put instead of
-//  re-animating on every step, and Cancel means one thing throughout — abandon the draft —
-//  rather than sometimes meaning "go back one".
+//  ── WHAT IT IS, THEN WHO GETS IN ────────────────────────────────────────────────
+//  Step 1 is identity: an icon, a name and a category (only the name is required).
+//  Step 2 is who can join. That one is asked up front, unlike the rest, because it is the
+//  decision that is costly to get wrong later: a community created open has already let
+//  people in by the time its host finds the setting.
 //
-//  ── EVERY STEP BUT THE FIRST IS SKIPPABLE ───────────────────────────────────────
-//  A community needs a name. It does not need Spaces, rules or invites before it exists, and
-//  demanding them is how a create flow gets abandoned at step 3. Each of those ships a working
-//  default, so skipping produces a real community rather than an empty one.
+//  Everything else the old five-step wizard asked for — description, extra Spaces, rules,
+//  invites — is left out. The server gives every community Announcements and General, and the
+//  rest comes back as the "Finish setting up" card on the community's Home
+//  (`CommunitySetupCard`), where it is easier to decide with the community in front of you.
 //
-//  ── UI ONLY, FOR NOW ────────────────────────────────────────────────────────────
-//  `onCreate` hands the finished draft back and nothing here calls the API. Wiring it needs
-//  three server-side fields that do not exist yet — category, rules and members-can-invite —
-//  and shipping a wizard that silently discards two of its five steps would be worse than
-//  shipping none. See the note on `CommunityDraftModel`.
+//  ── ONE SHEET, CONTENT SWAPS ────────────────────────────────────────────────────
+//  Not a pushed screen per step: the footer stays put, and the leading button means Cancel on
+//  step 1 and Back on step 2 — never "throw away what I typed" by surprise.
+//
+//  ── THE HANDLE IS SHOWN, NOT HIDDEN ─────────────────────────────────────────────
+//  It is derived from the name, so a host is not asked to invent a second name — but it is the
+//  community's address, and it shares one namespace with every username and social handle on
+//  Voiid. So it is visible, editable in place, and checked against the server as it changes
+//  (`GET /communities/handle-available`), rather than failing with a 409 on the last tap.
 //
 
+import PhotosUI
 import SwiftUI
-import Combine
 
-// MARK: - Draft
+// MARK: - Handle
 
-/// The community being built. `ObservableObject` rather than `@Observable`: every one of the
-/// 48 stores in this app is the former, and a second observation system for one sheet is a
-/// tax on whoever reads it next.
-final class CommunityDraftModel: ObservableObject {
-    enum Step: Int, CaseIterable, Identifiable {
-        case identity, privacy, spaces, rules, invite
-        var id: Int { rawValue }
+/// A community's handle — the `voiid.app/c/<handle>` address.
+///
+/// The FORMAT rules are the server's, copied exactly: `HANDLE_RE` in backend/api/src/routes/
+/// communities.ts is `^[a-z][a-z0-9_]{2,19}$`. Whether a valid handle is FREE only the server
+/// can say; see `CommunityService.handleAvailable`.
+enum CommunityHandle {
+    static let maxLength = 20
 
-        var title: String {
-            switch self {
-            case .identity: "Identity"
-            case .privacy:  "Privacy"
-            case .spaces:   "Spaces"
-            case .rules:    "Rules"
-            case .invite:   "Invite"
-            }
-        }
-
-        var heading: String {
-            switch self {
-            case .identity: "What are you building?"
-            case .privacy:  "Who can join?"
-            case .spaces:   "What will people talk about?"
-            case .rules:    "How should people behave?"
-            case .invite:   "Who's coming with you?"
-            }
-        }
-
-        var subheading: String {
-            switch self {
-            case .identity: "A name and a line about it. Everything else can change later."
-            case .privacy:  "You can change this at any time."
-            case .spaces:   "Spaces are channels. Start with a couple and add more later."
-            case .rules:    "Suggested, not imposed. Edit or remove any of them."
-            case .invite:   "Invite people now, or share a link once it exists."
-            }
-        }
-
-        /// A community needs a name. It does not need the rest before it exists.
-        var isSkippable: Bool { self != .identity }
+    /// A valid handle made from the name, or "" when the name has nothing usable in it (a name
+    /// written entirely in Devanagari, say) — the host then picks one themselves.
+    static func suggest(from name: String) -> String {
+        // "Café Noir" → "cafenoir": fold accents rather than drop the letters.
+        let folded = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+        var handle = String(folded.unicodeScalars
+            .filter { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
+            .map(Character.init))
+        // Must start with a letter: "2026 Batch" → "batch2026", not a rejected "2026batch".
+        let leadingDigits = handle.prefix { $0.isNumber }
+        handle = String(handle.dropFirst(leadingDigits.count)) + leadingDigits
+        guard handle.first?.isLetter == true else { return "" }
+        // Too short to be valid: "AI" → "aicommunity".
+        if handle.count < 3 { handle += "community" }
+        return String(handle.prefix(maxLength))
     }
 
-    @Published var name = ""
-    @Published var about = ""
-    @Published var category = "Design"
-    @Published var joinPolicy = "approval"
-    @Published var discoverable = true
-    @Published var membersCanInvite = true
-    @Published var spaceIDs: Set<String> = ["general", "announcements"]
-    @Published var ruleIDs: Set<String> = ["respect", "promo", "onTopic"]
-
-    /// Derived, not typed. A handle the user has to invent is a second naming decision for no
-    /// gain, and it can be edited once the community exists.
-    var handle: String {
-        let base = name.lowercased()
-            .replacingOccurrences(of: "[^a-z0-9 ]", with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespaces)
-            .replacingOccurrences(of: " ", with: "")
-        return String(base.prefix(20))
+    /// `base` with a number on the end that still fits: `designdaily` → `designdaily2`.
+    static func numbered(_ base: String, _ n: Int) -> String {
+        let suffix = String(n)
+        return String(base.prefix(maxLength - suffix.count)) + suffix
     }
 
-    var canContinue: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty }
+    /// What typing into the handle field keeps: lowercase letters, digits and underscores.
+    static func sanitise(_ typed: String) -> String {
+        String(typed.lowercased().unicodeScalars
+            .filter { ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "_" }
+            .map(Character.init)
+            .prefix(maxLength))
+    }
+
+    /// Why a handle's FORMAT is wrong, in words a host can act on, or nil if it is fine.
+    static func formatProblem(_ handle: String) -> String? {
+        if handle.isEmpty { return "Pick an address for your community." }
+        if handle.first?.isLetter != true { return "Start the address with a letter." }
+        if handle.count < 3 { return "Use at least 3 characters." }
+        return nil
+    }
 }
 
-struct SpaceTemplate: Identifiable, Hashable {
-    let id: String
-    let name: String
-    let detail: String
-    let icon: String
+// MARK: - Category
 
-    static let all: [SpaceTemplate] = [
-        .init(id: "announcements", name: "Announcements", detail: "Host posts, everyone reads.", icon: "megaphone.fill"),
-        .init(id: "general",       name: "General",       detail: "The room everything starts in.", icon: "bubble.left.and.bubble.right.fill"),
-        .init(id: "showcase",      name: "Showcase",      detail: "Finished work, shown off.", icon: "sparkles"),
-        .init(id: "help",          name: "Help",          detail: "Questions, and people who answer them.", icon: "lifepreserver.fill"),
-        .init(id: "offtopic",      name: "Off topic",     detail: "Everything that isn't the point.", icon: "cup.and.saucer.fill"),
-        .init(id: "jobs",          name: "Jobs",          detail: "Who's hiring, who's looking.", icon: "briefcase.fill"),
-    ]
-}
+/// The categories offered at creation and in settings — one list, so a host never sees one set
+/// when creating and a different set when editing.
+///
+/// The column is FREE TEXT and the server accepts any string, so this is a convenience and not
+/// a validation: a community whose category came from an older build keeps it.
+enum CommunityCategory {
+    static let all = ["Education", "Design", "Tech", "Gaming", "Music", "Sport", "Local", "Business"]
 
-struct RuleTemplate: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let detail: String
-
-    static let all: [RuleTemplate] = [
-        .init(id: "respect", title: "Be respectful", detail: "Critique the work, never the person."),
-        .init(id: "promo",   title: "No unsolicited promotion", detail: "Ads and cold pitches belong elsewhere."),
-        .init(id: "onTopic", title: "Keep it on topic", detail: "Post in the Space that fits what you're saying."),
-        .init(id: "credit",  title: "Credit your sources", detail: "If it isn't yours, say whose it is and link it."),
-        .init(id: "spam",    title: "No spam or repeat posting", detail: "Say it once, in one place."),
-        .init(id: "privacy", title: "Respect privacy", detail: "Don't share anyone's details without their say-so."),
-    ]
-}
-
-private struct PolicyOption: Identifiable {
-    let id: String
-    let title: String
-    let detail: String
-    let icon: String
-
-    static let all: [PolicyOption] = [
-        .init(id: "open", title: "Anyone can join", detail: "Open to everyone who finds it.", icon: "globe"),
-        .init(id: "approval", title: "Approval needed", detail: "People ask, you decide.", icon: "checkmark.shield.fill"),
-        .init(id: "invite_only", title: "Invite only", detail: "Only people with a link get in.", icon: "lock.fill"),
-    ]
+    static func icon(_ category: String) -> String {
+        switch category {
+        case "Education": "graduationcap.fill"
+        case "Design":    "paintpalette.fill"
+        case "Tech":      "chevron.left.forwardslash.chevron.right"
+        case "Gaming":    "gamecontroller.fill"
+        case "Music":     "music.note"
+        case "Sport":     "figure.run"
+        case "Local":     "mappin.and.ellipse"
+        case "Business":  "briefcase.fill"
+        default:          "circle.grid.2x2.fill"
+        }
+    }
 }
 
 // MARK: - Flow
 
 struct CommunityCreateFlow: View {
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var draft = CommunityDraftModel()
-    @State private var step: CommunityDraftModel.Step = .identity
 
-    /// Hands back the community the SERVER created, not the draft — the caller needs the id
-    /// and handle, and only the server knows them.
+    /// Hands back the community the SERVER created — the caller needs the id and handle, and
+    /// only the server knows them.
     var onCreate: (CommunityService.CommunityCard) -> Void = { _ in }
+
+    private enum Step: Int { case identity = 1, joining = 2 }
+
+    /// Where the handle check stands. `.unknown` after a network failure: the create route is
+    /// the real check, so a failed ADVISORY call must not block the host.
+    private enum Availability: Equatable { case checking, available, taken, unknown }
+
+    @State private var step: Step = .identity
+    @State private var name = ""
+    @State private var category = ""
+    /// "open" by default — the least friction for a community that is just starting, and the
+    /// first option on the step, so Create without a choice does what the screen shows.
+    @State private var joinPolicy = "open"
+
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var icon: UIImage?
+
+    /// Nil while the handle follows the name. Set the moment the host edits it; from then on
+    /// retyping the name must not undo a choice they made.
+    @State private var customHandle: String?
+    /// The derived handle after stepping past taken ones (`designdaily` → `designdaily2`).
+    /// The host SEES the number before creating and can change it.
+    @State private var resolvedSuggestion = ""
+    @State private var availability: Availability = .checking
 
     @State private var creating = false
     @State private var createError: String?
 
-    private var stepIndex: Int { step.rawValue }
-    private var isLast: Bool { step == .invite }
+    @FocusState private var nameFocused: Bool
+    @FocusState private var handleFocused: Bool
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var suggestion: String { CommunityHandle.suggest(from: name) }
+    private var handle: String { customHandle ?? (resolvedSuggestion.isEmpty ? suggestion : resolvedSuggestion) }
+
+    private var handleProblem: String? {
+        if let problem = CommunityHandle.formatProblem(handle) { return problem }
+        return availability == .taken ? "That address is taken. Try another." : nil
+    }
+
+    /// Only speak up once there is something to be wrong about — not over an empty form.
+    private var showsHandleProblem: Bool {
+        handleProblem != nil && (customHandle != nil || !trimmedName.isEmpty)
+    }
+
+    private var canContinue: Bool {
+        !trimmedName.isEmpty && handleProblem == nil && availability != .checking
+    }
+
+    /// Everything that should re-run the availability check when it changes.
+    private struct HandleQuery: Equatable { let suggestion: String; let custom: String? }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 VoiidColor.background.ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    progressBar
-
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
-                            heading
-
-                            switch step {
-                            case .identity: identityStep
-                            case .privacy:  privacyStep
-                            case .spaces:   spacesStep
-                            case .rules:    rulesStep
-                            case .invite:   inviteStep
-                            }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
+                        switch step {
+                        case .identity:
+                            identityHeading
+                            identityCard
+                            categoryPicker
+                        case .joining:
+                            joiningHeading
+                            joinOptions
+                            laterNote
                         }
-                        .padding(.horizontal, VoiidSpacing.md)
-                        .padding(.top, VoiidSpacing.md)
-                        .padding(.bottom, VoiidSpacing.xl)
                     }
-                    .scrollIndicators(.hidden)
-
-                    if let createError {
-                        Text(createError)
-                            .font(VoiidFont.footnote)
-                            .foregroundColor(VoiidColor.error)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, VoiidSpacing.md)
-                            .padding(.bottom, VoiidSpacing.xs)
-                    }
-
-                    footer
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.top, VoiidSpacing.md)
+                    .padding(.bottom, VoiidSpacing.xl)
                 }
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
             }
-            .navigationTitle("New Community")
+            .navigationTitle("New community")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { Haptics.tap(); dismiss() }
+                    if step == .identity {
+                        Button("Cancel") { Haptics.tap(); dismiss() }
+                            .tint(VoiidColor.textSecondary)
+                    } else {
+                        Button {
+                            Haptics.tap()
+                            createError = nil
+                            withAnimation(.easeOut(duration: 0.2)) { step = .identity }
+                        } label: {
+                            Label("Back", systemImage: "chevron.left").labelStyle(.titleAndIcon)
+                        }
                         .tint(VoiidColor.textSecondary)
+                        .disabled(creating)
+                    }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Text("\(step.rawValue) of 2")
+                        .font(VoiidFont.rounded(12.5, .semibold))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .monospacedDigit()
+                        .accessibilityLabel("Step \(step.rawValue) of 2")
+                }
+            }
+            .safeAreaInset(edge: .bottom) { footer }
+            // Swiping the sheet away on step 2 would lose step 1 without a word.
+            .interactiveDismissDisabled(step == .joining || creating)
+            .onAppear { nameFocused = true }
+            .onChange(of: pickedPhoto) { _, item in
+                Task {
+                    guard let item, let data = try? await item.loadTransferable(type: Data.self),
+                          let image = UIImage(data: data) else { return }
+                    icon = image
+                }
+            }
+            .task(id: HandleQuery(suggestion: suggestion, custom: customHandle)) {
+                await checkHandle()
             }
         }
     }
 
-    // MARK: Progress
+    // MARK: Step 1 — identity
 
-    /// Segments, not a continuous bar. Five discrete decisions read better as five marks — and
-    /// a completed segment stays lit, so going back does not look like losing progress.
-    private var progressBar: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 5) {
-                ForEach(CommunityDraftModel.Step.allCases) { s in
-                    Capsule()
-                        .fill(s.rawValue <= stepIndex ? VoiidColor.accent : VoiidColor.divider)
-                        .frame(height: 3)
-                }
-            }
-
-            HStack {
-                Text("Step \(stepIndex + 1) of \(CommunityDraftModel.Step.allCases.count)")
-                    .font(VoiidFont.rounded(11.5))
-                    .foregroundColor(VoiidColor.textSecondary)
-                Spacer(minLength: 0)
-                Text(step.title)
-                    .font(VoiidFont.rounded(11.5, .semibold))
-                    .foregroundColor(VoiidColor.accentInk)
-            }
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, VoiidSpacing.sm)
-        .animation(.easeOut(duration: 0.22), value: stepIndex)
-    }
-
-    private var heading: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(step.heading)
-                .font(VoiidFont.rounded(23, .bold))
+    private var identityHeading: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Bring your people together")
+                .font(VoiidFont.rounded(24, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(step.subheading)
+            Text("Start with a name. You can add a description, Spaces and rules once it's live.")
                 .font(VoiidFont.rounded(14))
                 .foregroundColor(VoiidColor.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    // MARK: Step 1 — identity
+    private var identityCard: some View {
+        VStack(spacing: VoiidSpacing.md) {
+            iconPicker
+            nameField
+        }
+        .padding(VoiidSpacing.md)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+            .stroke(VoiidColor.divider, lineWidth: 1))
+    }
 
-    private var identityStep: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+    private var iconPicker: some View {
+        PhotosPicker(selection: $pickedPhoto, matching: .images) {
             VStack(spacing: VoiidSpacing.sm) {
-                Circle()
-                    .fill(VoiidColor.accentTint)
-                    .frame(width: 78, height: 78)
-                    .overlay(Circle().stroke(VoiidColor.accent.opacity(0.35), lineWidth: 1))
-                    .overlay(
-                        Text(initials.isEmpty ? "?" : initials)
-                            .font(VoiidFont.rounded(26, .bold))
-                            .foregroundColor(VoiidColor.accentInk)
-                    )
+                iconView(size: 84)
                     .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 11))
+                        Image(systemName: icon == nil ? "camera.fill" : "pencil")
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(VoiidColor.textOnAccent)
                             .frame(width: 26, height: 26)
                             .background(Circle().fill(VoiidColor.accent))
                             .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2.5))
                     }
-
-                Text("Add an icon")
-                    .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                Text(icon == nil ? "Add an icon" : "Change icon")
+                    .font(VoiidFont.rounded(12.5, .semibold))
+                    .foregroundColor(VoiidColor.accentInk)
             }
             .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(PressableButtonStyle())
+        .disabled(creating)
+        .accessibilityLabel(icon == nil ? "Add a community icon" : "Change community icon")
+    }
 
-            field("Community name") {
-                TextField("Voiid Designers", text: $draft.name)
-                    .font(VoiidFont.rounded(15))
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .tint(VoiidColor.accent)
-            }
-
-            // Derived, not typed — a handle the user has to invent is a second naming decision
-            // for no gain, and it can be edited after the community exists.
-            if !draft.handle.isEmpty {
-                HStack(spacing: 5) {
-                    Image(systemName: "at").font(.system(size: 10))
-                    Text(draft.handle).font(VoiidFont.rounded(12.5, .medium))
-                    Spacer(minLength: 0)
-                    Text("Auto")
-                        .font(VoiidFont.rounded(10, .bold))
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(VoiidColor.surfaceRaised))
-                }
-                .foregroundColor(VoiidColor.accentInk)
-                .padding(.horizontal, VoiidSpacing.md).padding(.vertical, 9)
-                .background(VoiidColor.accentTint)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-
-            field("What's it for?") {
-                TextField("A community for designers to share, learn and grow together.",
-                          text: $draft.about, axis: .vertical)
-                    .font(VoiidFont.rounded(15))
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .tint(VoiidColor.accent)
-                    .lineLimit(3...6)
-            }
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Category")
-                    .font(VoiidFont.rounded(12.5, .semibold))
-                    .foregroundColor(VoiidColor.textSecondary)
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(["Design", "Tech", "Gaming", "Music", "Sport", "Local"], id: \.self) { option in
-                            let selected = draft.category == option
-                            Button {
-                                Haptics.selection()
-                                draft.category = option
-                            } label: {
-                                Text(option)
-                                    .font(VoiidFont.rounded(13.5, .semibold))
-                                    .foregroundColor(selected ? VoiidColor.textOnAccent : VoiidColor.textPrimary)
-                                    .padding(.horizontal, 15)
-                                    .frame(height: 36)
-                                    .background(Capsule().fill(selected ? VoiidColor.accent : VoiidColor.surfaceCard))
-                                    .overlay(Capsule().stroke(selected ? .clear : VoiidColor.divider, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 1)
-                }
+    @ViewBuilder
+    private func iconView(size: CGFloat) -> some View {
+        Group {
+            if let icon {
+                Image(uiImage: icon).resizable().scaledToFill()
+            } else if trimmedName.isEmpty {
+                Image(systemName: "person.3.fill")
+                    .font(.system(size: size * 0.3))
+                    .foregroundColor(VoiidColor.accentInk)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(VoiidColor.accentTint)
+            } else {
+                Text(initials)
+                    .font(VoiidFont.rounded(size * 0.33, .bold))
+                    .foregroundColor(VoiidColor.accentInk)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(VoiidColor.accentTint)
             }
         }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(VoiidColor.accent.opacity(0.35), lineWidth: 1))
     }
 
     private var initials: String {
-        let parts = draft.name.split(separator: " ").prefix(2)
-        return parts.compactMap { $0.first }.map(String.init).joined().uppercased()
+        let parts = trimmedName.split(separator: " ").prefix(2)
+        return parts.compactMap { $0.first(where: \.isLetter) }.map(String.init).joined().uppercased()
     }
 
-    // MARK: Step 2 — privacy
-
-    private var privacyStep: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-            VStack(spacing: 8) {
-                ForEach(PolicyOption.all) { policy in
-                    let selected = draft.joinPolicy == policy.id
-                    Button {
-                        Haptics.selection()
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            draft.joinPolicy = policy.id
-                            // Invite-only where every member can invite is not invite-only.
-                            // The dependent setting follows rather than silently contradicting.
-                            if policy.id == "invite_only" { draft.membersCanInvite = false }
-                        }
-                    } label: {
-                        HStack(spacing: VoiidSpacing.md) {
-                            Image(systemName: policy.icon)
-                                .font(.system(size: 16))
-                                .foregroundColor(selected ? VoiidColor.accentInk : VoiidColor.textSecondary)
-                                .frame(width: 26)
-
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(policy.title)
-                                    .font(VoiidFont.rounded(15, .semibold))
-                                    .foregroundColor(VoiidColor.textPrimary)
-                                Text(policy.detail)
-                                    .font(VoiidFont.rounded(12.5))
-                                    .foregroundColor(VoiidColor.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer(minLength: 0)
-
-                            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 21))
-                                .foregroundStyle(selected ? VoiidColor.textOnAccent : VoiidColor.textSecondary,
-                                                 selected ? VoiidColor.accent : .clear)
-                        }
-                        .padding(VoiidSpacing.md - 2)
-                        .background(selected ? VoiidColor.accentTint : VoiidColor.surfaceCard)
-                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-                            .stroke(selected ? VoiidColor.accent : VoiidColor.divider,
-                                    lineWidth: selected ? 1.5 : 1))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(selected ? [.isSelected] : [])
-                }
-            }
-
-            toggleRow("Show in search",
-                      detail: "People can find it without a link.",
-                      isOn: $draft.discoverable)
-
-            toggleRow("Members can invite",
-                      detail: draft.joinPolicy == "invite_only"
-                              ? "Turned off — invite-only means only you invite."
-                              : "Anyone inside can bring someone in.",
-                      isOn: $draft.membersCanInvite)
-                .disabled(draft.joinPolicy == "invite_only")
-                .opacity(draft.joinPolicy == "invite_only" ? 0.5 : 1)
-        }
-    }
-
-    // MARK: Step 3 — spaces
-
-    private var spacesStep: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(SpaceTemplate.all) { space in
-                let on = draft.spaceIDs.contains(space.id)
-                Button {
-                    Haptics.selection()
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        if on { draft.spaceIDs.remove(space.id) } else { draft.spaceIDs.insert(space.id) }
-                    }
-                } label: {
-                    selectableRow(icon: space.icon, title: space.name,
-                                  detail: space.detail, selected: on)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    // MARK: Step 4 — rules
-
-    private var rulesStep: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(RuleTemplate.all) { rule in
-                let on = draft.ruleIDs.contains(rule.id)
-                Button {
-                    Haptics.selection()
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        if on { draft.ruleIDs.remove(rule.id) } else { draft.ruleIDs.insert(rule.id) }
-                    }
-                } label: {
-                    selectableRow(icon: "checkmark.seal", title: rule.title,
-                                  detail: rule.detail, selected: on)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    // MARK: Step 5 — invite
-
-    private var inviteStep: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-                HStack(spacing: VoiidSpacing.sm) {
-                    Image(systemName: "link")
-                        .font(.system(size: 15))
-                        .foregroundColor(VoiidColor.textOnAccent)
-                        .frame(width: 34, height: 34)
-                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(VoiidColor.accent))
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Share a link")
-                            .font(VoiidFont.rounded(15, .semibold))
-                            .foregroundColor(VoiidColor.textPrimary)
-                        Text("Once it exists you get a link anyone can open.")
-                            .font(VoiidFont.rounded(12.5))
-                            .foregroundColor(VoiidColor.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .padding(VoiidSpacing.md - 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(VoiidColor.surfaceCard)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-                    .stroke(VoiidColor.divider, lineWidth: 1))
-            }
-
-            summary
-        }
-    }
-
-    /// The last step is also the review. Five decisions restated in one place beats a separate
-    /// confirmation screen that repeats them.
-    private var summary: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Review")
+    private var nameField: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Community name")
                 .font(VoiidFont.rounded(12.5, .semibold))
                 .foregroundColor(VoiidColor.textSecondary)
 
-            summaryRow("Name", draft.name.isEmpty ? "—" : draft.name)
-            summaryRow("Handle", draft.handle.isEmpty ? "—" : "@\(draft.handle)")
-            summaryRow("Category", draft.category)
-            summaryRow("Joining", PolicyOption.all.first { $0.id == draft.joinPolicy }?.title ?? "—")
-            summaryRow("In search", draft.discoverable ? "Yes" : "No")
-            summaryRow("Spaces", "\(draft.spaceIDs.count)")
-            summaryRow("Rules", "\(draft.ruleIDs.count)")
+            TextField("Northstar Photography Club", text: $name)
+                .font(VoiidFont.rounded(16))
+                .foregroundColor(VoiidColor.textPrimary)
+                .tint(VoiidColor.accent)
+                .focused($nameFocused)
+                .submitLabel(.done)
+                .padding(.horizontal, VoiidSpacing.md)
+                .frame(height: 50)
+                .background(VoiidColor.fieldFill)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                    .stroke(nameFocused ? VoiidColor.accent.opacity(0.6) : VoiidColor.fieldBorder,
+                            lineWidth: 1))
+
+            handleRow
         }
-        .padding(VoiidSpacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-            .stroke(VoiidColor.divider, lineWidth: 1))
     }
 
-    private func summaryRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(VoiidFont.rounded(13))
-                .foregroundColor(VoiidColor.textSecondary)
-            Spacer(minLength: VoiidSpacing.md)
-            Text(value)
-                .font(VoiidFont.rounded(13, .semibold))
-                .foregroundColor(VoiidColor.textPrimary)
-                .lineLimit(1)
+    // MARK: Handle
+
+    @ViewBuilder
+    private var handleRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if customHandle == nil {
+                HStack(spacing: 4) {
+                    Image(systemName: "link")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("voiid.app/c/\(handle.isEmpty ? "…" : handle)")
+                        .font(VoiidFont.rounded(12))
+                        .lineLimit(1)
+                    if availability == .checking, !handle.isEmpty {
+                        ProgressView().controlSize(.mini)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Edit") {
+                        Haptics.tap()
+                        customHandle = handle
+                        handleFocused = true
+                    }
+                    .font(VoiidFont.rounded(12, .semibold))
+                    .foregroundColor(VoiidColor.accentInk)
+                    .accessibilityLabel("Edit community address")
+                }
+                .foregroundColor(canContinue ? VoiidColor.accentInk : VoiidColor.textSecondary)
+                .padding(.leading, 4)
+            } else {
+                HStack(spacing: 0) {
+                    Text("voiid.app/c/")
+                        .font(VoiidFont.rounded(14))
+                        .foregroundColor(VoiidColor.textSecondary)
+                    TextField("yourcommunity", text: Binding(
+                        get: { customHandle ?? "" },
+                        set: { customHandle = CommunityHandle.sanitise($0) }))
+                        .font(VoiidFont.rounded(14, .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .tint(VoiidColor.accent)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.asciiCapable)
+                        .focused($handleFocused)
+                        .submitLabel(.done)
+                    if availability == .checking, CommunityHandle.formatProblem(handle) == nil {
+                        ProgressView().controlSize(.mini).padding(.trailing, 6)
+                    } else if availability == .available, handleProblem == nil {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(VoiidColor.success)
+                            .padding(.trailing, 6)
+                            .accessibilityLabel("Address available")
+                    }
+                    Text("\(handle.count)/\(CommunityHandle.maxLength)")
+                        .font(VoiidFont.rounded(11))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .monospacedDigit()
+                }
+                .padding(.horizontal, VoiidSpacing.sm + 2)
+                .frame(height: 42)
+                .background(VoiidColor.fieldFill)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                    .stroke(showsHandleProblem ? VoiidColor.error.opacity(0.7)
+                            : handleFocused ? VoiidColor.accent.opacity(0.6) : VoiidColor.fieldBorder,
+                            lineWidth: 1))
+            }
+
+            if showsHandleProblem, let handleProblem {
+                // Icon AND words, never colour alone.
+                Label(handleProblem, systemImage: "exclamationmark.circle.fill")
+                    .font(VoiidFont.rounded(12))
+                    .foregroundColor(VoiidColor.error)
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.15), value: showsHandleProblem)
+        .animation(.easeOut(duration: 0.15), value: customHandle == nil)
+    }
+
+    /// Debounced, and cancelled by the next keystroke — `.task(id:)` cancels the previous run.
+    ///
+    /// While the handle follows the name, a taken suggestion is stepped past (`name2`, `name3`
+    /// …) so the host lands on a free one without having to think about it. A handle they typed
+    /// is only checked, never rewritten.
+    private func checkHandle() async {
+        availability = .checking
+        // Drop the last resolved suggestion at once, so the row shows the new name's handle
+        // rather than the previous name's while the check runs.
+        if customHandle == nil { resolvedSuggestion = "" }
+        do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+
+        if let custom = customHandle {
+            guard CommunityHandle.formatProblem(custom) == nil else { availability = .unknown; return }
+            availability = await isFree(custom)
+            return
+        }
+
+        let base = suggestion
+        guard CommunityHandle.formatProblem(base) == nil else {
+            resolvedSuggestion = ""
+            availability = .unknown
+            return
+        }
+        for candidate in [base] + (2...5).map({ CommunityHandle.numbered(base, $0) }) {
+            let result = await isFree(candidate)
+            if Task.isCancelled { return }
+            if result != .taken {
+                resolvedSuggestion = candidate
+                availability = result
+                return
+            }
+        }
+        // Five in a row taken: stop guessing and say so. The host can edit it.
+        resolvedSuggestion = base
+        availability = .taken
+    }
+
+    private func isFree(_ candidate: String) async -> Availability {
+        do {
+            return try await CommunityService.shared.handleAvailable(candidate).available ? .available : .taken
+        } catch {
+            return .unknown
+        }
+    }
+
+    // MARK: Category
+
+    private var categoryPicker: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Text("Category")
+                    .font(VoiidFont.rounded(12.5, .semibold))
+                    .foregroundColor(VoiidColor.textSecondary)
+                Text("Optional")
+                    .font(VoiidFont.rounded(11))
+                    .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
+            }
+
+            ChipFlowLayout(spacing: 8) {
+                ForEach(CommunityCategory.all, id: \.self) { option in
+                    let selected = category == option
+                    Button {
+                        Haptics.selection()
+                        // Tapping the chosen one again clears it — optional means undoable.
+                        category = selected ? "" : option
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: CommunityCategory.icon(option))
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(option)
+                                .font(VoiidFont.rounded(13.5, .semibold))
+                        }
+                        .foregroundColor(selected ? VoiidColor.textOnAccent : VoiidColor.textPrimary)
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(Capsule().fill(selected ? VoiidColor.accent : VoiidColor.surfaceCard))
+                        .overlay(Capsule().stroke(selected ? .clear : VoiidColor.divider, lineWidth: 1))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
+                }
+            }
+        }
+    }
+
+    // MARK: Step 2 — who can join
+
+    private var joiningHeading: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: VoiidSpacing.sm) {
+                iconView(size: 36)
+                Text(trimmedName)
+                    .font(VoiidFont.rounded(14, .semibold))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .lineLimit(1)
+            }
+            .padding(.bottom, 4)
+
+            Text("Who can join?")
+                .font(VoiidFont.rounded(24, .bold))
+                .foregroundColor(VoiidColor.textPrimary)
+            Text("You can change this any time in settings.")
+                .font(VoiidFont.rounded(14))
+                .foregroundColor(VoiidColor.textSecondary)
+        }
+    }
+
+    /// The same options, in the same words, as the settings screen — `JoinPolicyOption` is the
+    /// single source of that copy. The unavailable paid tier is left out here: creation is not
+    /// the place to show a door that does not open yet.
+    private var joinOptions: some View {
+        VStack(spacing: 10) {
+            ForEach(JoinPolicyOption.all.filter(\.available)) { policy in
+                let selected = joinPolicy == policy.id
+                Button {
+                    Haptics.selection()
+                    joinPolicy = policy.id
+                } label: {
+                    HStack(spacing: VoiidSpacing.sm + 4) {
+                        Image(systemName: policy.icon)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(selected ? VoiidColor.textOnAccent : VoiidColor.accentInk)
+                            .frame(width: 42, height: 42)
+                            .background(Circle().fill(selected ? VoiidColor.accent : VoiidColor.accentTint))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(policy.label)
+                                .font(VoiidFont.rounded(15.5, .semibold))
+                                .foregroundColor(VoiidColor.textPrimary)
+                            Text(policy.explanation)
+                                .font(VoiidFont.rounded(13))
+                                .foregroundColor(VoiidColor.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 21))
+                            .foregroundColor(selected ? VoiidColor.accentInk : VoiidColor.divider)
+                    }
+                    .padding(VoiidSpacing.md)
+                    .background(VoiidColor.surfaceCard)
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                        .stroke(selected ? VoiidColor.accent : VoiidColor.divider,
+                                lineWidth: selected ? 1.5 : 1))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableButtonStyle())
+                .disabled(creating)
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
+            }
+        }
+    }
+
+    private var laterNote: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(VoiidColor.accentInk)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("You can finish the details later")
+                    .font(VoiidFont.rounded(13.5, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                Text("Your community is ready after this. Add a description, Spaces, rules and invites from its Home whenever you like.")
+                    .font(VoiidFont.rounded(12.5))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(VoiidSpacing.sm + 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(VoiidColor.accentTint.opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
     }
 
     // MARK: Footer
 
     private var footer: some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            if stepIndex > 0 {
-                Button {
-                    Haptics.tap()
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        step = CommunityDraftModel.Step(rawValue: stepIndex - 1) ?? .identity
-                    }
-                } label: {
-                    Text("Back")
-                        .font(VoiidFont.rounded(15, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .frame(width: 88, height: 46)
-                        .background(Capsule().fill(VoiidColor.surfaceCard))
-                        .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
+        VStack(spacing: VoiidSpacing.xs) {
+            if let createError {
+                Text(createError)
+                    .font(VoiidFont.footnote)
+                    .foregroundColor(VoiidColor.error)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
             }
-
             Button {
-                Haptics.tap()
-                if isLast {
-                    Task { await create() }
+                if step == .identity {
+                    Haptics.tap()
+                    nameFocused = false
+                    handleFocused = false
+                    withAnimation(.easeOut(duration: 0.2)) { step = .joining }
                 } else {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        step = CommunityDraftModel.Step(rawValue: stepIndex + 1) ?? .invite
-                    }
+                    Task { await create() }
                 }
             } label: {
                 Group {
                     if creating {
                         ProgressView().tint(VoiidColor.textOnAccent)
                     } else {
-                        Text(isLast ? "Create community" : "Continue")
-                            .font(VoiidFont.rounded(15, .semibold))
+                        Text(step == .identity ? "Continue" : "Create community")
+                            .font(VoiidFont.rounded(16.5, .semibold))
                     }
                 }
                 .foregroundColor(VoiidColor.textOnAccent)
                 .frame(maxWidth: .infinity)
-                .frame(height: 46)
-                .background(Capsule().fill(draft.canContinue ? VoiidColor.accent
-                                                             : VoiidColor.placeholder))
+                .frame(height: 52)
+                .background(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                    .fill(VoiidColor.accent))
             }
-            .buttonStyle(.plain)
-            .disabled(!draft.canContinue || creating)
+            .buttonStyle(PressableButtonStyle())
+            .disabled(!canContinue || creating)
+            .opacity(canContinue ? 1 : 0.45)
         }
         .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, VoiidSpacing.sm)
-        .padding(.bottom, VoiidSpacing.sm)
-        .background(.ultraThinMaterial)
-        .overlay(Divider().background(VoiidColor.divider), alignment: .top)
+        .padding(.vertical, VoiidSpacing.sm)
+        .background(.bar)
     }
 
     // MARK: Create
 
-    /// The handle is DERIVED from the name, so it can collide with one that already exists —
-    /// two communities called "Design Daily" produce the same handle. The server answers 409,
-    /// and the honest fix is to say so and let the user change the name, rather than silently
-    /// appending a number to a handle they never chose.
+    /// Icon first, then the community — and stop at the first failure, so a community is never
+    /// created without the icon the host saw on screen.
     private func create() async {
+        guard canContinue, !creating else { return }
         creating = true
+        createError = nil
         defer { creating = false }
         do {
+            var avatarKey: String?
+            if let icon {
+                do {
+                    avatarKey = try await MediaService.shared.uploadCommunityImage(icon)
+                } catch {
+                    Haptics.error()
+                    createError = "Couldn\u{2019}t upload the icon. Try again, or go back and remove it."
+                    return
+                }
+            }
             let card = try await CommunityService.shared.create(
-                handle: draft.handle,
-                name: draft.name.trimmingCharacters(in: .whitespaces),
-                description: draft.about.isEmpty ? nil : draft.about,
-                joinPolicy: draft.joinPolicy,
-                discoverable: draft.discoverable,
-                category: draft.category,
-                membersCanInvite: draft.membersCanInvite,
-                // Announcements and General are created by the server for every community, so
-                // sending them again would produce duplicates.
-                extraChannels: SpaceTemplate.all
-                    .filter { draft.spaceIDs.contains($0.id) }
-                    .filter { $0.id != "general" && $0.id != "announcements" }
-                    .map(\.name),
-                rules: RuleTemplate.all
-                    .filter { draft.ruleIDs.contains($0.id) }
-                    .map { CommunityService.RuleInput(title: $0.title, detail: $0.detail) })
+                handle: handle,
+                name: trimmedName,
+                description: nil,
+                joinPolicy: joinPolicy,
+                discoverable: true,
+                category: category.isEmpty ? nil : category,
+                avatarKey: avatarKey)
             Haptics.success()
             onCreate(card)
             dismiss()
         } catch {
             Haptics.error()
-            createError = (error as? APIError)?.errorDescription
-                ?? "Couldn’t create that community."
-        }
-    }
-
-    // MARK: Pieces
-
-    private func field<C: View>(_ label: String, @ViewBuilder content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(label)
-                .font(VoiidFont.rounded(12.5, .semibold))
-                .foregroundColor(VoiidColor.textSecondary)
-            content()
-                .padding(.horizontal, VoiidSpacing.md)
-                .padding(.vertical, 12)
-                .background(VoiidColor.fieldFill)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-                    .stroke(VoiidColor.fieldBorder, lineWidth: 1))
-        }
-    }
-
-    private func toggleRow(_ title: String, detail: String, isOn: Binding<Bool>) -> some View {
-        HStack(spacing: VoiidSpacing.md) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                Text(detail)
-                    .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            // A 409 here is the race the advisory check cannot close: someone took the handle
+            // between the check and the insert. Send the host back to the field that fixes it.
+            if case APIError.http(409, _, _) = error {
+                availability = .taken
+                customHandle = handle
+                createError = nil
+                withAnimation(.easeOut(duration: 0.2)) { step = .identity }
+                handleFocused = true
+                return
             }
-            Spacer(minLength: 0)
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .tint(VoiidColor.accent)
+            createError = (error as? APIError)?.errorDescription ?? "Couldn\u{2019}t create that community."
         }
-        .padding(VoiidSpacing.md - 2)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-            .stroke(VoiidColor.divider, lineWidth: 1))
+    }
+}
+
+// MARK: - Chip layout
+
+/// Wraps chips onto as many lines as they need. A sideways-scrolling chip row hides half the
+/// options behind a gesture nobody knows to make; eight short words fit on two lines.
+struct ChipFlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            maxX = max(maxX, x - spacing)
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxX, height: y + rowHeight)
     }
 
-    private func selectableRow(icon: String, title: String,
-                               detail: String, selected: Bool) -> some View {
-        HStack(spacing: VoiidSpacing.md) {
-            Image(systemName: icon)
-                .font(.system(size: 15))
-                .foregroundColor(selected ? VoiidColor.accentInk : VoiidColor.textSecondary)
-                .frame(width: 26)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                Text(detail)
-                    .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
             }
-
-            Spacer(minLength: 0)
-
-            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 21))
-                .foregroundStyle(selected ? VoiidColor.textOnAccent : VoiidColor.textSecondary,
-                                 selected ? VoiidColor.accent : .clear)
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
         }
-        .padding(VoiidSpacing.md - 2)
-        .background(selected ? VoiidColor.accentTint : VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-            .stroke(selected ? VoiidColor.accent : VoiidColor.divider,
-                    lineWidth: selected ? 1.5 : 1))
     }
 }
 
