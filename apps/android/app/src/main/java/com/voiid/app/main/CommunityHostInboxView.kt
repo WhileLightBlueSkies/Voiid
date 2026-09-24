@@ -66,7 +66,7 @@ fun CommunityHostInboxView(
     LaunchedEffect(Unit) {
         runCatching { CommunityHostThreads(context).all() }
             .onSuccess { threads = it }
-            .onFailure { error = "Couldn't load your community chats." }
+            .onFailure { error = "Couldn’t load your inbox." }
     }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
@@ -77,7 +77,7 @@ fun CommunityHostInboxView(
         }
         Text("Community messages", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary,
              modifier = Modifier.padding(horizontal = 16.dp))
-        Text("Community messages that authorized moderators can answer.",
+        Text("Messages to communities you moderate appear here. Any authorized moderator can reply.",
              style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
              modifier = Modifier.padding(horizontal = 16.dp).padding(top = 2.dp))
         Spacer(Modifier.height(10.dp))
@@ -85,7 +85,7 @@ fun CommunityHostInboxView(
         when {
             error != null -> InboxNote(error!!)
             threads == null -> InboxNote("Loading…")
-            threads!!.isEmpty() -> InboxNote("No community messages yet.")
+            threads!!.isEmpty() -> InboxNote("No messages yet")
             else -> LazyColumn(contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp)) {
                 items(threads!!, key = { it.conversation_id }) { t ->
                     Row(

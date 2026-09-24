@@ -115,7 +115,7 @@ fun StoriesHomeView(
                     subtitle = when {
                         mine == null -> "Add to your moment"
                         mine.newest?.uploadState == StoryUploadState.UPLOADING -> "Posting…"
-                        mine.newest?.uploadState == StoryUploadState.FAILED -> "Failed — tap to retry"
+                        mine.newest?.uploadState == StoryUploadState.FAILED -> "Didn't send — tap to retry"
                         else -> "${mine.stories.size} ${if (mine.stories.size == 1) "story" else "stories"}"
                     },
                     ringColor = if (mine?.hasUnviewed == true) VoiidColor.primary else VoiidColor.divider,
@@ -169,7 +169,7 @@ fun StoriesHomeView(
             Modifier.align(Alignment.BottomEnd).padding(24.dp).size(60.dp).clip(CircleShape)
                 .background(VoiidColor.primary).softClickable(scale = 0.9f, onClick = onCompose),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Default.Add, "New moment", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(28.dp)) }
+        ) { Icon(Icons.Default.Add, "Post a moment", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(28.dp)) }
 
         if (stories.posting) {
             Box(Modifier.align(Alignment.TopEnd).padding(20.dp)) {
@@ -227,7 +227,7 @@ private fun EmptyState() {
     ) {
         Text("No moments yet", style = VoiidFont.rounded(18, FontWeight.SemiBold), color = VoiidColor.textPrimary)
         Text(
-            "Share a photo or video that disappears in 24 hours.",
+            "Share a photo or video with your contacts. It disappears after 24 hours.",
             style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
         )
     }

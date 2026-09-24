@@ -90,7 +90,7 @@ fun ScanQrCodeScreen(onBack: () -> Unit, onOpen: (String, Boolean) -> Unit) {
             .clip(RoundedCornerShape(24.dp)).background(Color.Black).testTag("scan.viewfinder"), contentAlignment = Alignment.Center) {
             if (permission && cameraError == null) {
                 CameraFeed(scanning = active && captured == null, onCamera = { camera = it },
-                    onError = { cameraError = "Camera unavailable. Close the scanner and try again." },
+                    onError = { cameraError = "The camera was interrupted. Try opening it again." },
                     onDecoded = { raw ->
                         if (captured == null && active) {
                             if (CommunityLink.parse(Uri.parse(raw)) != null || ProfileLink.handleFrom(raw) != null) {
@@ -112,7 +112,7 @@ fun ScanQrCodeScreen(onBack: () -> Unit, onOpen: (String, Boolean) -> Unit) {
                     }
                 }
             } else Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(cameraError ?: "Camera access is off", color = Color.White, style = VoiidFont.rounded(18), textAlign = TextAlign.Center)
+                Text(cameraError ?: "Turn it on in Settings to scan a code.", color = Color.White, style = VoiidFont.rounded(18), textAlign = TextAlign.Center)
                 if (!permission) QrAction("Open Settings") {
                     context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
                 }

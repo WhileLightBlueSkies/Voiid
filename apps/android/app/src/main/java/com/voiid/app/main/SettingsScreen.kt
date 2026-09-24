@@ -128,6 +128,11 @@ fun SettingsScreen(
     // the recovery phrase), false = definitively none, null = couldn't tell.
     var confirmLogout by remember { mutableStateOf(false) }
     var backupExists by remember { mutableStateOf<Boolean?>(null) }
+    // Probed on open and again whenever the logout dialog opens: it was never set before, so the
+    // warning always fell back to the "unknown" wording. A failure leaves it null (honest unknown).
+    LaunchedEffect(confirmLogout) {
+        backupExists = runCatching { com.voiid.app.net.BackupService(context).fetchBackupMeta() != null }.getOrNull()
+    }
 
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
@@ -245,7 +250,7 @@ fun SettingsScreen(
                 // UIApplication.openNotificationSettingsURLString deep link. It is not a
                 // route on either platform, which is why it carries no chevron.
                 SettingsRow(Icons.Default.Notifications, "Notifications",
-                    "Sounds, badges, previews") {
+                    "Message, group & call tones") {
                     val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                         .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
                     runCatching { context.startActivity(intent) }
@@ -257,7 +262,11 @@ fun SettingsScreen(
                 // absent features get no pixels. Voiid One is not a product, and Razorpay is
                 // wired on the server with no client surface that consumes it.
                 SettingsRow(Icons.Default.VerifiedUser, "Backup & Recovery",
-                    "Encrypted backup & restore") { onBackupRecovery() }
+                    when (backupExists) {
+                        true -> "On · encrypted backup & restore"
+                        false -> "Not set up"
+                        null -> "Encrypted backup & restore"
+                    }) { onBackupRecovery() }
                 SettingsDivider()
                 SettingsRow(Icons.Default.PhoneAndroid, "Devices",
                     "Linked devices, sessions") { onLinkedDevices() }
@@ -289,7 +298,6 @@ fun SettingsScreen(
                 // THREE states (backed up / never backed up / unknown). Mirrors iOS.
                 SettingsRow(Icons.AutoMirrored.Filled.Logout, "Log out", tint = VoiidColor.error) {
                     haptics.rigid()
-                    backupExists = null          // re-probe each time the dialog opens
                     confirmLogout = true
                 }
             }

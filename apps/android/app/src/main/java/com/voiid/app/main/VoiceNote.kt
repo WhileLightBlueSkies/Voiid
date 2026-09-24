@@ -144,7 +144,7 @@ fun VoiceRecordButton(
     ) { granted ->
         // The permission dialog ends the original touch. Require a fresh hold.
         if (granted) tooShort = true
-        else error("Allow microphone access in Settings to record a voice message.")
+        else error("Allow microphone access for Voiid in Settings to record voice messages.")
     }
     fun finish(cancelled: Boolean) {
         if (!recording) return
@@ -211,7 +211,7 @@ fun VoiceRecordButton(
                                 RecordingLevel.reset(); dragged(0f); tick(0f)
                                 recording = true; changed(true); haptics.rigid()
                             } catch (_: Exception) {
-                                error("Microphone unavailable. End any active call and try again.")
+                                error("The microphone is unavailable. Please try again.")
                             }
                         }
                     }
@@ -236,7 +236,7 @@ fun VoiceRecordButton(
     ) {
         Box(Modifier.size(40.dp).clip(CircleShape).background(VoiidColor.primary.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center) {
-            Icon(Icons.Default.Mic, "Hold to record voice", tint = VoiidColor.primary,
+            Icon(Icons.Default.Mic, "Record voice message", tint = VoiidColor.primary,
                 modifier = Modifier.size(21.dp).alpha(if (recording) 0f else 1f))
         }
         AnimatedVisibility(tooShort, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.offset(y = (-44).dp)) {
