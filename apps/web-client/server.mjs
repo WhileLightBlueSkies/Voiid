@@ -38,7 +38,7 @@ const server = http.createServer(async (req, res) => {
     req.on('aborted', () => upstream.destroy()); req.pipe(upstream); return;
   }
   if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405).end(); return; }
-  const files = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/engine.js': ['engine.js', 'text/javascript'], '/app.css': ['app.css', 'text/css'], '/mark.svg': ['mark.svg', 'image/svg+xml'], '/crypto/voiid_e2e_bg.wasm': ['crypto/voiid_e2e_bg.wasm', 'application/wasm'] };
+  const files = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/engine.js': ['engine.js', 'text/javascript'], '/app.css': ['app.css', 'text/css'], '/mark.svg': ['mark.svg', 'image/svg+xml'], '/crypto/voiid_e2e_bg.wasm': ['crypto/voiid_e2e_bg.wasm', 'application/wasm'], '/fonts/plus-jakarta-sans-latin.woff2': ['fonts/plus-jakarta-sans-latin.woff2', 'font/woff2'], '/fonts/geist-latin.woff2': ['fonts/geist-latin.woff2', 'font/woff2'], '/fonts/geist-mono-latin.woff2': ['fonts/geist-mono-latin.woff2', 'font/woff2'] };
   const file = files[path]; if (!file) { res.writeHead(404).end(); return; }
   try { const bytes = await readFile(resolve(root, file[0])); res.writeHead(200, { 'Content-Type': file[1], 'Content-Length': bytes.length }); res.end(req.method === 'HEAD' ? undefined : bytes); }
   catch { res.writeHead(503).end('Build the web client first.'); }

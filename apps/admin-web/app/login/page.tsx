@@ -22,6 +22,7 @@ import { api, setToken, ApiError } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Input, Label } from '../../components/ui/input';
 import { BrandMark } from '../../components/Brand';
+import { Wordmark } from '../../components/Wordmark';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -99,7 +100,7 @@ export default function Login() {
         <div className="mb-7 flex items-center gap-2.5">
           <BrandMark size={32} />
           <div className="leading-tight">
-            <div className="text-[15px] font-semibold tracking-[-0.01em]">Voiid</div>
+            <Wordmark size={19} />
             <div className="text-tiny text-[var(--text-mute)]">Operations console</div>
           </div>
         </div>

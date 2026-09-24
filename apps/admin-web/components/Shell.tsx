@@ -19,6 +19,7 @@ import {
   Bell, Menu, Search, ShieldCheck, X, PanelLeftClose, PanelLeftOpen, BadgeCheck,
 } from 'lucide-react';
 import { BrandMark } from './Brand';
+import { Wordmark } from './Wordmark';
 import type { LucideIcon } from 'lucide-react';
 
 export type Me = { email: string; name: string; role: 'admin' | 'moderator' };
@@ -162,7 +163,7 @@ export default function Shell({ children }: { children: (me: Me) => ReactNodeLik
         <div className={`mb-5 flex items-center gap-3 px-1.5 pt-1 ${collapsed ? 'lg:flex-col lg:gap-3 lg:px-0' : ''}`}>
           <BrandMark size={30} />
           <div className={`whitespace-nowrap leading-tight ${collapsed ? 'lg:hidden' : ''}`}>
-            <div className="text-[17px] font-bold tracking-[-0.02em]">Voiid</div>
+            <Wordmark size={20} />
             <div className="text-micro font-medium text-[var(--text-mute)]">Operations console</div>
           </div>
           <button

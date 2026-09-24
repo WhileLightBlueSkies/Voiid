@@ -114,6 +114,14 @@ h2 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   background: var(--border);
 }
 
+
+/* The Voiid wordmark — identical to iOS BrandWordmark and voiid.app's Wordmark. */
+.wordmark { display: inline-flex; align-items: baseline; color: var(--text); font-family: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-weight: 700; letter-spacing: -0.02em; line-height: 1; user-select: none; }
+.wordmark-glyphs { display: inline-flex; align-items: baseline; transform: translateX(-0.022em); }
+.wordmark-stem { position: relative; display: inline-block; }
+.wordmark-dot { position: absolute; top: 0.10em; left: 50%; transform: translateX(-50%); width: 0.165em; height: 0.165em; border-radius: 50%; background: var(--tide); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
 /* ── Controls ──────────────────────────────────────────────────────────────── */
 
 button {
