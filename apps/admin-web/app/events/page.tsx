@@ -52,6 +52,7 @@ function Body() {
       <PageHeader
         title="Events"
         subtitle="Ticket pricing, orders and what each event collected"
+        right={<Link href="/refunds" className="button ghost">Refunds</Link>}
       />
 
       {/* A SEGMENTED CONTROL for status, a separate toggle for the paid filter.

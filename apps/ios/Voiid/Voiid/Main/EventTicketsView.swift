@@ -128,6 +128,11 @@ struct EventTicketsView: View {
     /// States WHY a ticket cannot be used, rather than leaving a dimmed row unexplained.
     private func subtitle(_ t: EventService.Ticket) -> String {
         if t.isCheckedIn { return "Already checked in" }
+        // A refund says what happened to the money, which matters more than why the ticket died.
+        if t.order_status == "refunded" { return "Refunded" + (t.refund_reason.map { " · \($0)" } ?? "") }
+        if t.refund_requested_at != nil, t.order_status == "paid" {
+            return "Refund on the way" + (t.refund_reason.map { " · \($0)" } ?? "")
+        }
         if t.event_status == "cancelled" { return "Event cancelled" }
         if t.state != "valid" { return "No longer valid" }
         if t.order_status != "paid" { return "Payment not complete" }

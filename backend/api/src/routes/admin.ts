@@ -1,4 +1,5 @@
 import { usageAnalytics } from '../usageAnalytics';
+import { RefundError, refundEvent, refundReasonText, requestRefund, syncRefund } from '../payments/refunds';
 import { communityFinance, setCommunityCommission, validCommission } from '../communityFinance';
 // Admin routes — the moderation plane (see 028_admin_users.sql).
 //
@@ -2265,6 +2266,7 @@ router.get('/events/:id', requireAdmin, asyncHandler(async (req, res) => {
       `select o.id, o.buyer_id, o.quantity, o.unit_price_minor, o.amount_minor,
               o.currency, o.provider, o.provider_ref, o.status, o.failure_reason,
               o.created_at, o.settled_at,
+              o.refund_requested_at, o.refund_reason, o.refund_error, o.refund_attempts,
               u.full_name as buyer_name, u.username as buyer_username
          from event_orders o
          left join users u on u.id = o.buyer_id
@@ -2293,6 +2295,99 @@ router.get('/events/:id', requireAdmin, asyncHandler(async (req, res) => {
   ]);
 
   res.json({ event, orders, totals, tickets: tickets[0] });
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// Refunds (payments/refunds.ts).
+//
+//   GET  /admin/refunds?state=pending|failed|refunded|all   the queue, newest first, with totals
+//   POST /admin/events/:id/orders/:orderId/refund { reason } request, or retry a failed one
+//   POST /admin/events/:id/refund-all            { reason } every paid order of the event
+//   POST /admin/orders/:orderId/refund-sync                 ask the provider where it stands
+//
+// Requesting is an 'admin' action and audited. The provider confirms; nothing here marks an
+// order refunded on its own say-so.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/refunds', requireAdmin, asyncHandler(async (req, res) => {
+  const state = String(req.query.state ?? 'all');
+  const where = {
+    pending: `o.status = 'paid' and o.refund_requested_at is not null and o.refund_error is null`,
+    failed: `o.status = 'paid' and o.refund_error is not null`,
+    refunded: `o.status = 'refunded'`,
+    all: `(o.status = 'refunded' or o.refund_requested_at is not null or o.refund_error is not null)`,
+  }[state] ?? null;
+  if (!where) return res.status(400).json({ error: 'state must be pending, failed, refunded or all' });
+
+  const [rows, totals] = await Promise.all([
+    query<any>(
+      `select o.id, o.event_id, e.title as event_title, c.name as community_name,
+              o.buyer_id, u.full_name as buyer_name, u.username as buyer_username,
+              o.amount_minor, o.currency, o.provider, o.status,
+              o.refund_requested_at, o.refund_reason, o.refund_error, o.refund_attempts,
+              o.settled_at, o.created_at,
+              case when o.status = 'refunded' then 'refunded'
+                   when o.refund_error is not null then 'failed'
+                   else 'pending' end as refund_state
+         from event_orders o
+         join community_events e on e.id = o.event_id
+         left join communities c on c.id = e.community_id
+         left join users u on u.id = o.buyer_id
+        where ${where}
+        order by coalesce(o.refund_requested_at, o.settled_at, o.created_at) desc
+        limit 300`),
+    query<any>(
+      `select count(*) filter (where o.status = 'paid' and o.refund_requested_at is not null and o.refund_error is null)::int as pending,
+              count(*) filter (where o.status = 'paid' and o.refund_error is not null)::int as failed,
+              count(*) filter (where o.status = 'refunded')::int as refunded,
+              coalesce(sum(o.amount_minor) filter (where o.status = 'refunded'), 0)::bigint as refunded_minor,
+              coalesce(sum(o.amount_minor) filter (where o.status = 'paid' and o.refund_requested_at is not null
+                                                     and o.refund_error is null), 0)::bigint as pending_minor
+         from event_orders o`),
+  ]);
+  res.json({ refunds: rows, totals: totals[0] });
+}));
+
+router.post('/events/:id/orders/:orderId/refund', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const { id, orderId } = req.params;
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !/^[0-9a-f-]{36}$/i.test(orderId)) {
+    return res.status(400).json({ error: 'ids must be uuids' });
+  }
+  const belongs = await query(`select 1 from event_orders where id = $1 and event_id = $2`, [orderId, id]);
+  if (!belongs[0]) return res.status(404).json({ error: 'no such order' });
+  try {
+    const result = await requestRefund(orderId, null, req.body?.reason);
+    await audit(a.adminId, 'order.refund', 'event_order', orderId,
+                { event_id: id, reason: refundReasonText(req.body?.reason), result: result.status, error: result.error });
+    if (result.status === 'failed') return res.status(502).json({ error: result.error, status: 'failed' });
+    res.json(result);
+  } catch (e) {
+    if (e instanceof RefundError) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
+}));
+
+router.post('/events/:id/refund-all', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const { id } = req.params;
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'event id must be a uuid' });
+  const reason = req.body?.reason ?? 'event_cancelled';
+  const results = await refundEvent(id, null, reason);
+  const requested = results.filter((r) => r.status !== 'failed').length;
+  const failed = results.filter((r) => r.status === 'failed').length;
+  await audit(a.adminId, 'event.refund_all', 'event', id, { reason: refundReasonText(reason), requested, failed });
+  res.json({ requested, failed, results });
+}));
+
+router.post('/orders/:orderId/refund-sync', requireAdmin, asyncHandler(async (req, res) => {
+  const { orderId } = req.params;
+  if (!/^[0-9a-f-]{36}$/i.test(orderId)) return res.status(400).json({ error: 'order id must be a uuid' });
+  try {
+    const state = await syncRefund(orderId);
+    res.json({ state });
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
 }));
 
 // POST /admin/events/:id/suspend — take a reported listing off sale, reversibly.

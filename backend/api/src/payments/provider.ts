@@ -88,10 +88,29 @@ export interface WebhookVerdict {
   payload?: unknown;
 }
 
+/** Money back on a paid order. The whole order, in minor units. */
+export interface RefundRequest {
+  providerRef: string;
+  /** Deterministic per order, so a retried request can never refund twice. */
+  refundId: string;
+  amountMinor: number;
+  /** Shown on the provider's side only. The event title, never message content. */
+  note: string;
+  /** Take a split's share back from the vendor it settled to. */
+  splits?: { vendorId: string; amountMinor: number }[];
+}
+
 export interface PaymentProvider {
   /** Goes straight into event_orders.provider. Lower-case, stable, never renamed. */
   readonly name: string;
   createCheckout(req: CheckoutRequest): Promise<CheckoutHandle>;
+  /**
+   * Ask the provider to return an order's money. Resolves once the provider has ACCEPTED the
+   * request — the order only becomes 'refunded' when its signed webhook confirms it.
+   */
+  refund?(req: RefundRequest): Promise<void>;
+  /** Where a requested refund stands — for when its webhook never arrives. */
+  refundStatus?(providerRef: string, refundId: string): Promise<'succeeded' | 'pending' | 'failed' | null>;
   resumeCheckout?(providerRef: string, amountMinor: number, currency: string): Record<string, unknown>;
   verifyWebhook(rawBody: Buffer, headers: Record<string, unknown>): WebhookVerdict;
 }

@@ -258,10 +258,15 @@ async function settleOrder(
  * 'failed' and 'cancelled' orders are left alone: no money was taken, so there is nothing to
  * return, and rewriting a terminal state on a stray event would destroy the audit trail.
  */
+/** A refund confirmed some other way than its webhook — the reconciliation sweep, or a free RSVP. */
+export async function markRefunded(orderId: string): Promise<void> {
+  await withTransaction((execute) => refundOrder(execute, orderId));
+}
+
 async function refundOrder(execute: typeof query, orderId: string): Promise<void> {
   const moved = await execute<{ id: string }>(
     `update event_orders
-        set status = 'refunded', settled_at = coalesce(settled_at, now())
+        set status = 'refunded', settled_at = coalesce(settled_at, now()), refund_error = null
       where id = $1 and status in ('paid', 'pending')
       returning id`,
     [orderId]

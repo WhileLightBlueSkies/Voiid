@@ -208,6 +208,25 @@ extension EventService {
         return r.event
     }
 
+    /// Cancel AND give every paid order its money back — an explicit choice, never the
+    /// default. Returns how many refunds were requested and how many failed.
+    func cancelAndRefund(eventId: String, reason: String = "event_cancelled") async throws -> (event: Event?, requested: Int, failed: Int) {
+        struct Body: Encodable { let refund = true; let reason: String }
+        struct Counts: Decodable { let requested: Int; let failed: Int }
+        struct Response: Decodable { let event: Event?; let refunds: Counts? }
+        let r = try await api.request("POST", "events/\(eventId)/cancel", body: Body(reason: reason), as: Response.self)
+        return (r.event, r.refunds?.requested ?? 0, r.refunds?.failed ?? 0)
+    }
+
+    /// Give one paid order its money back. It shows as "refund on the way" until the payment
+    /// provider confirms, then as refunded, and its tickets stop working.
+    func refundOrder(eventId: String, orderId: String, reason: String) async throws {
+        struct Body: Encodable { let reason: String }
+        struct Response: Decodable { let status: String? }
+        _ = try await api.request("POST", "events/\(eventId)/orders/\(orderId)/refund",
+                                  body: Body(reason: reason), as: Response.self)
+    }
+
     /// One row of `GET /events/:id/orders` — the organiser's attendee list.
     struct Order: Decodable, Identifiable, Equatable {
         let id: String
@@ -223,6 +242,10 @@ extension EventService {
         let created_at: String?
         let tickets: Int?
         let checked_in: Int?
+        /// A refund on its way, why, and why it failed if it did (094).
+        var refund_requested_at: String? = nil
+        var refund_reason: String? = nil
+        var refund_error: String? = nil
 
         /// The server returns ids and may return neither name; "Someone" is the honest
         /// fallback rather than an id nobody can read.
@@ -313,6 +336,9 @@ extension EventService {
         let event_status: String?
         let order_status: String?
         let community_id: String?
+        /// Set while a refund of this ticket's order is on its way (094).
+        var refund_requested_at: String? = nil
+        var refund_reason: String? = nil
 
         var isCheckedIn: Bool { checked_in_at != nil }
         /// The server refuses to mint a code for any of these, so the wallet must not offer

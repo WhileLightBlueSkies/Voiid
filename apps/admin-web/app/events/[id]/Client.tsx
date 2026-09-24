@@ -14,6 +14,7 @@ import Shell, { type Me } from '../../../components/Shell';
 import { WithRecordId } from '../../../components/RecordId';
 import { PageHeader, Async, Pill, Stat, when, name, money } from '../../../components/ui';
 import { api } from '../../../lib/api';
+import { RefundDialog, refundState, REFUND_TONE, REFUND_LABEL } from '../../../components/Refunds';
 
 type Event = {
   id: string; community_id: string; title: string; description: string | null;
@@ -29,6 +30,8 @@ type Order = {
   provider: string; provider_ref: string; status: string;
   failure_reason: string | null; created_at: string; settled_at: string | null;
   buyer_name: string | null; buyer_username: string | null;
+  refund_requested_at: string | null; refund_reason: string | null;
+  refund_error: string | null; refund_attempts: number;
 };
 type Total = { status: string; orders: number; seats: number; amount_minor: string | number };
 type Tickets = { issued: number; checked_in: number; voided: number };
@@ -48,6 +51,9 @@ function Body({ me, id }: { me: Me; id: string }) {
   const [writeError, setWriteError] = useState<string | null>(null);
   const [d, setD] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The order being refunded, or 'all' for every paid order; null when no dialog is open. */
+  const [refunding, setRefunding] = useState<Order | 'all' | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -83,6 +89,44 @@ function Body({ me, id }: { me: Me; id: string }) {
     } finally { setBusy(false); }
   }
 
+  async function refund(reason: string) {
+    const target = refunding;
+    setRefunding(null);
+    if (!target) return;
+    setBusy(true); setWriteError(null); setNotice(null);
+    try {
+      if (target === 'all') {
+        const r = await api<{ requested: number; failed: number }>(
+          `/events/${id}/refund-all`, { method: 'POST', json: { reason } });
+        setNotice(`${r.requested} refund${r.requested === 1 ? '' : 's'} requested` +
+                  (r.failed ? ` · ${r.failed} failed — see the orders below` : '.'));
+      } else {
+        await api(`/events/${id}/orders/${target.id}/refund`, { method: 'POST', json: { reason } });
+        setNotice(`Refund requested for ${name(target.buyer_name, target.buyer_username, 'this order')}.`);
+      }
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'the refund did not go through');
+    } finally {
+      setBusy(false);
+      await load();
+    }
+  }
+
+  async function check(o: Order) {
+    setBusy(true); setWriteError(null); setNotice(null);
+    try {
+      const r = await api<{ state: string | null }>(`/orders/${o.id}/refund-sync`, { method: 'POST', json: {} });
+      setNotice(r.state === 'refunded' ? 'Cashfree confirms it — refunded.'
+              : r.state === 'refund_pending' ? 'Still on its way at Cashfree.'
+              : r.state === 'failed' ? 'Cashfree says this refund failed.' : 'Nothing to check.');
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'could not reach Cashfree');
+    } finally {
+      setBusy(false);
+      await load();
+    }
+  }
+
   const by = (s: string) => d?.totals.find((t) => t.status === s);
   const cur = d?.event.currency ?? 'INR';
   const paid = by('paid');
@@ -111,6 +155,11 @@ function Body({ me, id }: { me: Me; id: string }) {
                   {d.event.status}
                 </Pill>
                 {d.event.suspended_at && <Pill tone="danger">Suspended</Pill>}
+                {me.role === 'admin' && (paid?.orders ?? 0) > 0 && (
+                  <button className="ghost" disabled={busy} onClick={() => setRefunding('all')}>
+                    Refund all paid orders
+                  </button>
+                )}
                 {me.role === 'admin' && (
                   d.event.suspended_at
                     ? <button className="ghost" disabled={busy}
@@ -123,6 +172,19 @@ function Body({ me, id }: { me: Me; id: string }) {
           />
 
           {writeError && <div className="notice error" style={{ marginBottom: 16 }}>{writeError}</div>}
+          {notice && <div className="notice" style={{ marginBottom: 16 }}>{notice}</div>}
+          {refunding && (
+            <RefundDialog
+              title={refunding === 'all' ? `Refund every paid order for “${d.event.title}”?`
+                                         : `Refund ${money(refunding.amount_minor, refunding.currency)} to ${name(refunding.buyer_name, refunding.buyer_username, 'this buyer')}?`}
+              detail={refunding === 'all'
+                ? `${paid?.orders ?? 0} orders, ${money(paid?.amount_minor ?? 0, cur)} in total. Each buyer gets their full amount back to how they paid, usually within 5–7 working days, and their tickets stop working.`
+                : 'The full amount goes back to how they paid, usually within 5–7 working days. Their tickets stop working once Cashfree confirms.'}
+              defaultReason={refunding === 'all' ? 'event_cancelled' : 'attendee_request'}
+              onCancel={() => setRefunding(null)}
+              onConfirm={(reason) => void refund(reason)}
+            />
+          )}
 
           {/* Says what suspension DID and did not do. A moderator who thinks this voided the
               tickets will not chase the refund that someone is actually owed. */}
@@ -178,7 +240,7 @@ function Body({ me, id }: { me: Me; id: string }) {
                   <thead>
                     <tr>
                       <th>Buyer</th><th>Qty</th><th>Amount</th>
-                      <th>Provider</th><th>Placed</th><th>Status</th>
+                      <th>Provider</th><th>Placed</th><th>Status</th><th />
                     </tr>
                   </thead>
                   <tbody>
@@ -199,9 +261,28 @@ function Body({ me, id }: { me: Me; id: string }) {
                           {when(o.created_at)}
                         </td>
                         <td>
-                          <Pill tone={ORDER_TONE[o.status]}>{o.status}</Pill>
+                          {refundState(o) ? (
+                            <Pill tone={REFUND_TONE[refundState(o)!]}>{REFUND_LABEL[refundState(o)!]}</Pill>
+                          ) : (
+                            <Pill tone={ORDER_TONE[o.status]}>{o.status}</Pill>
+                          )}
+                          {o.refund_reason && <div className="mute" style={{ fontSize: 11 }}>{o.refund_reason}</div>}
+                          {o.refund_error && o.status === 'paid' && (
+                            <div style={{ fontSize: 11, color: 'var(--danger, #c33)' }}>{o.refund_error}</div>
+                          )}
                           {o.failure_reason && (
                             <div className="mute" style={{ fontSize: 11 }}>{o.failure_reason}</div>
+                          )}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
+                          {o.status === 'paid' && me.role === 'admin' && !o.refund_requested_at && !o.refund_error && (
+                            <button className="ghost" disabled={busy} onClick={() => setRefunding(o)}>Refund</button>
+                          )}
+                          {o.status === 'paid' && me.role === 'admin' && o.refund_error && (
+                            <button className="ghost" disabled={busy} onClick={() => setRefunding(o)}>Retry refund</button>
+                          )}
+                          {o.status === 'paid' && o.refund_requested_at && !o.refund_error && (
+                            <button className="ghost" disabled={busy} onClick={() => void check(o)}>Check with Cashfree</button>
                           )}
                         </td>
                       </tr>

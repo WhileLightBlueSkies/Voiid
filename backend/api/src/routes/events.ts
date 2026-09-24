@@ -63,6 +63,7 @@ async function pricedEventRefusal(communityId: string): Promise<{ status: number
   return null;
 }
 import { reconcileUnmatched } from '../payments/inbox';
+import { RefundError, refundEvent, requestRefund } from '../payments/refunds';
 import {
   newTicketNonce,
   signTicketCode,
@@ -506,6 +507,18 @@ router.post(
     if (opened.event.status === 'published') {
       scheduleCommunityNotification({communityId:rows[0].community_id,actorId:userId,kind:'event'});
     }
+    // "Cancel and refund everyone" is an EXPLICIT choice (`refund: true`), never the default:
+    // cancelling must not move other people's money unless the host asked for exactly that.
+    if (req.body?.refund === true) {
+      const results = await refundEvent(opened.event.id, userId, req.body?.reason ?? 'event_cancelled');
+      return res.json({
+        event: eventCard(rows[0]),
+        refunds: {
+          requested: results.filter((r) => r.status !== 'failed').length,
+          failed: results.filter((r) => r.status === 'failed').length,
+        },
+      });
+    }
     res.json({ event: eventCard(rows[0]), note: 'existing tickets are untouched; refunds are separate' });
   })
 );
@@ -623,10 +636,12 @@ router.post(
         const rows = await query<{ id: string; status: string }>(
           `insert into event_orders
              (id, event_id, buyer_id, quantity, unit_price_minor, amount_minor, currency,
-              provider, provider_ref, status)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+              provider, provider_ref, status, split_vendor_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10)
            returning id, status`,
-          [orderId, event.id, userId, quantity, price, amount, event.currency, provider.name, handle.providerRef]
+          [orderId, event.id, userId, quantity, price, amount, event.currency, provider.name, handle.providerRef,
+           // The account this order's host share settles to — a refund takes it back from here.
+           vendorId && hostShare > 0 ? vendorId : null]
         );
 
         // ── CLOSE THE WINDOW THE CHECKOUT ABOVE OPENS.
@@ -821,7 +836,36 @@ router.post(
       }
     }
 
-    return res.status(409).json({ error: 'a paid order must be refunded through the payment provider' });
+    return res.status(409).json({ error: 'a paid order is refunded by the host — ask them to refund it' });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /events/:id/orders/:orderId/refund  { reason }
+//
+// The host gives a paid order's money back. The order says "refund on the way" until the
+// provider confirms, then becomes refunded and its tickets void (payments/refunds.ts).
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post(
+  '/events/:id/orders/:orderId/refund',
+  requireAuth,
+  rateLimit({ max: 60, windowSeconds: 60, bucket: 'events' }),
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth;
+    const opened = await openEvent(req.params.id, userId, true);
+    if (!opened.ok) return res.status(opened.status).json({ error: opened.error });
+    const orderId = String(req.params.orderId ?? '');
+    if (!UUID_RE.test(orderId)) return res.status(400).json({ error: 'order id must be a uuid' });
+    const belongs = await query(`select 1 from event_orders where id = $1 and event_id = $2`, [orderId, opened.event.id]);
+    if (!belongs[0]) return res.status(404).json({ error: 'no such order' });
+    try {
+      const result = await requestRefund(orderId, userId, req.body?.reason);
+      if (result.status === 'failed') return res.status(502).json({ error: result.error, status: 'failed' });
+      return res.json(result);
+    } catch (e) {
+      if (e instanceof RefundError) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
   })
 );
 
@@ -845,6 +889,7 @@ router.get(
       `select o.id, o.buyer_id, u.full_name, u.username, o.quantity,
               o.amount_minor::text as amount_minor, o.currency, o.status,
               o.provider, o.created_at, o.settled_at,
+              o.refund_requested_at, o.refund_reason, o.refund_error,
               (select count(*) from event_tickets t
                 where t.order_id = o.id and t.state = 'valid')::int as tickets,
               (select count(*) from event_tickets t
@@ -887,6 +932,7 @@ router.get(
     const rows = await query(
       `select o.id, o.quantity, o.amount_minor::text as amount_minor, o.currency,
               o.status, o.provider, o.failure_reason, o.created_at, o.settled_at,
+              o.refund_requested_at, o.refund_reason,
               (select count(*) from event_tickets t
                 where t.order_id = o.id and t.state = 'valid')::int as tickets
          from event_orders o
@@ -915,7 +961,8 @@ router.get(
     const rows = await query(
       `select t.id, t.event_id, t.state, t.checked_in_at, t.created_at,
               e.title, e.starts_at, e.ends_at, e.location_text, e.status as event_status,
-              e.community_id, o.status as order_status, case when o.admission_mode='group' then o.quantity else 1 end as people
+              e.community_id, o.status as order_status, case when o.admission_mode='group' then o.quantity else 1 end as people,
+              o.refund_requested_at, o.refund_reason, o.amount_minor::text as amount_minor, o.currency
          from event_tickets t
          join community_events e on e.id = t.event_id
          join event_orders o on o.id = t.order_id

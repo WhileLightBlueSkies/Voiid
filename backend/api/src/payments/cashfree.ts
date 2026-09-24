@@ -39,7 +39,7 @@
 // in an in-app browser and polls the order, which is server-authoritative regardless.
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type {
-  CheckoutHandle, CheckoutRequest, PaymentProvider, WebhookVerdict,
+  CheckoutHandle, CheckoutRequest, PaymentProvider, RefundRequest, WebhookVerdict,
 } from './provider';
 
 /** Pinned: the webhook payload shape follows the API version, and ours is written for this. */
@@ -167,6 +167,49 @@ export class CashfreeProvider implements PaymentProvider {
       throw new Error('invalid saved checkout');
     }
     return this.clientPayload(providerRef, amountMinor, currency);
+  }
+
+  /**
+   * Refund the whole order. POST /orders/{order_id}/refunds. With Easy Split, `refund_splits`
+   * recovers the host's share from their vendor account rather than all of it from Voiid.
+   * The refund id doubles as the idempotency key, so a retry is the same refund, not another.
+   */
+  async refund(req: RefundRequest): Promise<void> {
+    if (!CASHFREE_REF_RE.test(req.providerRef)) throw new CashfreeError('not a Cashfree order', 400);
+    const body: Record<string, unknown> = {
+      refund_amount: toMajor(req.amountMinor),
+      refund_id: req.refundId,
+      refund_note: req.note.slice(0, 100).padEnd(3, '.'),
+      refund_speed: 'STANDARD',
+    };
+    if (req.splits && req.splits.length > 0) {
+      body.refund_splits = req.splits.map((s) => ({ vendor_id: s.vendorId, amount: toMajor(s.amountMinor) }));
+    }
+    const res = await fetch(`${pgBase(this.env)}/orders/${encodeURIComponent(req.providerRef)}/refunds`, {
+      method: 'POST',
+      headers: { ...this.headers(), 'x-idempotency-key': req.refundId },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) return;
+    const err = (await res.json().catch(() => ({}))) as { code?: string; message?: string };
+    // Already requested with this id: the same refund, accepted earlier. Not an error.
+    if (res.status === 409 || /already/i.test(err.message ?? '')) return;
+    console.error(`[cashfree] refund failed: HTTP ${res.status} ${err.code ?? ''}`);
+    throw new CashfreeError(err.message ?? 'the refund was not accepted', res.status);
+  }
+
+  async refundStatus(providerRef: string, refundId: string): Promise<'succeeded' | 'pending' | 'failed' | null> {
+    const res = await fetch(
+      `${pgBase(this.env)}/orders/${encodeURIComponent(providerRef)}/refunds/${encodeURIComponent(refundId)}`,
+      { headers: this.headers() });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new CashfreeError('could not read the refund', res.status);
+    const r = (await res.json()) as { refund_status?: string };
+    switch (r.refund_status) {
+      case 'SUCCESS': return 'succeeded';
+      case 'CANCELLED': return 'failed';
+      default: return 'pending';     // PENDING, ONHOLD
+    }
   }
 
   /** The live session for an order, or null when it is paid, expired or unknown. */

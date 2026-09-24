@@ -1,6 +1,7 @@
 import { sweepExpiredConferenceInvites } from './routes/calls';
 import { sweepMissedCallNotifications, sweepUnansweredCalls } from './missedCallNotifications';
 import { sweepEventLiveActivities } from './eventLiveActivities';
+import { sweepPendingRefunds } from './payments/refunds';
 // VOIID API service (Phase 0/1). HTTPS-only in prod; JWT validation; rate limiting (Section 4.6/4.9).
 import { secretboxAvailable } from './secretbox';
 import { installErrorHandler } from './errors';
@@ -419,3 +420,9 @@ setInterval(() => {
   void sweepExpiredConferenceInvites().then(() => sweepUnansweredCalls()).catch(error => console.warn('[conference-expiry]', error))
     .finally(() => { expiringConferences = false; });
 }, 15_000).unref();
+
+// Refunds whose confirming webhook never arrived: ask the provider every 15 minutes, so a
+// buyer's refund cannot sit at "on the way" forever (payments/refunds.ts).
+setInterval(() => {
+  void sweepPendingRefunds().catch((error) => console.warn('[refunds] sweep failed:', (error as Error).message));
+}, 15 * 60_000).unref();

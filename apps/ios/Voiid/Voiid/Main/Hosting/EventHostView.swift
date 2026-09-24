@@ -45,6 +45,9 @@ struct EventHostView: View {
     @State private var busy = false
     @State private var actionError: String?
     @State private var confirmCancel = false
+    /// The attendee whose money is about to go back — drives the reason picker.
+    @State private var refundTarget: EventService.Order?
+    @State private var notice: String?
     @State private var showCheckIn = false
     @State private var editing = false
     @State private var workspaceTab = "Overview"
@@ -96,6 +99,13 @@ struct EventHostView: View {
                     attendeesCard
                 }
 
+                if let notice {
+                    Text(notice)
+                        .font(.footnote)
+                        .foregroundStyle(VoiidColor.textSecondary)
+                        .padding(.horizontal, 4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let actionError {
                     Text(actionError)
                         .font(.footnote)
@@ -121,13 +131,40 @@ struct EventHostView: View {
         .confirmationDialog("Cancel this event?",
                             isPresented: $confirmCancel,
                             titleVisibility: .visible) {
-            Button("Cancel event", role: .destructive) {
-                Haptics.rigid()
-                Task { await cancel() }
+            if paidCount > 0 {
+                Button("Cancel and refund everyone", role: .destructive) {
+                    Haptics.rigid()
+                    Task { await cancel(refund: true) }
+                }
+                Button("Cancel without refunds", role: .destructive) {
+                    Haptics.rigid()
+                    Task { await cancel(refund: false) }
+                }
+            } else {
+                Button("Cancel event", role: .destructive) {
+                    Haptics.rigid()
+                    Task { await cancel(refund: false) }
+                }
             }
             Button("Keep it", role: .cancel) {}
         } message: {
-            Text("Cancelling stops registration and admission. Records are kept; refunds are handled separately. This cannot be reversed.")
+            Text(paidCount > 0
+                 ? "Cancelling stops registration and admission. \(paidCount) \(paidCount == 1 ? "person has" : "people have") paid — refunding everyone returns their full amount to how they paid, usually within 5–7 working days. This cannot be reversed."
+                 : "Cancelling stops registration and admission. Records are kept. This cannot be reversed.")
+        }
+        .confirmationDialog(refundTarget.map { "Refund \(VoiidEventDate.price(minor: $0.amount_minor, currency: $0.currency)) to \($0.display)?" } ?? "",
+                            isPresented: Binding(get: { refundTarget != nil }, set: { if !$0 { refundTarget = nil } }),
+                            titleVisibility: .visible) {
+            ForEach(Self.refundReasons, id: \.code) { reason in
+                Button(reason.label) {
+                    let order = refundTarget
+                    refundTarget = nil
+                    if let order { Task { await refund(order, reason: reason.code) } }
+                }
+            }
+            Button("Don't refund", role: .cancel) { refundTarget = nil }
+        } message: {
+            Text("Choose why. They get the full amount back to how they paid, usually within 5–7 working days, and their ticket stops working.")
         }
     }
 
@@ -273,7 +310,18 @@ struct EventHostView: View {
                     if index > 0 { VoiidRowDivider() }
                     VoiidSettingsRow(icon: "person",
                                      title: order.display,
-                                     detail: orderDetail(order))
+                                     detail: orderDetail(order)) {
+                        if canRefund(order) {
+                            Button(order.refund_error == nil ? "Refund" : "Retry") {
+                                Haptics.tap()
+                                refundTarget = order
+                            }
+                            .font(VoiidFont.rounded(14, .semibold))
+                            .foregroundStyle(VoiidColor.accentInk)
+                            .disabled(busy)
+                            .accessibilityLabel("Refund \(order.display)")
+                        }
+                    }
                 }
             }
         }
@@ -283,6 +331,15 @@ struct EventHostView: View {
         var parts: [String] = []
         if let q = o.quantity, q > 1 { parts.append("\(q) tickets") }
         if let checked = o.checked_in, checked > 0 { parts.append("Checked in") }
+        if o.status == "paid", let error = o.refund_error {
+            parts.append("Refund failed: \(error)")
+            return parts.joined(separator: " \u{00B7} ")
+        }
+        if o.status == "paid", o.refund_requested_at != nil {
+            parts.append("Refund on the way")
+            if let r = o.refund_reason { parts.append(r) }
+            return parts.joined(separator: " \u{00B7} ")
+        }
         if let s = o.status {
             switch s {
             case "paid":      parts.append("Confirmed")
@@ -322,12 +379,19 @@ struct EventHostView: View {
         }
     }
 
-    private func cancel() async {
+    private func cancel(refund: Bool) async {
         busy = true
         actionError = nil
         defer { busy = false }
         do {
-            if let updated = try await EventService.shared.cancel(eventId: current.id) {
+            if refund {
+                let r = try await EventService.shared.cancelAndRefund(eventId: current.id)
+                if let updated = r.event { current = updated }
+                notice = r.failed == 0
+                    ? "Cancelled. \(r.requested) refund\(r.requested == 1 ? "" : "s") on the way."
+                    : "Cancelled. \(r.requested) refund\(r.requested == 1 ? "" : "s") on the way, \(r.failed) failed — retry them from the attendee list."
+                await loadOrders()
+            } else if let updated = try await EventService.shared.cancel(eventId: current.id) {
                 current = updated
             }
             Haptics.success()
@@ -335,6 +399,37 @@ struct EventHostView: View {
         } catch {
             actionError = error.localizedDescription
         }
+    }
+
+    /// Paid orders that took money — the ones a refund applies to.
+    private var paidCount: Int {
+        orders.filter { $0.status == "paid" && ($0.amount_minor ?? 0) > 0 }.count
+    }
+
+    private func canRefund(_ o: EventService.Order) -> Bool {
+        o.status == "paid" && (o.amount_minor ?? 0) > 0 && (o.refund_requested_at == nil || o.refund_error != nil)
+    }
+
+    private static let refundReasons: [(code: String, label: String)] = [
+        ("attendee_request", "Requested by the attendee"),
+        ("event_changed", "Event changed"),
+        ("duplicate_payment", "Duplicate payment"),
+        ("event_cancelled", "Event cancelled"),
+    ]
+
+    private func refund(_ order: EventService.Order, reason: String) async {
+        busy = true
+        actionError = nil
+        defer { busy = false }
+        do {
+            try await EventService.shared.refundOrder(eventId: current.id, orderId: order.id, reason: reason)
+            Haptics.success()
+            notice = "Refund on the way to \(order.display)."
+        } catch {
+            Haptics.error()
+            actionError = error.localizedDescription
+        }
+        await loadOrders()
     }
 
     private func loadOrders() async {
