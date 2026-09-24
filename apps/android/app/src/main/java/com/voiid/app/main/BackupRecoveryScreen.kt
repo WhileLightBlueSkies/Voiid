@@ -66,7 +66,7 @@ import kotlinx.coroutines.launch
  * state gates the home / setup / view-phrase / change-PIN sub-screens, mirroring how
  * MainScreen/ChatsHomeView gate children with a remembered flag + conditional composable.
  */
-private enum class Screen { HOME, SETUP, VIEW_PHRASE, CHANGE_PIN }
+private enum class Screen { HOME, SETUP, VIEW_PHRASE, RETIRE_PIN }
 
 @Composable
 fun BackupRecoveryScreen(onBack: () -> Unit) {
@@ -123,6 +123,9 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
     }
 
     LaunchedEffect(Unit) { reloadMeta() }
+    // An old PIN-protected copy of the key on the server (pre-S04): offer to remove it.
+    var legacyPin by remember { mutableStateOf(false) }
+    LaunchedEffect(screen) { if (screen == Screen.HOME) legacyPin = manager.hasLegacyPin() }
 
     // Re-consent flow (GoogleAuthUtil may need a second grant), then finish enabling.
     val recoveryLauncher = rememberLauncherForActivityResult(
@@ -200,7 +203,8 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
                 }
             },
             onViewPhrase = { screen = Screen.VIEW_PHRASE },
-            onChangePin = { screen = Screen.CHANGE_PIN },
+            legacyPin = legacyPin,
+            onRetirePin = { screen = Screen.RETIRE_PIN },
         )
         Screen.SETUP -> BackupSetupFlow(
             manager = manager,
@@ -211,10 +215,10 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
             manager = manager,
             onBack = { screen = Screen.HOME },
         )
-        Screen.CHANGE_PIN -> ChangePinScreen(
+        Screen.RETIRE_PIN -> RetirePinScreen(
             manager = manager,
             onBack = { screen = Screen.HOME },
-            onDone = { screen = Screen.HOME; flash("PIN changed") },
+            onDone = { screen = Screen.HOME; flash("Old PIN removed") },
         )
     }
 }
@@ -243,7 +247,8 @@ private fun BackupHome(
     onSetup: () -> Unit,
     onBackupNow: () -> Unit,
     onViewPhrase: () -> Unit,
-    onChangePin: () -> Unit,
+    legacyPin: Boolean,
+    onRetirePin: () -> Unit,
 ) {
     val latestBackup = listOfNotNull(meta, driveMeta?.let {
         BackupService.BackupMeta(size_bytes = it.sizeBytes, updated_at = it.modifiedTime)
@@ -330,8 +335,16 @@ private fun BackupHome(
             }
             Spacer(Modifier.height(12.dp))
             BackupSecondaryButton("View recovery phrase", onClick = onViewPhrase)
-            Spacer(Modifier.height(12.dp))
-            BackupSecondaryButton("Change PIN", onClick = onChangePin)
+            if (legacyPin) {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Your backup can still be opened with an old PIN. A short PIN can be guessed; " +
+                        "your 24-word recovery phrase can't. Save your phrase, then remove the PIN.",
+                    style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+                )
+                Spacer(Modifier.height(10.dp))
+                BackupSecondaryButton("Remove old backup PIN", onClick = onRetirePin)
+            }
 
 
         }
@@ -382,68 +395,58 @@ private fun DriveBackupSection(
 
 // MARK: - Setup flow
 
-private enum class SetupStep { PIN, CONFIRM, PHRASE }
+/**
+ * Setting up backup: the 24-word phrase, proof it was written down, then the first backup.
+ *
+ * THE PHRASE IS THE ONLY WAY BACK IN (S04). There used to be a PIN whose wrapped key sat on the
+ * server — an 8-digit PIN can be tried offline by anyone who obtains that copy. It is gone, which
+ * makes the phrase load-bearing, so setup asks for three of its words back.
+ */
+private enum class SetupStep { PHRASE, VERIFY }
 
 @Composable
 private fun BackupSetupFlow(manager: BackupManager, onBack: () -> Unit, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var step by remember { mutableStateOf(SetupStep.PIN) }
-    var pin by remember { mutableStateOf("") }
-    var confirm by remember { mutableStateOf("") }
+    var step by remember { mutableStateOf(SetupStep.PHRASE) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var written by remember { mutableStateOf(false) }
-    // Generated once we reach the phrase step; held only in memory until finalize.
-    var secret by remember { mutableStateOf<ByteArray?>(null) }
-    var phrase by remember { mutableStateOf("") }
+    val made = remember { runCatching { manager.newSecretAndPhrase() }.getOrNull() }
+    val secret = made?.first
+    val phrase = made?.second.orEmpty()
+
+    if (made == null) {
+        BackupScaffold(title = "Set up backup", onBack = onBack) {
+            Text("Couldn't generate a recovery phrase. Go back and try again.",
+                style = VoiidFont.rounded(15), color = VoiidColor.error)
+        }
+        return
+    }
 
     when (step) {
-        SetupStep.PIN -> PinEntryScreen(
-            title = "Choose a PIN",
-            subtitle = "Pick an 8-digit PIN. You'll need it to restore your chats on a new device.",
-            value = pin, onValueChange = { pin = it; error = null },
-            error = error, busy = false, cta = "Next",
-            ctaEnabled = pin.length == VOIID_PIN_LENGTH,
-            onBack = onBack,
-            onSubmit = { step = SetupStep.CONFIRM; error = null },
-        )
-        SetupStep.CONFIRM -> PinEntryScreen(
-            title = "Confirm your PIN",
-            subtitle = "Enter the same PIN again.",
-            value = confirm, onValueChange = { confirm = it; error = null },
-            error = error, busy = busy, cta = "Continue",
-            ctaEnabled = confirm.length == VOIID_PIN_LENGTH && !busy,
-            onBack = { step = SetupStep.PIN; confirm = ""; error = null },
-            onSubmit = {
-                if (confirm != pin) { error = "PINs don't match."; confirm = ""; return@PinEntryScreen }
-                busy = true; error = null
-                scope.launch {
-                    try {
-                        val (s, p) = manager.newSecretAndPhrase()
-                        secret = s; phrase = p
-                        step = SetupStep.PHRASE
-                    } catch (e: Exception) {
-                        error = e.message ?: "Couldn't generate recovery phrase."
-                    }
-                    busy = false
-                }
-            },
-        )
         SetupStep.PHRASE -> RecoveryPhraseScreen(
             phrase = phrase,
             confirmed = written,
             onToggleConfirmed = { written = !written },
-            error = error,
+            error = null,
+            busy = false,
+            cta = "Next",
+            ctaEnabled = written,
+            onBack = onBack,
+            onSubmit = { step = SetupStep.VERIFY; error = null },
+        )
+        SetupStep.VERIFY -> PhraseVerifyScreen(
+            phrase = phrase,
             busy = busy,
+            error = error,
             cta = if (busy) "Setting up…" else "Finish setup",
-            ctaEnabled = written && !busy,
-            onBack = { step = SetupStep.CONFIRM; error = null },
-            onSubmit = {
-                val s = secret ?: return@RecoveryPhraseScreen
+            onBack = { step = SetupStep.PHRASE; error = null },
+            onVerified = {
+                val s = secret ?: return@PhraseVerifyScreen
                 busy = true; error = null
                 scope.launch {
                     try {
-                        manager.finalizeSetup(s, pin)
+                        manager.finalizeSetup(s)
                         onDone()
                     } catch (e: Exception) {
                         error = e.message ?: "Backup setup failed. Try again."
@@ -452,6 +455,71 @@ private fun BackupSetupFlow(manager: BackupManager, onBack: () -> Unit, onDone: 
                 }
             },
         )
+    }
+}
+
+/**
+ * Three words of the phrase, typed back — one from each third, so the check cannot be passed by
+ * remembering the first line. Forgiving about case and spaces, strict about the word.
+ */
+@Composable
+private fun PhraseVerifyScreen(
+    phrase: String,
+    busy: Boolean,
+    error: String?,
+    cta: String,
+    onBack: () -> Unit,
+    onVerified: () -> Unit,
+) {
+    val words = remember(phrase) { phrase.trim().split(Regex("\\s+")) }
+    val positions = remember(phrase) {
+        val third = maxOf(1, words.size / 3)
+        (0 until 3).map { i -> (i * third until minOf(words.size, (i + 1) * third)).random() }
+    }
+    val answers = remember(phrase) { androidx.compose.runtime.mutableStateListOf("", "", "") }
+    var wrong by remember { mutableStateOf(setOf<Int>()) }
+    val haptics = LocalVoiidHaptics.current
+
+    BackupScaffold(title = "Check your phrase", onBack = onBack) {
+        Spacer(Modifier.height(8.dp))
+        Text("Type these words from your phrase", style = VoiidFont.rounded(20, FontWeight.SemiBold),
+            color = VoiidColor.textPrimary)
+        Spacer(Modifier.height(6.dp))
+        Text("This is the only way to restore your chats on a new phone, so it's worth one check.",
+            style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+        Spacer(Modifier.height(20.dp))
+        positions.forEachIndexed { i, position ->
+            Text("Word ${position + 1}", style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                color = VoiidColor.textSecondary)
+            Spacer(Modifier.height(6.dp))
+            val shape = RoundedCornerShape(12.dp)
+            BasicTextField(
+                value = answers[i],
+                onValueChange = { answers[i] = it; wrong = wrong - i },
+                singleLine = true,
+                textStyle = VoiidFont.rounded(17).merge(TextStyle(color = VoiidColor.textPrimary)),
+                cursorBrush = SolidColor(VoiidColor.primary),
+                modifier = Modifier.fillMaxWidth().height(48.dp).clip(shape)
+                    .background(VoiidColor.fieldFill)
+                    .border(1.dp, if (i in wrong) VoiidColor.error else VoiidColor.fieldBorder, shape)
+                    .padding(horizontal = 14.dp, vertical = 13.dp),
+            )
+            if (i in wrong) {
+                Spacer(Modifier.height(4.dp))
+                Text("That's not word ${position + 1}.", style = VoiidFont.rounded(12), color = VoiidColor.error)
+            }
+            Spacer(Modifier.height(14.dp))
+        }
+        error?.let {
+            Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
+            Spacer(Modifier.height(10.dp))
+        }
+        BackupButton(cta, enabled = !busy && answers.all { it.isNotBlank() }) {
+            wrong = positions.indices.filter { i ->
+                answers[i].trim().lowercase() != words[positions[i]].lowercase()
+            }.toSet()
+            if (wrong.isEmpty()) { haptics.success(); onVerified() } else haptics.error()
+        }
     }
 }
 
@@ -468,7 +536,7 @@ private fun ViewPhraseScreen(manager: BackupManager, onBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text(
             "Write these 24 words down and keep them somewhere safe. This is the ONLY way to " +
-                "restore your chats if you forget your PIN. Never share them.",
+                "restore your chats on a new phone. Never share them.",
             style = VoiidFont.rounded(14), color = VoiidColor.error,
         )
         Spacer(Modifier.height(20.dp))
@@ -476,44 +544,55 @@ private fun ViewPhraseScreen(manager: BackupManager, onBack: () -> Unit) {
     }
 }
 
-// MARK: - Change PIN
+// MARK: - Remove the old PIN
 
+/**
+ * For an account whose key still has an old PIN-protected copy on the server: the phrase, a
+ * check of it, then delete that copy. After this only the phrase restores the backup — which is
+ * the point, and why the phrase is checked first.
+ */
 @Composable
-private fun ChangePinScreen(manager: BackupManager, onBack: () -> Unit, onDone: () -> Unit) {
+private fun RetirePinScreen(manager: BackupManager, onBack: () -> Unit, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var newPin by remember { mutableStateOf("") }
-    var confirm by remember { mutableStateOf("") }
-    var confirming by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    val phrase = remember { runCatching { manager.recoveryPhrase() }.getOrNull() }
+    var verifying by remember { mutableStateOf(false) }
+    var written by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
 
-    if (!confirming) {
-        PinEntryScreen(
-            title = "New PIN",
-            subtitle = "Choose a new 8-digit PIN.",
-            value = newPin, onValueChange = { newPin = it; error = null },
-            error = error, busy = false, cta = "Next",
-            ctaEnabled = newPin.length == VOIID_PIN_LENGTH,
+    if (phrase == null) {
+        BackupScaffold(title = "Remove old PIN", onBack = onBack) {
+            Text("Backup isn't set up on this device.", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
+        }
+        return
+    }
+    if (!verifying) {
+        RecoveryPhraseScreen(
+            phrase = phrase,
+            confirmed = written,
+            onToggleConfirmed = { written = !written },
+            error = null,
+            busy = false,
+            cta = "Next",
+            ctaEnabled = written,
             onBack = onBack,
-            onSubmit = { confirming = true; error = null },
+            onSubmit = { verifying = true },
         )
     } else {
-        PinEntryScreen(
-            title = "Confirm new PIN",
-            subtitle = "Enter the new PIN again.",
-            value = confirm, onValueChange = { confirm = it; error = null },
-            error = error, busy = busy, cta = if (busy) "Saving…" else "Save",
-            ctaEnabled = confirm.length == VOIID_PIN_LENGTH && !busy,
-            onBack = { confirming = false; confirm = ""; error = null },
-            onSubmit = {
-                if (confirm != newPin) { error = "PINs don't match."; confirm = ""; return@PinEntryScreen }
+        PhraseVerifyScreen(
+            phrase = phrase,
+            busy = busy,
+            error = error,
+            cta = if (busy) "Removing…" else "Remove old PIN",
+            onBack = { verifying = false; error = null },
+            onVerified = {
                 busy = true; error = null
                 scope.launch {
                     try {
-                        manager.changePin(newPin)
+                        manager.retireLegacyPin()
                         onDone()
                     } catch (e: Exception) {
-                        error = e.message ?: "Couldn't change PIN."
+                        error = e.message ?: "Couldn't remove the old PIN. Try again."
                     }
                     busy = false
                 }

@@ -42,12 +42,31 @@
 // counted server-side, rate-limited, and visible. This bounds harvesting and makes
 // it observable. It does NOT make offline guessing hard.
 //
-// S04 IS NOT CLOSED BY THIS FILE. Closing it needs a reviewed design — a
-// high-entropy recovery secret, or a server-assisted protocol (OPRF/SVR) that
-// enforces attempts without handing out an offline verifier — and S04 states
-// explicitly that a cryptographic reviewer must approve it and that this is a
-// release gate. What is done here is code-level only: the false claims are gone,
-// the counters are atomic, and the one unforgeable signal is recorded.
+// ── THE DESIGN NOW (S04): THE PIN WRAP IS RETIRED ─────────────────────────────
+//
+// S04 offered two reviewed ways out: a high-entropy recovery secret, or a
+// server-assisted protocol (OPRF/SVR). The first is taken, because it needs NO new
+// cryptography — the 24-word BIP39 phrase (256 bits, generated on-device, never
+// sent here) already exists and is already the recovery path with real strength.
+//
+//   * NEW PIN WRAPS ARE REFUSED (PUT /key → 410). The apps no longer create one:
+//     backup setup shows the phrase and makes the person prove they wrote it down.
+//     No new offline-guessable envelope is ever written.
+//   * OLD WRAPS STILL RESTORE (GET /key, metered as before) — the versioned
+//     migration S04 requires, so nobody's existing backup is stranded. After a
+//     restore, and from Settings, the app deletes the wrap (DELETE /key) once the
+//     person has saved their phrase, shrinking what a stolen token or database
+//     can reach toward nothing.
+//   * GET /status says whether a wrap exists WITHOUT handing it out, so the app can
+//     decide to offer the PIN at all without counting as a fetch.
+//
+// VOIID_RECOVERY_PIN_WRAPS=legacy re-enables PUT for a deployment that still has
+// clients creating wraps. It exists for rollouts and tests, not as a product mode.
+//
+// What remains for review is the phrase path itself (BIP39 + AES-256-GCM in
+// e2e-core recovery.rs) — standard primitives, unchanged, and still marked pending
+// external cryptographic review there. This change removes the weak path; it does
+// not certify the strong one.
 import { Router } from 'express';
 import { query } from '../db';
 import { requireAuth } from '../auth';
@@ -84,6 +103,13 @@ const FETCH_COOLDOWN_SECONDS = 24 * 60 * 60;
 // `wrapped_key`). Storing a new wrap resets the failure counter + clears any lock.
 router.put('/key', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
+  // Retired (see the header). A new wrap would be a new offline-guessable envelope.
+  if (process.env.VOIID_RECOVERY_PIN_WRAPS !== 'legacy') {
+    return res.status(410).json({
+      error: 'PIN backup has been replaced by your recovery phrase. Update Voiid and save your phrase.',
+      code: 'pin_recovery_retired',
+    });
+  }
   const wrapped = req.body?.wrapped_key ?? req.body;
   if (!isValidWrappedKey(wrapped)) {
     return res.status(400).json({ error: 'invalid wrapped_key (expected { version:int, salt, nonce, ciphertext } as base64)' });
@@ -102,6 +128,22 @@ router.put('/key', requireAuth, asyncHandler(async (req, res) => {
     [user_id, JSON.stringify(value)]
   );
   res.json({ stored: true });
+}));
+
+// GET /recovery/status — does a legacy PIN wrap exist? Answers WITHOUT returning
+// it, so it is not a fetch: the app uses it to decide whether to offer a PIN at all.
+router.get('/status', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const rows = await query(`select 1 from recovery_keys where user_id = $1`, [user_id]);
+  res.json({ has_pin_wrap: rows.length > 0 });
+}));
+
+// DELETE /recovery/key — remove the caller's legacy PIN wrap. Called once the person
+// has saved their recovery phrase. Only ever shrinks what can be attacked.
+router.delete('/key', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const rows = await query(`delete from recovery_keys where user_id = $1 returning user_id`, [user_id]);
+  res.json({ deleted: rows.length > 0 });
 }));
 
 // GET /recovery/key — return the stored wrap so the caller can attempt PIN unwrap.

@@ -16,7 +16,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | S01 | P0 | Authorize receipt reads and writes | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S02 | P0 | Validate sender and recipient devices on all message paths | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S03 | P0 | Make revocation persistent and device-bound | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
-| S04 | P0 | Replace the false recovery lockout security boundary | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO (code-level half done; **release gate**, needs cryptographic reviewer) |
+| S04 | P0 | Replace the false recovery lockout security boundary | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | IMPLEMENTED_UNVERIFIED (PIN wrap retired; phrase-only recovery; **cryptographic review still required**) |
 | A03 | P1 | Support java.time on API 24/25 | Confirmed configuration gap | [06](06-ANDROID-DURABILITY.md) | DONE |
 | A04 | P1 | Remove destructive Room upgrade fallback | Confirmed policy risk | [06](06-ANDROID-DURABILITY.md) | DONE |
 | C02 | P1 | Make worker health reflect returned failures and staleness | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | IMPLEMENTED_UNVERIFIED |
@@ -1388,6 +1388,14 @@ The table above supersedes historical completion records below it. A02/M01/C02/C
   - `POST /recovery/attempt-result` with `success:true` **still clears the counter**, by design — it is left because removing it would not create a boundary, only break honest clients' backoff. The asymmetry is now documented at the call site rather than hidden.
   - A stolen database gets every envelope at once, with no fetch metering whatsoever.
   - **Not done:** selecting a reviewed recovery design (high-entropy secret, or a server-assisted OPRF/SVR that never exposes an offline verifier); the versioned migration keeping old backups restorable through it; stronger authorization before replacing recovery material. Per S04, *"this is a release gate, not a task an AI should claim to have cryptographically certified"* — and this entry makes no such claim.
+
+### S04 — design taken (24 Sep 2026)
+
+- **Chosen option: the high-entropy recovery secret.** The 24-word BIP39 phrase already existed and is 256 bits; the weak path was the server-stored PIN wrap (~20–27 bits). Taking this option needs **no new cryptography** — it removes a path rather than adding a protocol.
+- **Server:** `PUT /recovery/key` answers 410 unless `VOIID_RECOVERY_PIN_WRAPS=legacy` (rollout/test switch). `GET /recovery/status` reports whether a wrap exists without handing it out. `DELETE /recovery/key` removes one. `GET /recovery/key` is unchanged and still metered, so **old backups restore** — the versioned migration S04 requires.
+- **Apps (iOS + Android):** setup shows the phrase and makes the person type back three words (one per third) before anything depends on it; no PIN is created. "Change PIN" is gone. An account that still has a wrap sees "Remove old backup PIN", which shows and checks the phrase, then deletes the wrap. Restore opens on the phrase; the PIN page appears only when a legacy wrap exists.
+- **What this does for the named cases:** *stolen token* — for any account set up or migrated after this, there is no envelope to fetch. *Stolen database* — same. Legacy accounts remain exposed until they remove their wrap, which the app now prompts.
+- **Still open, and why this is not DONE:** no cryptographer has reviewed the phrase path (BIP39 + AES-256-GCM backup encryption) or this migration. A future sweep that deletes remaining wraps after a notice period is a product decision, not taken here.
 
 ## E01 — Reconcile crypto assurances with current code and executable gates
 

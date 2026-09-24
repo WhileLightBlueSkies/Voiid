@@ -7,7 +7,6 @@ import uniffi.voiid.generateMasterSecret
 import uniffi.voiid.masterSecretToPhrase
 import uniffi.voiid.phraseToMasterSecret
 import uniffi.voiid.unwrapMasterSecretWithPin
-import uniffi.voiid.wrapMasterSecretWithPin
 
 /**
  * High-level backup / recovery orchestration — ties the FFI crypto to the network
@@ -47,19 +46,18 @@ class BackupManager(context: Context) {
     }
 
     /**
-     * Commit a new backup: PIN-wrap the secret → PUT /recovery/key → persist the secret
-     * locally → run the first backup. Throws on any failure (nothing half-persisted:
-     * we save locally only after the key upload succeeds).
+     * Commit a new backup once the person has proved they wrote the phrase down: persist the
+     * secret locally → run the first backup. The 24-word phrase is the ONLY way back in — no
+     * PIN wrap is created (S04). Any wrap left by an older version is deleted, best-effort.
      */
-    suspend fun finalizeSetup(secret: ByteArray, pin: String) {
+    suspend fun finalizeSetup(secret: ByteArray) {
         if (!hasDestination()) throw ApiError.Http(0, "Choose a backup location first.")
         if (store.loadMasterSecret()?.contentEquals(secret) != true &&
             (backup.fetchBackupMeta() != null || (drive.isSignedIn() && drive.fetchBackupMeta() != null))) {
             throw ApiError.Http(409, "A backup already exists. Restore it before setting up a new backup.")
         }
-        val wrapped = wrapMasterSecretWithPin(secret, pin)
-        recovery.putKey(wrapped)
         store.saveMasterSecret(secret)
+        runCatching { recovery.deleteKey() }
         runBackup(secret)
     }
 
@@ -130,12 +128,11 @@ class BackupManager(context: Context) {
     fun recoveryPhrase(): String? =
         store.loadMasterSecret()?.let { masterSecretToPhrase(it) }
 
-    /** Re-wrap the local secret under a NEW PIN and upload it (Change PIN). */
-    suspend fun changePin(newPin: String) {
-        val secret = store.loadMasterSecret()
-            ?: throw ApiError.Http(0, "Set up backup first.")
-        recovery.putKey(wrapMasterSecretWithPin(secret, newPin))
-    }
+    /** Whether an old PIN-protected copy of the key is still on the server (pre-S04). */
+    suspend fun hasLegacyPin(): Boolean = runCatching { recovery.hasPinWrap() }.getOrDefault(false)
+
+    /** Delete that copy, after the person has saved their phrase. */
+    suspend fun retireLegacyPin() = recovery.deleteKey()
 
     // MARK: - Restore (returning user on a new device)
 

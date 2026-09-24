@@ -26,7 +26,9 @@ struct BackupRecoveryView: View {
     @State private var showRestore = false
     @State private var showSetup = false
     @State private var showPhrase = false
-    @State private var showChangePin = false
+    /// An old PIN-protected copy of the key still on the server (from before S04).
+    @State private var legacyPin = false
+    @State private var showRetirePin = false
     @State private var schedulePicker: BackupSchedulePicker.Page?
 
     // iCloud destination for the SAME encrypted blob.
@@ -62,7 +64,7 @@ struct BackupRecoveryView: View {
 
                     statusCard
                     if !loadingStatus, hasRestorableBackup {
-                        VoiidCardSection("Backup available", footer: "Restore saved chats using your backup PIN or recovery phrase. Your current chats are kept.") {
+                        VoiidCardSection("Backup available", footer: "Restore saved chats using your recovery phrase. Your current chats are kept.") {
                             actionRow(title: "Restore chats", system: "arrow.down.circle", enabled: !backingUp) {
                                 showRestore = true
                             }
@@ -78,8 +80,12 @@ struct BackupRecoveryView: View {
                         scheduleCard
                         VoiidCardSection {
                             actionRow(title: "View recovery phrase", system: "key") { showPhrase = true }
-                            VoiidRowDivider()
-                            actionRow(title: "Change PIN", system: "lock.rotation") { showChangePin = true }
+                        }
+                        if legacyPin {
+                            VoiidCardSection("Make your backup safer",
+                                             footer: "Your backup can still be opened with an old PIN. A short PIN can be guessed; your 24-word recovery phrase can’t. Save your phrase, then remove the PIN.") {
+                                actionRow(title: "Remove old backup PIN", system: "lock.slash") { showRetirePin = true }
+                            }
                         }
                     } else {
                         VoiidCardSection {
@@ -95,7 +101,7 @@ struct BackupRecoveryView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    Text("Your messages are encrypted on this device before backup. Only your PIN or recovery phrase can restore them — VOIID can’t read your backup or recover it for you.")
+                    Text("Your messages are encrypted on this device before backup. Only your 24-word recovery phrase can restore them — VOIID can’t read your backup or recover it for you. Keep it somewhere safe.")
                         .font(.footnote)
                         .foregroundColor(VoiidColor.textSecondary)
                         .padding(.horizontal, 4)
@@ -119,7 +125,10 @@ struct BackupRecoveryView: View {
             }
         }
         .sheet(isPresented: $showPhrase) { RecoveryPhraseSheet() }
-        .sheet(isPresented: $showChangePin) { ChangePinSheet { flash("PIN changed") } }
+        .sheet(isPresented: $showRetirePin, onDismiss: { Task { legacyPin = await manager.hasLegacyPin() } }) {
+            RetirePinFlow { flash("Old PIN removed") }
+        }
+        .task { legacyPin = await manager.hasLegacyPin() }
         .sheet(item: $schedulePicker) { page in
             BackupSchedulePicker(page: page, manager: manager)
         }
@@ -510,15 +519,21 @@ private struct ToastBanner: View {
     }
 }
 
-// MARK: - Setup flow (PIN → recovery phrase → first backup)
+// MARK: - Setup flow (recovery phrase → confirm it → first backup)
 
+/// Setting up backup: the 24-word phrase, proof it was written down, then the first backup.
+///
+/// THE PHRASE IS THE ONLY WAY BACK IN (S04). There used to be a PIN here too, whose wrapped
+/// key sat on the server — and a 6-digit PIN is ~20 bits, so anyone who obtained that copy
+/// could try every PIN offline. It is gone. That makes the phrase load-bearing, which is why
+/// setup asks for three of its words back: "I've written it down" alone is a button people
+/// press without writing anything down.
 struct BackupSetupFlow: View {
     let onDone: () -> Void
     @Environment(\.dismiss) private var dismiss
 
-    private enum Step { case pin, phrase, working }
-    @State private var step: Step = .pin
-    @State private var pin = ""
+    private enum Step { case phrase, confirm, working }
+    @State private var step: Step = .phrase
     @State private var secret = Data()
     @State private var phrase = ""
     @State private var errorText: String?
@@ -528,54 +543,151 @@ struct BackupSetupFlow: View {
             ZStack {
                 VoiidBackground()
                 switch step {
-                case .pin:
-                    PinChooseView(title: "Choose a backup PIN",
-                                  subtitle: "You’ll enter this PIN to restore your chats on a new device. Use 8 digits.",
-                                  errorText: errorText) { chosen in
-                        beginPhrase(pin: chosen)
-                    }
                 case .phrase:
-                    RecoveryPhraseView(phrase: phrase, confirmTitle: "I’ve written it down") {
-                        commit()
+                    if phrase.isEmpty {
+                        ProgressView().tint(VoiidColor.primary)
+                    } else {
+                        RecoveryPhraseView(phrase: phrase, confirmTitle: "I’ve written it down") {
+                            withAnimation(.easeOut(duration: 0.2)) { step = .confirm }
+                        }
                     }
+                case .confirm:
+                    PhraseConfirmView(phrase: phrase,
+                                      onBack: { withAnimation(.easeOut(duration: 0.2)) { step = .phrase } },
+                                      onConfirmed: { commit() })
                 case .working:
                     VStack(spacing: VoiidSpacing.md) {
                         ProgressView().tint(VoiidColor.primary)
                         Text("Setting up backup…").font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
                         if let errorText {
                             Text(errorText).font(VoiidFont.footnote).foregroundColor(VoiidColor.error)
+                                .multilineTextAlignment(.center)
                             Button("Try again") { commit() }.font(VoiidFont.headline).foregroundColor(VoiidColor.primary)
                         }
                     }
+                    .padding(VoiidSpacing.lg)
                 }
             }
-            .navigationTitle("Set up backup")
+            .navigationTitle(step == .confirm ? "Check your phrase" : "Set up backup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
         .interactiveDismissDisabled(step == .working)
-    }
-
-    private func beginPhrase(pin chosen: String) {
-        do {
-            let made = try BackupManager.shared.newSecretAndPhrase()
-            secret = made.secret; phrase = made.phrase; pin = chosen; errorText = nil
-            step = .phrase
-        } catch {
-            errorText = "Couldn’t generate a recovery phrase. Please try again."
+        .task {
+            guard phrase.isEmpty else { return }
+            do {
+                let made = try BackupManager.shared.newSecretAndPhrase()
+                secret = made.secret; phrase = made.phrase
+            } catch {
+                errorText = "Couldn’t generate a recovery phrase. Please try again."
+                step = .working
+            }
         }
     }
 
     private func commit() {
+        guard !phrase.isEmpty else { dismiss(); return }
         step = .working; errorText = nil
         Task {
             do {
-                try await BackupManager.shared.commitSetup(secret: secret, pin: pin)
+                try await BackupManager.shared.commitSetup(secret: secret)
+                Haptics.success()
                 onDone()
             } catch {
                 errorText = (error as? APIError)?.errorDescription ?? error.localizedDescription
                 Haptics.error()
             }
+        }
+    }
+}
+
+/// Three words of the phrase, typed back, before anything depends on it.
+///
+/// Positions are picked at random from across the phrase (one from each third), so the check
+/// cannot be passed by remembering the first line. Typing is forgiving about case and spaces,
+/// strict about the word.
+struct PhraseConfirmView: View {
+    let phrase: String
+    var onBack: () -> Void
+    var onConfirmed: () -> Void
+
+    @State private var positions: [Int] = []
+    @State private var answers: [String] = ["", "", ""]
+    @State private var wrong: Set<Int> = []
+    @FocusState private var focused: Int?
+
+    private var words: [String] { phrase.split(separator: " ").map(String.init) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Type these words from your phrase")
+                        .font(VoiidFont.rounded(20, .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                    Text("This is the only way to restore your chats on a new phone, so it’s worth one check.")
+                        .font(VoiidFont.subhead)
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+
+                ForEach(Array(positions.enumerated()), id: \.offset) { index, position in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Word \(position + 1)")
+                            .font(VoiidFont.rounded(13, .semibold))
+                            .foregroundColor(VoiidColor.textSecondary)
+                        TextField("", text: $answers[index], prompt: Text("word \(position + 1)").foregroundColor(VoiidColor.placeholder))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textContentType(.oneTimeCode)
+                            .focused($focused, equals: index)
+                            .submitLabel(index == 2 ? .done : .next)
+                            .onSubmit { if index < 2 { focused = index + 1 } else { check() } }
+                            .font(VoiidFont.rounded(17))
+                            .foregroundColor(VoiidColor.textPrimary)
+                            .padding(.horizontal, 14)
+                            .frame(height: 48)
+                            .background(VoiidColor.fieldFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(wrong.contains(index) ? VoiidColor.error : VoiidColor.divider, lineWidth: 1))
+                            .onChange(of: answers[index]) { _, _ in wrong.remove(index) }
+                        if wrong.contains(index) {
+                            Text("That’s not word \(position + 1).")
+                                .font(VoiidFont.footnote)
+                                .foregroundColor(VoiidColor.error)
+                        }
+                    }
+                }
+
+                VoiidPrimaryButton(title: "Confirm",
+                                   enabled: answers.allSatisfy { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                    check()
+                }
+                Button("Show the phrase again") { Haptics.tap(); onBack() }
+                    .font(VoiidFont.rounded(15, .semibold))
+                    .foregroundColor(VoiidColor.accentInk)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(VoiidSpacing.lg)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .onAppear {
+            guard positions.isEmpty, words.count >= 3 else { return }
+            let third = words.count / 3
+            positions = (0..<3).map { Int.random(in: ($0 * third)..<(($0 + 1) * third)) }
+            focused = 0
+        }
+    }
+
+    private func check() {
+        wrong = Set(positions.indices.filter { i in
+            answers[i].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != words[positions[i]].lowercased()
+        })
+        if wrong.isEmpty {
+            Haptics.success()
+            onConfirmed()
+        } else {
+            Haptics.error()
+            focused = wrong.min()
         }
     }
 }
@@ -611,38 +723,76 @@ struct RecoveryPhraseSheet: View {
     }
 }
 
-// MARK: - Change PIN
+// MARK: - Remove the old PIN
 
-struct ChangePinSheet: View {
+/// For an account whose key still has an old PIN-protected copy on the server: show the
+/// phrase, check it, then delete that copy. After this only the phrase restores the backup —
+/// which is exactly the point, and why the phrase is checked first.
+struct RetirePinFlow: View {
     let onDone: () -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var working = false
+
+    private enum Step { case phrase, confirm, working }
+    @State private var step: Step = .phrase
+    @State private var phrase: String?
     @State private var errorText: String?
 
     var body: some View {
         NavigationStack {
             ZStack {
                 VoiidBackground()
-                PinChooseView(title: "Choose a new PIN",
-                              subtitle: "Enter and confirm an 8-digit PIN. Your recovery phrase and saved chats stay the same.",
-                              errorText: errorText, submitTitle: "Set PIN", busy: working) { pin in change(to: pin) }
-
+                if let phrase {
+                    switch step {
+                    case .phrase:
+                        RecoveryPhraseView(phrase: phrase, confirmTitle: "I’ve saved my phrase") {
+                            withAnimation(.easeOut(duration: 0.2)) { step = .confirm }
+                        }
+                    case .confirm:
+                        PhraseConfirmView(phrase: phrase,
+                                          onBack: { withAnimation(.easeOut(duration: 0.2)) { step = .phrase } },
+                                          onConfirmed: { retire() })
+                    case .working:
+                        VStack(spacing: VoiidSpacing.md) {
+                            ProgressView().tint(VoiidColor.primary)
+                            Text("Removing the old PIN…").font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
+                            if let errorText {
+                                Text(errorText).font(VoiidFont.footnote).foregroundColor(VoiidColor.error)
+                                    .multilineTextAlignment(.center)
+                                Button("Try again") { retire() }.font(VoiidFont.headline).foregroundColor(VoiidColor.primary)
+                            }
+                        }
+                        .padding(VoiidSpacing.lg)
+                    }
+                } else if let errorText {
+                    Text(errorText).font(VoiidFont.subhead).foregroundColor(VoiidColor.error).padding()
+                } else {
+                    ProgressView().tint(VoiidColor.primary)
+                }
             }
-            .navigationTitle("Change PIN")
+            .navigationTitle("Remove old PIN")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(working) } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(step == .working) } }
         }
-        .interactiveDismissDisabled(working)
+        .interactiveDismissDisabled(step == .working)
+        .task {
+            do {
+                phrase = try BackupManager.shared.currentPhrase()
+                if phrase == nil { errorText = "Backup isn’t set up on this device." }
+            } catch { errorText = "Couldn’t load your recovery phrase." }
+        }
     }
 
-    private func change(to pin: String) {
-        guard !working else { return }
-        working = true; errorText = nil
+    private func retire() {
+        step = .working; errorText = nil
         Task {
-            do { try await BackupManager.shared.changePin(newPin: pin); onDone(); dismiss() }
-            catch {
+            do {
+                try await BackupManager.shared.retireLegacyPin()
+                Haptics.success()
+                onDone()
+                dismiss()
+            } catch {
                 errorText = (error as? APIError)?.errorDescription ?? error.localizedDescription
-                working = false; Haptics.error()
+                Haptics.error()
             }
         }
     }

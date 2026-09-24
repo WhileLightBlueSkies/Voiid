@@ -129,68 +129,6 @@ struct PinField: View {
     }
 }
 
-/// Choose a PIN, entered twice for confirmation. Calls `onSubmit(pin)` only when both
-/// entries match and satisfy the length rule.
-struct PinChooseView: View {
-    let title: String
-    let subtitle: String
-    var errorText: String?
-    var submitTitle: String = "Continue"
-    var busy: Bool = false
-    let onSubmit: (String) -> Void
-
-    @State private var pin = ""
-    @State private var confirm = ""
-    @FocusState private var pinFocused: Bool
-    @FocusState private var confirmFocused: Bool
-
-    private var canSubmit: Bool { PinRules.validNew(pin) && pin == confirm && !busy }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                Text(title).font(VoiidFont.title).foregroundColor(VoiidColor.textPrimary)
-                Text(subtitle).font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
-                PinField(placeholder: "PIN", text: $pin, externalFocus: $pinFocused)
-                PinField(placeholder: "Confirm PIN", text: $confirm, externalFocus: $confirmFocused)
-                if confirm.count == PinRules.maxLen && pin != confirm { fieldError("PINs don’t match.") }
-                if pin.count == PinRules.maxLen, let reason = PinRules.rejectionReason(pin) { fieldError(reason) }
-                if let errorText { fieldError(errorText) }
-            }
-            .disabled(busy)
-            .padding(VoiidSpacing.lg)
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .onTapGesture { pinFocused = false; confirmFocused = false }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            Button {
-                guard canSubmit else { return }
-                pinFocused = false; confirmFocused = false
-                Haptics.tap(); onSubmit(pin)
-            } label: {
-                HStack(spacing: 10) {
-                    if busy { ProgressView().tint(VoiidColor.textOnPrimary) }
-                    Text(busy ? "Saving PIN…" : submitTitle).font(VoiidFont.headline)
-                }
-                .foregroundColor(VoiidColor.textOnPrimary)
-                .frame(maxWidth: .infinity)
-                .frame(height: 56)
-                .background(VoiidColor.primary.opacity(canSubmit || busy ? 1 : 0.5), in: Capsule())
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSubmit)
-            .padding(.horizontal, VoiidSpacing.lg)
-            .padding(.vertical, VoiidSpacing.md)
-            .background(VoiidColor.background)
-        }
-    }
-
-    private func fieldError(_ t: String) -> some View {
-        Text(t).font(VoiidFont.footnote).foregroundColor(VoiidColor.error)
-    }
-}
-
 /// Enter an existing PIN once (restore path). Calls `onSubmit(pin)` when the length
 /// rule is met; `errorText` shows the last failure (e.g. "wrong PIN").
 struct PinEntryView: View {

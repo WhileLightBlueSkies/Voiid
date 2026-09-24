@@ -209,10 +209,11 @@ final class BackupManager: ObservableObject {
         return (secret, phrase)
     }
 
-    /// Step 2 of setup: wrap the secret under the PIN, store the wrap server-side,
-    /// persist the secret locally, then take a first backup. Idempotent enough to
-    /// retry on transient failure.
-    func commitSetup(secret: Data, pin: String) async throws {
+    /// Step 2 of setup, once the person has proved they wrote the phrase down: persist the
+    /// secret locally and take a first backup. The phrase is the ONLY way back in — no PIN
+    /// wrap is created (S04: a short PIN wrapped key could be guessed offline by anyone who
+    /// got hold of it). Idempotent enough to retry on transient failure.
+    func commitSetup(secret: Data) async throws {
         guard !enabledDestinations.isEmpty else { throw APIError.http(status: 400, message: "Choose a backup location first.") }
         if E2EManager.shared.masterSecret() != secret {
             let serverCopy = try await status()
@@ -221,9 +222,10 @@ final class BackupManager: ObservableObject {
                 throw APIError.http(status: 409, message: "A backup already exists. Restore it before setting up a new backup.")
             }
         }
-        let wrapped = try wrapMasterSecretWithPin(secret: secret, pin: pin)
-        try await recovery.putKey(wrapped)
         try saveSecret(secret)
+        // A wrap left from an older version would still be guessable; the new phrase has
+        // replaced it. Best-effort — the backup itself does not depend on this.
+        try? await recovery.deleteKey()
         try await backupNow()
     }
 
@@ -305,15 +307,15 @@ final class BackupManager: ObservableObject {
         return try masterSecretToPhrase(secret: secret)
     }
 
-    /// Re-wrap the existing local master secret under a new PIN and store it. The
-    /// master secret (and therefore the recovery phrase + existing backup) is
-    /// unchanged — only the PIN that unlocks it changes.
-    func changePin(newPin: String) async throws {
-        guard let secret = E2EManager.shared.masterSecret() else {
-            throw APIError.http(status: 412, message: "Set up backup before changing the PIN.")
-        }
-        let wrapped = try wrapMasterSecretWithPin(secret: secret, pin: newPin)
-        try await recovery.putKey(wrapped)
+    /// Whether this account still has an old PIN-protected copy of its key on the server.
+    func hasLegacyPin() async -> Bool {
+        (try? await recovery.hasPinWrap()) ?? false
+    }
+
+    /// Delete the old PIN-protected copy, after the person has saved their phrase. From then
+    /// on only the 24-word phrase can restore their backup.
+    func retireLegacyPin() async throws {
+        try await recovery.deleteKey()
     }
 
     /// Device-local, account-scoped completion; never mark a skipped or failed restore.

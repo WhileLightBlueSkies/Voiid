@@ -8,6 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -119,6 +121,14 @@ fun RestoreFlow(    session: AppSession,
     val scope = rememberCoroutineScope()
 
     var step by remember { mutableStateOf(RestoreStep.UNLOCK) }
+    /** An old PIN-protected copy of the key (pre-S04). Only then is a PIN offered; every
+     *  newer backup restores with the recovery phrase alone. Null until the server answers. */
+    var legacyPin by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(Unit) {
+        val legacy = manager.hasLegacyPin()
+        legacyPin = legacy
+        if (!legacy && step == RestoreStep.UNLOCK) step = RestoreStep.PHRASE
+    }
     var pin by remember { mutableStateOf("") }
     var phrase by remember { mutableStateOf("") }
     var credential by remember { mutableStateOf<Credential?>(null) }
@@ -247,7 +257,11 @@ fun RestoreFlow(    session: AppSession,
     }
 
     when (step) {
-        RestoreStep.UNLOCK -> RestoreUnlockPage(
+        RestoreStep.UNLOCK -> if (legacyPin == null) {
+            Box(Modifier.fillMaxSize().background(VoiidColor.background), contentAlignment = Alignment.Center) {
+                androidx.compose.material3.CircularProgressIndicator(color = VoiidColor.primary)
+            }
+        } else RestoreUnlockPage(
             meta = meta,
             pin = pin,
             onPinChange = { pin = it.filter { c -> c in '0'..'9' }.take(RESTORE_PIN_MAX); error = null },
@@ -261,7 +275,8 @@ fun RestoreFlow(    session: AppSession,
             onChange = { phrase = it; error = null },
             error = error,
             onSubmit = { unlock(Credential.Phrase(phrase)) },
-            onBack = { error = null; step = RestoreStep.UNLOCK },
+            // No PIN to go back to on a phrase-only backup: back means "not now".
+            onBack = { error = null; if (legacyPin == true) step = RestoreStep.UNLOCK else confirmSkip = true },
         )
         RestoreStep.CHOOSE -> RestoreChoosePage(
             candidates = candidates,

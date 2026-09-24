@@ -54,10 +54,17 @@ class RecoveryService(context: Context) {
         data class Locked(val retryAfterSeconds: Long?) : KeyResult() // 429
     }
 
-    /** Upload the PIN-wrapped master secret (setup + change-PIN). */
-    suspend fun putKey(wrapped: PinWrappedSecret) {
-        val body = ApiClient.json.encodeToString(WrappedKeyDto.serializer(), WrappedKeyDto.from(wrapped))
-        api.request("PUT", "recovery/key", jsonBody = body)
+    @kotlinx.serialization.Serializable private data class StatusResp(val has_pin_wrap: Boolean = false)
+
+    /** Whether a LEGACY PIN wrap exists. Not a fetch: the server answers without handing
+     *  the wrap out, so asking never counts toward the fetch limit. New backups never make
+     *  one (S04 — a short PIN wrapped key can be guessed offline by whoever obtains it). */
+    suspend fun hasPinWrap(): Boolean =
+        ApiClient.json.decodeFromString(StatusResp.serializer(), api.request("GET", "recovery/status")).has_pin_wrap
+
+    /** Delete the legacy PIN wrap, once the person has saved their recovery phrase. */
+    suspend fun deleteKey() {
+        api.request("DELETE", "recovery/key")
     }
 
     /** Fetch the PIN-wrapped master secret. Distinguishes never-set (404) and

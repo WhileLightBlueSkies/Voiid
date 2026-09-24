@@ -56,6 +56,9 @@ test('recovery metering against PostgreSQL', { skip: !url }, async (t) => {
 
   const envelope = { version: 1, salt: 'c2FsdA==', nonce: 'bm9uY2U=', ciphertext: 'Y2lwaGVy' };
 
+  // New PIN wraps are retired (S04); this suite exercises the LEGACY envelopes that
+  // still exist, so it turns the rollout switch on for itself.
+  process.env.VOIID_RECOVERY_PIN_WRAPS = 'legacy';
   async function putKey() {
     return fetch(`${base}/recovery/key`, {
       method: 'PUT', headers: { ...auth(), 'content-type': 'application/json' },

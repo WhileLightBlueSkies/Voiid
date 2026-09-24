@@ -79,9 +79,19 @@ final class RecoveryService {
     private struct StoredResp: Decodable { let stored: Bool }
     private struct WrappedKeyResp: Decodable { let wrapped_key: PinWrappedSecretDTO }
 
-    /// Store (or replace) the PIN-wrapped master secret on the server.
-    func putKey(_ wrapped: PinWrappedSecret) async throws {
-        let _: StoredResp = try await api.request("PUT", "recovery/key", body: PinWrappedSecretDTO(wrapped))
+    /// Whether a LEGACY PIN wrap exists for this account. Not a fetch: the server answers
+    /// without handing the wrap out, so asking never counts toward the fetch limit.
+    func hasPinWrap() async throws -> Bool {
+        struct StatusResp: Decodable { let has_pin_wrap: Bool }
+        let r: StatusResp = try await api.request("GET", "recovery/status")
+        return r.has_pin_wrap
+    }
+
+    /// Remove the legacy PIN wrap from the server (S04). Called once the person has saved
+    /// their recovery phrase — new backups never create one.
+    func deleteKey() async throws {
+        struct DeletedResp: Decodable { let deleted: Bool }
+        let _: DeletedResp = try await api.request("DELETE", "recovery/key")
     }
 
     /// Fetch the PIN-wrapped master secret. Uses a raw URLSession request (not the

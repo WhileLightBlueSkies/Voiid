@@ -54,6 +54,9 @@ struct RestoreMessagesView: View {
     private enum Step: Equatable { case unlock, phrase, choose, restoring }
 
     @State private var step: Step = .unlock
+    /// Whether this account still has an old PIN-protected copy of its key (pre-S04). Only
+    /// then is a PIN offered; every newer backup restores with the recovery phrase alone.
+    @State private var legacyPin: Bool?
     @State private var errorText: String?
     @State private var busy = false
 
@@ -80,6 +83,8 @@ struct RestoreMessagesView: View {
             VoiidBrand.ground.ignoresSafeArea()
 
             switch step {
+            case .unlock where legacyPin == nil:
+                ProgressView().tint(VoiidBrand.lime)
             case .unlock:    UnlockPage(meta: meta,
                                         errorText: errorText,
                                         busy: busy,
@@ -89,7 +94,10 @@ struct RestoreMessagesView: View {
             case .phrase:    PhrasePage(errorText: errorText,
                                         busy: busy,
                                         onSubmit: { unlock(.phrase($0)) },
-                                        onBack: { guard !busy else { return }; errorText = nil; step = .unlock })
+                                        onBack: legacyPin == true
+                                            ? { guard !busy else { return }; errorText = nil; step = .unlock }
+                                            : nil,
+                                        onSkip: { guard !busy else { return }; confirmSkip = true })
             case .choose:    ChoosePage(candidates: candidates,
                                         selected: $source,
                                         errorText: errorText,
@@ -109,6 +117,11 @@ struct RestoreMessagesView: View {
         } message: { Text("Previous chats will not be restored on this device. Your saved backups stay in their current locations.") }
         .interactiveDismissDisabled(true)
         .task { await loadCandidates() }
+        .task {
+            let legacy = await BackupManager.shared.hasLegacyPin()
+            legacyPin = legacy
+            if !legacy, step == .unlock { step = .phrase }
+        }
     }
 
     // MARK: Candidates
@@ -330,24 +343,36 @@ private struct PhrasePage: View {
     let errorText: String?
     let busy: Bool
     let onSubmit: (String) -> Void
-    let onBack: () -> Void
+    /// Back to the PIN — only for an account that still has a legacy PIN backup.
+    let onBack: (() -> Void)?
+    let onSkip: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                if let onBack {
+                    Button {
+                        Haptics.tap()
+                        onBack()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 15, weight: .semibold))
+                            Text("PIN").font(VoiidFont.rounded(16))
+                        }
+                        .foregroundColor(VoiidBrand.lime)
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                }
+                Spacer()
                 Button {
                     Haptics.tap()
-                    onBack()
+                    onSkip()
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 15, weight: .semibold))
-                        Text("PIN").font(VoiidFont.rounded(16))
-                    }
-                    .foregroundColor(VoiidBrand.lime)
+                    Text("Skip").font(VoiidFont.rounded(16)).foregroundColor(VoiidBrand.textDim)
                 }
                 .buttonStyle(PressableButtonStyle())
-                Spacer()
+                .accessibilityLabel("Continue without restoring")
             }
             .padding(.horizontal, VoiidSpacing.lg)
             .padding(.top, VoiidSpacing.sm)

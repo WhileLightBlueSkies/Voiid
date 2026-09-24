@@ -41,6 +41,14 @@
 //! inherent to storing a wrap the client unwraps by itself — it is not a bug in
 //! this module, and it cannot be fixed by tuning parameters here.
 //!
+//! STATUS (24 Sep 2026): the apps no longer create PIN wraps, and the server refuses
+//! new ones (routes/recovery.ts). New backups are recoverable ONLY by the phrase —
+//! S04's "high-entropy recovery secret" option, taken because it needs no new
+//! cryptography. `wrap_with_pin` is kept solely so nothing references a missing
+//! symbol during the migration; `unwrap_with_pin` stays so LEGACY wraps still restore,
+//! after which the app deletes them. Neither this module nor that change has been
+//! reviewed by a cryptographer; the phrase path remains pending external review.
+//!
 //! Consequently: server-side attempt counters do NOT bound guessing against a wrap
 //! that has been fetched. `backend/api/src/routes/recovery.ts` carries the full
 //! threat model, including why the client-reported counter there is telemetry
