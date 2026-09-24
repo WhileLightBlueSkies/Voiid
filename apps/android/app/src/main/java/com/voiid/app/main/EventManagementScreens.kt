@@ -79,14 +79,13 @@ fun EventTicketWallet(onDismiss:()->Unit) {
      val ticket=selected
      if(ticket==null) {
       if(tickets==null&&error==null)item{CircularProgressIndicator()}
-      if(tickets?.isEmpty()==true)item{Text("No tickets yet. Register for an event to get started.")}
+      if(tickets?.isEmpty()==true)item{Text("No tickets yet.")}
       tickets?.forEach { t->item {
        val usable=t.state=="valid"&&t.order_status=="paid"&&t.event_status=="published"&&t.checked_in_at==null
        Card(onClick={error=null;selected=t},enabled=usable,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
          Text(t.title ?: "Event",style=MaterialTheme.typography.titleLarge)
-         Text("${t.people} ${if(t.people==1)"person" else "people"}")
-         Text(if(t.checked_in_at!=null)"Already checked in" else if(usable)"Show ticket →" else "Unavailable")
+         Text("${t.people} ${if(t.people==1)"person" else "people"} · ${t.statusLine()}")
         }
        }
       } }

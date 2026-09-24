@@ -93,7 +93,24 @@ class EventService(private val api: ApiClient) {
         Earnings.serializer(), api.request("GET", "communities/$communityId/wallet"))
 
     @Serializable data class Ticket(val people:Int=1, val id:String,val event_id:String,val state:String,val checked_in_at:String?=null,
-        val title:String?=null,val starts_at:String?=null,val location_text:String?=null,val event_status:String?=null,val order_status:String?=null)
+        val title:String?=null,val starts_at:String?=null,val location_text:String?=null,val event_status:String?=null,val order_status:String?=null,
+        val refund_requested_at:String?=null,val refund_reason:String?=null) {
+        /** Row subtitle, iOS EventTicketsView.subtitle: says WHY a ticket can't be used. */
+        fun statusLine():String {
+            val reason=refund_reason?.let{" · $it"}.orEmpty()
+            return when {
+                checked_in_at!=null -> "Already checked in"
+                order_status=="refunded" -> "Refunded$reason"
+                refund_requested_at!=null&&order_status=="paid" -> "Refund on the way$reason"
+                event_status=="cancelled" -> "Event cancelled"
+                state!="valid" -> "No longer valid"
+                order_status!="paid" -> "Payment not complete"
+                else -> starts_at?.let{ runCatching{java.time.Instant.parse(it).atZone(java.time.ZoneId.systemDefault())
+                    .format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM, h:mm a"))}.getOrNull() }
+                    ?: location_text ?: "Ready to scan"
+            }
+        }
+    }
     @Serializable private data class Tickets(val tickets:List<Ticket>)
     @Serializable data class TicketCode(val code:String,val expires_at:Long)
     suspend fun tickets():List<Ticket> = ApiClient.json.decodeFromString(Tickets.serializer(),api.request("GET","my/event-tickets")).tickets
