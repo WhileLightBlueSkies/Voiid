@@ -74,6 +74,7 @@ fun CommunityJoinSheet(link: CommunityLink, onScanAgain: (() -> Unit)? = null, o
     var alreadyIn by remember(link) { mutableStateOf(false) }
     var error by remember(link) { mutableStateOf<String?>(null) }
     var busy by remember(link) { mutableStateOf(false) }
+    var showing by remember(link) { mutableStateOf(true) }
     var collegeEmail by remember(link) { mutableStateOf(false) }
     var openCommunity by remember(link) { mutableStateOf(false) }
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
@@ -96,15 +97,16 @@ fun CommunityJoinSheet(link: CommunityLink, onScanAgain: (() -> Unit)? = null, o
             }
         }
     }
+    val close: () -> Unit = { if (!busy) { if (onScanAgain == null) showing = false else onDismiss() } }
     val page: @Composable () -> Unit = {
         if (openCommunity && card != null) {
             CommunityDetailView(card!!, service, onBack = { openCommunity = false }, onOpenConversation = { id ->
-                com.voiid.app.net.DeepLinkRouter.open(id, null); onDismiss()
+                com.voiid.app.net.DeepLinkRouter.open(id, null); close()
             })
         } else {
 
         QrPreviewPage("Community preview", "Here’s the community from your QR code or link.",
-            onBack = onScanAgain ?: onDismiss, busy = busy,
+            onBack = onScanAgain ?: close, busy = busy, inSheet = onScanAgain == null,
             actions = {
                 val c = card
                 if (c != null) {
@@ -115,7 +117,7 @@ fun CommunityJoinSheet(link: CommunityLink, onScanAgain: (() -> Unit)? = null, o
                         }
                         "pending" -> {
                             Notice("Request sent. You’ll get in once an admin approves it.")
-                            QrAction("Done", onClick = onDismiss)
+                            QrAction("Done", onClick = close)
                         }
                         else -> JoinArea(c, busy, error) {
                             if (!busy) { haptics.rigid(); error = null; busy = true }
@@ -140,8 +142,11 @@ fun CommunityJoinSheet(link: CommunityLink, onScanAgain: (() -> Unit)? = null, o
     }
     }
     if (onScanAgain != null) page()
-    else androidx.compose.ui.window.Dialog(onDismissRequest = { if (!busy) onDismiss() },
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false, dismissOnClickOutside = false)) { page() }
+    else com.voiid.app.ui.components.VoiidSheet(
+        visible = showing, onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+        dismissOnBack = false, tapOutsideToDismiss = !busy, dismissOnDrag = !busy,
+    ) { page() }
 
     LaunchedEffect(busy, link) {
         if (!busy) return@LaunchedEffect

@@ -419,6 +419,9 @@ private fun InCallUi(state: CallManager.CallState) {
     val isVideo = state.kind == CallKind.VIDEO
     val context = androidx.compose.ui.platform.LocalContext.current
     var showAddPerson by remember { mutableStateOf(false) }
+    var presentedAddPerson by remember { mutableStateOf(false) }
+    var pendingInvitee by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(showAddPerson) { if (showAddPerson) presentedAddPerson = true }
     // The conference roster is drawn over the call surface when there is more than one other
     // participant — see ConferenceViews.kt for why it is deliberately spare.
     val conferenceState by ConferenceManager.state.collectAsState()
@@ -595,13 +598,14 @@ private fun InCallUi(state: CallManager.CallState) {
             )
         }
 
-        if (showAddPerson) {
-            androidx.compose.ui.window.Dialog(onDismissRequest = { showAddPerson = false }) {
-                ConferenceInviteSheet(
-                    chat = androidx.lifecycle.viewmodel.compose.viewModel(),
-                    excludeUserId = state.peerUserId,
-                    onPick = { invitee ->
-                        showAddPerson = false
+        if (presentedAddPerson) {
+            com.voiid.app.ui.components.VoiidSheet(
+                visible = showAddPerson,
+                onDismiss = {
+                    showAddPerson = false
+                    presentedAddPerson = false
+                    pendingInvitee?.let { invitee ->
+                        pendingInvitee = null
                         ConferenceManager.addPerson(
                             context = context,
                             callId = state.callId,
@@ -609,6 +613,16 @@ private fun InCallUi(state: CallManager.CallState) {
                             peerUserId = state.peerUserId,
                             inviteeUserId = invitee,
                         )
+                    }
+                },
+                detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+            ) {
+                ConferenceInviteSheet(
+                    chat = androidx.lifecycle.viewmodel.compose.viewModel(),
+                    excludeUserId = state.peerUserId,
+                    onPick = { invitee ->
+                        pendingInvitee = invitee
+                        showAddPerson = false
                     },
                     onDismiss = { showAddPerson = false },
                 )

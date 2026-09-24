@@ -21,11 +21,14 @@ import com.voiid.app.ui.theme.VoiidFont
 @Composable
 internal fun QrPreviewPage(
     title: String, subtitle: String, onBack: () -> Unit, busy: Boolean = false,
+    inSheet: Boolean = false,
     actions: @Composable ColumnScope.() -> Unit = {},
     content: @Composable ColumnScope.() -> Unit,
 ) {
     BackHandler { if (!busy) onBack() }
-    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().navigationBarsPadding().imePadding()) {
+    Column(Modifier.fillMaxSize().background(VoiidColor.background)
+        .then(if (inSheet) Modifier else Modifier.statusBarsPadding().navigationBarsPadding())
+        .imePadding()) {
         VoiidCircleBack(onBack = { if (!busy) onBack() })
         Column(
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp),
