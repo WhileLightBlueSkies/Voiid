@@ -29,7 +29,7 @@ import CoreImage
 
 private enum RecorderTab: String, CaseIterable { case faces = "Faces", filters = "Filters" }
 
-private extension ClipFaceEffect {
+extension ClipFaceEffect {
     /// The tray shows faces, not symbols — the reference's emoji glyphs.
     var glyph: String {
         switch self {
