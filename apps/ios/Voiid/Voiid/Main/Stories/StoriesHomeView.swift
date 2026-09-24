@@ -116,14 +116,15 @@ struct StoriesHomeView: View {
                         .accessibilityAddTraits(.isHeader)
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    NavigationLink { MomentsPrivacyView() } label: {
-                        Image(systemName: "person.2.badge.gearshape")
-                    }
-                    .accessibilityLabel("Moments privacy")
                     NavigationLink { StoryArchiveView() } label: {
                         Image(systemName: "archivebox")
                     }
                     .accessibilityLabel("Archive")
+                    // Moments' OWN settings — who sees them, receipts, archive — not the app's.
+                    NavigationLink { MomentsPrivacyView() } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Moments settings")
                 }
             }
             .onAppear {

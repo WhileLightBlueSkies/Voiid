@@ -15,7 +15,8 @@
 //  It applies to NEW moments. One already shared was encrypted for the people it went to; it
 //  cannot be taken back from them, and the footer says so rather than implying it.
 //
-//  Reached from Settings → Privacy → Moments, the Moments header, and the composer.
+//  Reached from the gear on the Moments tab (Moments settings), Settings → Privacy → Moments,
+//  and the composer.
 //
 
 import SwiftUI
@@ -32,8 +33,8 @@ struct MomentsPrivacyView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                VoiidSettingsHeader("Moments privacy",
-                                    subtitle: "Choose who sees the moments you share.",
+                VoiidSettingsHeader("Moments settings",
+                                    subtitle: "Choose who sees the moments you share, and what's kept.",
                                     badge: (icon: "lock.fill", text: "End-to-end encrypted"))
 
                 audienceSection
@@ -44,6 +45,16 @@ struct MomentsPrivacyView: View {
                 }
 
                 viewingSection
+
+                VoiidCardSection {
+                    NavigationLink { StoryArchiveView() } label: {
+                        VoiidSettingsRow(icon: "archivebox", title: "Archive",
+                                         detail: "Your moments kept after 24 hours") {
+                            VoiidChevron()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(VoiidSpacing.md)
             .animation(.easeOut(duration: 0.2), value: settings.audienceMode)
@@ -52,7 +63,7 @@ struct MomentsPrivacyView: View {
         .foregroundStyle(VoiidColor.textPrimary)
         .fontDesign(.rounded)
         .voiidSettingsPage()
-        .navigationTitle("Moments privacy")
+        .navigationTitle("Moments settings")
         .sheet(item: $picking) { pick in
             switch pick {
             case .selected:
