@@ -332,6 +332,7 @@ fun EventGroupBooking(event:EventService.Event,onDismiss:()->Unit,onBooked:()->U
 
 @Composable
 private fun EventAdmissionScanner(event:EventService.Event,onDismiss:()->Unit,onAdmitted:(Int)->Unit) {
+ var showing by remember { mutableStateOf(true) }
  val ctx=LocalContext.current
  val haptics=com.voiid.app.ui.components.LocalVoiidHaptics.current
  val service=remember{EventService(ApiClient(TokenStore.get(ctx)))}
@@ -348,10 +349,14 @@ private fun EventAdmissionScanner(event:EventService.Event,onDismiss:()->Unit,on
  var people by remember{mutableStateOf(0)}
  LaunchedEffect(Unit){if(!allowed)permission.launch(android.Manifest.permission.CAMERA)}
  LaunchedEffect(lifecycleOwner){lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED){active=true;try{kotlinx.coroutines.awaitCancellation()}finally{active=false}}}
- Dialog(onDismissRequest={if(!busy)onDismiss()},properties=DialogProperties(usePlatformDefaultWidth=false)) {
+ com.voiid.app.ui.components.VoiidSheet(
+  visible=showing,onDismiss=onDismiss,
+  detents=listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+  dismissOnBack=!busy,tapOutsideToDismiss=!busy,dismissOnDrag=!busy,
+ ) {
   Surface(Modifier.fillMaxSize(),color=VoiidColor.background) {
-   Column(Modifier.statusBarsPadding().navigationBarsPadding().padding(20.dp),verticalArrangement=Arrangement.spacedBy(20.dp)) {
-    Row(verticalAlignment=Alignment.CenterVertically){Text("Check-in desk",Modifier.weight(1f),style=MaterialTheme.typography.headlineSmall);TextButton(enabled=!busy,onClick=onDismiss){Text("Done")}}
+   Column(Modifier.fillMaxSize().padding(20.dp),verticalArrangement=Arrangement.spacedBy(20.dp)) {
+    Row(verticalAlignment=Alignment.CenterVertically){Text("Check-in desk",Modifier.weight(1f),style=MaterialTheme.typography.headlineSmall);TextButton(enabled=!busy,onClick={showing=false}){Text("Done")}}
     Text(event.title,style=MaterialTheme.typography.titleLarge)
     if(allowed&&!cameraError) Box(Modifier.fillMaxWidth().weight(1f)) {
      CameraFeed(scanning=active&&!busy&&!latched,onCamera={},onError={cameraError=true},onDecoded={value->
