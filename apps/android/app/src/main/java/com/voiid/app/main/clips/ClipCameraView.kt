@@ -68,6 +68,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PhotoLibrary
+import kotlinx.coroutines.launch
+import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -231,7 +235,10 @@ fun ClipCameraView(
     // wall-clock would sail past the backend's 90s limit and be rejected only at post.
     val liveOutputMs = if (speed <= 0f) liveMs else (liveMs / speed).toLong()
     val totalMs = bankedMs + liveOutputMs
-    val capMs = maxSeconds * 1000L
+    // The clip's length, chosen under the shutter (15s / 30s / 60s / 2m). Defaults to the whole
+    // allowance: the shorter lengths are a choice, not a limit to discover mid-take.
+    var lengthSeconds by remember { mutableStateOf(maxSeconds) }
+    val capMs = lengthSeconds * 1000L
 
     // Audio is recorded only if the permission was actually granted. Asking CameraX for audio
     // without it throws at start; a clip with no sound beats a camera that refuses to record.
@@ -471,6 +478,67 @@ fun ClipCameraView(
         }
     }
 
+    // ── Recorder design (Voiid Ui, Chat/ClipRecorderScreen.swift; iOS ClipRecorderView) ──
+    // The frame is the screen: tools in a column on the right, effects and upload bottom-left,
+    // the shutter in the middle with the clip's progress on its ring, undo and next on the right.
+    var lockedTake by remember { mutableStateOf(false) }
+    var showSpeed by remember { mutableStateOf(false) }
+    var showGrid by remember { mutableStateOf(false) }
+    var timerSeconds by remember { mutableStateOf(0) }
+    var countdown by remember { mutableStateOf<Int?>(null) }
+    var showEffects by remember { mutableStateOf(false) }
+    var effectsTab by remember { mutableStateOf(0) }   // 0 faces, 1 filters
+    var filterThumbs by remember { mutableStateOf<Map<ClipFilter, Bitmap>>(emptyMap()) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var countdownJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    val lengths = remember(maxSeconds) { listOf(15, 30, 60, 120).filter { it <= maxSeconds } }
+
+    LaunchedEffect(isRecording) { if (!isRecording) lockedTake = false }
+
+    fun startCountdown() {
+        countdownJob?.cancel()
+        countdownJob = scope.launch {
+            for (n in timerSeconds downTo 1) {
+                countdown = n
+                haptics.tap()
+                delay(1000)
+            }
+            countdown = null
+            timerSeconds = 0          // one take per countdown — the timer is for getting into shot
+            lockedTake = true
+            showSpeed = false
+            startRecording()
+        }
+    }
+
+    fun openEffects() {
+        showEffects = true
+        // The look thumbnails are YOUR shot in each look, taken from the live frame now.
+        val frame = runCatching { previewView.bitmap }.getOrNull() ?: return
+        scope.launch(Dispatchers.Default) {
+            val scale = 160f / maxOf(frame.width, 1)
+            val small = Bitmap.createScaledBitmap(frame, (frame.width * scale).toInt().coerceAtLeast(1),
+                (frame.height * scale).toInt().coerceAtLeast(1), true)
+            val thumbs = ClipFilter.entries.associateWith { f ->
+                val m = f.colorMatrix() ?: return@associateWith small
+                val out = Bitmap.createBitmap(small.width, small.height, Bitmap.Config.ARGB_8888)
+                android.graphics.Canvas(out).drawBitmap(small, 0f, 0f,
+                    Paint().apply { colorFilter = ColorMatrixColorFilter(m) })
+                out
+            }
+            withContext(Dispatchers.Main) { filterThumbs = thumbs }
+        }
+    }
+
+    // The shutter's press handler outlives recompositions (it is suspended mid-press), so it
+    // reads the live state and actions through these rather than capturing stale ones.
+    val recordingNow by androidx.compose.runtime.rememberUpdatedState(isRecording)
+    val startNow by androidx.compose.runtime.rememberUpdatedState { showSpeed = false; startRecording() }
+    val stopNow by androidx.compose.runtime.rememberUpdatedState { stopRecording() }
+    val timerNow by androidx.compose.runtime.rememberUpdatedState(timerSeconds)
+    val fullNow by androidx.compose.runtime.rememberUpdatedState(totalMs >= capMs - 50)
+    val countdownNow by androidx.compose.runtime.rememberUpdatedState(countdown)
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { previewView },
@@ -593,238 +661,311 @@ fun ClipCameraView(
             )
         }
 
-        // ── Top bar ───────────────────────────────────────────────────────────────
-        Row(
-            Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            CircleButton(Icons.Default.Close, "Close") {
-                stopRecording()
-                // Discard half-finished takes; nothing here has been handed to the composer.
-                segments.forEach { runCatching { it.file.delete() } }
-                onClose()
-            }
-            Spacer(Modifier.weight(1f))
-            if (totalMs > 0 || isRecording) {
-                // Elapsed AND the cap, so a 90s clip does not stop at what looks like an
-                // arbitrary moment with no warning it was coming.
-                Text(
-                    "%02d:%02d / %02d:%02d".format(
-                        totalMs / 60000, (totalMs / 1000) % 60,
-                        maxSeconds / 60, maxSeconds % 60,
-                    ),
-                    style = VoiidFont.rounded(15, FontWeight.SemiBold),
-                    color = Color.White,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(VoiidRadius.pill))
-                        .background(if (isRecording) VoiidColor.error else Color.Black.copy(alpha = 0.4f))
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            // Torch only where there is a lamp: front cameras mostly have none, and an
-            // always-present button that silently does nothing is worse than no button.
-            if (camera?.cameraInfo?.hasFlashUnit() == true) {
-                CircleButton(
-                    if (torchOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                    if (torchOn) "Turn off the light" else "Turn on the light",
-                    tint = if (torchOn) VoiidColor.accent else Color.White,
-                ) {
-                    haptics.tap()
-                    torchOn = !torchOn
-                    runCatching { camera?.cameraControl?.enableTorch(torchOn) }
-                }
-            }
-            // Speed toggle
-            Box(
-                Modifier
-                    .size(width = 44.dp, height = 40.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.40f))
-                    .softClickable(scale = 0.90f, enabled = !isRecording) {
-                        haptics.tap()
-                        val speeds = listOf(0.5f, 1f, 2f)
-                        val next = (speeds.indexOf(speed) + 1) % speeds.size
-                        speed = speeds[next]
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    speedLabel(speed),
-                    style = VoiidFont.rounded(12, FontWeight.Bold),
-                    color = if (speed != 1f) VoiidColor.accent else Color.White,
-                )
-            }
-            CircleButton(Icons.Default.Cameraswitch, "Flip") {
-                if (!isRecording) { haptics.tap(); lensFront = !lensFront }
-            }
-        }
 
-        // Segment progress — one tick per take, so "how much have I got, and what does undo
-        // throw away" is answerable at a glance instead of by arithmetic on a timer. Each tick
-        // is sized by the take's OUTPUT length, matching what the cap counts.
-        if (segments.isNotEmpty() || isRecording) {
-            Row(
-                Modifier.fillMaxWidth().statusBarsPadding()
-                    .padding(top = 72.dp, start = 16.dp, end = 16.dp)
-                    .height(3.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                // Durations come from each ClipTake, already measured at capture — the old
-                // single bar hid a MediaMetadataRetriever read per recomposition here, which
-                // is a main-thread file read on every frame of a recording.
-                segments.forEach { take ->
-                    SegmentTick(take.outputMs.toFloat() / capMs, Color.White)
-                }
-                if (isRecording && liveOutputMs > 0) {
-                    SegmentTick(liveOutputMs.toFloat() / capMs, VoiidColor.error)
+        if (showGrid) {
+            Canvas(Modifier.fillMaxSize()) {
+                val c = Color.White.copy(alpha = 0.3f)
+                for (i in 1..2) {
+                    val x = size.width * i / 3f
+                    val y = size.height * i / 3f
+                    drawLine(c, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
+                    drawLine(c, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
                 }
             }
         }
 
-        // Filter name, flashed centre-screen on a swipe. Not a permanent label: the point of
-        // a live filter is that you judge it by looking at the picture.
+        countdown?.let {
+            Text("$it", style = VoiidFont.rounded(110, FontWeight.Bold), color = Color.White,
+                modifier = Modifier.align(Alignment.Center))
+        }
+
+        // Filter name, flashed centre-screen on a swipe.
         if (filterLabelAlpha > 0.01f) {
-            Text(
-                filter.label,
-                style = VoiidFont.rounded(28, FontWeight.Bold),
-                color = Color.White,
-                modifier = Modifier.align(Alignment.Center).alpha(filterLabelAlpha),
-            )
+            Text(filter.label, style = VoiidFont.rounded(28, FontWeight.Bold), color = Color.White,
+                modifier = Modifier.align(Alignment.Center).alpha(filterLabelAlpha))
+        }
+
+        // ── Top: segment bar, close, timer ────────────────────────────────────────
+        Column(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp)) {
+            if (segments.isNotEmpty() || isRecording) {
+                Row(Modifier.fillMaxWidth().height(3.dp)
+                    .clip(RoundedCornerShape(VoiidRadius.pill)).background(Color.White.copy(alpha = 0.2f)),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    segments.forEach { take -> SegmentTick(take.outputMs.toFloat() / capMs, Color.White) }
+                    if (isRecording && liveOutputMs > 0) SegmentTick(liveOutputMs.toFloat() / capMs, VoiidColor.error)
+                }
+            } else {
+                Spacer(Modifier.height(3.dp))
+            }
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.fillMaxWidth()) {
+                if (!isRecording) {
+                    CircleButton(Icons.Default.Close, "Close") {
+                        stopRecording()
+                        segments.forEach { runCatching { it.file.delete() } }
+                        onClose()
+                    }
+                }
+                if (totalMs > 0 || isRecording) {
+                    Row(Modifier.align(Alignment.Center).clip(RoundedCornerShape(VoiidRadius.pill))
+                        .background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        if (isRecording) {
+                            Box(Modifier.size(7.dp).clip(CircleShape).background(VoiidColor.error))
+                            Spacer(Modifier.size(6.dp))
+                        }
+                        Text("%d:%02d / %d:%02d".format(totalMs / 60000, (totalMs / 1000) % 60,
+                            lengthSeconds / 60, lengthSeconds % 60),
+                            style = VoiidFont.rounded(14, FontWeight.SemiBold), color = Color.White)
+                    }
+                }
+            }
         }
 
         errorText?.let {
-            Text(
-                it,
-                style = VoiidFont.rounded(13),
-                color = Color.White,
-                modifier = Modifier.align(Alignment.Center)
-                    .padding(top = 96.dp)
-                    .clip(RoundedCornerShape(VoiidRadius.sm))
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            )
+            Text(it, style = VoiidFont.rounded(13), color = Color.White,
+                modifier = Modifier.align(Alignment.Center).padding(top = 96.dp)
+                    .clip(RoundedCornerShape(VoiidRadius.sm)).background(Color.Black.copy(alpha = 0.6f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp))
         }
 
-        // ── Bottom controls ───────────────────────────────────────────────────────
-        Column(
-            Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
-                .padding(bottom = 32.dp).fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            // Face filter selector — the rail every Voiid camera shares.
-            com.voiid.app.main.camera.FaceLensRail(
-                selected = faceEffect,
-                enabled = !isRecording,
-                onSelect = { effect ->
-                    faceEffect = effect
-                    faceDetector.activeEffect = effect
-                    if (effect == ClipFaceEffect.NONE) faceDetector.reset()
-                },
-            )
+        // ── Right: tool column. Fades out while recording so the shot is unobstructed. ──
+        if (!isRecording && !showEffects) {
+            Column(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 70.dp, end = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                ToolButton(Icons.Default.Cameraswitch, "Flip") { haptics.tap(); lensFront = !lensFront }
+                if (camera?.cameraInfo?.hasFlashUnit() == true) {
+                    ToolButton(if (torchOn) Icons.Default.FlashOn else Icons.Default.FlashOff, "Flash", active = torchOn) {
+                        haptics.tap()
+                        torchOn = !torchOn
+                        runCatching { camera?.cameraControl?.enableTorch(torchOn) }
+                    }
+                }
+                ToolText(if (speed == 1f) "1×" else speedLabel(speed), if (speed == 1f) "Speed" else speedLabel(speed),
+                    active = speed != 1f || showSpeed) { haptics.tap(); showSpeed = !showSpeed }
+                ToolButton(Icons.Default.Timer, if (timerSeconds == 0) "Timer" else "${timerSeconds}s", active = timerSeconds != 0) {
+                    haptics.tap()
+                    timerSeconds = when (timerSeconds) { 0 -> 3; 3 -> 10; else -> 0 }
+                }
+                ToolButton(Icons.Default.GridOn, "Grid", active = showGrid) { haptics.tap(); showGrid = !showGrid }
+            }
+        }
 
-            // Camera Zoom Rail (0.6x, 1x, 2x, 3x)
-            if (zoomPresets.size > 1) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+        // ── Bottom ────────────────────────────────────────────────────────────────
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .background(androidx.compose.ui.graphics.Brush.verticalGradient(
+                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f))))
+                .navigationBarsPadding().padding(top = 60.dp, bottom = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            if (showSpeed && !isRecording) {
+                Row(Modifier.clip(RoundedCornerShape(VoiidRadius.pill)).background(Color.Black.copy(alpha = 0.5f)).padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    SPEEDS.forEach { s ->
+                        val on = speed == s
+                        Box(Modifier.size(width = 54.dp, height = 34.dp).clip(RoundedCornerShape(VoiidRadius.pill))
+                            .background(if (on) Color.White else Color.Transparent)
+                            .softClickable(scale = 0.94f) { haptics.selection(); speed = s },
+                            contentAlignment = Alignment.Center) {
+                            Text(speedLabel(s), style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                                color = if (on) Color.Black else Color.White)
+                        }
+                    }
+                }
+            }
+            if (zoomPresets.size > 1 && !isRecording) {
+                Row(Modifier.clip(RoundedCornerShape(VoiidRadius.pill)).background(Color.Black.copy(alpha = 0.25f))
+                    .padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val lit = zoomPresets.minByOrNull { abs(it - currentZoom) }
                     zoomPresets.forEach { preset ->
-                        val isSelected = abs(currentZoom - preset) < 0.20f
-                        Box(
-                            Modifier
-                                .size(width = 48.dp, height = 36.dp)
-                                .clip(RoundedCornerShape(VoiidRadius.pill))
-                                .background(
-                                    if (isSelected) Color.White else Color.Black.copy(alpha = 0.45f)
-                                )
-                                .border(
-                                    width = if (isSelected) 0.dp else 1.dp,
-                                    color = Color.White.copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(VoiidRadius.pill),
-                                )
-                                .softClickable(scale = 0.92f) {
-                                    haptics.tap()
-                                    camera?.cameraControl?.setZoomRatio(preset.coerceIn(minZoom, maxZoom))
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                if (preset == preset.toInt().toFloat()) "${preset.toInt()}×" else "${preset}×",
-                                style = VoiidFont.rounded(13, if (isSelected) FontWeight.Bold else FontWeight.Medium),
-                                color = if (isSelected) Color.Black else Color.White,
-                            )
+                        val on = preset == lit
+                        Box(Modifier.size(42.dp).softClickable(scale = 0.92f) {
+                            haptics.selection()
+                            camera?.cameraControl?.setZoomRatio(preset.coerceIn(minZoom, maxZoom))
+                        }, contentAlignment = Alignment.Center) {
+                            Box(Modifier.size(if (on) 38.dp else 32.dp).clip(CircleShape)
+                                .background(Color.Black.copy(alpha = if (on) 0.55f else 0.3f)), contentAlignment = Alignment.Center) {
+                                val label = if (preset < 1f) ".${(preset * 10).roundToInt()}" else "${preset.toInt()}"
+                                Text(if (on) "$label×" else label, style = VoiidFont.rounded(if (on) 12 else 11, FontWeight.Bold),
+                                    color = if (on) VoiidColor.accent else Color.White)
+                            }
                         }
                     }
                 }
             }
 
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceEvenly,
-            ) {
-                // Left slot: undo the last take once there is one, otherwise the way into the
-                // gallery. Undo wins because it is the destructive-but-wanted action during a
-                // shoot; importing is a decision made before the first take, not after it.
-                Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
-                    when {
-                        segments.isNotEmpty() && !isRecording -> {
-                            CircleButton(Icons.AutoMirrored.Filled.Undo, "Undo last take") {
-                                haptics.tap()
-                                val last = segments.removeAt(segments.lastIndex)
-                                runCatching { last.file.delete() }
-                                // Re-derived from what remains rather than by subtracting the
-                                // discarded take, which would drift.
-                                bankedMs = segments.sumOf { it.outputMs }
-                            }
-                        }
-                        onPickGallery != null && !isRecording -> {
-                            GalleryButton(galleryThumb) {
-                                haptics.tap()
-                                // Unmerged takes are one tap away from being THROWN AWAY by a
-                                // library import, so they get a say: iOS asks before
-                                // replacing. With nothing banked, import straight through.
-                                if (segments.isEmpty()) onPickGallery?.invoke()
-                                else showReplaceTakes = true
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally)) {
+                    if (!isRecording) {
+                        val styled = faceEffect != ClipFaceEffect.NONE || filter != ClipFilter.NONE
+                        SideButton(Icons.Default.Face, "Effects", highlight = styled) { haptics.tap(); openEffects() }
+                        if (onPickGallery != null && segments.isEmpty()) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                GalleryButton(galleryThumb) { haptics.tap(); onPickGallery.invoke() }
+                                Text("Upload", style = VoiidFont.rounded(10, FontWeight.SemiBold), color = Color.White,
+                                    modifier = Modifier.padding(top = 4.dp))
                             }
                         }
                     }
                 }
 
-                // Shutter: tap toggles. Nobody holds a finger down for 90 seconds.
+                // Shutter. Tap: a locked take that runs until the next tap. Hold: a take that
+                // ends on release. Under a third of a second counts as a tap.
+                val progress = (totalMs.toFloat() / capMs).coerceIn(0f, 1f)
+                val ends = remember(segments.size) {
+                    var sum = 0L; segments.map { sum += it.outputMs; sum.toFloat() / capMs }
+                }
                 Box(
-                    Modifier.size(76.dp).clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.25f))
-                        .softClickable(scale = 0.9f) {
-                            haptics.tap()
-                            if (isRecording) stopRecording() else startRecording()
+                    Modifier.size(82.dp)
+                        .alpha(if (totalMs >= capMs - 50 && !isRecording) 0.5f else 1f)
+                        .pointerInput(Unit) {
+                            detectTapGestures(onPress = {
+                                if (countdownNow != null) {
+                                    countdownJob?.cancel(); countdown = null
+                                    tryAwaitRelease(); return@detectTapGestures
+                                }
+                                if (recordingNow) {
+                                    haptics.tap(); stopNow()
+                                    tryAwaitRelease(); return@detectTapGestures
+                                }
+                                if (fullNow) { tryAwaitRelease(); return@detectTapGestures }
+                                if (timerNow > 0) {
+                                    startCountdown()
+                                    tryAwaitRelease(); return@detectTapGestures
+                                }
+                                val pressedAt = System.currentTimeMillis()
+                                haptics.selection()
+                                startNow()
+                                tryAwaitRelease()
+                                if (System.currentTimeMillis() - pressedAt < 350) lockedTake = true else stopNow()
+                            })
                         },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Box(
-                        Modifier
-                            .size(if (isRecording) 34.dp else 62.dp)
-                            .clip(if (isRecording) RoundedCornerShape(VoiidRadius.sm) else CircleShape)
-                            .background(if (isRecording) VoiidColor.error else Color.White)
-                    )
+                    val ringColor = if (isRecording) VoiidColor.error else VoiidColor.accent
+                    Canvas(Modifier.fillMaxSize()) {
+                        val stroke = 5.dp.toPx()
+                        val inset = stroke / 2
+                        val arcSize = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)
+                        drawArc(Color.White.copy(alpha = 0.35f), 0f, 360f, false,
+                            topLeft = Offset(inset, inset), size = arcSize, style = Stroke(stroke))
+                        drawArc(ringColor, -90f, 360f * progress, false,
+                            topLeft = Offset(inset, inset), size = arcSize,
+                            style = Stroke(stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                        // A notch at the end of each take.
+                        ends.forEach { f ->
+                            val angle = Math.toRadians((360.0 * f) - 90.0)
+                            val r = size.width / 2 - inset
+                            val c = Offset(size.width / 2, size.height / 2)
+                            val p1 = Offset(c.x + (r - 5.dp.toPx()) * kotlin.math.cos(angle).toFloat(),
+                                c.y + (r - 5.dp.toPx()) * kotlin.math.sin(angle).toFloat())
+                            val p2 = Offset(c.x + (r + 5.dp.toPx()) * kotlin.math.cos(angle).toFloat(),
+                                c.y + (r + 5.dp.toPx()) * kotlin.math.sin(angle).toFloat())
+                            drawLine(Color.Black, p1, p2, strokeWidth = 3.dp.toPx())
+                        }
+                    }
+                    Box(Modifier.size(if (isRecording) 32.dp else 62.dp)
+                        .clip(if (isRecording) RoundedCornerShape(9.dp) else CircleShape)
+                        .background(if (isRecording) VoiidColor.error else Color.White))
                 }
 
-                // Accept what has been recorded and hand the segments to the composer, with
-                // the filter the author was actually looking at while they shot.
-                Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically) {
                     if (segments.isNotEmpty() && !isRecording) {
-                        Box(
-                            Modifier.size(48.dp).clip(CircleShape).background(VoiidColor.primary)
-                                .softClickable(scale = 0.9f) {
-                                    haptics.tap()
-                                    onDone(segments.toList(), filter)
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) { Icon(Icons.Default.Check, "Use clip", tint = VoiidColor.textOnPrimary) }
+                        SideButton(Icons.AutoMirrored.Filled.Undo, "Undo") {
+                            haptics.tap()
+                            val last = segments.removeAt(segments.lastIndex)
+                            runCatching { last.file.delete() }
+                            bankedMs = segments.sumOf { it.outputMs }
+                        }
+                        Box(Modifier.size(48.dp).clip(CircleShape).background(VoiidColor.accent)
+                            .softClickable(scale = 0.9f) { haptics.success(); onDone(segments.toList(), filter) },
+                            contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Check, "Next", tint = Color.White)
+                        }
                     }
+                }
+            }
+
+            if (segments.isEmpty() && !isRecording) {
+                Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                    lengths.forEach { s ->
+                        val on = lengthSeconds == s
+                        Column(Modifier.softClickable(scale = 0.94f) { haptics.selection(); lengthSeconds = s }
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(if (s >= 120) "2m" else "${s}s",
+                                style = VoiidFont.rounded(13, if (on) FontWeight.Bold else FontWeight.Medium),
+                                color = if (on) Color.White else Color.White.copy(alpha = 0.6f))
+                            Spacer(Modifier.height(4.dp))
+                            Box(Modifier.size(4.dp).clip(CircleShape).background(if (on) Color.White else Color.Transparent))
+                        }
+                    }
+                }
+            } else {
+                Text(if (isRecording) (if (lockedTake) "Tap to stop" else "Release to stop") else "Hold or tap to add another take",
+                    style = VoiidFont.rounded(12, FontWeight.Medium), color = Color.White.copy(alpha = 0.75f),
+                    modifier = Modifier.height(30.dp))
+            }
+        }
+
+        // ── Effects tray: faces and looks, chosen once per clip ────────────────────
+        if (showEffects) {
+            Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { showEffects = false } })
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
+                    .background(Color(0xE6161A1C))
+                    .navigationBarsPadding().padding(bottom = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.size(width = 36.dp, height = 4.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.35f)))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 60.dp)) {
+                    listOf("Faces", "Filters").forEachIndexed { i, title ->
+                        Column(Modifier.weight(1f).softClickable(scale = 0.96f) { haptics.selection(); effectsTab = i },
+                            horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(title, style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                                color = if (effectsTab == i) Color.White else Color.White.copy(alpha = 0.55f))
+                            Spacer(Modifier.height(6.dp))
+                            Box(Modifier.size(width = 24.dp, height = 2.5.dp).clip(CircleShape)
+                                .background(if (effectsTab == i) Color.White else Color.Transparent))
+                        }
+                    }
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp)) {
+                    if (effectsTab == 0) {
+                        items(ClipFaceEffect.entries.toList()) { f ->
+                            EffectCell(f.label, selected = faceEffect == f, onClick = {
+                                haptics.selection()
+                                faceEffect = f
+                                faceDetector.activeEffect = f
+                                if (f == ClipFaceEffect.NONE) faceDetector.reset()
+                            }) {
+                                Text(if (f == ClipFaceEffect.NONE) "⊘" else f.icon, style = VoiidFont.rounded(28), color = Color.White)
+                            }
+                        }
+                    } else {
+                        items(ClipFilter.entries.toList()) { f ->
+                            EffectCell(f.label, selected = filter == f, onClick = { haptics.selection(); filter = f }) {
+                                val thumb = filterThumbs[f]
+                                if (thumb != null) {
+                                    androidx.compose.foundation.Image(thumb.asImageBitmap(), null,
+                                        contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                }
+                            }
+                        }
+                    }
+                }
+                Box(Modifier.clip(RoundedCornerShape(VoiidRadius.pill)).background(Color.White)
+                    .softClickable(scale = 0.95f) { haptics.tap(); showEffects = false }
+                    .padding(horizontal = 28.dp, vertical = 11.dp)) {
+                    Text("Done", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = Color.Black)
                 }
             }
         }
@@ -842,6 +983,69 @@ fun ClipCameraView(
             },
             confirmDestructive = true,
         )
+    }
+}
+
+/** A tool in the right-hand column: a glass disc and its label. */
+@Composable
+private fun ToolButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    active: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Column(Modifier.size(width = 56.dp, height = 62.dp).softClickable(scale = 0.9f, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(42.dp).clip(CircleShape).background(if (active) Color.White else Color.Black.copy(alpha = 0.35f)),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, label, tint = if (active) Color.Black else Color.White, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(label, style = VoiidFont.rounded(10, FontWeight.SemiBold), color = Color.White)
+    }
+}
+
+/** A tool whose glyph is text (the speed). */
+@Composable
+private fun ToolText(glyph: String, label: String, active: Boolean, onClick: () -> Unit) {
+    Column(Modifier.size(width = 56.dp, height = 62.dp).softClickable(scale = 0.9f, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(42.dp).clip(CircleShape).background(if (active) Color.White else Color.Black.copy(alpha = 0.35f)),
+            contentAlignment = Alignment.Center) {
+            Text(glyph, style = VoiidFont.rounded(12, FontWeight.Bold), color = if (active) Color.Black else Color.White)
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(label, style = VoiidFont.rounded(10, FontWeight.SemiBold), color = Color.White)
+    }
+}
+
+/** A control beside the shutter: glyph over label. */
+@Composable
+private fun SideButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    highlight: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Column(Modifier.softClickable(scale = 0.9f, onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(38.dp), contentAlignment = Alignment.Center) {
+            Icon(icon, label, tint = if (highlight) VoiidColor.accent else Color.White, modifier = Modifier.size(22.dp))
+        }
+        Text(label, style = VoiidFont.rounded(10, FontWeight.SemiBold), color = Color.White)
+    }
+}
+
+/** One round cell in the effects tray. */
+@Composable
+private fun EffectCell(label: String, selected: Boolean, onClick: () -> Unit, content: @Composable () -> Unit) {
+    Column(Modifier.size(width = 68.dp, height = 86.dp).softClickable(scale = 0.94f, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(60.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.12f))
+            .border(if (selected) 3.dp else 1.dp, if (selected) VoiidColor.accent else Color.White.copy(alpha = 0.25f), CircleShape),
+            contentAlignment = Alignment.Center) { content() }
+        Spacer(Modifier.height(6.dp))
+        Text(label, style = VoiidFont.rounded(11, if (selected) FontWeight.Bold else FontWeight.Medium),
+            color = Color.White.copy(alpha = if (selected) 1f else 0.8f), maxLines = 1)
     }
 }
 
