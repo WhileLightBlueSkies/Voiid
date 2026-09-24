@@ -1,5 +1,7 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -256,6 +258,9 @@ fun RestoreFlow(    session: AppSession,
         step = RestoreStep.CHOOSE
     }
 
+    // Committed dark, like every onboarding screen and like iOS RestoreMessagesView (drawn on
+    // VoiidBrand.ground). Without this a light-mode phone got a light restore flow mid-onboarding.
+    androidx.compose.runtime.CompositionLocalProvider(com.voiid.app.ui.theme.LocalVoiidDark provides true) {
     when (step) {
         RestoreStep.UNLOCK -> if (legacyPin == null) {
             Box(Modifier.fillMaxSize().background(VoiidColor.background), contentAlignment = Alignment.Center) {
@@ -275,8 +280,9 @@ fun RestoreFlow(    session: AppSession,
             onChange = { phrase = it; error = null },
             error = error,
             onSubmit = { unlock(Credential.Phrase(phrase)) },
-            // No PIN to go back to on a phrase-only backup: back means "not now".
-            onBack = { error = null; if (legacyPin == true) step = RestoreStep.UNLOCK else confirmSkip = true },
+            // iOS PhrasePage: "‹ PIN" only when a legacy PIN backup exists; "Skip" always.
+            onBack = if (legacyPin == true) ({ error = null; step = RestoreStep.UNLOCK }) else null,
+            onSkip = { haptics.tap(); confirmSkip = true },
         )
         RestoreStep.CHOOSE -> RestoreChoosePage(
             candidates = candidates,
@@ -308,6 +314,7 @@ fun RestoreFlow(    session: AppSession,
             onRetry = { begin() },
             onSkip = { haptics.tap(); confirmSkip = true },
         )
+    }
     }
 }
 
@@ -380,12 +387,21 @@ private fun RestorePhrasePage(
     onChange: (String) -> Unit,
     error: String?,
     onSubmit: () -> Unit,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
+    onSkip: () -> Unit,
 ) {
     val shape = RoundedCornerShape(VoiidRadius.lg)
     val wordCount = value.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.size
-    OnbScaffold(showBack = true, onBack = onBack) {
-        Spacer(Modifier.height(24.dp))
+    OnbScaffold(showBack = false, onBack = {}) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (onBack != null) Text("‹ PIN", style = VoiidFont.rounded(16), color = VoiidColor.primary,
+                modifier = Modifier.noRippleClickable { onBack() }.padding(vertical = 8.dp))
+            Spacer(Modifier.weight(1f))
+            Text("Skip", style = VoiidFont.rounded(16), color = VoiidColor.textSecondary,
+                modifier = Modifier.noRippleClickable { onSkip() }.padding(vertical = 8.dp)
+                    .semantics { contentDescription = "Continue without restoring" })
+        }
+        Spacer(Modifier.height(16.dp))
         Text("Recovery phrase", style = VoiidFont.rounded(22, FontWeight.Bold),
             color = VoiidColor.textPrimary, modifier = Modifier.padding(horizontal = 24.dp))
         Text("Enter your 24-word recovery phrase, separated by spaces.",
