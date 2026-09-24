@@ -1,5 +1,11 @@
 package com.voiid.app.main
 
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.PersonSearch
+import androidx.compose.material.icons.filled.People
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -126,6 +132,25 @@ fun PrivacySettingsScreen(onBack: () -> Unit, onBlockedContacts: () -> Unit = {}
         // their own PIN — a wall of text where a number belongs. The card shows the PIN; the
         // sentence says what it's for; the rotation caveat moved to the confirm dialog, where
         // it actually applies.
+        // iOS "Who can reach you": the three paths reachability.ts enforces, stated as prose,
+        // not toggles — the server offers no choice between them, so a switch would be a
+        // privacy control that quietly does nothing. The one real control (the PIN) follows.
+        PrivacySection(
+            header = "Who can reach you",
+            footer = "Blocked people can't message or call you through any of these paths. They aren't notified when you block them.",
+        ) {
+            ReachPath(Icons.Default.People, "People you've both saved",
+                "When you've saved each other, messages go straight to your chats.")
+            HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f), modifier = Modifier.padding(start = 56.dp))
+            ReachPath(Icons.Default.PersonSearch, "Someone who has you saved",
+                "If you haven't saved them back, you choose whether to accept their request.")
+            HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f), modifier = Modifier.padding(start = 56.dp))
+            ReachPath(Icons.Default.AlternateEmail, "People who find your @username",
+                "They need your Contact PIN first. You still choose whether to accept their request.")
+        }
+
+        Spacer(Modifier.height(20.dp))
+
         PrivacySection(
             header = "Contact PIN",
             footer = "Share this with people who find you by @username. They'll need it to " +
@@ -438,6 +463,24 @@ private fun PrivacyVisibilityRow(
                     )
                 }
             }
+        }
+    }
+}
+
+
+/** A statement, not a control — no chevron, no tap (iOS reachPath). */
+@Composable
+private fun ReachPath(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, detail: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp)
+            .semantics(mergeDescendants = true) {},
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(icon, null, tint = VoiidColor.accentInk, modifier = Modifier.size(22.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
+            Text(detail, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
         }
     }
 }
