@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun EventTicketWallet(onDismiss:()->Unit) {
+ var showing by remember { mutableStateOf(true) }
  val ctx=LocalContext.current
  val service=remember { EventService(ApiClient(TokenStore.get(ctx))) }
  var tickets by remember { mutableStateOf<List<EventService.Ticket>?>(null) }
@@ -62,13 +63,16 @@ fun EventTicketWallet(onDismiss:()->Unit) {
    finally{code=null}
   }
  }
- Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false)) {
+ com.voiid.app.ui.components.VoiidSheet(
+  visible=showing,onDismiss=onDismiss,
+  detents=listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+ ) {
   Surface(modifier=Modifier.fillMaxSize(),color=VoiidColor.background) {
-   Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+   Column(Modifier.fillMaxSize()) {
     Row(Modifier.fillMaxWidth().padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically) {
      if(selected!=null) TextButton(onClick={selected=null;error=null}){Text("Back")}
      Text(if(selected==null)"My tickets" else "Your ticket",style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f))
-     TextButton(onClick=onDismiss){Text("Done")}
+     TextButton(onClick={showing=false}){Text("Done")}
     }
     LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(22.dp)) {
      error?.let { item {Text(it,color=MaterialTheme.colorScheme.error);TextButton(onClick={error=null;retry++}){Text("Refresh ticket")}} }
@@ -251,6 +255,7 @@ private fun EventTeamDialog(id:String,onDismiss:()->Unit){
 
 @Composable
 fun EventGroupBooking(event:EventService.Event,onDismiss:()->Unit,onBooked:()->Unit) {
+ var showing by remember { mutableStateOf(true) }
  val ctx=LocalContext.current
  val service=remember{EventService(ApiClient(TokenStore.get(ctx)))}
  val scope=rememberCoroutineScope()
@@ -277,10 +282,14 @@ fun EventGroupBooking(event:EventService.Event,onDismiss:()->Unit,onBooked:()->U
   }
  }
  val maximum=(event.capacity ?: 10).coerceIn(1,10)
- Dialog(onDismissRequest={if(!busy)onDismiss()},properties=DialogProperties(usePlatformDefaultWidth=false)) {
+ com.voiid.app.ui.components.VoiidSheet(
+  visible=showing,onDismiss=onDismiss,
+  detents=listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+  dismissOnBack=!busy,tapOutsideToDismiss=!busy,dismissOnDrag=!busy,
+ ) {
   Surface(Modifier.fillMaxSize(),color=VoiidColor.background) {
-   LazyColumn(contentPadding=PaddingValues(20.dp),modifier=Modifier.statusBarsPadding().navigationBarsPadding(),verticalArrangement=Arrangement.spacedBy(24.dp)) {
-    item{Row(verticalAlignment=Alignment.CenterVertically){Text("Book tickets",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium);TextButton(enabled=!busy,onClick=onDismiss){Text("Close")}}}
+   LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(24.dp)) {
+    item{Row(verticalAlignment=Alignment.CenterVertically){Text("Book tickets",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium);TextButton(enabled=!busy,onClick={showing=false}){Text("Close")}}}
     item{Text(event.title,style=MaterialTheme.typography.headlineLarge);event.location_text?.let{Text(it)}}
     item{
      Surface(shape=RoundedCornerShape(24.dp),color=VoiidColor.surfaceCard) {
