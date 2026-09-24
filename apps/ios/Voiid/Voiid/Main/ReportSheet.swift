@@ -143,7 +143,7 @@ struct ReportSheet: View {
         case .person:
             return "We can see who you are reporting and what you write here. We cannot read "
                 + "your messages with them — those are encrypted and we hold no key."
-        case .clip, .creator:
+        case .clip, .creator, .clipComment:
             return "We can see the content you are reporting."
         case .communityPost, .community:
             // Deliberately says WHO ELSE sees it, which the other cases do not have to. A

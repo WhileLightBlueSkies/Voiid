@@ -29,7 +29,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // 053 adds the last two. 'community_post' targets the POST, never its author — reporting a
 // person is what 'creator' and 'message_sender' are for, and those accumulate against an
 // account, which is a different fact from "this one post is bad".
-const TARGET_TYPES = ['clip', 'creator', 'message_sender', 'community_post', 'community', 'event'] as const;
+const TARGET_TYPES = ['clip', 'creator', 'message_sender', 'community_post', 'community', 'event', 'clip_comment'] as const;
 
 /**
  * Which target kinds name a USER rather than a piece of content.
@@ -128,6 +128,12 @@ router.post('/', requireAuth, rateLimit({ max: 20, windowSeconds: 60, bucket: 'r
     case 'event':
       exists = (await query(
         `select 1 from community_events where id = $1 limit 1`, [target_id])).length > 0;
+      break;
+    case 'clip_comment':
+      // 091. Deleted comments included, for the community_post reason above: the worst
+      // comments are removed fastest, and the report is still evidence about the author.
+      exists = (await query(
+        `select 1 from clip_comments where id = $1 limit 1`, [target_id])).length > 0;
       break;
     default:
       // 'creator' and 'message_sender' — both name a user.

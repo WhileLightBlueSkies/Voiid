@@ -73,6 +73,8 @@ struct StoryCameraView: View {
                 }
                 if showFilters && !cam.isRecording {
                     FaceLensRail(selection: $cam.faceEffect)
+                        .disabled(cam.isRecording)
+                        .opacity(cam.isRecording ? 0.5 : 1)
                         .padding(.bottom, VoiidSpacing.sm)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }

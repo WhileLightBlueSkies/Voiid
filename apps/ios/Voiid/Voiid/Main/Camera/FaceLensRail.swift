@@ -55,7 +55,7 @@ struct FaceLensRail: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(ClipFaceEffect.allCases) { e in
+                        ForEach(ClipFaceEffect.allCases.filter(\.isAvailable)) { e in
                             lensButton(e).id(e)
                         }
                     }

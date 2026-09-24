@@ -69,6 +69,12 @@ enum ClipFaceEffect: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Drawn by a 3D ARKit lens rather than the sprite engine below.
+    var usesLens: Bool { self == .dog }
+
+    /// A lens needs the TrueDepth camera; on a phone without one it is left off the rail.
+    var isAvailable: Bool { !usesLens || FaceLensSession.isSupported }
+
 }
 
 // MARK: - Tracked face

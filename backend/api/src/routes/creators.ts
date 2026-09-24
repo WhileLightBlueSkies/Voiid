@@ -374,7 +374,7 @@ router.get('/:handle/clips', requireAuth, rateLimit({ max: 180, windowSeconds: 6
 
   const rows = await query<any>(
     `select c.id, c.thumb_r2_key, c.caption, c.duration_ms, c.width, c.height,
-            c.view_count, c.like_count, c.comment_count, c.created_at
+            c.view_count, c.like_count, c.comment_count, c.created_at, c.comments_enabled
        from clips c
        join social_profiles p on p.user_id = c.author_id
       where lower(p.handle) = $1
@@ -466,7 +466,7 @@ router.get('/feed/following', requireAuth, rateLimit({ max: 180, windowSeconds: 
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
   const rows = await query<any>(
     `select c.id, c.author_id, c.thumb_r2_key, c.caption, c.duration_ms,
-            c.width, c.height, c.view_count, c.like_count, c.comment_count, c.created_at,
+            c.width, c.height, c.view_count, c.like_count, c.comment_count, c.created_at, c.comments_enabled,
             p.handle as author_handle, p.display_name as author_display_name,
             p.is_verified as author_verified
        from clips c

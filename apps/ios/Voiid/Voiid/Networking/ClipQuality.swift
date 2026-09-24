@@ -31,8 +31,8 @@ enum ClipQuality: String, CaseIterable, Codable, Hashable {
         }
     }
 
-    /// Target average bitrate. Chosen so a 90s clip stays well inside the 100 MB cap:
-    /// 90s at 4.5 Mbps ≈ 50 MB, leaving headroom for audio and container overhead.
+    /// Target average bitrate. Chosen so a 2-minute clip stays inside the 100 MB cap:
+    /// 120s at 4.5 Mbps ≈ 68 MB, leaving headroom for audio and container overhead.
     var bitrate: Int {
         switch self {
         case .sd: return 1_200_000

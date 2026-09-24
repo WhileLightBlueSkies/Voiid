@@ -78,6 +78,8 @@ final class ClipService {
         var byte_size_hd: Int?
         var byte_size_fhd: Int?
         var cover_source: String?
+        /// Comments on or off for this clip (092). Absent from an older backend: on.
+        var comments_enabled: Bool?
     }
     struct FeedResp: Decodable {
         let clips: [ClipRow]
@@ -128,7 +130,8 @@ final class ClipService {
                   durationMs: Int?, width: Int?, height: Int?, byteSize: Int?,
                   renditionKeys: [ClipQuality: String] = [:],
                   renditionSizes: [ClipQuality: Int] = [:],
-                  coverSource: String = "frame") async throws -> PostClipResp {
+                  coverSource: String = "frame",
+                  commentsEnabled: Bool = true) async throws -> PostClipResp {
         struct Body: Encodable {
             let clip_id: String; let r2_key: String; let thumb_r2_key: String
             let caption: String?; let duration_ms: Int?
@@ -136,6 +139,7 @@ final class ClipService {
             let r2_key_sd: String?; let r2_key_hd: String?; let r2_key_fhd: String?
             let byte_size_sd: Int?; let byte_size_hd: Int?; let byte_size_fhd: Int?
             let cover_source: String
+            let comments_enabled: Bool
         }
         return try await api.request("POST", "clips", body: Body(
             clip_id: clipId, r2_key: r2Key, thumb_r2_key: thumbKey, caption: caption,
@@ -144,7 +148,8 @@ final class ClipService {
             r2_key_fhd: renditionKeys[.fhd],
             byte_size_sd: renditionSizes[.sd], byte_size_hd: renditionSizes[.hd],
             byte_size_fhd: renditionSizes[.fhd],
-            cover_source: coverSource))
+            cover_source: coverSource,
+            comments_enabled: commentsEnabled))
     }
 
     /// Explore grid, newest-first. `cursor` is the opaque keyset cursor from the

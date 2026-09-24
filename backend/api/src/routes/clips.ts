@@ -37,7 +37,7 @@ const MAX_CLIPS_PER_DAY = 30;
 const MAX_CAPTION_LEN = 2200;
 const MAX_COMMENT_LEN = 1000;
 // Hard caps, enforced HERE as well as on-device. A client-only cap is not a cap.
-const MAX_DURATION_MS = 90_000;      // 90s
+const MAX_DURATION_MS = 120_000;     // 2 minutes (4.5 Mbps × 120s ≈ 68 MB, inside MAX_BYTE_SIZE)
 const MAX_BYTE_SIZE = 100 * 1024 * 1024;
 
 /**
@@ -157,7 +157,7 @@ async function signAuthorAvatars<T>(rows: T[]): Promise<T[]> {
 const CLIP_COLUMNS = `
   c.id, c.author_id, c.r2_key, c.thumb_r2_key, c.caption, c.duration_ms,
   c.width, c.height, c.byte_size, c.view_count, c.like_count, c.comment_count,
-  c.created_at, c.cover_source,
+  c.created_at, c.cover_source, c.comments_enabled,
   -- WHICH renditions exist, not their keys: the client needs this to choose a quality
   -- before calling /playback, but handing out object keys it cannot presign anyway
   -- would just widen the surface for no gain.
@@ -247,7 +247,7 @@ router.post('/', requireAuth, requireSocialProfile(), rateLimit({ max: 240, wind
     clip_id, r2_key, thumb_r2_key, caption, duration_ms, width, height, byte_size,
     r2_key_sd, r2_key_hd, r2_key_fhd,
     byte_size_sd, byte_size_hd, byte_size_fhd,
-    cover_source,
+    cover_source, comments_enabled,
   } = req.body ?? {};
 
   if (typeof clip_id !== 'string' || !UUID_RE.test(clip_id)) {
@@ -328,13 +328,17 @@ router.post('/', requireAuth, requireSocialProfile(), rateLimit({ max: 240, wind
       `insert into clips (id, author_id, r2_key, thumb_r2_key, caption, duration_ms,
                           width, height, byte_size,
                           r2_key_sd, r2_key_hd, r2_key_fhd,
-                          byte_size_sd, byte_size_hd, byte_size_fhd, cover_source)
+                          byte_size_sd, byte_size_hd, byte_size_fhd, cover_source,
+                          comments_enabled)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                 $10, $11, $12, $13, $14, $15, coalesce($16, 'frame'))
+                 $10, $11, $12, $13, $14, $15, coalesce($16, 'frame'), $17)
          returning created_at`,
       [clip_id, user_id, r2_key, thumb_r2_key, caption ?? null, dur, w, h, size,
        r2_key_sd ?? null, r2_key_hd ?? null, r2_key_fhd ?? null,
-       sizeSd, sizeHd, sizeFhd, cover_source ?? null]
+       sizeSd, sizeHd, sizeFhd, cover_source ?? null,
+       // Only an explicit `false` turns them off; an older client that never sends it
+       // posts clips open to comments, as before.
+       comments_enabled !== false]
     );
     created = rows[0];
   } catch (e) {
@@ -615,6 +619,7 @@ router.get('/:id/comments', requireAuth, rateLimit({ max: 240, windowSeconds: 60
        left join social_profiles cp on cp.user_id = c.author_id
       where cc.clip_id = $1 and cc.deleted_at is null
         and coalesce(cp.allow_comments, true)
+        and c.comments_enabled
         ${cursor ? 'and (cc.created_at, cc.id) > ($2::timestamptz, $3::uuid)' : ''}
       order by cc.created_at asc, cc.id asc
       limit ${limit + 1}`,
@@ -646,12 +651,16 @@ router.post('/:id/comments', requireAuth, requireSocialProfile(), rateLimit({ ma
   // The author's `allow_comments` gates new comments. Existing ones are withheld from
   // reads rather than deleted (see GET /:id/comments), so turning this back on restores the
   // conversation instead of having destroyed it.
-  const openToComments = await query<{ allowed: boolean }>(
-    `select coalesce(cp.allow_comments, true) as allowed
+  // The clip's own switch (092), chosen when it was posted, applies as well.
+  const openToComments = await query<{ allowed: boolean; clip_allows: boolean }>(
+    `select coalesce(cp.allow_comments, true) as allowed, c.comments_enabled as clip_allows
        from clips c left join social_profiles cp on cp.user_id = c.author_id
       where c.id = $1`, [clipId]);
   if (openToComments[0] && openToComments[0].allowed === false) {
     return res.status(403).json({ error: 'comments are turned off for this creator' });
+  }
+  if (openToComments[0] && openToComments[0].clip_allows === false) {
+    return res.status(403).json({ error: 'comments are turned off for this clip' });
   }
 
   const live = await query<{ one: number }>(

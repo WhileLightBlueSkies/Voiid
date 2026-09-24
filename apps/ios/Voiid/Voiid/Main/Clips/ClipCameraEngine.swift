@@ -1,22 +1,18 @@
 //
-//  ClipCameraView.swift
+//  ClipCameraEngine.swift
 //  Voiid
 //
-//  The dedicated clip camera: multi-take recording with a LIVE-FILTERED viewfinder.
+//  The clip camera's ENGINE: capture, live-filtered preview, multi-take recording, and the
+//  take joiner. The screen on top of it is ClipRecorderView (the Voiid Ui recorder design);
+//  Stories, chat and the profile photo run on this same controller with their own screens.
 //
-//  WHY THIS EXISTS. Clips used to borrow the story camera in a `.clip` mode, which is a
-//  single-shot camera: it fires `onCapture` and dismisses the moment the first recording
-//  finalizes, and the composer accepted exactly one URL. So iOS had no multi-take, no undo
-//  and no banked progress while Android already had all three, and the shape of that camera
-//  ruled out ever putting the filter strip in the live preview.
-//
-//  CAPTURE PIPELINE. Unlike the story camera this does NOT use AVCaptureMovieFileOutput or
-//  AVCaptureVideoPreviewLayer — neither can render a CIFilter. Frames come off
-//  AVCaptureVideoDataOutput, are filtered per-frame for the preview only, and are written to
-//  disk CLEAN through an AVAssetWriter. The chosen filter travels with the finished URL and
-//  is baked exactly once at export, so the edit stays non-destructive and the colour is never
-//  applied twice. (The movie output and the data output do not usefully coexist in one
-//  session, which is why this is a separate camera and stories are left alone.)
+//  CAPTURE PIPELINE. Not AVCaptureMovieFileOutput or AVCaptureVideoPreviewLayer — neither can
+//  render a CIFilter. Frames come off AVCaptureVideoDataOutput, are filtered per-frame for the
+//  preview only, and are written to disk CLEAN through an AVAssetWriter. The chosen filter
+//  travels with the finished URL and is baked exactly once at export, so the edit stays
+//  non-destructive and the colour is never applied twice. Face effects are the exception:
+//  they are burned in at capture, where the tracking exists. A 3D lens (Camera/PuppyLens.swift)
+//  swaps the capture session for ARKit and hands back frames already composed.
 //
 //  SEGMENTS. Each press/release is one take written to its own `clip_seg_<uuid>.mp4`. They
 //  are concatenated only when the author commits: re-muxing after every stop would stall the
@@ -58,621 +54,6 @@ enum ClipSpeed {
 
     static func label(_ v: Double) -> String {
         v == v.rounded() ? "\(Int(v))×" : String(format: "%.1f×", v)
-    }
-}
-
-// MARK: - Screen
-
-struct ClipCameraView: View {
-    var maxSeconds: Double = ClipCaps.maxDurationSeconds
-    /// The joined recording plus the filter chosen in the viewfinder. The filter is passed
-    /// as an EDIT, never burnt into the file, so the editor can still change it.
-    var onDone: (URL, ClipFilter) -> Void
-    /// A video chosen from the library. It goes through the composer's existing intake so
-    /// duration and cap validation are identical for recordings and imports.
-    var onGalleryPicked: (PhotosPickerItem) -> Void
-    var onClose: () -> Void
-
-    @StateObject private var cam = ClipCameraController()
-
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var galleryThumb: UIImage?
-    @State private var joining = false
-    @State private var confirmImport = false
-    @State private var pendingImport: PhotosPickerItem?
-
-    // Shutter gesture bookkeeping — see `shutterPressChanged`.
-    @State private var showGrid = false
-    /// Self-timer in seconds. 0 = off. Applies to the NEXT take only — it is a framing aid
-    /// for getting into shot, not a mode you leave armed and forget.
-    @State private var timerSeconds = 0
-    /// Live countdown while the timer runs; nil when idle.
-    @State private var countdown: Int?
-    @State private var countdownTask: Task<Void, Never>?
-
-    @State private var pressActive = false
-    @State private var pressBegan = Date()
-    @State private var pressConsumed = false
-
-    private var totalSeconds: Double { cam.bankedSeconds + cam.liveSeconds }
-    private var full: Bool { totalSeconds >= maxSeconds - 0.05 }
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-
-            ClipCameraPreview(renderer: cam.renderer,
-                              onZoom: { cam.zoom(scale: $0, began: $1) },
-                              onFocus: { cam.focus(atNormalizedViewPoint: $0) },
-                              onFlip: { if !cam.isRecording { Haptics.tap(); cam.flip() } })
-                .ignoresSafeArea()
-
-            if showGrid { gridOverlay }
-
-            // The countdown owns the whole screen while it runs: you are looking at the
-            // frame, not at a control, so a number in a corner would be missed.
-            if let countdown {
-                Text("\(countdown)")
-                    .font(.system(size: 96, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .shadow(radius: 12)
-                    .transition(.scale(scale: 1.4).combined(with: .opacity))
-                    .id(countdown)   // re-triggers the transition on each tick
-                    .allowsHitTesting(false)
-            }
-
-            VStack(spacing: 0) {
-                topBar
-                progressTicks
-                    .padding(.horizontal, VoiidSpacing.md)
-                    .padding(.top, VoiidSpacing.sm)
-                Spacer(minLength: 0)
-                if let text = cam.errorText {
-                    Text(text)
-                        .font(VoiidFont.footnote)
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, VoiidSpacing.md)
-                        .padding(.vertical, VoiidSpacing.sm)
-                        .background(Color.black.opacity(0.6))
-                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.sm, style: .continuous))
-                        .padding(.horizontal, VoiidSpacing.lg)
-                }
-                Spacer(minLength: 0)
-                // Zoom is ALWAYS available, recording included: framing is something you
-                // do both before and during a take.
-                //
-                // The SPEED rail is deliberately not here. It rendered "1×/2×/3×" — the
-                // same strings as zoom, stacked directly above it — and did not work in
-                // testing. `ClipTakeJoiner` still applies `take.speed`, and `selectedSpeed`
-                // still defaults to 1, so removing the control changes nothing downstream;
-                // re-adding it is one line once the behaviour is fixed.
-                zoomRail
-                faceRail
-                filterRail
-                bottomBar
-            }
-            .padding(.bottom, VoiidSpacing.md)
-
-            if joining {
-                ZStack {
-                    Color.black.opacity(0.55).ignoresSafeArea()
-                    ProgressView("Putting your takes together…")
-                        .tint(.white)
-                        .foregroundColor(.white)
-                }
-            }
-        }
-        .statusBarHidden(true)
-        .onAppear {
-            cam.maxSeconds = maxSeconds
-            cam.start()
-            loadGalleryThumb()
-        }
-        .onDisappear {
-            // The countdown Task outlives the view unless it is cancelled here — otherwise
-            // it fires `startRecording()` against a session `cam.stop()` just tore down.
-            cancelCountdown()
-            cam.stop()
-        }
-        .onChange(of: pickerItem) { _, item in
-            guard let item else { return }
-            pickerItem = nil
-            // An import replaces the takes, so ask first rather than silently binning work.
-            if cam.takes.isEmpty {
-                onGalleryPicked(item)
-            } else {
-                pendingImport = item
-                confirmImport = true
-            }
-        }
-        .confirmationDialog("Use a video from your library?",
-                            isPresented: $confirmImport, titleVisibility: .visible) {
-            Button("Discard takes and import", role: .destructive) {
-                if let item = pendingImport {
-                    cam.discardTakes()
-                    onGalleryPicked(item)
-                }
-                pendingImport = nil
-            }
-            Button("Keep recording", role: .cancel) { pendingImport = nil }
-        } message: {
-            Text("The \(cam.takes.count) take\(cam.takes.count == 1 ? "" : "s") you've recorded will be discarded.")
-        }
-    }
-
-    // MARK: Top bar
-
-    private var topBar: some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            roundButton("xmark", label: "Close") {
-                cam.stop()
-                cam.discardTakes()
-                onClose()
-            }
-            Spacer()
-            if totalSeconds > 0 || cam.isRecording {
-                // Elapsed AND the cap, so a 90s clip does not stop at what looks like an
-                // arbitrary moment with no warning it was coming.
-                Text(String(format: "%02d:%02d / %02d:%02d",
-                            Int(totalSeconds) / 60, Int(totalSeconds) % 60,
-                            Int(maxSeconds) / 60, Int(maxSeconds) % 60))
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, VoiidSpacing.md)
-                    .padding(.vertical, 6)
-                    .background(cam.isRecording ? VoiidColor.error : Color.black.opacity(0.4))
-                    .clipShape(Capsule())
-            }
-            Spacer()
-            if cam.hasTorch {
-                roundButton(cam.torchOn ? "bolt.fill" : "bolt.slash",
-                            label: "Flash", active: cam.torchOn) {
-                    Haptics.tap()
-                    cam.toggleTorch()
-                }
-            }
-            // Cycles 0 → 3 → 10 → 0. A cycling button rather than a menu: three states are
-            // faster to tap through than to pick from, and the icon carries the current one.
-            // One symbol plus a text badge, rather than the `N.circle.fill` numeric
-            // glyphs: those exist only for some N and have moved between SF Symbols
-            // releases, and a missing symbol renders as an EMPTY button — a control that
-            // silently disappears is worse than one that is a little plainer.
-            roundButton("timer",
-                        label: timerSeconds == 0 ? "Self-timer off" : "Self-timer \(timerSeconds) seconds",
-                        active: timerSeconds != 0,
-                        badge: timerSeconds == 0 ? nil : "\(timerSeconds)") {
-                guard !cam.isRecording else { return }
-                Haptics.tap()
-                timerSeconds = timerSeconds == 0 ? 3 : (timerSeconds == 3 ? 10 : 0)
-            }
-            roundButton("square.grid.3x3", label: "Grid", active: showGrid) {
-                Haptics.tap()
-                showGrid.toggle()
-            }
-            roundButton("arrow.triangle.2.circlepath.camera", label: "Flip camera") {
-                // Flipping mid-take would have to cut the segment; simply not offered while
-                // recording, which is what the Android camera does too.
-                guard !cam.isRecording else { return }
-                Haptics.tap()
-                cam.flip()
-            }
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, VoiidSpacing.sm)
-    }
-
-    /// One tick per banked take plus the in-flight one, so "how much have I got" is
-    /// answerable at a glance and undo has a visual anchor.
-    private var progressTicks: some View {
-        GeometryReader { geo in
-            HStack(spacing: 2) {
-                ForEach(cam.takes) { take in
-                    Capsule()
-                        .fill(Color.white)
-                        .frame(width: tickWidth(take.outputSeconds, in: geo.size.width))
-                }
-                if cam.isRecording {
-                    Capsule()
-                        .fill(VoiidColor.error)
-                        .frame(width: tickWidth(cam.liveSeconds, in: geo.size.width))
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(height: 3)
-        }
-        .frame(height: 3)
-        .opacity(cam.takes.isEmpty && !cam.isRecording ? 0 : 1)
-    }
-
-    private func tickWidth(_ seconds: Double, in total: CGFloat) -> CGFloat {
-        max(2, total * CGFloat(min(1, seconds / maxSeconds)))
-    }
-
-    // MARK: Rails
-
-    private var speedRail: some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            ForEach(ClipSpeed.options, id: \.self) { s in
-                Button {
-                    Haptics.selection()
-                    cam.selectedSpeed = s
-                } label: {
-                    HStack(spacing: 3) {
-                        // Names the control. Without it this rail renders "1×/2×/3×" — the
-                        // identical strings the zoom rail shows — and the two read as one
-                        // repeated control stacked on itself.
-                        Image(systemName: "speedometer")
-                            .font(.system(size: 9, weight: .bold))
-                        Text(ClipSpeed.label(s))
-                            .font(VoiidFont.rounded(13, .semibold))
-                    }
-                        .foregroundColor(cam.selectedSpeed == s ? .black : .white)
-                        .frame(minWidth: 58, minHeight: 44)
-                        .background(cam.selectedSpeed == s ? Color.white : Color.black.opacity(0.35))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(SoftPressStyle())
-                .accessibilityLabel("Speed \(ClipSpeed.label(s))")
-                .accessibilityAddTraits(cam.selectedSpeed == s ? [.isSelected] : [])
-            }
-        }
-        .padding(.bottom, VoiidSpacing.sm)
-    }
-
-    /// Zoom presets plus a live readout, the way the system camera does it.
-    ///
-    /// The presets exist because a pinch is imprecise: getting exactly 2× by feel is
-    /// fiddly, and "back to 1×" was previously only reachable by pinching all the way
-    /// down. Tapping the ACTIVE preset is not a no-op — it reads the current factor, so a
-    /// pinched 2.4× shows "2.4×" and tapping 2× snaps it clean.
-    private var zoomRail: some View {
-        HStack(spacing: 6) {
-            ForEach(cam.availableZoomPresets, id: \.self) { factor in
-                let active = abs(cam.currentZoom - factor) < 0.05
-                Button {
-                    Haptics.selection()
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                        cam.setZoom(factor)
-                    }
-                } label: {
-                    // The active pill shows the REAL factor to one decimal when it is not a
-                    // round number, so the readout never lies about where the pinch landed.
-                    HStack(spacing: 3) {
-                        // The glyph is what separates this rail from the SPEED rail above,
-                        // which renders the identical strings "1×/2×/3×". Without it the two
-                        // are indistinguishable stacked on top of each other.
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 9, weight: .bold))
-                        Text(active ? liveZoomLabel(factor) : Self.zoomLabel(factor))
-                            .font(VoiidFont.rounded(active ? 13 : 12, .semibold))
-                    }
-                        .foregroundColor(active ? .black : .white)
-                        .frame(minWidth: active ? 56 : 46, minHeight: 34)
-                        .background(active ? Color.white : Color.black.opacity(0.4))
-                        .clipShape(Capsule())
-                        // 44pt of target around a 34pt pill — the pills sit close together
-                        // and a mis-tap changes the shot.
-                        .padding(.vertical, 5)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(SoftPressStyle())
-                .accessibilityLabel("\(Self.zoomLabel(factor)) zoom")
-                .accessibilityAddTraits(active ? [.isSelected] : [])
-            }
-        }
-        .padding(.bottom, VoiidSpacing.sm)
-    }
-
-    private func liveZoomLabel(_ factor: CGFloat) -> String {
-        Self.zoomLabel(cam.currentZoom)
-    }
-
-    /// `Int(factor)` truncates, which rendered the 0.5× ultra-wide preset as "0×".
-    private static func zoomLabel(_ v: CGFloat) -> String {
-        v.rounded() == v ? "\(Int(v))×" : String(format: "%.1f×", v)
-    }
-
-    /// Rule-of-thirds guides. Off by default: they are a framing aid, not decoration, and
-    /// permanent lines over every shot is noise for the majority who never want them.
-    private var gridOverlay: some View {
-        GeometryReader { geo in
-            Path { p in
-                for i in 1...2 {
-                    let x = geo.size.width * CGFloat(i) / 3
-                    p.move(to: CGPoint(x: x, y: 0))
-                    p.addLine(to: CGPoint(x: x, y: geo.size.height))
-                    let y = geo.size.height * CGFloat(i) / 3
-                    p.move(to: CGPoint(x: 0, y: y))
-                    p.addLine(to: CGPoint(x: geo.size.width, y: y))
-                }
-            }
-            .stroke(Color.white.opacity(0.28), lineWidth: 0.5)
-        }
-        .allowsHitTesting(false)
-        .ignoresSafeArea()
-    }
-
-    /// Face effects, on their own rail above the colour filters.
-    ///
-    /// Deliberately NOT merged into the colour rail: the two are independent — a dog filter
-    /// in black and white is a legitimate combination — so one shared rail would force a
-    /// choice the pipeline does not actually impose.
-    private var faceRail: some View {
-        FaceLensRail(selection: $cam.faceEffect)
-            .padding(.bottom, VoiidSpacing.xs)
-    }
-
-    private var filterRail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: VoiidSpacing.sm) {
-                ForEach(ClipFilter.allCases) { f in
-                    Button {
-                        Haptics.selection()
-                        cam.filter = f
-                    } label: {
-                        Text(f.label)
-                            .font(VoiidFont.rounded(13, .semibold))
-                            .foregroundColor(cam.filter == f ? .black : .white)
-                            .padding(.horizontal, VoiidSpacing.md)
-                            .frame(minHeight: 44)
-                            .background(cam.filter == f ? Color.white : Color.black.opacity(0.35))
-                            .clipShape(Capsule())
-                    }
-                    .buttonStyle(SoftPressStyle())
-                }
-            }
-            .padding(.horizontal, VoiidSpacing.md)
-        }
-        .frame(height: 44)
-        .padding(.bottom, VoiidSpacing.md)
-    }
-
-    // MARK: Bottom bar
-
-    private var bottomBar: some View {
-        HStack(spacing: 0) {
-            galleryButton
-            Spacer(minLength: VoiidSpacing.sm)
-            undoButton
-            Spacer(minLength: VoiidSpacing.sm)
-            shutter
-            Spacer(minLength: VoiidSpacing.sm)
-            acceptButton
-            Spacer(minLength: VoiidSpacing.sm)
-            // Balances the gallery button so the shutter stays optically centred.
-            Color.clear.frame(width: 52, height: 52)
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-    }
-
-    /// Instagram's corner thumbnail. The image only appears when library access has ALREADY
-    /// been granted — opening the camera is not the moment to demand a new permission.
-    private var galleryButton: some View {
-        PhotosPicker(selection: $pickerItem, matching: .videos) {
-            ZStack {
-                if let galleryThumb {
-                    Image(uiImage: galleryThumb).resizable().scaledToFill()
-                } else {
-                    Color.white.opacity(0.15)
-                    Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 20))
-                        .foregroundColor(.white)
-                }
-            }
-            .frame(width: 52, height: 52)
-            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-                .stroke(.white.opacity(0.6), lineWidth: 1))
-        }
-        .buttonStyle(SoftPressStyle())
-    }
-
-    private var undoButton: some View {
-        // Present but inert while recording rather than vanishing, so the row does not
-        // reflow under the user's thumb mid-take.
-        Group {
-            if !cam.takes.isEmpty && !cam.isRecording {
-                roundButton("arrow.uturn.backward", label: "Undo last take") {
-                    Haptics.tap()
-                    cam.undoLastTake()
-                }
-            } else {
-                Color.clear.frame(width: 44, height: 44)
-            }
-        }
-        .frame(width: 44, height: 44)
-    }
-
-    private var acceptButton: some View {
-        Group {
-            if !cam.takes.isEmpty && !cam.isRecording {
-                Button {
-                    Haptics.success()
-                    commit()
-                } label: {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(VoiidColor.textOnPrimary)
-                        .frame(width: 52, height: 52)
-                        .background(VoiidColor.primary)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(SoftPressStyle())
-                .accessibilityLabel("Use clip")
-            } else {
-                Color.clear.frame(width: 52, height: 52)
-            }
-        }
-        .frame(width: 52, height: 52)
-    }
-
-    private var shutter: some View {
-        Circle()
-            .stroke(.white, lineWidth: 4)
-            .frame(width: 76, height: 76)
-            .overlay(
-                RoundedRectangle(cornerRadius: cam.isRecording ? 8 : 31, style: .continuous)
-                    .fill(cam.isRecording ? VoiidColor.error : .white)
-                    .frame(width: cam.isRecording ? 34 : 62, height: cam.isRecording ? 34 : 62)
-                    .animation(.spring(response: 0.25, dampingFraction: 0.7), value: cam.isRecording)
-            )
-            .contentShape(Circle())
-            .gesture(
-                // A DragGesture with no minimum distance is the only reliable press/release
-                // signal here: onLongPressGesture's `pressing` callback also fires for a
-                // plain tap, which would start and immediately end a 0.1s take.
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard !pressActive else { return }
-                        pressActive = true
-                        shutterPressChanged(true)
-                    }
-                    .onEnded { _ in
-                        pressActive = false
-                        shutterPressChanged(false)
-                    }
-            )
-            .accessibilityLabel(cam.isRecording ? "Stop recording" : "Record")
-    }
-
-    private func shutterPressChanged(_ pressing: Bool) {
-        if pressing {
-            if cam.isRecording {
-                // A second press ends a take that is running locked.
-                cam.stopRecording()
-                pressConsumed = true
-            } else if countdown != nil {
-                // Pressing during a countdown CANCELS it. Without this the only escape from
-                // a 10-second timer you triggered by accident is to close the camera.
-                cancelCountdown()
-                pressConsumed = true
-            } else {
-                guard !full else { return }
-                pressConsumed = false
-                pressBegan = Date()
-                if timerSeconds > 0 {
-                    // A timed take is always LOCKED: you set a timer to get into shot, so
-                    // there is no finger on the shutter to release. `pressConsumed` stops
-                    // the release handler below from stopping the take we have not begun.
-                    pressConsumed = true
-                    startCountdown()
-                } else {
-                    cam.startRecording()
-                }
-            }
-            return
-        }
-        if pressConsumed { pressConsumed = false; return }
-        // Under a third of a second reads as a TAP, which LOCKS the take running — nobody
-        // holds a finger down for ninety seconds. A real press-and-hold ends on release,
-        // which is how a burst of short segments gets banked.
-        if Date().timeIntervalSince(pressBegan) >= 0.35 { cam.stopRecording() }
-    }
-
-    /// Counts down, then starts a locked take. Driven by a Task rather than a Timer so it
-    /// cancels cleanly — `cancelCountdown` tears the task down, and leaving the screen
-    /// cancels it with the view.
-    private func startCountdown() {
-        countdownTask?.cancel()
-        countdownTask = Task {
-            for remaining in stride(from: timerSeconds, through: 1, by: -1) {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.7)) {
-                    countdown = remaining
-                }
-                Haptics.tap()
-                try? await Task.sleep(for: .seconds(1))
-                if Task.isCancelled { return }
-            }
-            countdown = nil
-            guard !full else { return }
-            Haptics.selection()
-            cam.startRecording()
-        }
-    }
-
-    private func cancelCountdown() {
-        countdownTask?.cancel()
-        countdownTask = nil
-        withAnimation { countdown = nil }
-    }
-
-    // MARK: Commit
-
-    private func commit() {
-        let takes = cam.takes
-        guard !takes.isEmpty else { return }
-        joining = true
-        let filter = cam.filter
-        Task {
-            let joined = await ClipTakeJoiner.join(takes: takes)
-            await MainActor.run {
-                joining = false
-                guard let joined else {
-                    cam.errorText = "Couldn't put those takes together."
-                    return
-                }
-                cam.forgetTakes()
-                cam.stop()
-                onDone(joined, filter)
-            }
-        }
-    }
-
-    // MARK: Chrome helpers
-
-    /// `badge` rides on the corner for a control whose state is a NUMBER (the self-timer).
-    /// The alternative — swapping in a numeric SF Symbol per value — depends on glyphs that
-    /// exist only for some values and have moved between SF Symbols releases; a missing one
-    /// renders as an empty circle.
-    private func roundButton(_ systemName: String, label: String,
-                             active: Bool = false, badge: String? = nil,
-                             action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundColor(active ? .black : .white)
-                .frame(width: 44, height: 44)
-                .background(active ? Color.white : Color.black.opacity(0.35))
-                .clipShape(Circle())
-                .overlay(alignment: .topTrailing) {
-                    if let badge {
-                        Text(badge)
-                            .font(VoiidFont.rounded(10, .bold))
-                            .foregroundColor(.black)
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 16, minHeight: 16)
-                            .background(Color.white)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().stroke(Color.black.opacity(0.35), lineWidth: 1))
-                            .offset(x: 2, y: -2)
-                    }
-                }
-        }
-        .buttonStyle(SoftPressStyle())
-        .accessibilityLabel(label)
-    }
-
-    private func loadGalleryThumb() {
-        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard status == .authorized || status == .limited else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let options = PHFetchOptions()
-            options.fetchLimit = 1
-            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-            let result = PHAsset.fetchAssets(with: .video, options: options)
-            guard let asset = result.firstObject else { return }
-            let request = PHImageRequestOptions()
-            request.deliveryMode = .opportunistic
-            request.isNetworkAccessAllowed = false
-            PHImageManager.default().requestImage(
-                for: asset, targetSize: CGSize(width: 156, height: 156),
-                contentMode: .aspectFill, options: request
-            ) { image, _ in
-                guard let image else { return }
-                DispatchQueue.main.async { galleryThumb = image }
-            }
-        }
     }
 }
 
@@ -862,6 +243,8 @@ final class ClipCameraController: NSObject, ObservableObject,
     @Published var liveSeconds: Double = 0
     @Published var errorText: String?
     @Published var hasTorch = false
+    /// Which way the camera faces, for the flip control's state.
+    @Published private(set) var isFront = false
     @Published var torchOn = false
     @Published var selectedSpeed: Double = 1
     @Published var filter: ClipFilter = .none {
@@ -878,8 +261,29 @@ final class ClipCameraController: NSObject, ObservableObject,
             // Drop stale faces when switching off, so re-enabling cannot flash the ears at
             // wherever a face was several seconds ago.
             if faceEffect == .none { faceDetector.reset() }
+            // A 3D lens (Puppy) runs on ARKit instead of the capture session.
+            let wantsLens = faceEffect.usesLens && FaceLensSession.isSupported
+            if wantsLens != lensActive { wantsLens ? enterLens() : exitLens() }
         }
     }
+
+    /// True while a 3D lens owns the front camera (Camera/PuppyLens.swift). The capture
+    /// session is stopped meanwhile; zoom and torch do not apply.
+    @Published private(set) var lensActive = false
+    private lazy var lens: FaceLensSession = {
+        let lens = FaceLensSession()
+        lens.onFrame = { [weak self] buffer, pts in self?.lensFrame(buffer, at: pts) }
+        lens.onAudio = { [weak self] sample in
+            self?.writerQueue.async { self?.appendAudio(sample) }
+        }
+        lens.onFailure = { [weak self] in
+            DispatchQueue.main.async {
+                self?.errorText = "That lens couldn't start."
+                self?.faceEffect = .none
+            }
+        }
+        return lens
+    }()
 
     /// Re-derived from what is on disk rather than accumulated, so undo can never drift.
     var bankedSeconds: Double { takes.reduce(0) { $0 + $1.outputSeconds } }
@@ -936,12 +340,21 @@ final class ClipCameraController: NSObject, ObservableObject,
     /// would come back without the ears the person was looking at when they tapped.
     func captureStill(_ completion: @escaping (UIImage?) -> Void) {
         Haptics.tap()
+        grabFrame(completion)
+    }
+
+    /// The next viewfinder frame, quietly — for thumbnails, not a shutter press.
+    func grabFrame(_ completion: @escaping (UIImage?) -> Void) {
         filterLock.lock(); pendingStill = completion; filterLock.unlock()
     }
 
     // MARK: Lifecycle
 
     func start() {
+        if lensActive {
+            lens.start(withAudio: wantsAudio)
+            return
+        }
         // Decode the filter art before the rail is tappable, off the capture path, so
         // choosing a filter never stalls a frame on a PNG decode.
         DispatchQueue.global(qos: .utility).async { ClipFaceAssets.preload() }
@@ -992,9 +405,41 @@ final class ClipCameraController: NSObject, ObservableObject,
             return
         }
         setTorch(on: false)
+        if lensActive { lens.stop() }
         sessionQueue.async { [weak self] in
             guard let self, self.session.isRunning else { return }
             self.session.stopRunning()
+        }
+    }
+
+    /// Hand the camera to ARKit: the lens is front-only, and the two cannot share it.
+    private func enterLens() {
+        lensActive = true
+        setTorch(on: false)
+        position = .front
+        isFront = true
+        hasTorch = false
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if self.session.isRunning { self.session.stopRunning() }
+            DispatchQueue.main.async {
+                guard self.lensActive else { return }
+                self.lens.start(withAudio: self.wantsAudio)
+            }
+        }
+    }
+
+    /// And back: the capture session resumes on the front camera the lens left it on.
+    private func exitLens() {
+        lensActive = false
+        lens.stop()
+        sessionQueue.async { [weak self] in
+            guard let self, self.configured else { return }
+            self.session.beginConfiguration()
+            self.attachCamera(position: self.position)
+            self.session.commitConfiguration()
+            self.applyConnectionGeometry()
+            if !self.session.isRunning { self.session.startRunning() }
         }
     }
 
@@ -1075,8 +520,16 @@ final class ClipCameraController: NSObject, ObservableObject,
         // user's: on a phone with an ultra-wide, device 1.0 IS the ultra-wide, so a
         // user-facing 1× is `switchOvers[0]` in device units.
         let userScaleBase = base
+        // Open at the user's 1× — the wide lens. A virtual device starts at ITS 1.0, which on
+        // a phone with an ultra-wide is the 0.5× lens, so every camera opened zoomed out.
+        if (try? dev.lockForConfiguration()) != nil {
+            dev.videoZoomFactor = min(max(base, dev.minAvailableVideoZoomFactor), ceiling)
+            dev.unlockForConfiguration()
+        }
         let clampedZoom = min(dev.videoZoomFactor / userScaleBase, ceiling / userScaleBase)
+        let front = position == .front
         DispatchQueue.main.async {
+            self.isFront = front
             self.hasTorch = torch
             if !torch { self.torchOn = false }
             self.zoomScaleBase = userScaleBase
@@ -1106,6 +559,8 @@ final class ClipCameraController: NSObject, ObservableObject,
 
     func flip() {
         guard !isRecording else { return }
+        // The lens is front-only, so flipping takes it off and goes on to the back camera.
+        if lensActive { faceEffect = .none }
         // The previous camera's faces do not apply to the new one, and a stale box would
         // park the ears mid-air until the next detection lands.
         faceDetector.reset()
@@ -1242,6 +697,7 @@ final class ClipCameraController: NSObject, ObservableObject,
     /// orientation, so a portrait viewfinder point has to be rotated into that space — and
     /// un-mirrored again when the front camera preview is mirrored.
     func focus(atNormalizedViewPoint point: CGPoint) {
+        guard !lensActive else { return }
         let u = (position == .front) ? (1 - point.x) : point.x
         let devicePoint = CGPoint(x: point.y, y: 1 - u)
         Haptics.tap()
@@ -1267,6 +723,7 @@ final class ClipCameraController: NSObject, ObservableObject,
         let remaining = maxSeconds - bankedSeconds
         guard remaining > 0.2 else { return }
         let speed = selectedSpeed
+        let lens = lensActive
         Haptics.rigid()
         isRecording = true
         liveSeconds = 0
@@ -1275,7 +732,7 @@ final class ClipCameraController: NSObject, ObservableObject,
         // second, so the RECORDED budget has to be scaled by the speed or a slow-motion
         // take would sail past the backend's 90s cap.
         let budget = remaining * speed
-        writerQueue.async { [weak self] in self?.beginWriter(speed: speed, budget: budget) }
+        writerQueue.async { [weak self] in self?.beginWriter(speed: speed, budget: budget, lens: lens) }
     }
 
     func stopRecording() {
@@ -1319,12 +776,20 @@ final class ClipCameraController: NSObject, ObservableObject,
         return settings
     }
 
-    private func beginWriter(speed: Double, budget: Double) {
+    private func beginWriter(speed: Double, budget: Double, lens: Bool) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("clip_seg_\(UUID().uuidString).mp4")
         do {
             let assetWriter = try AVAssetWriter(outputURL: url, fileType: .mp4)
-            let videoSettings = portraitVideoSettings()
+            var videoSettings = portraitVideoSettings()
+            if lens {
+                // Lens frames are composed at a fixed portrait size, whatever the capture
+                // session last recommended.
+                var settings = videoSettings ?? [AVVideoCodecKey: AVVideoCodecType.h264]
+                settings[AVVideoWidthKey] = Int(FaceLensSession.outputSize.width)
+                settings[AVVideoHeightKey] = Int(FaceLensSession.outputSize.height)
+                videoSettings = settings
+            }
             let videoInput = AVAssetWriterInput(mediaType: .video,
                                                 outputSettings: videoSettings)
             videoInput.expectsMediaDataInRealTime = true
@@ -1361,8 +826,17 @@ final class ClipCameraController: NSObject, ObservableObject,
                 sourcePixelBufferAttributes: adaptorAttrs)
 
             var audioInput: AVAssetWriterInput?
-            if let audioSettings = audioOut.recommendedAudioSettingsForAssetWriter(writingTo: .mp4)
-                as? [String: Any] {
+            // A stopped session (the lens has the mic) may not recommend anything; plain AAC
+            // then, which the writer converts ARKit's PCM into.
+            let recommendedAudio = audioOut.recommendedAudioSettingsForAssetWriter(writingTo: .mp4)
+                as? [String: Any]
+            let fallbackAudio: [String: Any]? = lens && wantsAudio ? [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVNumberOfChannelsKey: 1,
+                AVSampleRateKey: 44_100,
+                AVEncoderBitRateKey: 128_000,
+            ] : nil
+            if let audioSettings = recommendedAudio ?? fallbackAudio {
                 let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
                 input.expectsMediaDataInRealTime = true
                 if assetWriter.canAdd(input) {
@@ -1464,14 +938,7 @@ final class ClipCameraController: NSObject, ObservableObject,
                 }
                 renderer.submit(preview)
 
-                filterLock.lock()
-                let still = pendingStill
-                pendingStill = nil
-                filterLock.unlock()
-                if let still {
-                    let cg = writerCIContext.createCGImage(preview, from: preview.extent)
-                    DispatchQueue.main.async { still(cg.map { UIImage(cgImage: $0) }) }
-                }
+                deliverStill(preview)
             }
             writerQueue.async { [weak self] in self?.appendVideo(sampleBuffer) }
         } else if output === audioOut {
@@ -1479,18 +946,59 @@ final class ClipCameraController: NSObject, ObservableObject,
         }
     }
 
-    private func appendVideo(_ sample: CMSampleBuffer) {
-        guard writing, let assetWriter = writer, let input = writerVideoInput,
-              assetWriter.status == .writing else { return }
-        let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-        guard pts.isValid else { return }
+    private func deliverStill(_ preview: CIImage) {
+        filterLock.lock()
+        let still = pendingStill
+        pendingStill = nil
+        filterLock.unlock()
+        if let still {
+            let cg = writerCIContext.createCGImage(preview, from: preview.extent)
+            DispatchQueue.main.async { still(cg.map { UIImage(cgImage: $0) }) }
+        }
+    }
 
+    /// A lens frame: camera and lens already composed. The colour look stays preview-only,
+    /// exactly as on the capture path, and the composed frame is what gets written.
+    private func lensFrame(_ buffer: CVPixelBuffer, at pts: CMTime) {
+        filterLock.lock(); let active = liveFilter; filterLock.unlock()
+        let preview = active.apply(to: CIImage(cvPixelBuffer: buffer))
+        renderer.submit(preview)
+        deliverStill(preview)
+        writerQueue.async { [weak self] in self?.appendLensVideo(buffer, at: pts) }
+    }
+
+    private func appendLensVideo(_ buffer: CVPixelBuffer, at pts: CMTime) {
+        guard writing, let assetWriter = writer, let adaptor = writerPixelAdaptor,
+              assetWriter.status == .writing, pts.isValid else { return }
+        markVideoTime(pts, writer: assetWriter)
+        if adaptor.assetWriterInput.isReadyForMoreMediaData {
+            adaptor.append(buffer, withPresentationTime: pts)
+        }
+        afterVideoFrame(pts)
+    }
+
+    /// Opens the take's timeline on its first video frame, and tracks the last one.
+    private func markVideoTime(_ pts: CMTime, writer assetWriter: AVAssetWriter) {
         if !sessionStarted {
             assetWriter.startSession(atSourceTime: pts)
             sessionStarted = true
             firstPTS = pts
         }
         lastPTS = pts
+    }
+
+    private func afterVideoFrame(_ pts: CMTime) {
+        let recorded = (pts - firstPTS).seconds
+        publishLive(recorded / takeSpeed)
+        if recorded >= recordBudget { finishTake() }
+    }
+
+    private func appendVideo(_ sample: CMSampleBuffer) {
+        guard writing, let assetWriter = writer, let input = writerVideoInput,
+              assetWriter.status == .writing else { return }
+        let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+        guard pts.isValid else { return }
+        markVideoTime(pts, writer: assetWriter)
 
         filterLock.lock(); let face = liveFaceEffect; filterLock.unlock()
         let faces = face == .none ? [] : faceDetector.latest
@@ -1509,10 +1017,7 @@ final class ClipCameraController: NSObject, ObservableObject,
                 input.append(sample)
             }
         }
-
-        let recorded = (pts - firstPTS).seconds
-        publishLive(recorded / takeSpeed)
-        if recorded >= recordBudget { finishTake() }
+        afterVideoFrame(pts)
     }
 
     /// Composite the face effect into a fresh buffer from the adaptor's pool.
@@ -1562,7 +1067,9 @@ enum ClipTakeJoiner {
     /// A lone 1× take is returned AS-IS: every take shares the same codec and session
     /// settings, so joining them is a passthrough remux, and copying one file through a full
     /// export would be pure loss in the overwhelmingly common case.
-    static func join(takes: [ClipTake]) async -> URL? {
+    /// `consumeTakes: false` leaves the take files in place, for a recorder the author can
+    /// come back to and add to.
+    static func join(takes: [ClipTake], consumeTakes: Bool = true) async -> URL? {
         guard !takes.isEmpty else { return nil }
         if takes.count == 1, takes[0].speed == 1 { return takes[0].url }
 
@@ -1611,12 +1118,12 @@ enum ClipTakeJoiner {
         // settings the session produced.
         let primary = scaled ? AVAssetExportPreset1920x1080 : AVAssetExportPresetPassthrough
         if let out = await export(composition, preset: primary) {
-            cleanUp(takes)
+            if consumeTakes { cleanUp(takes) }
             return out
         }
         if primary == AVAssetExportPresetPassthrough,
            let out = await export(composition, preset: AVAssetExportPreset1920x1080) {
-            cleanUp(takes)
+            if consumeTakes { cleanUp(takes) }
             return out
         }
         return nil

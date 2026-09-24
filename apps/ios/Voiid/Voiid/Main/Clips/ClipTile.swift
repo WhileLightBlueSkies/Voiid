@@ -100,7 +100,8 @@ struct ClipTile: View {
                 .clipped()
 
             switch clip.uploadState {
-            case .uploading(let progress): uploadOverlay(progress)
+            case .processing(let progress): uploadOverlay(progress, label: "Preparing")
+            case .uploading(let progress): uploadOverlay(progress, label: "Uploading")
             case .failed(let message):     failedOverlay(message)
             case .none:                    metaRow
             }
@@ -234,7 +235,7 @@ struct ClipTile: View {
 
     // MARK: - Upload states
 
-    private func uploadOverlay(_ progress: Double) -> some View {
+    private func uploadOverlay(_ progress: Double, label: String) -> some View {
         ZStack {
             Color.black.opacity(0.45)
             VStack(spacing: 6) {
@@ -242,8 +243,9 @@ struct ClipTile: View {
                     .progressViewStyle(.linear)
                     .tint(VoiidColor.primary)
                     .frame(width: 56)
-                Text("Uploading")
+                Text("\(label) \(Int((min(1, max(0, progress)) * 100).rounded()))%")
                     .font(VoiidFont.rounded(10, .medium))
+                    .monospacedDigit()
                     .foregroundColor(.white)
             }
         }
@@ -261,6 +263,14 @@ struct ClipTile: View {
                     .font(.system(size: 16)).foregroundColor(VoiidColor.error)
                 Text("Upload failed")
                     .font(VoiidFont.rounded(10, .semibold)).foregroundColor(.white)
+                // Why, in a line — "failed" alone gave no way to tell a lost connection from
+                // a video that could not be processed.
+                Text(message)
+                    .font(VoiidFont.rounded(9))
+                    .foregroundColor(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .padding(.horizontal, 4)
 
                 if canRetry, let onRetry {
                     Button {

@@ -135,6 +135,8 @@ final class SocialService {
         var author_handle: String?
         var author_display_name: String?
         var author_verified: Bool?
+        /// Comments on or off for this clip (092). Absent from an older backend: on.
+        var comments_enabled: Bool?
     }
     struct ClipsResp: Decodable {
         let clips: [CreatorClipRow]

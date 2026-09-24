@@ -70,7 +70,7 @@ enum class ClipComposerStep { EDIT, DETAILS }
 
 /** Mirrors MAX_DURATION_MS / MAX_BYTE_SIZE in backend/api/src/routes/clips.ts. */
 object ClipCaps {
-    const val MAX_DURATION_MS = 90_000L
+    const val MAX_DURATION_MS = 120_000L
     const val MAX_BYTES = 100L * 1024 * 1024
 }
 
@@ -115,7 +115,7 @@ fun ClipComposerFlow(
                     // Validate BEFORE the user invests time in the editor — telling
                     // someone their 4-minute video is too long only at Post is the
                     // wrong order.
-                    errorText = "Clips can be up to 90 seconds. Trim it and try again."
+                    errorText = "Clips can be up to 2 minutes. Trim it and try again."
                 else -> {
                     sourceFile = result.file
                     edit = ClipEdit(

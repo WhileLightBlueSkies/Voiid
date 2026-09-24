@@ -19,8 +19,8 @@ enum class ClipQuality(val wire: String, val longEdge: Int, val bitrate: Int, va
     HD("hd", 1280, 2_800_000, "720p"),
 
     /**
-     * Bitrates are chosen so a 90s clip stays well inside the 100 MB cap: 90s at
-     * 4.5 Mbps ≈ 50 MB, leaving headroom for audio and container overhead.
+     * Bitrates are chosen so a 2-minute clip stays inside the 100 MB cap: 120s at
+     * 4.5 Mbps ≈ 68 MB, leaving headroom for audio and container overhead.
      */
     FHD("fhd", 1920, 4_500_000, "1080p");
 

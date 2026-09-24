@@ -50,6 +50,8 @@ enum ReportTarget {
     /// against their account. A host reporting their own event is refused server-side — they
     /// can cancel it — and answered with the same 202 as everything else.
     case event(eventId: String)
+    /// One comment under a Clip (clip_comments.id, 091) — not the clip, not the person.
+    case clipComment(commentId: String)
 
     /// The server's `target_type` vocabulary (routes/reports.ts TARGET_TYPES).
     var type: String {
@@ -60,6 +62,7 @@ enum ReportTarget {
         case .communityPost: return "community_post"
         case .community: return "community"
         case .event: return "event"
+        case .clipComment: return "clip_comment"
         }
     }
 
@@ -71,6 +74,7 @@ enum ReportTarget {
         case .communityPost(let postId): return postId
         case .community(let communityId): return communityId
         case .event(let eventId): return eventId
+        case .clipComment(let commentId): return commentId
         }
     }
 }

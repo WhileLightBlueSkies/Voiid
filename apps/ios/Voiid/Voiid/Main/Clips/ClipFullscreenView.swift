@@ -47,8 +47,8 @@ struct ClipFullscreenView: View {
     /// Drives `scrollPosition(id:)`. Kept separate from `index` so a programmatic jump and a
     /// user scroll cannot fight each other mid-gesture.
     @State private var scrolledID: Int?
-    @State private var showComments = false
-    @State private var commentDraft = ""
+    /// The clip whose comments sheet is open. The video keeps playing under it.
+    @State private var commentsFor: Clip?
     @StateObject private var players = ClipPlayerPool()
 
     /// The working copy of an injected feed. Held locally because likes, views and comments
@@ -59,6 +59,11 @@ struct ClipFullscreenView: View {
     /// The clip being reported. Held on the PAGER, not on the page: a sheet raised from
     /// inside a paging page is torn down the moment the user swipes away from it.
     @State private var reporting: Clip?
+    /// "More" on the rail: Report and Block, off the rail because they are rare and destructive
+    /// and sit beside Like and Comment, which are frequent and reversible.
+    @State private var moreFor: Clip?
+    @State private var blocking: Clip?
+    @State private var toast: String?
 
     init(startIndex: Int) {
         self.startIndex = startIndex
@@ -80,20 +85,65 @@ struct ClipFullscreenView: View {
 
     var body: some View {
         GeometryReader { geo in
-            VStack(spacing: 0) {
-                pager(size: CGSize(
-                    width: geo.size.width,
-                    height: showComments ? geo.size.height * 0.42 : geo.size.height))
-
-                if showComments, let clip = currentClip {
-                    commentsPanel(for: clip)
-                        .frame(height: geo.size.height * 0.58)
-                        .transition(.move(edge: .bottom))
-                }
-            }
-            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: showComments)
+            pager(size: geo.size)
         }
         .background(Color.black.ignoresSafeArea())
+        .preferredColorScheme(.dark)
+        .overlay(alignment: .top) {
+            if let toast {
+                Text(toast)
+                    .font(VoiidFont.rounded(13, .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.vertical, 10)
+                    .background(Capsule().fill(.black.opacity(0.75)))
+                    .padding(.top, 60)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .sheet(item: $commentsFor) { clip in
+            ClipCommentsSheet(clip: clip) { delta in
+                // The engine moves counts for rows it owns; an injected row's lives here.
+                if feed != nil { mutateInjected(clip.id) { $0.commentCount = max(0, $0.commentCount + delta) } }
+            }
+        }
+        .confirmationDialog(
+            moreFor.map { "@\($0.authorHandle ?? $0.authorName)" } ?? "",
+            isPresented: .init(get: { moreFor != nil }, set: { if !$0 { moreFor = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Report this Clip", role: .destructive) {
+                let clip = moreFor; moreFor = nil; reporting = clip
+            }
+            if let clip = moreFor, clip.authorId != session.userId {
+                Button("Block this creator", role: .destructive) {
+                    moreFor = nil; blocking = clip
+                }
+            }
+            Button("Cancel", role: .cancel) { moreFor = nil }
+        }
+        .confirmationDialog(
+            "Report this Clip?",
+            isPresented: .init(get: { reporting != nil }, set: { if !$0 { reporting = nil } }),
+            titleVisibility: .visible
+        ) {
+            ForEach(ReportReason.allCases) { reason in
+                Button(reason.label) { submitReport(reason) }
+            }
+            Button("Cancel", role: .cancel) { reporting = nil }
+        } message: {
+            Text("Tell us what's wrong with it. Reports are reviewed, and we act on serious ones within 24 hours.")
+        }
+        .confirmationDialog(
+            blocking.map { "Block @\($0.authorHandle ?? $0.authorName)?" } ?? "",
+            isPresented: .init(get: { blocking != nil }, set: { if !$0 { blocking = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Block", role: .destructive) { submitBlock() }
+            Button("Cancel", role: .cancel) { blocking = nil }
+        } message: {
+            Text("You won't see their Clips, and they won't be able to message you. They aren't told.")
+        }
         .ignoresSafeArea(.keyboard)
         .onAppear {
             session.hideTabBar = true
@@ -107,12 +157,6 @@ struct ClipFullscreenView: View {
             players.releaseAll()
         }
         .task(id: index) { await onPageChanged() }
-        // Reporting a clip. Presented from the PAGER so it survives a swipe, and offered as
-        // a sheet rather than a confirmation dialog because the server wants a reason and an
-        // optional note — see ReportService.
-        .sheet(item: $reporting) { clip in
-            ReportSheet(target: .clip(id: clip.id)) { reporting = nil }
-        }
     }
 
     // MARK: - Injected feed
@@ -159,14 +203,14 @@ struct ClipFullscreenView: View {
                     ClipPlayerPage(
                         clip: clip,
                         player: players.player(for: clip.id),
-                        isActive: i == index && !showComments,
-                        compact: showComments,
+                        isActive: i == index,
+                        compact: false,
                         canFollow: canFollow(clip),
                         onToggleLike: { Task { await toggleLike(clip) } },
-                        onOpenComments: { openComments(clip) },
+                        onOpenComments: { Haptics.tap(); commentsFor = clip },
                         onFollow: { follow(clip) },
-                        onReport: { reporting = clip },
-                        onBack: { showComments ? closeComments() : dismiss() }
+                        onMore: { moreFor = clip },
+                        onBack: { dismiss() }
                     )
                     .frame(width: size.width, height: size.height)
                     .id(i)
@@ -177,9 +221,6 @@ struct ClipFullscreenView: View {
         .scrollTargetBehavior(.paging)
         .scrollPosition(id: $scrolledID)
         .scrollIndicators(.hidden)
-        // Comments open = the reel is a shrunken box at the top; paging it there would be
-        // a stray gesture fighting the comment list's own scroll.
-        .scrollDisabled(showComments)
         .frame(width: size.width, height: size.height)
         .clipped()
         .onChange(of: scrolledID) { _, newValue in
@@ -291,170 +332,41 @@ struct ClipFullscreenView: View {
         Task { await creators.toggleFollow(handle) }
     }
 
-    // MARK: - Comments
+    // MARK: - Report and block
 
-    private func openComments(_ clip: Clip) {
-        Haptics.tap()
-        withAnimation { showComments = true }
-        players.pause(clip.id)
-        if engine.comments[clip.id] == nil {
-            Task { await engine.loadComments(for: clip.id) }
+    /// Confirms, then moves on. A report that produces no acknowledgement reads as ignored,
+    /// which is what stops people reporting the second time.
+    private func submitReport(_ reason: ReportReason) {
+        guard let clip = reporting else { return }
+        reporting = nil
+        Task {
+            do {
+                try await ReportService.shared.submit(target: .clip(id: clip.id), reason: reason, note: "")
+                Haptics.success()
+                showToast("Reported. Thanks \u{2014} we\u{2019}ll review it.")
+            } catch {
+                showToast("Couldn\u{2019}t send the report. Try again.")
+            }
         }
     }
 
-    private func closeComments() {
-        withAnimation { showComments = false }
-        if let clip = currentClip { players.play(clip.id) }
+    private func submitBlock() {
+        guard let clip = blocking else { return }
+        blocking = nil
+        Task {
+            let ok = await BlockService.shared.block(userId: clip.authorId, displayName: clip.authorName,
+                                                     username: clip.authorHandle, photoURL: clip.authorPhotoURL)
+            if ok { Haptics.success() }
+            showToast(ok ? "Blocked. You won\u{2019}t see their Clips." : "Couldn\u{2019}t block right now. Try again.")
+        }
     }
 
-    private func commentsPanel(for clip: Clip) -> some View {
-        let rows = engine.comments[clip.id] ?? []
-        return VStack(spacing: 0) {
-            Capsule().fill(VoiidColor.divider)
-                .frame(width: 40, height: 4)
-                .padding(.vertical, VoiidSpacing.sm)
-
-            HStack {
-                Text(rows.isEmpty ? "Comments" : "\(rows.count) comments")
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                Spacer()
-                Button { closeComments() } label: {
-                    Image(systemName: "xmark").foregroundColor(VoiidColor.textSecondary)
-                }
-            }
-            .padding(.horizontal, VoiidSpacing.lg)
-            .padding(.bottom, VoiidSpacing.sm)
-            Divider()
-
-            if engine.commentsLoading.contains(clip.id) && rows.isEmpty {
-                Spacer()
-                ProgressView().tint(VoiidColor.primary)
-                Spacer()
-            } else if rows.isEmpty {
-                Spacer()
-                VStack(spacing: VoiidSpacing.xs) {
-                    Text("No comments yet")
-                        .font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
-                    Text("Be the first to say something.")
-                        .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
-                }
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                        ForEach(rows) { c in commentRow(c, clipId: clip.id) }
-                    }
-                    .padding(VoiidSpacing.lg)
-                }
-            }
-
-            Divider()
-            composer(for: clip)
+    private func showToast(_ text: String) {
+        withAnimation(.easeOut(duration: 0.2)) { toast = text }
+        Task {
+            try? await Task.sleep(for: .seconds(2.2))
+            withAnimation(.easeOut(duration: 0.2)) { toast = nil }
         }
-        .background(VoiidColor.background)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-
-    private func commentRow(_ c: ClipComment, clipId: String) -> some View {
-        HStack(alignment: .top, spacing: VoiidSpacing.sm) {
-            ProfileAvatarButton(photoURL: c.authorPhotoURL, name: c.authorName, size: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(c.authorName)
-                    .font(VoiidFont.rounded(13, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                Text(c.text)
-                    .font(VoiidFont.rounded(14, .regular))
-                    .foregroundColor(VoiidColor.textPrimary)
-
-                // A failed comment is kept and made retryable — never silently dropped.
-                if c.sendState == .failed {
-                    Button {
-                        Task {
-                            await engine.retryComment(
-                                clipId: clipId, commentId: c.id,
-                                authorId: session.userId ?? "",
-                                authorName: session.profile.fullName)
-                        }
-                    } label: {
-                        Text("Failed to send · Retry")
-                            .font(VoiidFont.caption)
-                            .foregroundColor(VoiidColor.error)
-                    }
-                }
-            }
-            Spacer(minLength: 0)
-
-            // DELETE YOUR OWN. `DELETE /clips/:id/comments/:commentId` and
-            // ClipService.deleteComment have both shipped for a while with no way to reach
-            // them: a comment, once posted, could not be taken back from anywhere in the app.
-            //
-            // Shown only on your own rows, and only once the comment actually exists on the
-            // server — a pending row has no id to delete, and a failed one is removed by
-            // retrying or by giving up rather than by this control.
-            //
-            // The hiding is CONVENIENCE, not enforcement: the server checks that the caller
-            // wrote the comment (or owns the clip), and it is the authority.
-            if c.authorId == session.userId, c.sendState == .sent {
-                Menu {
-                    Button("Delete", systemImage: "trash", role: .destructive) {
-                        Haptics.rigid()
-                        Task {
-                            await engine.deleteComment(clipId: clipId, commentId: c.id)
-                            // An injected feed owns its own count — see the composer.
-                            if feed != nil {
-                                mutateInjected(clipId) {
-                                    $0.commentCount = max(0, $0.commentCount - 1)
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Comment options")
-            }
-        }
-        .opacity(c.sendState == .sending ? 0.55 : 1)
-    }
-
-    private func composer(for clip: Clip) -> some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            TextField("", text: $commentDraft,
-                      prompt: Text("Add a comment…").foregroundColor(VoiidColor.placeholder))
-                .font(VoiidFont.rounded(15, .regular))
-                .foregroundColor(VoiidColor.textPrimary)
-                .padding(.horizontal, VoiidSpacing.md)
-                .frame(height: 44)
-                .background(VoiidColor.fieldFill)
-                .clipShape(Capsule())
-
-            Button {
-                let text = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return }
-                Haptics.tap()
-                commentDraft = ""
-                Task {
-                    let sent = await engine.addComment(
-                        clipId: clip.id, text: text,
-                        authorId: session.userId ?? "",
-                        authorName: session.profile.fullName)
-                    // The engine only moves the count for rows it owns; an injected row's
-                    // count lives here, and is moved only once the comment actually landed.
-                    if sent, feed != nil { mutateInjected(clip.id) { $0.commentCount += 1 } }
-                }
-            } label: {
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 22))
-                    .foregroundColor(VoiidColor.primary)
-            }
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.vertical, VoiidSpacing.sm)
     }
 }
 
@@ -469,10 +381,9 @@ private struct ClipPlayerPage: View {
     let onToggleLike: () -> Void
     let onOpenComments: () -> Void
     let onFollow: () -> Void
-    /// Report this clip or its creator. A separate callback rather than presenting the sheet
-    /// from here: the pager owns presentation, and a sheet raised from inside a paging page
-    /// dies with the page when the user swipes.
-    let onReport: () -> Void
+    /// "More" — Report and Block. A callback rather than a dialog raised from here: the pager
+    /// owns presentation, and one raised inside a paging page dies with it on a swipe.
+    let onMore: () -> Void
     let onBack: () -> Void
 
     @State private var muted = true
@@ -575,119 +486,105 @@ private struct ClipPlayerPage: View {
     /// small preview, and a scrim sized for a full page would swallow most of it.
     private func scrim(pageHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
-            LinearGradient(colors: [.black.opacity(0.45), .clear],
+            // The Voiid Ui reference's two gradients: legible chrome at each end without
+            // dimming the middle of the video.
+            LinearGradient(colors: [.black.opacity(0.55), .clear],
                            startPoint: .top, endPoint: .bottom)
-                .frame(height: 120)
+                .frame(height: 140)
             Spacer(minLength: 0)
-            // ~40% of the page: enough to cover a three-line caption and the whole action
-            // rail without dimming the subject of the shot.
-            LinearGradient(colors: [.clear, .black.opacity(0.8)],
+            LinearGradient(colors: [.clear, .black.opacity(0.65)],
                            startPoint: .top, endPoint: .bottom)
-                .frame(height: pageHeight * 0.4)
+                .frame(height: max(220, pageHeight * 0.3))
         }
         .allowsHitTesting(false)
         .opacity(compact ? 0.35 : 1)
         .animation(.easeInOut(duration: 0.2), value: compact)
     }
 
+    /// Built to the Voiid Ui reference (Chat/ClipPlayerScreen.swift): close top-left, the
+    /// creator bottom-left, and a rail of Like · Comments · Share · More on the right. The mute
+    /// state stays top-right — the reference is silent, real video is not.
     private var chrome: some View {
-        VStack {
+        VStack(spacing: 0) {
             HStack {
                 Button(action: onBack) {
-                    Image(systemName: compact ? "chevron.down" : "chevron.left")
-                        .font(.title2)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(.white)
                         .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
-                .accessibilityLabel(compact ? "Close comments" : "Back")
+                .accessibilityLabel("Close")
                 Spacer()
-                if !compact {
-                    Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 16))
-                        .foregroundColor(.white.opacity(0.9))
-                        .frame(width: 44, height: 44)
-                        .accessibilityLabel(muted ? "Muted" : "Sound on")
-                }
+                Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel(muted ? "Muted" : "Sound on")
             }
             .padding(.horizontal, VoiidSpacing.xs)
+
             Spacer()
 
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-                    HStack(spacing: VoiidSpacing.sm) {
-                        ProfileAvatarButton(photoURL: clip.authorPhotoURL,
-                                            name: clip.authorName, size: 44)
-                        Text(clip.authorName)
-                            .font(VoiidFont.rounded(15, .semibold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                        if clip.authorVerified { VerifiedSeal(size: 14) }
-                        // Following someone you have just found should not cost a trip to
-                        // their profile — but the chip only appears when the follow state is
-                        // actually known, so it can never lie (see `canFollow`).
-                        if canFollow && !compact { followChip }
-                    }
-                    if !compact, let caption = clip.caption, !caption.isEmpty {
-                        Text(caption)
-                            .font(VoiidFont.rounded(14, .regular))
-                            .foregroundColor(.white)
-                            .lineLimit(3)
-                    }
-                }
-                Spacer(minLength: VoiidSpacing.sm)
-
-                if !compact {
-                    VStack(spacing: VoiidSpacing.md) {
-                        likeAction
-                        action("bubble.right.fill",
-                               ClipCount.compact(clip.commentCount), .white,
-                               "Comments") { onOpenComments() }
-                        // Views are a READOUT, not a control: there is nothing to open, so it
-                        // gets the same type treatment without pretending to be tappable.
-                        VStack(spacing: 4) {
-                            Image(systemName: "eye.fill")
-                                .font(.system(size: 24)).foregroundColor(.white)
-                            Text(ClipCount.compact(clip.viewCount))
-                                .font(VoiidFont.rounded(12, .semibold))
-                                .foregroundColor(.white)
-                        }
-                        .frame(width: 44, height: 44)
-                        .accessibilityLabel("\(clip.viewCount) views")
-
-                        // SHARE AND REPORT. Both were absent, and the second is not
-                        // optional: routes/reports.ts has shipped `clip` and `creator`
-                        // target types since moderation landed, and `ReportTarget.clip`
-                        // existed in ReportService without a single call site — a
-                        // moderation path with no door. A UGC feed that cannot be reported
-                        // from is also an App Review problem.
-                        Menu {
-                            ShareLink(item: shareText) {
-                                Label("Share clip", systemImage: "square.and.arrow.up")
-                            }
-                            Divider()
-                            Button("Report", systemImage: "flag", role: .destructive) {
-                                Haptics.tap()
-                                onReport()
-                            }
-                        } label: {
-                            VStack(spacing: 4) {
-                                Image(systemName: "ellipsis")
-                                    .font(.system(size: 24))
-                                    .foregroundColor(.white)
-                                Text("More")
-                                    .font(VoiidFont.rounded(12, .semibold))
-                                    .foregroundColor(.white)
-                            }
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                        }
-                        .accessibilityLabel("More options")
-                    }
-                }
+            HStack(alignment: .bottom, spacing: VoiidSpacing.md) {
+                creatorBlock
+                Spacer(minLength: 0)
+                actionRail
             }
             .padding(.horizontal, VoiidSpacing.md)
             .padding(.bottom, VoiidSpacing.sm)
         }
+    }
+
+    private var creatorBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ProfileAvatarButton(photoURL: clip.authorPhotoURL, name: clip.authorName, size: 32)
+                Text(clip.authorHandle.map { "@\($0)" } ?? clip.authorName)
+                    .font(VoiidFont.rounded(15, .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                if clip.authorVerified {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(VoiidBrand.limeBright)
+                        .accessibilityLabel("Verified")
+                }
+                // Following someone you have just found should not cost a trip to their
+                // profile — shown only when the follow state is known (see `canFollow`).
+                if canFollow { followChip }
+            }
+            Text("\(ClipCount.compact(clip.viewCount)) views")
+                .font(VoiidFont.rounded(12))
+                .foregroundColor(.white.opacity(0.7))
+            if let caption = clip.caption, !caption.isEmpty {
+                Text(caption)
+                    .font(VoiidFont.rounded(14))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+            }
+        }
+        .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
+    }
+
+    /// Counts under Like and Comments, because a rail of bare glyphs says what you CAN do and
+    /// nothing about the clip. Share and More carry no number — there is nothing to count.
+    private var actionRail: some View {
+        VStack(spacing: VoiidSpacing.md) {
+            likeAction
+            railButton(icon: "bubble.right", count: clip.commentCount, label: "Comments") {
+                onOpenComments()
+            }
+            ShareLink(item: shareText) {
+                railIcon("paperplane", count: nil)
+            }
+            .accessibilityLabel("Share")
+            railButton(icon: "ellipsis", count: nil, label: "More") {
+                Haptics.tap()
+                onMore()
+            }
+        }
+        .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
     }
 
     /// Deliberately NOT a per-clip deep link: nothing in the app resolves one yet, and a
@@ -728,20 +625,13 @@ private struct ClipPlayerPage: View {
             }
             onToggleLike()
         } label: {
-            VStack(spacing: 4) {
-                Image(systemName: clip.likedByMe ? "heart.fill" : "heart")
-                    .font(.system(size: 26))
-                    .foregroundColor(clip.likedByMe ? VoiidColor.error : .white)
-                    .scaleEffect(likePop ? 1.3 : 1)
-                    .symbolEffect(.bounce, value: clip.likedByMe)
-                Text(ClipCount.compact(clip.likeCount))
-                    .font(VoiidFont.rounded(12, .semibold))
-                    .foregroundColor(.white)
-            }
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
+            railIcon(clip.likedByMe ? "heart.fill" : "heart", count: clip.likeCount,
+                     tint: clip.likedByMe ? Color(hex: 0xF87171) : .white)
+                .scaleEffect(likePop ? 1.3 : 1)
+                .symbolEffect(.bounce, value: clip.likedByMe)
         }
-        .accessibilityLabel(clip.likedByMe ? "Unlike" : "Like")
+        .buttonStyle(.plain)
+        .accessibilityLabel(clip.likedByMe ? "Unlike, \(clip.likeCount)" : "Like, \(clip.likeCount)")
     }
 
     /// Visible feedback while a speed hold is active — without it the change in playback rate
@@ -760,20 +650,30 @@ private struct ClipPlayerPage: View {
         .transition(.opacity)
     }
 
-    /// A rail action. The 44pt frame is the point: these were bare icon+label stacks whose
-    /// tappable area was only as big as the glyph, on the busiest control surface in the app.
-    private func action(_ icon: String, _ label: String, _ color: Color,
-                        _ accessibility: String,
-                        _ tap: @escaping () -> Void) -> some View {
-        Button(action: tap) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 24)).foregroundColor(color)
-                Text(label).font(VoiidFont.rounded(12, .semibold)).foregroundColor(.white)
+    /// A rail action: 52pt wide, 56pt tall with a count, 44pt without — the reference's sizes,
+    /// and never smaller than a 44pt target on the busiest control surface in the app.
+    private func railButton(icon: String, count: Int?, label: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) { railIcon(icon, count: count) }
+            .buttonStyle(.plain)
+            .accessibilityLabel(count.map { "\(label), \($0)" } ?? label)
+    }
+
+    private func railIcon(_ icon: String, count: Int?, tint: Color = .white) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: icon)
+                .font(.system(size: 24))
+                .foregroundColor(tint)
+            if let count {
+                Text(ClipCount.compact(count))
+                    .font(VoiidFont.rounded(11.5, .semibold))
+                    .foregroundColor(.white)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
             }
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
         }
-        .accessibilityLabel(accessibility)
+        .frame(width: 52, height: count == nil ? 44 : 56)
+        .contentShape(Rectangle())
     }
 }
 

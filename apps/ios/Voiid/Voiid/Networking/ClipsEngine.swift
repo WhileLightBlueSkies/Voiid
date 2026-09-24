@@ -14,6 +14,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import Photos
 
 // MARK: - Models
 
@@ -41,6 +42,8 @@ struct Clip: Identifiable, Hashable {
     /// guesses when this is nil.
     var authorHandle: String?
     var authorVerified = false
+    /// Whether this clip takes comments, as its author chose when posting it.
+    var commentsEnabled = true
 
     /// Local-only: a clip being uploaded shows in the grid immediately with progress.
     var uploadState: ClipUploadState = .none
@@ -67,6 +70,7 @@ struct Clip: Identifiable, Hashable {
         // without a creator profile has no handle, and the tile falls back to authorName.
         authorHandle = row.author_handle
         authorVerified = row.author_verified ?? false
+        commentsEnabled = row.comments_enabled ?? true
     }
 
     /// A row from a creator's grid or the Following feed.
@@ -87,6 +91,7 @@ struct Clip: Identifiable, Hashable {
             ?? authorHandle.map { "@\($0)" }
             ?? "Unknown"
         authorVerified = r.author_verified ?? false
+        commentsEnabled = r.comments_enabled ?? true
         authorPhotoURL = nil
         thumbURL = r.thumb_url
         caption = r.caption
@@ -121,6 +126,8 @@ struct Clip: Identifiable, Hashable {
 
 enum ClipUploadState: Hashable {
     case none
+    /// Encoding the edit into the upload files, before any byte is sent.
+    case processing(progress: Double)
     case uploading(progress: Double)
     case failed(String)
 }
@@ -203,11 +210,27 @@ final class ClipsEngine: ObservableObject {
     private struct PendingUpload {
         let ladder: ClipExporter.LadderOutput
         let caption: String?
+        var commentsEnabled = true
     }
     private var pendingUploads: [String: PendingUpload] = [:]
 
+    /// A post whose EXPORT has not finished (or failed): everything needed to run it again.
+    /// The source files are kept until the export succeeds, so a retry has something to read.
+    private struct PendingExport {
+        let source: URL
+        let edit: ClipEdit
+        let caption: String?
+        let commentsEnabled: Bool
+        let saveToPhotos: Bool
+        /// Recording files to delete once the export has made its own copies.
+        let cleanup: [URL]
+    }
+    private var pendingExports: [String: PendingExport] = [:]
+
     /// Whether a failed tile can be retried (as opposed to only dismissed).
-    func canRetryUpload(_ clipId: String) -> Bool { pendingUploads[clipId] != nil }
+    func canRetryUpload(_ clipId: String) -> Bool {
+        pendingUploads[clipId] != nil || pendingExports[clipId] != nil
+    }
 
     var hasPendingCommits: Bool { !pendingCommits.isEmpty }
 
@@ -523,31 +546,94 @@ final class ClipsEngine: ObservableObject {
 
     // MARK: - Posting
 
-    /// Optimistic post: the tile appears in the grid immediately and the upload runs in
-    /// the background, so Share never blocks on a 100 MB PUT. Mirrors StoryEngine's
-    /// reasoning for the same decision.
-    func post(ladder: ClipExporter.LadderOutput, caption: String?,
+    /// Post a clip. The tile appears in the grid AT ONCE, with the cover the author chose,
+    /// and everything slow — encoding the edit, then the upload — runs behind it with its
+    /// progress on the tile. The composer closes the moment Post is tapped.
+    ///
+    /// Encoding used to happen before the tile existed, so a two-minute clip left the grid
+    /// unchanged for most of a minute, and an encode that failed vanished without a word.
+    /// Now every failure lands on the tile, with Retry, whichever stage it happened in.
+    func post(source: URL, edit: ClipEdit, coverJPEG: Data?, caption: String?,
+              commentsEnabled: Bool, saveToPhotos: Bool, cleanup: [URL],
               authorId: String, authorName: String) {
         let clipId = UUID().uuidString.lowercased()
 
-        // Persist the cover so the optimistic tile has something to draw.
-        let thumbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("clip_thumb_\(clipId).jpg")
-        try? ladder.thumbnailJPEG.write(to: thumbPath)
-
         var placeholder = Clip(pendingId: clipId, authorId: authorId, authorName: authorName,
-                               caption: caption, localThumbPath: thumbPath.path,
-                               durationMs: ladder.durationMs)
-        placeholder.width = ladder.width
-        placeholder.height = ladder.height
+                               caption: caption, localThumbPath: nil,
+                               durationMs: Int(edit.duration * 1000))
+        if let coverJPEG {
+            let thumbPath = FileManager.default.temporaryDirectory
+                .appendingPathComponent("clip_thumb_\(clipId).jpg")
+            if (try? coverJPEG.write(to: thumbPath)) != nil {
+                placeholder.localThumbPath = thumbPath.path
+            }
+        }
+        placeholder.uploadState = .processing(progress: 0)
         clips.insert(placeholder, at: 0)
 
-        // Held so a FAILED upload can be run again from the tile, rather than offering only
-        // "Dismiss" — which threw away a video the user had already waited through an export
-        // for. The ladder files live in the temp directory and are only cleaned up on
-        // success or explicit discard, so the retry has real bytes to send.
-        pendingUploads[clipId] = PendingUpload(ladder: ladder, caption: caption)
-        runUpload(clipId: clipId)
+        pendingExports[clipId] = PendingExport(source: source, edit: edit, caption: caption,
+                                               commentsEnabled: commentsEnabled,
+                                               saveToPhotos: saveToPhotos, cleanup: cleanup)
+        runExport(clipId: clipId)
+    }
+
+    /// Encode the edit into the rendition ladder, then hand over to the upload.
+    private func runExport(clipId: String) {
+        guard let job = pendingExports[clipId] else { return }
+        setState(clipId, .processing(progress: 0))
+
+        Task { [weak self] in
+            guard let self else { return }
+            // The encode runs on after the composer closes; a backgrounded app gets a few
+            // minutes to finish it rather than being suspended mid-file.
+            let bg = UIApplication.shared.beginBackgroundTask(withName: "clip-export")
+            defer { UIApplication.shared.endBackgroundTask(bg) }
+            do {
+                let ladder = try await ClipExporter.exportLadder(
+                    source: job.source, edit: job.edit,
+                    onProgress: { fraction in
+                        Task { @MainActor [weak self] in
+                            self?.setState(clipId, .processing(progress: fraction))
+                        }
+                    })
+                // The tile may have been dismissed while it encoded.
+                guard self.pendingExports.removeValue(forKey: clipId) != nil else {
+                    Self.cleanUp(ladder)
+                    try? FileManager.default.removeItem(at: ladder.baseline)
+                    return
+                }
+                // The encode made its own copies; the recording is no longer needed.
+                for url in job.cleanup { try? FileManager.default.removeItem(at: url) }
+                if job.saveToPhotos { await Self.saveToPhotos(ladder.baseline) }
+
+                if let i = self.clips.firstIndex(where: { $0.id == clipId }) {
+                    self.clips[i].durationMs = ladder.durationMs
+                    self.clips[i].width = ladder.width
+                    self.clips[i].height = ladder.height
+                }
+                self.pendingUploads[clipId] = PendingUpload(ladder: ladder, caption: job.caption,
+                                                            commentsEnabled: job.commentsEnabled)
+                self.runUpload(clipId: clipId)
+            } catch {
+                NSLog("[VOIID] clip export failed: \(error)")
+                self.setState(clipId, .failed("Couldn't process this video."))
+            }
+        }
+    }
+
+    /// Best-effort: a clip that posted but did not save is still posted, so this never fails
+    /// the post. Add-only access is all it asks for — it cannot read the library.
+    private static func saveToPhotos(_ url: URL) async {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else { return }
+        try? await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+        }
+    }
+
+    private func setState(_ clipId: String, _ state: ClipUploadState) {
+        guard let i = clips.firstIndex(where: { $0.id == clipId }) else { return }
+        clips[i].uploadState = state
     }
 
     /// One attempt at the upload for an already-inserted optimistic tile.
@@ -555,6 +641,7 @@ final class ClipsEngine: ObservableObject {
         guard let pending = pendingUploads[clipId] else { return }
         let ladder = pending.ladder
         let caption = pending.caption
+        let commentsEnabled = pending.commentsEnabled
 
         setUploadProgress(clipId, 0)
 
@@ -640,7 +727,8 @@ final class ClipsEngine: ObservableObject {
                         byteSize: baselineSize,
                         renditionKeys: uploadedKeys,
                         renditionSizes: uploadedSizes,
-                        coverSource: ladder.coverSource.rawValue)
+                        coverSource: ladder.coverSource.rawValue,
+                        commentsEnabled: commentsEnabled)
                 }
                 do {
                     try await commit()
@@ -677,8 +765,12 @@ final class ClipsEngine: ObservableObject {
     /// Run a failed upload again from the start. The export is not repeated — the ladder is
     /// still on disk, which is the whole point of holding it.
     func retryUpload(_ clipId: String) {
-        guard pendingUploads[clipId] != nil else { return }
-        runUpload(clipId: clipId)
+        if pendingUploads[clipId] != nil {
+            runUpload(clipId: clipId)
+        } else if pendingExports[clipId] != nil {
+            // The encode itself failed: run it again from the kept recording.
+            runExport(clipId: clipId)
+        }
     }
 
     /// Three renditions of a 90s clip is a lot of temp storage to leave lying around.
@@ -697,6 +789,10 @@ final class ClipsEngine: ObservableObject {
         // Discard is the ONLY place the retained ladder is reaped on failure — it is kept
         // across a failed attempt so retry has bytes to send, so without this a dismissed
         // upload would leave three renditions of a 90s video in temp forever.
+        // An encode that never finished still owns the recording files.
+        if let job = pendingExports.removeValue(forKey: clipId) {
+            for url in job.cleanup { try? FileManager.default.removeItem(at: url) }
+        }
         if let pending = pendingUploads.removeValue(forKey: clipId) {
             Self.cleanUp(pending.ladder)
             // Also the baseline, which cleanUp deliberately leaves alone on the success path
@@ -848,8 +944,21 @@ final class ClipsEngine: ObservableObject {
         }
     }
 
+    /// What the failed tile says. Specific enough to tell a dropped connection from the
+    /// server or storage refusing the upload — "something went wrong" told nobody anything.
     private static func message(_ error: Error) -> String {
+        NSLog("[VOIID] clip upload failed: \(error)")
         if let api = error as? APIError, case .http(_, let m, _) = api { return m }
+        if let url = error as? URLError {
+            switch url.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+                return "No connection. Retry when you're back online."
+            case .timedOut:
+                return "The upload timed out. Retry on a stronger connection."
+            default:
+                return "Couldn't reach the server (\(url.code.rawValue))."
+            }
+        }
         return "Something went wrong. Try again."
     }
 

@@ -2,7 +2,8 @@
 //  ClipEditor.swift
 //  Voiid
 //
-//  Step 3 of the composer: trim, filter, cover frame.
+//  The editor's engine: the edit description, the filters, the looping preview player and
+//  the exporter. The editor SCREEN is ClipEditorScreen.swift.
 //
 //  ON "ALL THE FILTERS ON THE PHONE": iOS has NO public API that enumerates or applies
 //  the Photos app's own filter list. The real equivalent — and what Photos itself is
@@ -44,6 +45,8 @@ struct ClipEdit: Equatable {
     /// A separate image the author picked instead of a video frame. When set, this wins
     /// over `coverSeconds` — see ClipCoverSource.
     var customCoverJPEG: Data?
+    /// Text placed on the video, burned in at export (ClipTextOverlay.swift).
+    var texts: [ClipTextOverlay] = []
 
     var duration: Double { max(0, trimEnd - trimStart) }
 
@@ -61,7 +64,9 @@ enum ClipCoverSource: String, Equatable {
 }
 
 /// Keep names/order identical to the Android list.
-enum ClipFilter: String, CaseIterable, Identifiable, Equatable {
+/// Nonisolated: the export and the preview apply it inside AVFoundation's per-frame handler,
+/// on AVFoundation's own threads. It is pure image math with no state to protect.
+nonisolated enum ClipFilter: String, CaseIterable, Identifiable, Equatable, Sendable {
     case none, vivid, dramatic, mono, noir, fade, chrome, process, transfer, instant
 
     var id: String { rawValue }
@@ -141,284 +146,7 @@ enum ClipFilter: String, CaseIterable, Identifiable, Equatable {
     }
 }
 
-// MARK: - Editor screen
-
-struct ClipEditorView: View {
-    let sourceURL: URL
-    @Binding var edit: ClipEdit
-    let onNext: () -> Void
-
-    @Environment(\.scenePhase) private var scenePhase
-
-    @State private var duration: Double = 0
-    @State private var filmstrip: [UIImage] = []
-    @State private var coverPreview: UIImage?
-    @State private var filterThumbs: [ClipFilter: UIImage] = [:]
-    @State private var coverPickerItem: PhotosPickerItem?
-    @StateObject private var preview = ClipPreviewPlayer()
-
-    var body: some View {
-        VStack(spacing: VoiidSpacing.md) {
-            previewPane
-            ScrollView {
-                VStack(spacing: VoiidSpacing.md) {
-                    trimPane
-                    coverSection
-                    Toggle("Mute audio", isOn: $edit.muted)
-                        .font(VoiidFont.subhead)
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .tint(VoiidColor.primary)
-                    filterStrip
-                }
-            }
-            VoiidPrimaryButton(title: "Next", enabled: edit.duration >= 0.5) { onNext() }
-        }
-        .padding(VoiidSpacing.md)
-        .background(VoiidColor.background.ignoresSafeArea())
-        .navigationTitle("Edit")
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
-        // Pushing Details fires onDisappear but leaves this view alive in the stack, so
-        // `.task` never runs again — releasing the player here would leave a black preview
-        // on the way back. Pause instead; the player is released in ClipPreviewPlayer.deinit
-        // when the whole composer goes away.
-        .onAppear { preview.resume() }
-        .onDisappear { preview.pause() }
-        .onChange(of: edit.filter) { _, f in
-            Task {
-                await preview.applyFilter(f, source: sourceURL)
-                await refreshCoverPreview()
-            }
-        }
-        .onChange(of: edit.muted) { _, m in preview.setMuted(m) }
-        .onChange(of: edit.coverSeconds) { _, _ in Task { await refreshCoverPreview() } }
-        .onChange(of: scenePhase) { _, phase in
-            // A player left running behind a backgrounded app keeps decoding for nothing.
-            if phase == .active { preview.resume() } else { preview.pause() }
-        }
-    }
-
-    // MARK: Preview
-
-    private var previewPane: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
-                .fill(Color.black)
-            ClipPlayerLayer(player: preview.player)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-            if filmstrip.isEmpty {
-                ClipShimmer()
-                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-                    .allowsHitTesting(false)
-            }
-        }
-        .frame(maxHeight: 320)
-    }
-
-    // MARK: Trim
-
-    private var trimPane: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            HStack {
-                Text("Trim").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
-                Spacer()
-                Text(String(format: "%.1fs", edit.duration))
-                    .font(VoiidFont.caption).foregroundColor(VoiidColor.textSecondary)
-            }
-
-            if duration > 0 {
-                ClipFilmstripBar(
-                    thumbs: filmstrip,
-                    duration: duration,
-                    // The trimmed window, plus a playhead so the loop is legible.
-                    windowStart: edit.trimStart,
-                    windowEnd: edit.trimEnd,
-                    playhead: preview.position,
-                    handles: .both,
-                    onDrag: { which, seconds in
-                        if which == .start {
-                            edit.trimStart = min(seconds, max(0, edit.trimEnd - 0.5))
-                            preview.scrub(to: edit.trimStart)
-                        } else {
-                            // Clamp to the 90s cap here as well as at intake: a long source
-                            // can be trimmed DOWN into range rather than rejected.
-                            let capped = min(seconds, edit.trimStart + ClipCaps.maxDurationSeconds)
-                            edit.trimEnd = max(capped, edit.trimStart + 0.5)
-                            preview.scrub(to: edit.trimEnd)
-                        }
-                    },
-                    onRelease: {
-                        Haptics.selection()
-                        preview.setLoop(start: edit.trimStart, end: edit.trimEnd)
-                    })
-            }
-        }
-    }
-
-    // MARK: Cover
-
-    /// Two ways to set the grid tile: drag the cover handle to a frame, or upload a separate
-    /// image. An uploaded image WINS over the scrubber (and clearing it returns to the
-    /// frame), so the two controls can never disagree about what the tile will show.
-    ///
-    /// The grid is entirely cover images, so this is the highest-leverage control in the
-    /// whole flow — never cut it.
-    private var coverSection: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            HStack {
-                Text("Cover").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
-                Spacer()
-                if edit.customCoverJPEG != nil {
-                    Button {
-                        Haptics.tap()
-                        edit.customCoverJPEG = nil
-                    } label: {
-                        Text("Use a video frame")
-                            .font(VoiidFont.caption)
-                            .foregroundColor(VoiidColor.primary)
-                    }
-                }
-            }
-
-            HStack(spacing: VoiidSpacing.md) {
-                // Live preview of exactly what the grid tile will be.
-                ZStack {
-                    if let data = edit.customCoverJPEG, let img = UIImage(data: data) {
-                        Image(uiImage: img).resizable().scaledToFill()
-                    } else if let coverPreview {
-                        Image(uiImage: coverPreview).resizable().scaledToFill()
-                    } else {
-                        ClipShimmer()
-                    }
-                }
-                .frame(width: 54, height: 72)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.sm, style: .continuous))
-
-                VStack(alignment: .leading, spacing: VoiidSpacing.xs) {
-                    Text(edit.customCoverJPEG == nil ? "Drag to pick a frame" : "Custom image")
-                        .font(VoiidFont.subhead)
-                        .foregroundColor(VoiidColor.textPrimary)
-
-                    PhotosPicker(selection: $coverPickerItem, matching: .images) {
-                        Text(edit.customCoverJPEG == nil ? "Upload an image" : "Change image")
-                            .font(VoiidFont.subhead)
-                            .foregroundColor(VoiidColor.primary)
-                    }
-                }
-                Spacer()
-            }
-
-            // The scrubber is meaningless while a custom image is in force — hide it
-            // rather than leave a control that silently does nothing.
-            if edit.customCoverJPEG == nil && duration > 0 {
-                ClipFilmstripBar(
-                    thumbs: filmstrip,
-                    duration: duration,
-                    windowStart: 0,
-                    windowEnd: duration,
-                    playhead: nil,
-                    handles: .cover(edit.coverSeconds),
-                    onDrag: { _, seconds in edit.coverSeconds = seconds },
-                    onRelease: { Haptics.selection() })
-            }
-        }
-        .onChange(of: coverPickerItem) { _, item in
-            guard let item else { return }
-            Task { await loadCustomCover(item) }
-        }
-    }
-
-    /// Re-encode the picked image to a bounded JPEG. An 8 MB HEIC straight from the
-    /// camera roll would be a 200x heavier grid tile than the frames it sits beside.
-    private func loadCustomCover(_ item: PhotosPickerItem) async {
-        guard let data = try? await item.loadTransferable(type: Data.self),
-              let image = UIImage(data: data) else { return }
-
-        let maxEdge: CGFloat = 1080
-        let scale = min(1, maxEdge / max(image.size.width, image.size.height))
-        let target = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let resized = UIGraphicsImageRenderer(size: target).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: target))
-        }
-        if let jpeg = resized.jpegData(compressionQuality: 0.8) {
-            edit.customCoverJPEG = jpeg
-            Haptics.success()
-        }
-    }
-
-    // MARK: Filters
-
-    private var filterStrip: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            Text("Filters").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: VoiidSpacing.sm) {
-                    ForEach(ClipFilter.allCases) { f in
-                        Button {
-                            Haptics.tap()
-                            edit.filter = f
-                        } label: {
-                            VStack(spacing: 4) {
-                                ZStack {
-                                    if let t = filterThumbs[f] {
-                                        Image(uiImage: t).resizable().scaledToFill()
-                                    } else {
-                                        ClipShimmer()
-                                    }
-                                }
-                                .frame(width: 54, height: 72)
-                                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.sm, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: VoiidRadius.sm, style: .continuous)
-                                        .stroke(edit.filter == f ? VoiidColor.primary : .clear, lineWidth: 2))
-                                Text(f.label)
-                                    .font(VoiidFont.rounded(10, .medium))
-                                    .foregroundColor(edit.filter == f ? VoiidColor.primary : VoiidColor.textSecondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: Loading
-
-    private func load() async {
-        let asset = AVURLAsset(url: sourceURL)
-        duration = (try? await asset.load(.duration))?.seconds ?? 0
-        if edit.trimEnd <= 0 { edit.trimEnd = min(duration, ClipCaps.maxDurationSeconds) }
-
-        await preview.load(source: sourceURL, filter: edit.filter)
-        preview.setMuted(edit.muted)
-        preview.setLoop(start: edit.trimStart, end: edit.trimEnd)
-
-        await refreshCoverPreview()
-        filmstrip = await ClipExporter.filmstrip(from: sourceURL)
-        await buildFilterThumbs()
-    }
-
-    private func refreshCoverPreview() async {
-        coverPreview = try? await ClipExporter.frame(from: sourceURL, at: edit.coverSeconds,
-                                                     filter: edit.filter)
-    }
-
-    /// One decode, N filter applications — decoding the frame once per filter would make
-    /// the strip take ten times as long to populate.
-    private func buildFilterThumbs() async {
-        guard let base = try? await ClipExporter.rawFrame(from: sourceURL, at: max(0.1, edit.trimStart)) else { return }
-        let ci = CIImage(cgImage: base)
-        let context = CIContext()
-        for f in ClipFilter.allCases {
-            let out = f.apply(to: ci)
-            if let cg = context.createCGImage(out, from: ci.extent) {
-                filterThumbs[f] = UIImage(cgImage: cg)
-            }
-        }
-    }
-}
+// MARK: - Editor screen: ClipEditorScreen.swift
 
 // MARK: - Looping filtered preview
 
@@ -435,6 +163,8 @@ final class ClipPreviewPlayer: ObservableObject {
 
     /// Playhead in seconds, for the marker on the trim strip.
     @Published private(set) var position: Double = 0
+    /// Whether it is meant to be playing — the editor's play/pause state.
+    @Published private(set) var isPlaying = true
 
     private var observer: Any?
     private var loopStart: Double = 0
@@ -450,6 +180,26 @@ final class ClipPreviewPlayer: ObservableObject {
         installObserver()
         player.play()
         wasPlaying = true
+        isPlaying = true
+    }
+
+    /// Tap on the video: pause where it is, or carry on from there.
+    func togglePlayback() {
+        if wasPlaying {
+            player.pause()
+            wasPlaying = false
+        } else {
+            if position >= loopEnd - 0.05 || position < loopStart { seek(to: loopStart) }
+            player.play()
+            wasPlaying = true
+        }
+        isPlaying = wasPlaying
+    }
+
+    /// Hold still on one frame (the cover picker), without losing the play state to resume.
+    func hold(at seconds: Double) {
+        player.pause()
+        seek(to: seconds)
     }
 
     func applyFilter(_ filter: ClipFilter, source: URL) async {
@@ -474,6 +224,7 @@ final class ClipPreviewPlayer: ObservableObject {
         if position < start || position > loopEnd { seek(to: start) }
         player.play()
         wasPlaying = true
+        isPlaying = true
     }
 
     /// Called continuously while a trim handle is dragged: park the playhead on the frame
@@ -481,6 +232,7 @@ final class ClipPreviewPlayer: ObservableObject {
     func scrub(to seconds: Double) {
         player.pause()
         wasPlaying = false
+        isPlaying = false
         seek(to: seconds)
     }
 
@@ -523,19 +275,21 @@ final class ClipPreviewPlayer: ObservableObject {
 
 /// A bare AVPlayerLayer. AVKit's `VideoPlayer` brings transport controls, which would sit on
 /// top of the trim handles and offer a scrubber that disagrees with them.
-private struct ClipPlayerLayer: UIViewRepresentable {
+struct ClipPlayerLayer: UIViewRepresentable {
     let player: AVPlayer
+    var gravity: AVLayerVideoGravity = .resizeAspect
 
     func makeUIView(context: Context) -> PlayerHost {
         let view = PlayerHost()
         view.playerLayer.player = player
-        view.playerLayer.videoGravity = .resizeAspect
+        view.playerLayer.videoGravity = gravity
         view.backgroundColor = .black
         return view
     }
 
     func updateUIView(_ uiView: PlayerHost, context: Context) {
         uiView.playerLayer.player = player
+        uiView.playerLayer.videoGravity = gravity
     }
 
     final class PlayerHost: UIView {
@@ -544,113 +298,29 @@ private struct ClipPlayerLayer: UIViewRepresentable {
     }
 }
 
-// MARK: - Filmstrip scrubber
+// MARK: - Export
 
-/// A row of real frames with draggable handles — the visual anchor two abstract labelled
-/// sliders never gave. Used twice: with `.both` handles it is the trim window, with
-/// `.cover` it is Instagram's single-handle "Edit cover".
-private struct ClipFilmstripBar: View {
-    enum Handle { case start, end }
-    enum Mode: Equatable {
-        case both
-        case cover(Double)
-    }
+/// The text overlay, drawn once per frame size and reused for every frame. The composition
+/// handler runs on AVFoundation's own threads, hence the lock.
+nonisolated private final class TextOverlayCache: @unchecked Sendable {
+    private let texts: [ClipTextOverlay]
+    private let lock = NSLock()
+    private var size: CGSize = .zero
+    private var image: CIImage?
 
-    let thumbs: [UIImage]
-    let duration: Double
-    let windowStart: Double
-    let windowEnd: Double
-    let playhead: Double?
-    let handles: Mode
-    let onDrag: (Handle, Double) -> Void
-    let onRelease: () -> Void
+    init(_ texts: [ClipTextOverlay]) { self.texts = texts }
 
-    private let barHeight: CGFloat = 56
-    private let gripWidth: CGFloat = 14
-    /// The visible grip is thin, but the thing a finger has to hit is not.
-    private let touchWidth: CGFloat = 44
-
-    var body: some View {
-        GeometryReader { geo in
-            let width = max(1, geo.size.width)
-            ZStack(alignment: .topLeading) {
-                filmstrip(width: width)
-
-                switch handles {
-                case .both:
-                    let xs = position(windowStart, width)
-                    let xe = position(windowEnd, width)
-                    Rectangle().fill(Color.black.opacity(0.55))
-                        .frame(width: xs, height: barHeight)
-                    Rectangle().fill(Color.black.opacity(0.55))
-                        .frame(width: max(0, width - xe), height: barHeight)
-                        .offset(x: xe)
-                    RoundedRectangle(cornerRadius: VoiidRadius.sm, style: .continuous)
-                        .stroke(VoiidColor.accent, lineWidth: 2)
-                        .frame(width: max(0, xe - xs), height: barHeight)
-                        .offset(x: xs)
-                    if let playhead {
-                        Rectangle().fill(.white)
-                            .frame(width: 2, height: barHeight)
-                            .offset(x: position(playhead, width))
-                            .allowsHitTesting(false)
-                    }
-                    grip(x: xs, width: width, handle: .start)
-                    grip(x: xe, width: width, handle: .end)
-
-                case .cover(let seconds):
-                    grip(x: position(seconds, width), width: width, handle: .start)
-                }
-            }
-            .frame(height: barHeight)
-            .coordinateSpace(.named("filmstrip"))
+    func overlay(for extent: CGRect) -> CIImage? {
+        guard !texts.isEmpty else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        if extent.size != size {
+            size = extent.size
+            image = ClipTextRenderer.overlay(texts, frame: extent.size)?
+                .transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
         }
-        .frame(height: barHeight)
-    }
-
-    private func filmstrip(width: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            if thumbs.isEmpty {
-                ClipShimmer()
-            } else {
-                ForEach(Array(thumbs.enumerated()), id: \.offset) { _, image in
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: width / CGFloat(thumbs.count), height: barHeight)
-                        .clipped()
-                }
-            }
-        }
-        .frame(width: width, height: barHeight)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.sm, style: .continuous))
-    }
-
-    private func position(_ seconds: Double, _ width: CGFloat) -> CGFloat {
-        guard duration > 0 else { return 0 }
-        return CGFloat(min(max(seconds / duration, 0), 1)) * width
-    }
-
-    private func grip(x: CGFloat, width: CGFloat, handle: Handle) -> some View {
-        Capsule()
-            .fill(VoiidColor.accent)
-            .frame(width: gripWidth, height: barHeight)
-            .overlay(Capsule().fill(Color.black.opacity(0.35)).frame(width: 2, height: 18))
-            .frame(width: touchWidth, height: barHeight)
-            .contentShape(Rectangle())
-            .offset(x: x - touchWidth / 2)
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .named("filmstrip"))
-                    .onChanged { value in
-                        let clamped = min(max(value.location.x, 0), width)
-                        onDrag(handle, Double(clamped / width) * duration)
-                    }
-                    .onEnded { _ in onRelease() }
-            )
+        return image
     }
 }
-
-// MARK: - Export
 
 enum ClipExportError: Error { case noVideoTrack, exportFailed(String), noFrame }
 
@@ -757,14 +427,19 @@ enum ClipExporter {
             try? audioTrack?.insertTimeRange(range, of: audio, at: .zero)
         }
 
-        // The filter is baked in via a CI video composition — the same mechanism Photos
-        // uses. `.none` skips it entirely so an unfiltered clip is a straight transcode.
+        // The filter and any text are baked in via a CI video composition — the same
+        // mechanism Photos uses. With neither, it is skipped and the clip is a straight
+        // transcode.
         var videoComposition: AVVideoComposition?
-        if edit.filter != .none {
+        if edit.filter != .none || !edit.texts.isEmpty {
             let filter = edit.filter
+            let text = TextOverlayCache(edit.texts)
             videoComposition = AVVideoComposition(asset: composition) { request in
-                let output = filter.apply(to: request.sourceImage.clampedToExtent())
-                    .cropped(to: request.sourceImage.extent)
+                let source = request.sourceImage
+                var output = filter.apply(to: source.clampedToExtent()).cropped(to: source.extent)
+                if let overlay = text.overlay(for: source.extent) {
+                    output = overlay.composited(over: output)
+                }
                 request.finish(with: output, context: nil)
             }
         }
@@ -777,7 +452,8 @@ enum ClipExporter {
     /// Encode one rendition. Returns nil when the source is already smaller than this
     /// rung — UPSCALING is never worth it: it costs upload bytes and encode time to
     /// produce a file that looks no better than the one below it.
-    private static func encode(_ prepared: Prepared, quality: ClipQuality) async -> (URL, Int)? {
+    private static func encode(_ prepared: Prepared, quality: ClipQuality,
+                               onProgress: @escaping (Double) -> Void = { _ in }) async -> (URL, Int)? {
         // 10% tolerance so a 1920x1080 source still counts as satisfying .fhd rather
         // than being rejected by a rounding difference.
         guard prepared.sourceLongEdge >= quality.longEdge * 0.9 || quality == .sd else { return nil }
@@ -801,8 +477,19 @@ enum ClipExporter {
         // has arrived. Without this the player buffers the entire clip first.
         session.shouldOptimizeForNetworkUse = true
 
+        // The session only reports progress when asked, so it is sampled while it runs.
+        let ticker = Task {
+            while !Task.isCancelled {
+                onProgress(Double(session.progress))
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
         await session.export()
-        guard session.status == .completed else { return nil }
+        ticker.cancel()
+        guard session.status == .completed else {
+            NSLog("[VOIID] clip encode \(quality.rawValue) failed: \(String(describing: session.error))")
+            return nil
+        }
 
         let attrs = try? FileManager.default.attributesOfItem(atPath: out.path)
         let size = (attrs?[.size] as? Int) ?? 0
@@ -820,16 +507,21 @@ enum ClipExporter {
     /// The BASELINE (`Output.url`) is the best rung that actually encoded; the others
     /// ride along in `renditions`. At least one must succeed or the post fails — a clip
     /// with no video is not a clip.
-    static func exportLadder(source: URL, edit: ClipEdit) async throws -> LadderOutput {
+    static func exportLadder(source: URL, edit: ClipEdit,
+                             onProgress: @escaping (Double) -> Void = { _ in }) async throws -> LadderOutput {
         let prepared = try await prepare(source: source, edit: edit)
 
         var renditions: [ClipQuality: (url: URL, size: Int)] = [:]
         // Sequential, not concurrent: three simultaneous hardware encodes contend for the
         // same VideoToolbox session and on older devices simply fail.
-        for quality in ClipQuality.allCases {
-            if let (url, size) = await encode(prepared, quality: quality) {
+        let rungs = ClipQuality.allCases
+        for (index, quality) in rungs.enumerated() {
+            if let (url, size) = await encode(prepared, quality: quality, onProgress: { f in
+                onProgress((Double(index) + f) / Double(rungs.count))
+            }) {
                 renditions[quality] = (url, size)
             }
+            onProgress(Double(index + 1) / Double(rungs.count))
         }
         guard !renditions.isEmpty else {
             throw ClipExportError.exportFailed("Couldn't process that video.")

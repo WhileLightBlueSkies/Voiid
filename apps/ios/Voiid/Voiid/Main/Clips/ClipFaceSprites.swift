@@ -55,15 +55,8 @@ enum ClipFaceArt {
     static let layers: [ClipFaceEffect: [FxLayer]] = [
         .none: [],
 
-        .dog: [
-            FxLayer(asset: "dog_ear_left", anchor: .eyes, widthD: 0.95, riseD: 1.35,
-                    outD: 0.95, mirrored: true, wobble: true),
-            FxLayer(asset: "dog_nose", anchor: .nose, widthD: 0.82, riseD: -0.04,
-                    pivotYFromTop: 0.47),
-            // Only once the mouth actually opens, which is the whole joke.
-            FxLayer(asset: "dog_tongue", anchor: .mouth, widthD: 0.50, riseD: -0.42,
-                    openMouth: 0.15, pivotYFromTop: 0.10),
-        ],
+        // Puppy is a 3D ARKit lens now (Camera/PuppyLens.swift), not sprites.
+        .dog: [],
 
         .tiger: [
             FxLayer(asset: "tiger_ear_left", anchor: .eyes, widthD: 0.85, riseD: 1.28,
