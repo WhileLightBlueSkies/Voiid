@@ -164,7 +164,7 @@ fun OnboardingFlow(session: AppSession) {
                             OnbStep.TERMS -> WelcomeTermsScreen(
                                 onContinue = { push(OnbStep.PERMISSIONS) },
                             )
-                            OnbStep.PERMISSIONS -> PermissionsScreen(onContinue = { push(OnbStep.PHONE) })
+                            OnbStep.PERMISSIONS -> PermissionsScreen(onContinue = { push(OnbStep.PHONE) }, onBack = ::pop)
                             OnbStep.PHONE -> PhoneScreen(onBack = ::pop, onContinue = { e164, vid -> phone = e164; verificationId = vid; push(OnbStep.OTP) })
                             OnbStep.OTP -> OtpScreen(
                                 session = session,

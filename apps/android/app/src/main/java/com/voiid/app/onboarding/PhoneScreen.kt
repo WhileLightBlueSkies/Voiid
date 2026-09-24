@@ -186,12 +186,7 @@ fun PhoneScreen(
     }
 
     Column(Modifier.fillMaxSize().background(VoiidBrand.ground).statusBarsPadding().imePadding()) {
-        Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            androidx.compose.material3.IconButton(onClick = { focus.clearFocus(); haptics.tap(); onBack() }) {
-                Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                    contentDescription = "Back", tint = VoiidBrand.text, modifier = Modifier.size(28.dp))
-            }
-        }
+        OnboardingBackChip { focus.clearFocus(); onBack() }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
             OnboardingHeader(

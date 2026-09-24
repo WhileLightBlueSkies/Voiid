@@ -1,5 +1,6 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.material.icons.outlined.NearMe
 import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -68,7 +69,7 @@ import com.voiid.app.ui.theme.VoiidFont
  * a decision rather than a side effect.
  */
 @Composable
-fun PermissionsScreen(onContinue: () -> Unit) {
+fun PermissionsScreen(onContinue: () -> Unit, onBack: (() -> Unit)? = null) {
     val haptics = LocalVoiidHaptics.current
     var appeared by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { appeared = true }
@@ -105,6 +106,7 @@ fun PermissionsScreen(onContinue: () -> Unit) {
     }
 
     OnboardingScaffold(
+        onBack = onBack,
         footer = {
             OnboardingKitButton(title = "Allow All", enabled = !requesting, busy = requesting) {
                 requesting = true
@@ -174,7 +176,8 @@ private data class PermissionRow(
  * matched word for word. They now actually do.
  */
 private fun permissionRows(): List<PermissionRow> = listOf(
-    PermissionRow("location", Icons.Outlined.LocationOn, "Location",
+    // iOS uses the navigation arrow ("location"), not a pin.
+    PermissionRow("location", Icons.Outlined.NearMe, "Location",
                   "Shows you relevant content and nearby features."),
     PermissionRow("notifications", Icons.Outlined.Notifications, "Notifications",
                   "Keeps you updated on activity and offers."),

@@ -1,5 +1,6 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -626,6 +627,8 @@ fun OnboardingScaffold(
     modifier: Modifier = Modifier,
     scrollState: ScrollState = rememberScrollState(),
     dismissKeyboardOnTap: Boolean = true,
+    /** Non-null draws iOS's round glass back chip top-left. Null on a stack root. */
+    onBack: (() -> Unit)? = null,
     footer: @Composable (ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -642,16 +645,39 @@ fun OnboardingScaffold(
                 } else Modifier
             ),
     ) {
+        if (onBack != null) Box(Modifier.statusBarsPadding()) { OnboardingBackChip(onBack) }
         Column(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .verticalScroll(scrollState)
-                .statusBarsPadding()
+                .then(if (onBack == null) Modifier.statusBarsPadding() else Modifier)
                 .padding(horizontal = VoiidSpacing.lg),
             content = content,
         )
         footer?.let { OnboardingFooter(content = it) }
+    }
+}
+
+/**
+ * iOS's navigation back button on the committed-dark ground: a 44dp glass circle with a
+ * chevron, top-left. Twin of the NavigationStack back chip on Permissions / Phone / OTP.
+ */
+@Composable
+fun OnboardingBackChip(onBack: () -> Unit) {
+    val haptics = LocalVoiidHaptics.current
+    Box(
+        Modifier
+            .padding(start = VoiidSpacing.md, top = VoiidSpacing.sm)
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.10f))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+            .clickable { haptics.tap(); onBack() }
+            .semantics { contentDescription = "Back" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, null, tint = VoiidBrand.text, modifier = Modifier.size(26.dp))
     }
 }
 

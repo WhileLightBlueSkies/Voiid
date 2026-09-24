@@ -195,6 +195,7 @@ fun OtpScreen(
     }
 
     OnboardingScaffold(
+        onBack = onBack,
         footer = {
             OnboardingKitButton(
                 title = "Verify & Continue",
