@@ -104,8 +104,21 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     // MARK: - Load / sync
 
     /** Render local first, then sweep expired, then sync the feed + counts + receipts. */
+    /** True while a refresh runs — drives the pull indicator, and stops a second pull from
+     *  stacking a parallel refresh on top of the first. */
+    var refreshing by mutableStateOf(false)
+        private set
+
     fun refresh() {
+        if (refreshing) return
+        refreshing = true
         viewModelScope.launch {
+            try { refreshLocked() } finally { refreshing = false }
+        }
+    }
+
+    private suspend fun refreshLocked() {
+        run {
             loadLocal()
             engine.sweep()
             loadLocal()

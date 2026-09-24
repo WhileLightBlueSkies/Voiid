@@ -76,7 +76,7 @@ fun StoriesHomeView(
     val newContexts = stories.othersContexts.filter { it.hasUnviewed }
     val seenContexts = stories.othersContexts.filter { !it.hasUnviewed }
     val seenColumns = if (largeText) 2 else 4
-    val pull = rememberVoiidPullRefresh { stories.refresh() }
+    val pull = rememberVoiidPullRefresh(refreshing = stories.refreshing) { stories.refresh() }
     LaunchedEffect(Unit) { stories.refresh() }
 
     Box(Modifier.fillMaxSize().background(VoiidColor.background).voiidPullRefresh(pull, VoiidColor.primary)) {

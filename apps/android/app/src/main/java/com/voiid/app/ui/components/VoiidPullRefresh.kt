@@ -131,6 +131,14 @@ fun Modifier.voiidPullRefresh(
             if (!state.refreshing && state.pullPx >= threshold * 0.9f) {
                 animate(initialValue = state.pullPx, targetValue = threshold * 0.55f) { v, _ -> state.pullPx = v }
                 state.fire?.invoke()
+                // A caller that reports `refreshing` collapses the indicator when its work ends
+                // (rememberVoiidPullRefresh). One that does not — most of them — used to leave it
+                // PARKED for good, the list shifted down under a frozen arc, until the screen was
+                // left. Give the caller a beat to report; if it has not, collapse now.
+                kotlinx.coroutines.delay(450)
+                if (!state.refreshing && state.pullPx > 0f) {
+                    animate(initialValue = state.pullPx, targetValue = 0f) { v, _ -> state.pullPx = v }
+                }
             } else if (state.pullPx > 0f) {
                 animate(initialValue = state.pullPx, targetValue = 0f) { v, _ -> state.pullPx = v }
             }
