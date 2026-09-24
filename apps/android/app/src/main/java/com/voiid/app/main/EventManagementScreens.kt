@@ -611,7 +611,13 @@ fun EventEditorDialog(communityId:String,event:EventService.Event?=null,isOwner:
 
   LazyColumn(state=listState,contentPadding=PaddingValues(20.dp),modifier=Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(24.dp)) {
    item{LinearProgressIndicator(progress={ (step+1)/4f },modifier=Modifier.fillMaxWidth());Spacer(Modifier.height(12.dp));Text("Step ${step+1} of 4 · ${listOf("Details","Schedule","Tickets","Review")[step]}")}
-   item{Text(listOf("What's happening?","When is it?","Your venue and tickets","Ready to save?")[step],style=MaterialTheme.typography.headlineLarge)}
+   item{
+    Text(listOf("What's happening?","When is it?","Your venue and tickets",if(event==null)"Ready to create?" else "Ready to save?")[step],style=MaterialTheme.typography.headlineLarge)
+    // iOS EventCreateFlow step subtitles.
+    Text(listOf("A name and a line about it. You can edit both later.","A start time is required. An end time is optional.",
+     "Set your venue and the number of places available.","Check the details before making your event available.")[step],
+     color=VoiidColor.textSecondary,modifier=Modifier.padding(top=6.dp))
+   }
    when(step) {
     0->item{OutlinedTextField(title,{title=it.take(120)},singleLine=true,supportingText={Text("${title.length}/120")},label={Text("Event name")},modifier=Modifier.fillMaxWidth(),enabled=!busy);Spacer(Modifier.height(16.dp));OutlinedTextField(about,{about=it.take(5000)},label={Text("About this event")},modifier=Modifier.fillMaxWidth(),minLines=3,enabled=!busy)}
     1->item{
