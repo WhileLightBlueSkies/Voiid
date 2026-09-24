@@ -67,7 +67,10 @@ import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
+import androidx.media3.effect.BitmapOverlay
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.TextureOverlay
 import androidx.media3.effect.RgbFilter
 import androidx.media3.effect.RgbMatrix
 import androidx.media3.exoplayer.ExoPlayer
@@ -99,7 +102,7 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /**
- * Step 3 of the composer: trim, filter, cover frame. Port of iOS `ClipEditor.swift`.
+ * The edit description, the looks and the exporter behind ClipEditorScreen. Port of iOS `ClipEditor.swift`.
  *
  * ON "ALL THE FILTERS ON THE PHONE": Android has no public API that enumerates the
  * system gallery's own filter list either. The correct equivalent — and what this uses —
@@ -122,6 +125,8 @@ data class ClipEdit(
      * over [coverMs] — see [coverSource].
      */
     val customCoverJpeg: ByteArray? = null,
+    /** Words placed on the clip, burned in on export (ClipTextOverlay). */
+    val texts: List<ClipTextOverlay> = emptyList(),
 ) {
     val durationMs: Long get() = (trimEndMs - trimStartMs).coerceAtLeast(0)
 
@@ -141,6 +146,7 @@ data class ClipEdit(
             filter == other.filter &&
             muted == other.muted &&
             coverMs == other.coverMs &&
+            texts == other.texts &&
             customCoverJpeg.contentEquals(other.customCoverJpeg)
     }
 
@@ -151,6 +157,7 @@ data class ClipEdit(
         result = 31 * result + muted.hashCode()
         result = 31 * result + coverMs.hashCode()
         result = 31 * result + (customCoverJpeg?.contentHashCode() ?: 0)
+        result = 31 * result + texts.hashCode()
         return result
     }
 }
@@ -345,349 +352,14 @@ enum class ClipFilter(val label: String) {
     }
 }
 
-/** Frames in the trim/cover filmstrip. Ten is enough to read the shape of a 90s clip. */
-private const val FILMSTRIP_FRAMES = 10
-
 /** Long edge of a filmstrip / filter thumb, in px. */
 private const val THUMB_EDGE = 240
-
-@Composable
-fun ClipEditorView(
-    sourceFile: File,
-    edit: ClipEdit,
-    onEditChange: (ClipEdit) -> Unit,
-    onNext: () -> Unit,
-) {
-    val context = LocalContext.current
-    val haptics = LocalVoiidHaptics.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    var durationMs by remember { mutableStateOf(0L) }
-    var coverPreview by remember { mutableStateOf<Bitmap?>(null) }
-    val filterThumbs = remember { mutableStateMapOf<ClipFilter, Bitmap>() }
-    val filmstrip = remember { mutableStateListOf<Bitmap>() }
-    val scope = rememberCoroutineScope()
-
-    /**
-     * A LOOPING PLAYER, not a still frame.
-     *
-     * The preview used to be one bitmap out of MediaMetadataRetriever, which meant you could
-     * not judge a trim, could not see a filter on motion, and could not hear the audio at all —
-     * making the mute switch a decision taken blind. ExoPlayer is already a dependency for the
-     * feed; the clipping configuration below turns it into a loop of exactly the range that
-     * will be exported.
-     */
-    val player = remember {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ONE
-            playWhenReady = true
-        }
-    }
-    DisposableEffect(Unit) { onDispose { player.release() } }
-
-    // Playing video under a backgrounded app is a battery and audio-focus bug, not a feature.
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE -> player.pause()
-                Lifecycle.Event.ON_RESUME -> player.play()
-                else -> Unit
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    val coverPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        scope.launch {
-            val jpeg = withContext(Dispatchers.IO) { loadCustomCover(context, uri) }
-            if (jpeg != null) {
-                onEditChange(edit.copy(customCoverJpeg = jpeg))
-                haptics.success()
-            }
-        }
-    }
-
-    // The range the PLAYER is currently looping. Deliberately separate from edit.trim*: a
-    // clipping configuration can only be changed by rebuilding the media item, which forces a
-    // re-prepare and a seek, so it is committed when a handle is RELEASED rather than on every
-    // pixel of a drag — otherwise scrubbing the trim would stutter through a hundred seeks.
-    var loopRange by remember { mutableStateOf<Pair<Long, Long>?>(null) }
-
-    LaunchedEffect(sourceFile) {
-        durationMs = withContext(Dispatchers.IO) { ClipExporter.durationMs(sourceFile) }
-        val end = if (edit.trimEndMs <= 0L) minOf(durationMs, ClipCaps.MAX_DURATION_MS)
-                  else edit.trimEndMs
-        if (edit.trimEndMs <= 0L) onEditChange(edit.copy(trimEndMs = end))
-        loopRange = edit.trimStartMs to end
-
-        // One decode, N filter applications — decoding per filter would make the strip take
-        // ten times as long to populate. Scaled down first: ten ARGB copies of a 1080p frame
-        // is ~80 MB of bitmap for thumbnails that are drawn 54dp wide.
-        val base = withContext(Dispatchers.IO) {
-            ClipExporter.frameBitmap(sourceFile, edit.trimStartMs.coerceAtLeast(100))
-                ?.let { downscale(it) }
-        }
-        if (base != null) {
-            ClipFilter.entries.forEach { f -> filterThumbs[f] = f.applyToBitmap(base) }
-        }
-    }
-
-    // The filmstrip itself: the visual anchor the two abstract labelled sliders never gave.
-    // OPTION_CLOSEST_SYNC and Dispatchers.IO both matter — an exact seek on long-GOP H.264 is
-    // slow and often returns null, and every one of these is a file read.
-    LaunchedEffect(sourceFile, durationMs) {
-        if (durationMs <= 0L) return@LaunchedEffect
-        val frames = withContext(Dispatchers.IO) {
-            (0 until FILMSTRIP_FRAMES).mapNotNull { i ->
-                ClipExporter.frameBitmap(sourceFile, durationMs * i / FILMSTRIP_FRAMES)
-                    ?.let { downscale(it) }
-            }
-        }
-        filmstrip.clear()
-        filmstrip.addAll(frames)
-    }
-
-    LaunchedEffect(loopRange, edit.filter) {
-        val range = loopRange ?: return@LaunchedEffect
-        // Effects are set BEFORE prepare(): media3 wires the effect pipeline into the video
-        // renderer at preparation, so setting them on a prepared player is not guaranteed to
-        // take. The cost is that changing filter restarts the loop — on a local file that is a
-        // frame, and restarting at the trim start is what you want to judge a look anyway.
-        // This is the SAME chain the exporter will bake in; a preview that showed a different
-        // transform would make every filter choice a guess.
-        player.setVideoEffects(edit.filter.effects())
-        player.setMediaItem(
-            MediaItem.Builder()
-                .setUri(android.net.Uri.fromFile(sourceFile))
-                .setClippingConfiguration(
-                    MediaItem.ClippingConfiguration.Builder()
-                        .setStartPositionMs(range.first)
-                        .setEndPositionMs(range.second)
-                        .build()
-                )
-                .build()
-        )
-        player.prepare()
-        player.play()
-    }
-
-    // Mute is no longer a blind switch — it is audible the moment it is flipped.
-    LaunchedEffect(edit.muted) { player.volume = if (edit.muted) 0f else 1f }
-
-    LaunchedEffect(edit.coverMs, edit.filter, edit.customCoverJpeg) {
-        val custom = edit.customCoverJpeg
-        coverPreview = withContext(Dispatchers.IO) {
-            if (custom != null) {
-                android.graphics.BitmapFactory.decodeByteArray(custom, 0, custom.size)
-            } else {
-                ClipExporter.frameBitmap(sourceFile, edit.coverMs)
-                    ?.let { edit.filter.applyToBitmap(downscale(it)) }
-            }
-        }
-    }
-
-    Column(
-        Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        // Preview
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(320.dp)
-                .clip(RoundedCornerShape(VoiidRadius.lg))
-                .background(Color.Black),
-            contentAlignment = Alignment.Center,
-        ) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        this.player = player
-                        // FIT, not ZOOM: cropping the preview to fill would hide exactly the
-                        // edges the author is about to publish.
-                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        setShutterBackgroundColor(android.graphics.Color.BLACK)
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-
-            Box(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp)
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.45f))
-                    .softClickable(scale = 0.9f) {
-                        haptics.tap()
-                        onEditChange(edit.copy(muted = !edit.muted))
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    if (edit.muted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                    if (edit.muted) "Unmute" else "Mute",
-                    tint = Color.White,
-                )
-            }
-        }
-
-        // Trim
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Trim", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-            Spacer(Modifier.weight(1f))
-            Text(
-                String.format("%.1fs", edit.durationMs / 1000f),
-                style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
-            )
-        }
-        if (durationMs > 0) {
-            TrimStrip(
-                frames = filmstrip,
-                durationMs = durationMs,
-                startMs = edit.trimStartMs,
-                endMs = edit.trimEndMs,
-                onChange = { start, end ->
-                    onEditChange(edit.copy(trimStartMs = start, trimEndMs = end))
-                },
-                onCommit = {
-                    haptics.tap()
-                    loopRange = edit.trimStartMs to edit.trimEndMs
-                },
-            )
-        }
-
-        // Cover — the grid is entirely cover images, so this is the highest-leverage
-        // control in the whole flow. Never cut it. Two ways to set it: scrub to a frame,
-        // or upload a separate image. An uploaded image WINS over the scrubber (and
-        // clearing it returns to the frame), so the two can never disagree.
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Cover", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-            Spacer(Modifier.weight(1f))
-            if (edit.customCoverJpeg != null) {
-                Text(
-                    "Use a video frame",
-                    style = VoiidFont.rounded(12),
-                    color = VoiidColor.primary,
-                    modifier = Modifier.softClickable(scale = 0.95f) {
-                        haptics.tap()
-                        onEditChange(edit.copy(customCoverJpeg = null))
-                    },
-                )
-            }
-        }
-
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            // Live preview of exactly what the grid tile will be.
-            Box(
-                Modifier
-                    .size(width = 54.dp, height = 72.dp)
-                    .clip(RoundedCornerShape(VoiidRadius.sm)),
-            ) {
-                coverPreview?.let {
-                    androidx.compose.foundation.Image(
-                        bitmap = it.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } ?: ClipShimmer(Modifier.fillMaxSize())
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    if (edit.customCoverJpeg == null) "Drag to pick a frame" else "Custom image",
-                    style = VoiidFont.rounded(15),
-                    color = VoiidColor.textPrimary,
-                )
-                Text(
-                    if (edit.customCoverJpeg == null) "Upload an image" else "Change image",
-                    style = VoiidFont.rounded(15),
-                    color = VoiidColor.primary,
-                    modifier = Modifier.softClickable(scale = 0.95f) {
-                        haptics.tap()
-                        coverPicker.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
-                    },
-                )
-            }
-        }
-
-        // The scrubber is meaningless while a custom image is in force — hide it rather
-        // than leave a control that silently does nothing.
-        if (durationMs > 0 && edit.customCoverJpeg == null) {
-            CoverStrip(
-                frames = filmstrip,
-                durationMs = durationMs,
-                coverMs = edit.coverMs,
-                startMs = edit.trimStartMs,
-                endMs = edit.trimEndMs,
-                onChange = { onEditChange(edit.copy(coverMs = it)) },
-            )
-        }
-
-        // Filters
-        Text("Filters", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(ClipFilter.entries.toList()) { f ->
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.softClickable(scale = 0.95f) {
-                        haptics.tap()
-                        onEditChange(edit.copy(filter = f))
-                    },
-                ) {
-                    Box(
-                        Modifier
-                            .size(width = 54.dp, height = 72.dp)
-                            .clip(RoundedCornerShape(VoiidRadius.sm))
-                            .border(
-                                width = if (edit.filter == f) 2.dp else 0.dp,
-                                color = if (edit.filter == f) VoiidColor.primary else Color.Transparent,
-                                shape = RoundedCornerShape(VoiidRadius.sm),
-                            ),
-                    ) {
-                        filterThumbs[f]?.let {
-                            androidx.compose.foundation.Image(
-                                bitmap = it.asImageBitmap(),
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        } ?: ClipShimmer(Modifier.fillMaxSize())
-                    }
-                    Text(
-                        f.label,
-                        style = VoiidFont.rounded(10, FontWeight.Medium),
-                        color = if (edit.filter == f) VoiidColor.primary else VoiidColor.textSecondary,
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-        VoiidPrimaryButton(title = "Next", enabled = edit.durationMs >= 500) { onNext() }
-        Spacer(Modifier.height(24.dp))
-    }
-}
 
 /**
  * Re-encode the picked image to a bounded JPEG. An 8 MB HEIC straight from the gallery
  * would be a 200x heavier grid tile than the frames it sits beside.
  */
-private fun loadCustomCover(context: Context, uri: android.net.Uri): ByteArray? = runCatching {
+internal fun loadCustomCover(context: Context, uri: android.net.Uri): ByteArray? = runCatching {
     val source = context.contentResolver.openInputStream(uri).use {
         android.graphics.BitmapFactory.decodeStream(it)
     } ?: return null
@@ -716,7 +388,7 @@ private fun loadCustomCover(context: Context, uri: android.net.Uri): ByteArray? 
  * Ten filmstrip frames plus ten filter thumbnails at full 1080p ARGB would be ~160 MB of
  * bitmap held live, for images drawn a few dp wide — an OOM on any mid-range device.
  */
-private fun downscale(src: Bitmap): Bitmap {
+internal fun downscale(src: Bitmap): Bitmap {
     val longEdge = maxOf(src.width, src.height)
     if (longEdge <= THUMB_EDGE) return src
     val scale = THUMB_EDGE.toFloat() / longEdge
@@ -758,7 +430,7 @@ private fun FilmstripRow(frames: List<Bitmap>, modifier: Modifier = Modifier) {
  * end landed — you set a number, then scrolled up to a still that may not even have changed.
  */
 @Composable
-private fun TrimStrip(
+internal fun TrimStrip(
     frames: List<Bitmap>,
     durationMs: Long,
     startMs: Long,
@@ -841,7 +513,7 @@ private fun BoxScope.TrimHandle(x: Float, onCommit: () -> Unit, onDelta: (Float)
  * the published clip never shows.
  */
 @Composable
-private fun CoverStrip(
+internal fun CoverStrip(
     frames: List<Bitmap>,
     durationMs: Long,
     coverMs: Long,
@@ -888,88 +560,6 @@ private fun CoverStrip(
     }
 }
 
-/** Details & Post — caption, the public-content notice, and the Post button. */
-@Composable
-fun ClipDetailsView(
-    sourceFile: File,
-    edit: ClipEdit,
-    onPost: (String) -> Unit,
-) {
-    var caption by remember { mutableStateOf("") }
-    var cover by remember { mutableStateOf<Bitmap?>(null) }
-
-    LaunchedEffect(sourceFile, edit.coverMs, edit.filter, edit.customCoverJpeg) {
-        // Mirror the exporter's precedence exactly: an uploaded image wins over the frame
-        // picker, so what the author confirms here is what the grid will show.
-        val custom = edit.customCoverJpeg
-        cover = if (custom != null) {
-            withContext(Dispatchers.IO) {
-                android.graphics.BitmapFactory.decodeByteArray(custom, 0, custom.size)
-            }
-        } else {
-            withContext(Dispatchers.IO) { ClipExporter.frameBitmap(sourceFile, edit.coverMs) }
-                ?.let { edit.filter.applyToBitmap(it) }
-        }
-    }
-
-    Column(
-        Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(VoiidRadius.lg))
-                .background(VoiidColor.surfaceCard)
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Box(
-                Modifier
-                    .size(width = 84.dp, height = 112.dp)
-                    .clip(RoundedCornerShape(VoiidRadius.md)),
-            ) {
-                cover?.let {
-                    androidx.compose.foundation.Image(
-                        bitmap = it.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } ?: ClipShimmer(Modifier.fillMaxSize())
-            }
-            androidx.compose.foundation.text.BasicTextField(
-                value = caption,
-                onValueChange = { caption = it },
-                textStyle = VoiidFont.rounded(16).copy(color = VoiidColor.textPrimary),
-                cursorBrush = androidx.compose.ui.graphics.SolidColor(VoiidColor.primary),
-                modifier = Modifier.weight(1f),
-                decorationBox = { inner ->
-                    if (caption.isEmpty()) {
-                        Text(
-                            "Write a caption…",
-                            style = VoiidFont.rounded(16),
-                            color = VoiidColor.placeholder,
-                        )
-                    }
-                    inner()
-                },
-            )
-        }
-
-        // Clips are public and NOT encrypted (docs/CLIPS.md §0). Say so here rather than
-        // letting a user assume the messaging guarantee carries over.
-        Text(
-            "Clips are public. Unlike your chats and moments, they aren't end-to-end encrypted.",
-            style = VoiidFont.rounded(12),
-            color = VoiidColor.textSecondary,
-        )
-
-        Spacer(Modifier.weight(1f))
-        VoiidPrimaryButton(title = "Post", enabled = true) { onPost(caption) }
-    }
-}
-
 // ── Export ────────────────────────────────────────────────────────────────────────
 
 object ClipExporter {
@@ -1010,6 +600,17 @@ object ClipExporter {
         val width: Int,
         val height: Int,
     )
+
+    /** The source's upright size — width and height with its rotation applied. */
+    fun uprightSize(file: File): Pair<Int, Int> = runCatching {
+        val r = MediaMetadataRetriever()
+        r.setDataSource(file.absolutePath)
+        val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+        val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+        val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+        r.release()
+        if (rot == 90 || rot == 270) h to w else w to h
+    }.getOrDefault(0 to 0)
 
     /** The source's long edge, used to skip rungs that would only upscale. */
     private fun sourceLongEdge(file: File): Int = runCatching {
@@ -1059,6 +660,19 @@ object ClipExporter {
         val videoEffects = buildList {
             add(Presentation.createForHeight(quality.longEdge))
             addAll(edit.filter.effects())
+            // Text goes on LAST, over the filtered frame, so a look never tints the words.
+            // The overlay is drawn at this rung's exact output size; Media3 places a bitmap
+            // overlay at its pixel size, so frame-sized means it maps 1:1 onto the frame.
+            if (edit.texts.any { it.text.isNotBlank() }) {
+                val (w, h) = uprightSize(source)
+                if (w > 0 && h > 0) {
+                    val outW = (w.toLong() * quality.longEdge / h).toInt()
+                    ClipTextRenderer.overlay(context, edit.texts, outW, quality.longEdge)?.let { bmp ->
+                        add(OverlayEffect(ImmutableList.of<TextureOverlay>(
+                            BitmapOverlay.createStaticBitmapOverlay(bmp))))
+                    }
+                }
+            }
         }
 
         val editedItem = EditedMediaItem.Builder(clipped)

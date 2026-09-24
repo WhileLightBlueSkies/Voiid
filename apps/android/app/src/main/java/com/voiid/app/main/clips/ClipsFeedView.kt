@@ -319,7 +319,7 @@ private fun ClipTile(
                         color = VoiidColor.primary,
                     )
                     Text(
-                        "Uploading",
+                        if (state.processing) "Preparing" else "Uploading ${(state.progress * 100).toInt()}%",
                         style = VoiidFont.rounded(10, FontWeight.Medium),
                         color = Color.White,
                     )

@@ -66,12 +66,14 @@ import java.util.UUID
  * viewfinder, which is where the alternative belongs. So the camera is not a step in this
  * stack: it is the front door, and EDIT backs out to it.
  */
-enum class ClipComposerStep { EDIT, DETAILS }
+enum class ClipComposerStep { EDIT, POST }
 
 /** Mirrors MAX_DURATION_MS / MAX_BYTE_SIZE in backend/api/src/routes/clips.ts. */
 object ClipCaps {
     const val MAX_DURATION_MS = 120_000L
     const val MAX_BYTES = 100L * 1024 * 1024
+    /** Mirrors the caption cap in backend/api/src/routes/clips.ts and iOS ClipCaps.maxCaption. */
+    const val MAX_CAPTION = 2200
 }
 
 @Composable
@@ -90,6 +92,7 @@ fun ClipComposerFlow(
     var edit by remember { mutableStateOf(ClipEdit()) }
     var preparing by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
+    var openPanel by remember { mutableStateOf<ClipEditPanel?>(null) }
 
     // Recording happens IN-APP via ClipCameraView (CameraX VideoCapture), replacing the system
     // camera intent this used to launch. The intent worked, but it is somebody else's UI: no
@@ -203,92 +206,47 @@ fun ClipComposerFlow(
             }
         }
     } else {
-        ComposerSteps(
-            step = step,
-            sourceFile = sourceFile,
-            edit = edit,
-            onEditChange = { edit = it },
-            onStep = { step = it },
-            onBackToCamera = {
-                errorText = null
-                showCamera = true
-            },
-            onPost = { file, caption ->
-                haptics.success()
-                // Hand the work to the STORE first, then dismiss. The store owns it on
-                // viewModelScope, which outlives this composable — the previous version
-                // launched the export on this composable's own scope and then called
-                // onClose(), cancelling the export a frame later, so nothing ever
-                // uploaded. Never start work on a composable scope that has to survive
-                // that composable's dismissal.
-                clips.post(
-                    sourceFile = file,
-                    edit = edit,
-                    caption = caption.trim().ifEmpty { null },
-                    authorId = myUserId,
-                    authorName = myName,
-                )
-                onClose()
-            },
-        )
-    }
-}
-
-/** Everything after capture: the header back-stack, the editor and the details screen. */
-@Composable
-private fun ComposerSteps(
-    step: ClipComposerStep,
-    sourceFile: File?,
-    edit: ClipEdit,
-    onEditChange: (ClipEdit) -> Unit,
-    onStep: (ClipComposerStep) -> Unit,
-    onBackToCamera: () -> Unit,
-    onPost: (File, String) -> Unit,
-) {
-    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
-        // Header with a real back stack. EDIT backs out to the camera, which is where the
-        // clip came from — there is no source step to return to any more.
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Default.ArrowBack, "Back", tint = VoiidColor.textPrimary,
-                modifier = Modifier.size(24.dp).softClickable(scale = 0.9f) {
-                    when (step) {
-                        ClipComposerStep.EDIT -> onBackToCamera()
-                        ClipComposerStep.DETAILS -> onStep(ClipComposerStep.EDIT)
-                    }
-                },
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                when (step) {
-                    ClipComposerStep.EDIT -> "Edit"
-                    ClipComposerStep.DETAILS -> "Details"
-                },
-                style = VoiidFont.rounded(17, FontWeight.SemiBold),
-                color = VoiidColor.textPrimary,
-            )
-            Spacer(Modifier.weight(1f))
-            Spacer(Modifier.size(24.dp))
-        }
-
+        val file = sourceFile ?: return
         when (step) {
-            ClipComposerStep.EDIT -> sourceFile?.let { file ->
-                ClipEditorView(
-                    sourceFile = file,
-                    edit = edit,
-                    onEditChange = onEditChange,
-                    onNext = { onStep(ClipComposerStep.DETAILS) },
-                )
-            }
+            ClipComposerStep.EDIT -> ClipEditorScreen(
+                sourceFile = file,
+                edit = edit,
+                onEditChange = { edit = it },
+                openPanel = openPanel,
+                onPanelOpened = { openPanel = null },
+                // The editor backs out to the camera, which is where the clip came from.
+                onBack = {
+                    errorText = null
+                    showCamera = true
+                },
+                onNext = { step = ClipComposerStep.POST },
+            )
 
-            ClipComposerStep.DETAILS -> sourceFile?.let { file ->
-                ClipDetailsView(
+            ClipComposerStep.POST -> {
+                androidx.activity.compose.BackHandler { step = ClipComposerStep.EDIT }
+                ClipPostScreen(
                     sourceFile = file,
                     edit = edit,
-                    onPost = { caption -> onPost(file, caption) },
+                    onBack = { step = ClipComposerStep.EDIT },
+                    onEditCover = {
+                        openPanel = ClipEditPanel.COVER
+                        step = ClipComposerStep.EDIT
+                    },
+                    onPost = { choices ->
+                        // Hand the work to the STORE first, then dismiss. The store owns it on
+                        // viewModelScope, which outlives this composable — work started on a
+                        // composable scope is cancelled the moment the composer closes.
+                        clips.post(
+                            sourceFile = file,
+                            edit = edit,
+                            caption = choices.caption.ifEmpty { null },
+                            commentsEnabled = choices.commentsEnabled,
+                            saveToGallery = choices.saveToGallery,
+                            authorId = myUserId,
+                            authorName = myName,
+                        )
+                        onClose()
+                    },
                 )
             }
         }

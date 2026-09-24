@@ -43,6 +43,8 @@ data class VClip(
     val createdAt: String = "",
     val uploadState: ClipUploadState = ClipUploadState.None,
     val localThumbPath: String? = null,
+    /** Chosen when the clip was posted; off means the comments sheet says so. */
+    val commentsEnabled: Boolean = true,
 ) {
     companion object {
         fun from(row: ClipService.ClipRow) = VClip(
@@ -60,13 +62,15 @@ data class VClip(
             commentCount = row.comment_count,
             likedByMe = row.liked_by_me,
             createdAt = row.created_at,
+            commentsEnabled = row.comments_enabled ?: true,
         )
     }
 }
 
 sealed class ClipUploadState {
     object None : ClipUploadState()
-    data class Uploading(val progress: Float) : ClipUploadState()
+    /** [processing]: still encoding on the phone, before any bytes go up. */
+    data class Uploading(val progress: Float, val processing: Boolean = false) : ClipUploadState()
     data class Failed(val message: String) : ClipUploadState()
 }
 
@@ -170,6 +174,7 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
     private data class PendingUpload(
         val ladder: ClipExporter.LadderOutput,
         val caption: String?,
+        val commentsEnabled: Boolean,
     )
     private val pendingUploads = mutableStateMapOf<String, PendingUpload>()
 
@@ -184,7 +189,9 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
         val pending = pendingUploads[clipId] ?: return
         val i = clips.indexOfFirst { it.id == clipId }
         if (i >= 0) clips[i] = clips[i].copy(uploadState = ClipUploadState.Uploading(0f))
-        viewModelScope.launch { uploadLadder(clipId, pending.ladder, pending.caption, null) }
+        viewModelScope.launch {
+            uploadLadder(clipId, pending.ladder, pending.caption, pending.commentsEnabled, null)
+        }
     }
 
     /**
@@ -529,6 +536,8 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
         caption: String?,
         authorId: String,
         authorName: String,
+        commentsEnabled: Boolean = true,
+        saveToGallery: Boolean = false,
     ) {
         val clipId = UUID.randomUUID().toString()
 
@@ -542,7 +551,10 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 authorId = authorId,
                 authorName = authorName,
                 caption = caption,
-                uploadState = ClipUploadState.Uploading(0f),
+                commentsEnabled = commentsEnabled,
+                // "Preparing" until the encode is done — an upload bar sitting at 0% for the
+                // length of a transcode reads as a stalled network.
+                uploadState = ClipUploadState.Uploading(0f, processing = true),
             )
         )
 
@@ -562,7 +574,12 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
             // Held so a FAILED upload can be run again from the tile, rather than offering
             // only "Dismiss" — which threw away a video the user had already waited through
             // an export for. The ladder files stay on disk until success or explicit discard.
-            pendingUploads[clipId] = PendingUpload(ladder, caption)
+            pendingUploads[clipId] = PendingUpload(ladder, caption, commentsEnabled)
+
+            // The finished clip — trimmed, filtered, with its text — not the raw recording.
+            if (saveToGallery) {
+                withContext(Dispatchers.IO) { saveCopyToGallery(ladder.baseline) }
+            }
 
             // Persist the cover so the tile has something real to draw from here on.
             val thumbFile = File(getApplication<Application>().cacheDir, "clip_thumb_$clipId.jpg")
@@ -573,9 +590,10 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 width = ladder.width,
                 height = ladder.height,
                 localThumbPath = thumbFile.absolutePath,
+                uploadState = ClipUploadState.Uploading(0f),
             )
 
-            uploadLadder(clipId, ladder, caption, sourceFile)
+            uploadLadder(clipId, ladder, caption, commentsEnabled, sourceFile)
         }
     }
 
@@ -591,6 +609,7 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
         clipId: String,
         ladder: ClipExporter.LadderOutput,
         caption: String?,
+        commentsEnabled: Boolean,
         sourceFile: File?,
     ) {
             runCatching {
@@ -666,6 +685,7 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                         renditionKeys = keys,
                         renditionSizes = sizes,
                         coverSource = ladder.coverSource,
+                        commentsEnabled = commentsEnabled,
                     )
                 }
                 try {
@@ -698,6 +718,30 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 val i = clips.indexOfFirst { it.id == clipId }
                 if (i >= 0) clips[i] = clips[i].copy(uploadState = ClipUploadState.Failed(message(e)))
             }
+    }
+
+    /**
+     * A copy of the finished clip in Movies/Voiid. Android 10+ only: older versions need the
+     * storage permission, which Voiid does not ask for, and the post screen hides the switch
+     * there. A failed save never fails the post.
+     */
+    private fun saveCopyToGallery(file: File) {
+        if (android.os.Build.VERSION.SDK_INT < 29) return
+        runCatching {
+            val resolver = getApplication<Application>().contentResolver
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, "Voiid_${System.currentTimeMillis()}.mp4")
+                put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/Voiid")
+                put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                ?: return
+            resolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+            values.clear()
+            values.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        }.onFailure { android.util.Log.w("VOIID", "save clip to gallery failed: ${it.message}") }
     }
 
     /** Three renditions of a 90s clip is a lot of cache to leave lying around. */

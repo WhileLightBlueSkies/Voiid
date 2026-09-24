@@ -110,6 +110,7 @@ data class ClipPagerRow(
     val likeCount: Int = 0,
     val commentCount: Int = 0,
     val likedByMe: Boolean = false,
+    val commentsEnabled: Boolean = true,
 ) {
     companion object {
         fun of(c: VClip) = ClipPagerRow(
@@ -122,6 +123,7 @@ data class ClipPagerRow(
             likeCount = c.likeCount,
             commentCount = c.commentCount,
             likedByMe = c.likedByMe,
+            commentsEnabled = c.commentsEnabled,
         )
 
         /**
@@ -145,6 +147,7 @@ data class ClipPagerRow(
             viewCount = c.view_count,
             likeCount = c.like_count,
             commentCount = c.comment_count,
+            commentsEnabled = c.comments_enabled ?: true,
         )
     }
 }
@@ -389,6 +392,7 @@ fun ClipFullscreenView(
             CommentsPanel(
                 clips = clips,
                 clipId = currentRow.id,
+                commentsEnabled = currentRow.commentsEnabled,
                 myUserId = myUserId,
                 myName = myName,
                 modifier = Modifier.fillMaxWidth().weight(0.58f),
@@ -726,6 +730,7 @@ private fun ActionButton(
 private fun CommentsPanel(
     clips: ClipsStore,
     clipId: String,
+    commentsEnabled: Boolean,
     myUserId: String,
     myName: String,
     modifier: Modifier = Modifier,
@@ -765,6 +770,20 @@ private fun CommentsPanel(
 
         Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
             when {
+                // The author turned comments off when posting: say so, rather than an empty
+                // list and a field that only fails on send.
+                !commentsEnabled -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "Comments are off",
+                        style = VoiidFont.rounded(17, FontWeight.SemiBold),
+                        color = VoiidColor.textPrimary,
+                    )
+                    Text(
+                        "The creator turned off comments for this clip.",
+                        style = VoiidFont.rounded(15),
+                        color = VoiidColor.textSecondary,
+                    )
+                }
                 loading && rows.isEmpty() -> CircularProgressIndicator(color = VoiidColor.primary)
                 rows.isEmpty() -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
@@ -791,7 +810,7 @@ private fun CommentsPanel(
             }
         }
 
-        Row(
+        if (commentsEnabled) Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),

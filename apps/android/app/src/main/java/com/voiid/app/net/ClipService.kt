@@ -68,6 +68,7 @@ class ClipService(private val tokens: TokenStore) {
         val byte_size_hd: Long? = null,
         val byte_size_fhd: Long? = null,
         val cover_source: String = "frame",
+        val comments_enabled: Boolean = true,
     )
     @Serializable data class PostClipResp(val clip_id: String, val created_at: String)
 
@@ -98,6 +99,7 @@ class ClipService(private val tokens: TokenStore) {
         val byte_size_hd: Long? = null,
         val byte_size_fhd: Long? = null,
         val cover_source: String? = null,
+        val comments_enabled: Boolean? = null,
     )
     @Serializable data class FeedResp(val clips: List<ClipRow>, val next_cursor: String? = null)
 
@@ -242,6 +244,7 @@ class ClipService(private val tokens: TokenStore) {
         renditionKeys: Map<ClipQuality, String> = emptyMap(),
         renditionSizes: Map<ClipQuality, Long> = emptyMap(),
         coverSource: String = "frame",
+        commentsEnabled: Boolean = true,
     ): PostClipResp = api.requestAs(
         "POST", "clips",
         jsonBody = ApiClient.json.encodeToString(
@@ -255,6 +258,7 @@ class ClipService(private val tokens: TokenStore) {
                 byte_size_hd = renditionSizes[ClipQuality.HD],
                 byte_size_fhd = renditionSizes[ClipQuality.FHD],
                 cover_source = coverSource,
+                comments_enabled = commentsEnabled,
             )
         )
     )

@@ -121,6 +121,7 @@ class SocialService(private val tokens: TokenStore) {
         val author_handle: String? = null,
         val author_display_name: String? = null,
         val author_verified: Boolean = false,
+        val comments_enabled: Boolean? = null,
     )
 
     @Serializable
