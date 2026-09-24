@@ -29,21 +29,19 @@ struct StoryComposerView: View {
     @State private var processing = false
     @State private var errorText: String?
 
-    // Audience: pre-selected with every contact you can reach (§2.2), or the last custom set.
-    @State private var audience: Set<String> = []
+    /// Who it goes to comes from Moments privacy — one setting, not a per-post picker.
+    @ObservedObject private var settings = StorySettings.shared
     /// Seeded from the setting in `.onAppear`, then overridable for THIS post only —
     /// flipping it here never rewrites the default.
     @State private var keepThis = true
 
-    /// Everyone reachable — the directory UNION 1:1 conversation peers. Using the directory
-    /// alone silently excluded anyone you chat with but never saved as a contact, so their
-    /// story never reached them. See UserDirectory.storyReachableUserIds().
-    private var everyoneIds: Set<String> {
-        UserDirectory.shared.storyReachableUserIds()
-    }
+    private var isPrivate: Bool { settings.audienceMode == .nobody }
+    private var audienceIds: [String] { settings.resolvedAudience() }
     private var audienceLabel: String {
-        audience.count == everyoneIds.count ? "My Contacts (\(audience.count))" : "Custom (\(audience.count))"
+        isPrivate ? "Nobody · only you" : "\(settings.audienceMode.title) · \(audienceIds.count)"
     }
+    /// Nothing to send to under the current setting (e.g. "Only selected people", none picked).
+    private var noOneToShareWith: Bool { !isPrivate && audienceIds.isEmpty }
     private var hasMedia: Bool { previewImage != nil || pickedVideoURL != nil }
 
     var body: some View {
@@ -60,8 +58,15 @@ struct StoryComposerView: View {
                         .multilineTextAlignment(.center)
                 }
                 Spacer()
-                VoiidPrimaryButton(title: processing ? "Sharing…" : "Share",
-                                   enabled: hasMedia && !audience.isEmpty && !processing) { share() }
+                if hasMedia && noOneToShareWith {
+                    Text("No one to share with yet. Choose who sees your moments.")
+                        .font(VoiidFont.caption)
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                VoiidPrimaryButton(title: processing ? (isPrivate ? "Saving…" : "Sharing…")
+                                                     : (isPrivate ? "Save for me" : "Share"),
+                                   enabled: hasMedia && !noOneToShareWith && !processing) { share() }
             }
             .padding(VoiidSpacing.lg)
             .background(VoiidColor.background.ignoresSafeArea())
@@ -69,14 +74,22 @@ struct StoryComposerView: View {
             .interactiveDismissDisabled(processing)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() }.disabled(processing) } }
             .onAppear {
-                if audience.isEmpty { audience = Set(StorySettings.shared.lastCustomAudience ?? Array(everyoneIds)) }
                 keepThis = StorySettings.shared.archiveByDefault
             }
             .onChange(of: pickerItem) { _, item in Task { await loadPicked(item) } }
             .fullScreenCover(isPresented: $showCamera) {
                 StoryCameraView { photo, video in Task { await handleCamera(photo: photo, video: video) } }
             }
-            .sheet(isPresented: $showAudience) { StoryAudiencePickerView(selected: $audience) }
+            .sheet(isPresented: $showAudience) {
+                NavigationStack {
+                    MomentsPrivacyView()
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { showAudience = false }.fontWeight(.semibold)
+                            }
+                        }
+                }
+            }
         }
     }
 
@@ -136,7 +149,7 @@ struct StoryComposerView: View {
     private var audienceChip: some View {
         Button { showAudience = true } label: {
             HStack(spacing: VoiidSpacing.sm) {
-                Image(systemName: "person.2.fill").foregroundColor(VoiidColor.primary)
+                Image(systemName: isPrivate ? "lock.fill" : "person.2.fill").foregroundColor(VoiidColor.primary)
                 Text(audienceLabel).foregroundColor(VoiidColor.textPrimary)
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption).foregroundColor(VoiidColor.placeholder)
@@ -178,10 +191,24 @@ struct StoryComposerView: View {
         processing = true
         errorText = nil
         let cap = caption
-        let ids = Array(audience)
-        StorySettings.shared.rememberAudience(ids, isCustom: audience.count != everyoneIds.count)
+        let ids = audienceIds
+        let privately = isPrivate
         Task {
             do {
+                if privately {
+                    // Nobody: kept on this phone, nothing encrypted for anyone or uploaded.
+                    if let img = previewImage {
+                        let (data, w, h) = try encodeImage(img)
+                        try StoryEngine.shared.savePrivately(mediaData: data, mime: "image/jpeg", caption: cap,
+                                                             width: w, height: h, durationMs: nil)
+                    } else if let video = pickedVideoURL {
+                        let (data, w, h, ms) = try await encodeVideo(video)
+                        try StoryEngine.shared.savePrivately(mediaData: data, mime: "video/mp4", caption: cap,
+                                                             width: w, height: h, durationMs: ms)
+                    }
+                    dismiss()
+                    return
+                }
                 if let img = previewImage {
                     let (data, w, h) = try encodeImage(img)
                     try await StoryEngine.shared.postStory(mediaData: data, mime: "image/jpeg", caption: cap,

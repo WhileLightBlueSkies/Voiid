@@ -75,8 +75,8 @@ struct PrivacySettingsView: View {
                 }
                 VoiidRowDivider()
                 privacyLink("Moments", icon: "circle.dashed",
-                            detail: "View receipts and your archive") {
-                    privacyPage("Moments") { momentsSection }
+                            detail: "Who sees your moments, view receipts, archive") {
+                    MomentsPrivacyView()
                 }
                 VoiidRowDivider()
                 privacyLink("Map location", icon: "location",
@@ -299,33 +299,6 @@ struct PrivacySettingsView: View {
                     .tint(VoiidColor.primary)
             }
             .accessibilityHint("Shows the online and last-seen line at the top of a chat")
-        }
-    }
-
-    private var momentsSection: some View {
-        VoiidCardSection(
-            "Moments",
-            footer: """
-                View receipts work both ways: turn them off to hide your views and stop seeing who viewed yours.
-
-                Keep my moments saves your own posts on this device after 24 hours. Other people’s moments still expire.
-                """
-        ) {
-            VoiidSettingsRow(icon: "eye.circle", title: "Moment view receipts") {
-                Toggle("Moment view receipts", isOn: $storySettings.sendViewReceipts)
-                    .labelsHidden()
-                    .tint(VoiidColor.primary)
-            }
-            .accessibilityHint("Lets people see that you viewed their moment, and shows you who viewed yours")
-
-            VoiidRowDivider()
-
-            VoiidSettingsRow(icon: "archivebox", title: "Keep my moments") {
-                Toggle("Keep my moments", isOn: $storySettings.archiveByDefault)
-                    .labelsHidden()
-                    .tint(VoiidColor.primary)
-            }
-            .accessibilityHint("Saves your own moments to your archive on this device after they expire")
         }
     }
 

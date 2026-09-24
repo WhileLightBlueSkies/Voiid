@@ -125,7 +125,9 @@ final class StoryEngine: ObservableObject {
         // An authenticated prekey session is not permission to enter the Moments feed.
         // Defer consuming envelopes while the local contact/chat list is still empty.
         guard !reachable.isEmpty else { return true }
-        let cached = StoryStore.liveContexts().flatMap { $0.stories }
+        // A private memory never existed on the server: asking about it would both leak its id
+        // and come back "unavailable", which deletes it.
+        let cached = StoryStore.liveContexts().flatMap { $0.stories }.filter { !$0.isPrivate }
         for batch in cached.chunked(into: 1000) {
             guard let available = try? await svc.available(storyIds: batch.map { $0.id }) else { continue }
             guard epoch == generation, !Task.isCancelled else { return false }
@@ -340,6 +342,30 @@ final class StoryEngine: ObservableObject {
         reloadFromStore()
     }
 
+    /// "Nobody": the memory is kept on this phone only. Nothing is encrypted for anyone,
+    /// uploaded or sent, so there is no server row; it goes straight into your archive, where it
+    /// stays until you delete it.
+    func savePrivately(mediaData: Data, mime: String, caption: String,
+                       width: Int?, height: Int?, durationMs: Int?) throws {
+        guard let myUserId else { throw StoryError.noRecipients }
+        let storyId = UUID().uuidString.lowercased()
+        let localPath = StoryStore.mediaCacheDir.appendingPathComponent("\(storyId).bin").path
+        try mediaData.write(to: URL(fileURLWithPath: localPath),
+                            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let now = Date()
+        let ref = MediaRef(mediaUrl: Story.privatePrefix + storyId, mime: mime, key: "", nonce: "", sha256: "")
+        let story = Story(id: storyId, authorId: myUserId, authorDeviceId: myDeviceId, isMine: true,
+                          createdAt: now, expiresAt: now.addingTimeInterval(24 * 3600),
+                          media: ref, caption: caption, durationMs: durationMs,
+                          width: width, height: height, allowsReplies: false,
+                          viewedAt: now, localPath: localPath, downloadState: .ready,
+                          archivedAt: now)
+        StoryStore.upsert(story)
+        StoryStore.setDownload(storyId, state: .ready, localPath: localPath)
+        StoryStore.setArchived(storyId, true)
+        reloadFromStore()
+    }
+
     // MARK: - Download (§8.4 lazy, verified)
 
     /// Ensure a story's plaintext is on disk, decrypted + hash-verified. Returns the file
@@ -482,6 +508,11 @@ final class StoryEngine: ObservableObject {
     /// security operation — anyone who already downloaded keeps the media (§1.6).
     @discardableResult
     func deleteStory(_ story: Story) async -> Bool {
+        if story.isPrivate {
+            StoryStore.delete(story.id)
+            reloadFromStore()
+            return true
+        }
         do { try await svc.delete(storyId: story.id) }
         catch {
             if case APIError.http(let status, _, _) = error, status == 404 { /* already gone */ }

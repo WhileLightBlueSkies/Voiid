@@ -115,7 +115,11 @@ struct StoriesHomeView: View {
                         .foregroundStyle(VoiidColor.textPrimary)
                         .accessibilityAddTraits(.isHeader)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    NavigationLink { MomentsPrivacyView() } label: {
+                        Image(systemName: "person.2.badge.gearshape")
+                    }
+                    .accessibilityLabel("Moments privacy")
                     NavigationLink { StoryArchiveView() } label: {
                         Image(systemName: "archivebox")
                     }

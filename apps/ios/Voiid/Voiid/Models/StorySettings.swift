@@ -18,6 +18,56 @@ import SwiftUI
 import Combine
 
 @MainActor
+/// Who your memories go to. One setting, chosen in Memories privacy (MemoriesPrivacyView) and
+/// shown on every new memory — not re-picked per post.
+enum MomentAudience: String, CaseIterable, Identifiable {
+    /// Phone contacts on Voiid, and everyone you chat with.
+    case connections
+    /// Only people saved in your phone's contacts.
+    case contacts
+    /// Only people you have messaged with.
+    case chats
+    /// Only the people you pick.
+    case selected
+    /// Nobody: kept on this phone only.
+    case nobody
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .connections: "All my connections"
+        case .contacts: "My contacts"
+        case .chats: "People I chat with"
+        case .selected: "Only selected people"
+        case .nobody: "Nobody"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .connections: "Your contacts on Voiid and everyone you chat with"
+        case .contacts: "People saved in your phone who use Voiid"
+        case .chats: "Only people you've messaged with"
+        case .selected: "Only the people you choose"
+        case .nobody: "Only you. Kept on this phone, never sent."
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .connections: "person.3.fill"
+        case .contacts: "person.crop.circle.fill"
+        case .chats: "bubble.left.and.bubble.right.fill"
+        case .selected: "checklist"
+        case .nobody: "lock.fill"
+        }
+    }
+
+    /// Whether "Hide from" applies on top of this choice.
+    var allowsHiding: Bool { self == .connections || self == .contacts || self == .chats }
+}
+
 final class StorySettings: ObservableObject {
     static let shared = StorySettings()
 
@@ -26,6 +76,21 @@ final class StorySettings: ObservableObject {
         static let defaultAudience  = "voiid.stories.defaultAudience"   // [user_id] or empty = "My Contacts"
         static let audienceIsCustom = "voiid.stories.audienceIsCustom"
         static let archiveByDefault = "voiid.stories.archiveByDefault"
+        static let audienceMode = "voiid.stories.audienceMode"
+        static let selectedPeople = "voiid.stories.selectedPeople"
+        static let hiddenFrom = "voiid.stories.hiddenFrom"
+    }
+
+    @Published var audienceMode: MomentAudience {
+        didSet { UserDefaults.standard.set(audienceMode.rawValue, forKey: Key.audienceMode) }
+    }
+    /// The people for `.selected`.
+    @Published var selectedPeople: Set<String> {
+        didSet { UserDefaults.standard.set(Array(selectedPeople), forKey: Key.selectedPeople) }
+    }
+    /// Left out of `.connections`, `.contacts` and `.chats`.
+    @Published var hiddenFrom: Set<String> {
+        didSet { UserDefaults.standard.set(Array(hiddenFrom), forKey: Key.hiddenFrom) }
     }
 
     /// OFF by default. Reciprocal: off means you send no receipts AND see no viewer names.
@@ -50,29 +115,51 @@ final class StorySettings: ObservableObject {
         // than silently losing them. Uses object(forKey:) because plain `bool` reads a
         // missing key as false, which would be the wrong default here.
         archiveByDefault = (UserDefaults.standard.object(forKey: Key.archiveByDefault) as? Bool) ?? true
+
+        let defaults = UserDefaults.standard
+        selectedPeople = Set(defaults.stringArray(forKey: Key.selectedPeople) ?? [])
+        hiddenFrom = Set(defaults.stringArray(forKey: Key.hiddenFrom) ?? [])
+        if let raw = defaults.string(forKey: Key.audienceMode), let mode = MomentAudience(rawValue: raw) {
+            audienceMode = mode
+        } else if defaults.bool(forKey: Key.audienceIsCustom),
+                  let last = defaults.stringArray(forKey: Key.defaultAudience), !last.isEmpty {
+            // Carried over from the per-post picker: a custom list becomes "Only selected people".
+            audienceMode = .selected
+            selectedPeople = Set(last)
+        } else {
+            audienceMode = .connections
+        }
+    }
+
+    /// Everyone `mode` covers right now, before "Hide from".
+    func people(for mode: MomentAudience) -> Set<String> {
+        let directory = UserDirectory.shared
+        switch mode {
+        case .connections: return directory.storyReachableUserIds()
+        case .contacts: return directory.phoneContactIds()
+        case .chats: return directory.chatPeerIds()
+        case .selected: return selectedPeople.intersection(directory.storyReachableUserIds())
+        case .nobody: return []
+        }
+    }
+
+    /// Who a new memory is sent to under the current setting.
+    func resolvedAudience() -> [String] {
+        var ids = people(for: audienceMode)
+        if audienceMode.allowsHiding { ids.subtract(hiddenFrom) }
+        return Array(ids)
     }
 
     func resetForSignOut() {
         sendViewReceipts = false
         archiveByDefault = true
-        for key in [Key.sendViewReceipts, Key.defaultAudience, Key.audienceIsCustom, Key.archiveByDefault] {
+        audienceMode = .connections
+        selectedPeople = []
+        hiddenFrom = []
+        for key in [Key.sendViewReceipts, Key.defaultAudience, Key.audienceIsCustom, Key.archiveByDefault,
+                    Key.audienceMode, Key.selectedPeople, Key.hiddenFrom] {
             UserDefaults.standard.removeObject(forKey: key)
         }
     }
 
-    // MARK: - Remembered audience (§2.2)
-
-    /// The last-used custom audience, or nil when the last post was "My Contacts" (which
-    /// re-expands to include newly-added contacts on the next post).
-    var lastCustomAudience: [String]? {
-        get {
-            guard UserDefaults.standard.bool(forKey: Key.audienceIsCustom) else { return nil }
-            return UserDefaults.standard.stringArray(forKey: Key.defaultAudience)
-        }
-    }
-
-    func rememberAudience(_ userIds: [String], isCustom: Bool) {
-        UserDefaults.standard.set(isCustom, forKey: Key.audienceIsCustom)
-        UserDefaults.standard.set(isCustom ? userIds : [], forKey: Key.defaultAudience)
-    }
 }

@@ -482,7 +482,15 @@ private struct StoryContextPlayer: View {
     }
 
     @ViewBuilder private var footer: some View {
-        if context.isMine {
+        if context.isMine, current?.isPrivate == true {
+            // Shared with nobody, so there are no views to count.
+            Label("Only you", systemImage: "lock.fill")
+                .font(VoiidFont.subhead).foregroundColor(.white)
+                .padding(.horizontal, VoiidSpacing.md).padding(.vertical, VoiidSpacing.sm)
+                .background(.white.opacity(0.15)).clipShape(Capsule())
+                .padding(.bottom, safeArea.bottom + VoiidSpacing.sm)
+                .accessibilityLabel("Only you can see this memory")
+        } else if context.isMine {
             // No hand-written `paused = true` here any more: `showViewers` IS the pause (see
             // `paused`), and `.onChange(of: paused)` drives the player. One flag, one flip.
             Button { showViewers = true } label: {

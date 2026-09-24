@@ -90,6 +90,9 @@ struct Story: Identifiable, Equatable {
     var archivedAt: Date? = nil
 
     var isExpired: Bool { expiresAt <= Date() }
+    /// Posted with "Nobody": kept on this phone only, never uploaded or sent (StoryEngine.savePrivately).
+    var isPrivate: Bool { media.mediaUrl.hasPrefix(Story.privatePrefix) }
+    static let privatePrefix = "local:"
     var isArchived: Bool { archivedAt != nil }
     var isViewed: Bool { viewedAt != nil }
 

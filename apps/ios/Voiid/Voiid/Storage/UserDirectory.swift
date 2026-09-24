@@ -115,6 +115,27 @@ final class UserDirectory: ObservableObject {
     /// also removes a real cross-platform asymmetry in who can receive a story. The union is
     /// the honest answer: a story ride needs an established 1:1 session, which either source
     /// implies. Ids with no directory row still resolve a name via `displayName(_:)`.
+    /// People saved in this phone's contacts who are on Voiid.
+    func phoneContactIds() -> Set<String> {
+        let me = TokenStore.shared.userId
+        var ids = Set(byId.values.filter {
+            !($0.savedName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }.map(\.userId))
+        if let me { ids.remove(me) }
+        return ids
+    }
+
+    /// People you have an actual 1:1 conversation with — at least one message either way.
+    func chatPeerIds() -> Set<String> {
+        let me = TokenStore.shared.userId
+        var ids = Set<String>()
+        for c in LocalStore.conversations() where c.type == .direct && c.lastMessageAt != nil {
+            if let peer = c.peerUserId, !peer.isEmpty { ids.insert(peer) }
+        }
+        if let me { ids.remove(me) }
+        return ids
+    }
+
     func storyReachableUserIds() -> Set<String> {
         let me = TokenStore.shared.userId
         var ids = Set(byId.keys)
