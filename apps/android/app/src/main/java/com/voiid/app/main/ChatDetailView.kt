@@ -846,7 +846,8 @@ fun ChatDetailView(
         val selected = messages.filter { it.id in selectedIds }
         com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest = { showBulkDelete = false }) {
             Spacer(Modifier.height(20.dp))
-            Text("Delete ${selectedIds.size} messages?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            Text("Delete ${selectedIds.size} message${if (selectedIds.size == 1) "" else "s"}?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            Text("Choose who the selected messages are deleted for.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
             if (!isGroup && selected.isNotEmpty() && selected.all {
                 it.isMine && !it.deletedForEveryone && it.status != com.voiid.app.model.MessageStatus.SENDING && it.status != com.voiid.app.model.MessageStatus.FAILED
             }) {
