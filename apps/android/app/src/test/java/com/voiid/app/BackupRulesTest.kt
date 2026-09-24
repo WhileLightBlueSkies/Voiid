@@ -65,6 +65,8 @@ class BackupRulesTest {
         "voiid_consent" to "consent records",
         "voiid_privacy_prefs" to "privacy choices",
         "voiid_story_prefs" to "story state",
+        "community_setup" to "which setup cards this owner hid on this device",
+        "games_shelf" to "a cached copy of the games catalog, refetched on open",
         "voiid_story_engine" to "story state",
         "voiid_flags" to "per-account flags",
         // Plaintext, and both are a record of WHO this person deals with — restoring either
