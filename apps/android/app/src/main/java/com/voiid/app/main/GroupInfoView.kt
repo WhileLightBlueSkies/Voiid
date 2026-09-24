@@ -1,5 +1,7 @@
 package com.voiid.app.main
 
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Security
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -73,6 +75,8 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var muted by remember { mutableStateOf(false) }
     val members = remember { mutableStateListOf<VMember>() }
+    var verifyingMembers by remember { mutableStateOf(false) }
+    var verifyTarget by remember { mutableStateOf<VMember?>(null) }
     var memberAction by remember { mutableStateOf<VMember?>(null) }
     var showAllMedia by remember { mutableStateOf(false) }
     var viewPhoto by remember { mutableStateOf(false) }
@@ -192,9 +196,52 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
             ProfileCard {
                 ToggleRow(Icons.Default.Block, "Mute notifications", muted) { muted = it; haptics.selection() }
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
+                // iOS GroupInfoView: "Verify encryption — Compare security codes with members".
+                ProfileRow(Icons.Default.Security, "Verify encryption", tint = VoiidColor.textPrimary) {
+                    haptics.tap(); verifyingMembers = true
+                }
+                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                 ProfileRow(Icons.Default.Logout, "Exit group", tint = VoiidColor.error) { haptics.rigid(); onBack() }
                 ProfileRow(Icons.Default.Block, "Report group", tint = VoiidColor.error) { haptics.rigid() }
             }
+        }
+    }
+
+    // iOS GroupMemberViews "Verify a member": pick someone, then their safety number.
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = verifyingMembers && verifyTarget == null,
+        onDismiss = { verifyingMembers = false },
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Verify a member", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
+                Text("Done", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.primary,
+                    modifier = Modifier.clickable { verifyingMembers = false }.padding(6.dp))
+            }
+            val others = members.filter { !it.isYou }
+            if (others.isEmpty()) Text("No other members to verify.", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
+            others.forEach { m ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { haptics.tap(); verifyTarget = m }.padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    ProfileAvatar(photoUrl = m.photoName, name = m.name, size = 40.dp)
+                    Text(m.name.ifBlank { "Voiid member" }, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
+                    Icon(Icons.Default.ChevronRight, null, tint = VoiidColor.textSecondary)
+                }
+            }
+            Text("Choose a member to compare the security code for your devices.", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+        }
+    }
+    verifyTarget?.let { m ->
+        // Full-screen window so it always sits above group info, whatever hosts this view.
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { verifyTarget = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            SafetyNumberScreen(peerUserId = m.id, peerName = m.name, onClose = { verifyTarget = null })
         }
     }
 
