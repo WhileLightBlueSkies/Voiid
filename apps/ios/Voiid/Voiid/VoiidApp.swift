@@ -5,6 +5,7 @@
 //  Created by Bask Creative on 15/06/26.
 //
 
+import FirebaseCrashlytics
 import SwiftUI
 import FirebaseCore
 import FirebaseAuth
@@ -122,6 +123,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                 FirebaseApp.configure(options: options)
             }
         }
+        // Crash reports from release builds only. They carry stack traces and device details —
+        // never message content, which exists in plaintext only inside the E2EE store.
+        #if DEBUG
+        Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(false)
+        #else
+        Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(true)
+        #endif
         do {
             try Auth.auth().useUserAccessGroup(nil)
         } catch {

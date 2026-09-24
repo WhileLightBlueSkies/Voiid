@@ -90,6 +90,13 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Voiid"
         tools:targetApi="31">
+        <!-- Crashlytics: on in release, off in debug (build.gradle.kts). Crash reports carry
+             stack traces and device info only — never message content, which never leaves the
+             E2EE store in plaintext. -->
+        <meta-data
+            android:name="firebase_crashlytics_collection_enabled"
+            android:value="${crashlyticsEnabled}" />
+
         <activity android:name=".payments.EventCheckoutActivity" android:exported="false" />
         <activity android:name=".payments.DigiLockerActivity" android:exported="false" />
         <!-- NO APPLICATION-WIDE CLEARTEXT (Q03). android:usesCleartextTraffic used to be "true"

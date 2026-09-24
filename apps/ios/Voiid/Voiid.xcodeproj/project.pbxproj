@@ -247,6 +247,7 @@
 				0B832F1D2FE005110023F558 /* Resources */,
 				BB0000000000000000000003 /* Embed Frameworks */,
 				AA0000000000000000000042 /* Embed Foundation Extensions */,
+				CC00000000000000000000A1 /* Upload dSYMs to Crashlytics */,
 			);
 			buildRules = (
 			);
@@ -375,6 +376,35 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		CC00000000000000000000A1 /* Upload dSYMs to Crashlytics */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${PRODUCT_NAME}",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Info.plist",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info.plist",
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)",
+				"$(SRCROOT)/../vendor/firebase-ios-sdk/Crashlytics/run",
+				"$(SRCROOT)/../vendor/firebase-ios-sdk/Crashlytics/upload-symbols",
+			);
+			name = "Upload dSYMs to Crashlytics";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Release builds only: they are the ones with dSYMs and the ones users run.\n# Never fails the build — a missing crash symbol file is worth a warning, not a broken release.\nif [ \"${CONFIGURATION}\" != \"Release\" ]; then exit 0; fi\n# Firebase is vendored (../vendor/firebase-ios-sdk), not a downloaded package.\nRUN=\"${SRCROOT}/../vendor/firebase-ios-sdk/Crashlytics/run\"\nif [ -x \"$RUN\" ]; then\n  \"$RUN\" || echo \"warning: Crashlytics dSYM upload failed; crash reports for this build will not be symbolicated.\"\nelse\n  echo \"warning: Crashlytics run script not found at $RUN\"\nfi\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		0B832F1B2FE005110023F558 /* Sources */ = {

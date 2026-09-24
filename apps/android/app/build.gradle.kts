@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
+    alias(libs.plugins.firebase.crashlytics)   // crash reports, release builds only (see buildTypes)
     alias(libs.plugins.ksp)          // Room’s annotation processor
 }
 
@@ -86,6 +87,8 @@ android {
             ?: System.getenv("MAPS_API_KEY")
             ?: ""
         manifestPlaceholders["MAPS_API_KEY"] = mapsKey
+        // Crash reporting is on for release builds only; debug crashes are development noise.
+        manifestPlaceholders["crashlyticsEnabled"] = "true"
         buildConfigField("boolean", "MAPS_CONFIGURED", mapsKey.isNotBlank().toString())
     }
 
@@ -99,6 +102,7 @@ android {
                 ?: System.getenv("VOIID_WS_URL") ?: "wss://api-dev.voiid.app/ws"
             buildConfigField("String", "VOIID_API_BASE_URL", "\"$debugApi\"")
             buildConfigField("String", "VOIID_WS_URL", "\"$debugWs\"")
+            manifestPlaceholders["crashlyticsEnabled"] = "false"
         }
         release {
             isMinifyEnabled = false
@@ -279,6 +283,7 @@ dependencies {
     // Firebase Cloud Messaging — receives the content-free "wake" data push; the
     // FirebaseMessagingService fetches + decrypts locally and posts the notification.
     implementation(libs.firebase.messaging)
+    implementation(libs.firebase.crashlytics)
     implementation(libs.kotlinx.coroutines.play.services)   // Task.await()
 
     // Google Sign-In — authorizes the least-privilege drive.appdata OAuth scope so the
