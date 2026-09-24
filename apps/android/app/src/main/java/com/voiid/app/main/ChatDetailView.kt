@@ -757,9 +757,14 @@ fun ChatDetailView(
         )
     }
     recordingError?.let { error ->
-        AlertDialog(onDismissRequest = { recordingError = null },
-            title = { Text("Couldn’t record") }, text = { Text(error) },
-            confirmButton = { TextButton(onClick = { recordingError = null }) { Text("OK") } })
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { recordingError = null },
+            title = "Couldn’t record",
+            body = error,
+            confirmLabel = "OK",
+            onConfirm = { recordingError = null },
+            cancelLabel = null,
+        )
     }
     chat.actionError?.let { error ->
         com.voiid.app.ui.components.VoiidDialog(

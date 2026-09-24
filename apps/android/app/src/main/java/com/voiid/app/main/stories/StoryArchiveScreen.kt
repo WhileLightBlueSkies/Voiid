@@ -84,9 +84,13 @@ fun StoryArchiveScreen(onClose: () -> Unit) {
         }
     }
     delete?.let { moment ->
-        AlertDialog(onDismissRequest = { delete = null }, title = { Text("Delete this kept moment?") },
-            text = { Text("This removes the copy on this device. It can’t be undone.") },
-            confirmButton = { TextButton(onClick = {
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { delete = null },
+            title = "Delete this kept moment?",
+            body = "This removes the copy on this device. It can’t be undone.",
+            confirmLabel = "Delete",
+            confirmDestructive = true,
+            onConfirm = {
                 scope.launch {
                     try {
                         StoryLocalStore.deleteKeptMoment(context, moment.id)
@@ -95,7 +99,8 @@ fun StoryArchiveScreen(onClose: () -> Unit) {
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                     catch (_: Exception) { error = "Couldn’t delete this kept moment. Please try again."; delete = null }
                 }
-            }) { Text("Delete", color = VoiidColor.error) } },
-            dismissButton = { TextButton(onClick = { delete = null }) { Text("Cancel") } })
+            },
+            onCancel = { delete = null },
+        )
     }
 }

@@ -282,25 +282,22 @@ fun ContactProfileView(
 
     // Report. Hosted here rather than inside the danger card so it survives the card
     // scrolling out of view, and dismissed by the sheet's own onDone.
-    if (showReportSheet) {
-        val peer = conversation.peerUserId
-        if (peer == null) {
+    if (showReportSheet && conversation.peerUserId == null) {
             // A group has no single person to report. Nothing here can be a valid target,
             // so say so rather than opening a sheet that cannot submit.
             showReportSheet = false
             notImplemented = "There's no individual contact to report in a group."
-        } else {
-            androidx.compose.ui.window.Dialog(
-                onDismissRequest = { showReportSheet = false },
-                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-            ) {
-                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                    ReportSheet(
-                        target = ReportTarget.Person(peer),
-                        onDone = { showReportSheet = false },
-                    )
-                }
-            }
+    }
+    conversation.peerUserId?.let { peer ->
+        com.voiid.app.ui.components.VoiidSheet(
+            visible = showReportSheet,
+            onDismiss = { showReportSheet = false },
+            detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+        ) {
+            ReportSheet(
+                target = ReportTarget.Person(peer),
+                onDone = { showReportSheet = false },
+            )
         }
     }
 
@@ -619,24 +616,11 @@ fun ContactProfileView(
         val viewerPhoto = photoUrl
             ?: UserDirectory.photoUrl(conversation.peerUserId ?: "")
             ?: conversation.photoURL
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { viewPhoto = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth().padding(24.dp)) {
-                val diameter = minOf(maxWidth, 320.dp)
-                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                    ProfileAvatar(photoUrl = viewerPhoto, name = conversation.title, size = diameter)
-                    Text(conversation.title, style = VoiidFont.rounded(20, FontWeight.SemiBold),
-                        color = Color.White, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    androidx.compose.material3.TextButton(onClick = { viewPhoto = false },
-                        modifier = Modifier.height(48.dp)) {
-                        Text("Close", color = Color.White, style = VoiidFont.rounded(16, FontWeight.Medium))
-                    }
-                }
-            }
-        }
+        ProfilePhotoViewer(
+            title = conversation.title,
+            photoRef = viewerPhoto,
+            onClose = { viewPhoto = false },
+        )
     }
     // Safety number, opened from the Encryption card. Full-screen: the digits are read aloud in
     // 5-groups and need the whole width.

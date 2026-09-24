@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -205,16 +206,17 @@ private fun SheetBody(
     var containerH by remember { mutableIntStateOf(0) }
     var contentH by remember { mutableIntStateOf(0) }
     val imeH = WindowInsets.ime.getBottom(density)
+    val statusH = WindowInsets.statusBars.getTop(density)
     val availableH = (containerH - imeH).coerceAtLeast(0)
     val latestOnHidden by rememberUpdatedState(onHidden)
 
     // Height (px) of each detent, matching [detents] order.
-    val detentHeights = remember(detents, availableH, contentH, density) {
+    val detentHeights = remember(detents, availableH, contentH, density, statusH) {
         detents.map { d ->
             when (d) {
                 is VoiidDetent.Fixed -> with(density) { d.height.toPx() }
                 VoiidDetent.Medium -> availableH * VoiidSheetTokens.MEDIUM_FRACTION
-                VoiidDetent.Large -> availableH - with(density) { VoiidSheetTokens.largeTopGap.toPx() }
+                VoiidDetent.Large -> availableH - statusH - with(density) { VoiidSheetTokens.largeTopGap.toPx() }
                 VoiidDetent.Content -> contentH.toFloat()
             }.coerceIn(0f, availableH.toFloat())
         }
@@ -314,9 +316,15 @@ private fun SheetBody(
         val current = rawTranslate
         val flungDown = velocityY > (VoiidSheetTokens.DISMISS_FLING_VELOCITY * density.density)
         val overdrag = current - maxAnchor
-        if (dismissOnDrag && (overdrag > largestH * VoiidSheetTokens.DISMISS_EXCESS_FRACTION ||
-            (flungDown && overdrag > 0f))
-        ) {
+        // The presentation has already applied overdrag resistance. Compare with the
+        // resisted threshold too, or a 22% dismissal requires dragging roughly 73% of
+        // the sheet's height before it closes (especially noticeable on fixed sheets).
+        val visibleHeight = detentHeights.getOrNull(settledIndex) ?: largestH
+        val dismissDistance = visibleHeight * VoiidSheetTokens.DISMISS_EXCESS_FRACTION *
+            VoiidSheetTokens.OVERDRAG_RESISTANCE
+        if (dismissOnDrag && (overdrag > dismissDistance ||
+            (flungDown && overdrag > 0f)
+        )) {
             onRequestHide()
             return
         }
@@ -333,7 +341,7 @@ private fun SheetBody(
 
     // Nested-scroll handoff: an inner list drags the sheet up as it scrolls past its own top,
     // and hands its leftover downward overscroll to the sheet at its bottom.
-    val nestedHandoff = remember(minAnchor, maxAnchor, largestH, density, hiding, reduceMotion) {
+    val nestedHandoff = remember(minAnchor, maxAnchor, largestH, density, hiding, reduceMotion, dismissOnDrag) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (!hiding && source == NestedScrollSource.UserInput && available.y < 0) {
@@ -384,18 +392,18 @@ private fun SheetBody(
     Box(
         Modifier
             .fillMaxSize()
-            .onSizeChanged { containerH = it.height }
-            .pointerInput(tapOutsideToDismiss, hiding) {
-                detectTapGestures {
-                    if (tapOutsideToDismiss && !hiding) onRequestHide()
-                }
-            },
+            .onSizeChanged { containerH = it.height },
     ) {
         Box(
             Modifier
                 .fillMaxSize()
                 .alpha(travel * fadeAlpha * VoiidSheetTokens.scrimAlpha)
-                .background(Color.Black),
+                .background(Color.Black)
+                .pointerInput(tapOutsideToDismiss, hiding) {
+                    detectTapGestures {
+                        if (tapOutsideToDismiss && !hiding) onRequestHide()
+                    }
+                },
         )
 
         Column(
@@ -410,9 +418,7 @@ private fun SheetBody(
                 .then(
                     pinnedSurfaceHeight?.let { Modifier.height(it) } ?: Modifier
                 )
-                // Consume taps landing on the surface so they never reach the scrim detector.
-                .pointerInput(Unit) { detectTapGestures { } }
-                .pointerInput(hiding, minAnchor, maxAnchor) {
+                .pointerInput(hiding, minAnchor, maxAnchor, dismissOnDrag) {
                     if (hiding) return@pointerInput
                     detectVerticalDragGestures(
                         onDragStart = { tracker.resetTracking(); beginDirectDrag() },

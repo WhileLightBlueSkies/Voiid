@@ -58,10 +58,12 @@ internal fun CommunityPostingMembersDialog(communityId: String, channelId: Strin
         loading = false
     }
     LaunchedEffect(communityId, channelId) { load(true) }
-    AlertDialog(
+    com.voiid.app.ui.components.VoiidDialogCustom(
         onDismissRequest = { if (busy.isEmpty()) onClose() },
-        title = { Text("Selected members") },
-        text = {
+        backDismissable = busy.isEmpty(),
+        scrimDismissable = busy.isEmpty(),
+    ) {
+            Text("Selected members")
             Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
                 Text("Changes save immediately. Managers can already post when Selected members is active.")
                 OutlinedTextField(search, { search = it }, label = { Text("Search loaded members") })
@@ -87,9 +89,8 @@ internal fun CommunityPostingMembersDialog(communityId: String, channelId: Strin
                 }
                 if (more && !loading) TextButton(onClick = { scope.launch { load(false) } }) { Text("Load more members") }
             }
-        },
-        confirmButton = { TextButton(onClick = onClose, enabled = busy.isEmpty()) { Text("Done") } },
-    )
+            com.voiid.app.ui.components.VoiidDialogAction("Done", enabled = busy.isEmpty(), onClick = onClose)
+    }
 }
 
 @Composable
@@ -104,7 +105,12 @@ internal fun CommunitySpaceSettingsDialog(communityId: String, channel: Communit
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     if (choosing) CommunityPostingMembersDialog(communityId, channel.conversation_id) { choosing = false }
-    AlertDialog(onDismissRequest = { if (!saving) onClose() }, title = { Text("Space settings") }, text = {
+    com.voiid.app.ui.components.VoiidDialogCustom(
+        onDismissRequest = { if (!saving) onClose() },
+        backDismissable = !saving,
+        scrimDismissable = !saving,
+    ) {
+        Text("Space settings")
         Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
             OutlinedTextField(purpose, { purpose = it.take(200) }, label = { Text("Description") }, enabled = !saving)
             Row { Checkbox(pinned, { pinned = it }, enabled = !saving); Text("Pin to top") }
@@ -112,12 +118,12 @@ internal fun CommunitySpaceSettingsDialog(communityId: String, channel: Communit
             if (posting == "selected") TextButton(onClick = { choosing = true }, enabled = !saving) { Text("Choose members") }
             error?.let { Text(it) }
         }
-    }, confirmButton = {
-        TextButton(enabled = !saving, onClick = { scope.launch {
+        com.voiid.app.ui.components.VoiidDialogAction(if (saving) "Saving…" else "Save", enabled = !saving) { scope.launch {
             saving = true
             try { service.updateSpace(communityId, channel.conversation_id, posting, purpose, pinned); onSaved() }
             catch (e: Exception) { error = e.message ?: "Couldn't save Space." }
             saving = false
-        } }) { Text(if (saving) "Saving…" else "Save") }
-    }, dismissButton = { TextButton(onClick = onClose, enabled = !saving) { Text("Cancel") } })
+        } }
+        com.voiid.app.ui.components.VoiidDialogAction("Cancel", enabled = !saving, onClick = onClose)
+    }
 }

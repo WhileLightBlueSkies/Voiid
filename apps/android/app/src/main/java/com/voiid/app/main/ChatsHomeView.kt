@@ -412,11 +412,12 @@ fun ChatsHomeView(
         }
     }
 
-    // Calls — fullscreen dialog, same pattern as Settings below.
-    if (showCallLog) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showCallLog = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    // Native large sheet, matching the iOS Calls route.
+        com.voiid.app.ui.components.VoiidSheet(
+            visible = showCallLog,
+            onDismiss = { showCallLog = false },
+            detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+            showHandle = true,
         ) {
             CallLogScreen(
                 chat = chat,
@@ -426,7 +427,6 @@ fun ChatsHomeView(
                 onOpenConversation = { conv -> showCallLog = false; onOpenConversation(conv) },
             )
         }
-    }
 
     // ONE window for the whole settings cluster: pushes preserve hierarchy (Storage can
     // open Backup ON TOP of itself and Back returns to Storage), and Back from the root
@@ -502,11 +502,12 @@ fun ChatsHomeView(
         }
     }
 
-    // New chat (contact discovery) — fullscreen dialog
-    if (showFindByUsername) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showFindByUsername = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    // Contact discovery keeps its native screen content inside the shared sheet.
+        com.voiid.app.ui.components.VoiidSheet(
+            visible = showFindByUsername,
+            onDismiss = { showFindByUsername = false },
+            detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+            showHandle = true,
         ) {
             FindByUsernameScreen(
                 onClose = { showFindByUsername = false },
@@ -524,7 +525,6 @@ fun ChatsHomeView(
                 },
             )
         }
-    }
     if (showScanner) {
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { showScanner = false },
@@ -542,10 +542,11 @@ fun ChatsHomeView(
             )
         }
     }
-    if (showRequests) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showRequests = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        com.voiid.app.ui.components.VoiidSheet(
+            visible = showRequests,
+            onDismiss = { showRequests = false },
+            detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+            showHandle = true,
         ) {
             MessageRequestsScreen(
                 onClose = { showRequests = false; reachScope.launch { refreshRequestCount() } },
@@ -560,11 +561,11 @@ fun ChatsHomeView(
                 },
             )
         }
-    }
-    if (showNewChat) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showNewChat = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        com.voiid.app.ui.components.VoiidSheet(
+            visible = showNewChat,
+            onDismiss = { showNewChat = false },
+            detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+            showHandle = true,
         ) {
             // WHICH sheet is now explicit, not inferred from the tab. The old rule — "+ means
             // group on the Groups tab, 1:1 on Chats" — made one control mean two things
@@ -584,7 +585,6 @@ fun ChatsHomeView(
                 )
             }
         }
-    }
 
     // Delete confirmation
     deleteTarget?.let { c ->

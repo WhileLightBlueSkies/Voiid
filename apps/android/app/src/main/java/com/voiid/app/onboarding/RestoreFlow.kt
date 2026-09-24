@@ -130,12 +130,13 @@ fun RestoreFlow(    session: AppSession,
     var busy by remember { mutableStateOf(false) }
 
     var confirmSkip by remember { mutableStateOf(false) }
-    if (confirmSkip) androidx.compose.material3.AlertDialog(
+    if (confirmSkip) com.voiid.app.ui.components.VoiidDialog(
         onDismissRequest = { confirmSkip = false },
-        title = { Text("Continue without restoring?") },
-        text = { Text("Previous chats will not be restored on this device. Your saved backups will stay in their current locations.") },
-        confirmButton = { androidx.compose.material3.TextButton(onClick = { confirmSkip = false; onSkip() }) { Text("Continue without restoring") } },
-        dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmSkip = false }) { Text("Cancel") } },
+        title = "Continue without restoring?",
+        body = "Previous chats will not be restored on this device. Your saved backups will stay in their current locations.",
+        confirmLabel = "Continue without restoring",
+        onConfirm = { confirmSkip = false; onSkip() },
+        onCancel = { confirmSkip = false },
     )
     fun finish() = onDone()
 

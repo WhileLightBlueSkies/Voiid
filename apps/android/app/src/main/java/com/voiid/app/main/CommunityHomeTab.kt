@@ -2,6 +2,7 @@ package com.voiid.app.main
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -80,6 +81,8 @@ fun CommunityHomeTab(
 
     var composing by remember { mutableStateOf(false) }
     var pinning by remember { mutableStateOf(false) }
+    var composerVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(composing, pinning) { if (composing || pinning) composerVisible = true }
     var draft by remember { mutableStateOf("") }
     var draftTitle by remember { mutableStateOf("") }
     var authoringBusy by remember { mutableStateOf(false) }
@@ -350,10 +353,22 @@ fun CommunityHomeTab(
             },
         )
     }
-    if (composing || pinning) androidx.compose.material3.AlertDialog(
-        onDismissRequest = { if (!authoringBusy) { composing = false; pinning = false } },
-        title = { Text(if (pinning) "Pin announcement" else "New post") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = composerVisible,
+        onDismiss = { composerVisible = false; composing = false; pinning = false },
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+        showHandle = true,
+        dismissOnBack = !authoringBusy,
+        tapOutsideToDismiss = !authoringBusy,
+        dismissOnDrag = !authoringBusy,
+    ) {
+        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (pinning) "Pin announcement" else "New post", style = VoiidFont.title,
+                    color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
+                androidx.compose.material3.TextButton(enabled = !authoringBusy, onClick = { composerVisible = false }) { Text("Cancel") }
+            }
             if (pinning) androidx.compose.material3.OutlinedTextField(value = draftTitle, onValueChange = { draftTitle = it.take(140) }, label = { Text("Title") })
             androidx.compose.material3.OutlinedTextField(value = draft, onValueChange = { draft = it.take(if (pinning) 2000 else 5000) }, label = { Text("Write something") }, minLines = 3, enabled = !authoringBusy)
             if (!pinning) {
@@ -384,8 +399,7 @@ fun CommunityHomeTab(
             }
             Text("Community posts are visible to the server and the community’s audience.", style = VoiidFont.rounded(12))
             authoringError?.let { Text(it, color = VoiidColor.error) }
-        } },
-        confirmButton = { androidx.compose.material3.TextButton(enabled = !authoringBusy && !preparingPhoto && draft.isNotBlank() && (pinning || selectedDestinations.isNotEmpty()) && (!pinning || draftTitle.isNotBlank()), onClick = { scope.launch {
+            androidx.compose.material3.TextButton(enabled = !authoringBusy && !preparingPhoto && draft.isNotBlank() && (pinning || selectedDestinations.isNotEmpty()) && (!pinning || draftTitle.isNotBlank()), onClick = { scope.launch {
             authoringBusy = true; authoringError = null
             try {
                 if (pinning) pinned = svc.pinAnnouncement(communityId, draftTitle.trim(), draft.trim())
@@ -403,12 +417,12 @@ fun CommunityHomeTab(
                     }
                     attachment = null; attachmentKey = null
                 }
-                composing = false; pinning = false; draft = ""; draftTitle = ""; haptics.success()
+                composerVisible = false; draft = ""; draftTitle = ""; haptics.success()
             } catch (e: Exception) { authoringError = e.message ?: "Couldn’t publish. Your draft is still here." }
             finally { authoringBusy = false }
-        } }) { Text(if (authoringBusy) "Publishing…" else "Publish") } },
-        dismissButton = { androidx.compose.material3.TextButton(enabled = !authoringBusy, onClick = { composing = false; pinning = false }) { Text("Cancel") } },
-    )
+        } }) { Text(if (authoringBusy) "Publishing…" else "Publish") }
+        }
+    }
 
 }
 

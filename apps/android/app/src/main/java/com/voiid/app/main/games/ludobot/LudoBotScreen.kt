@@ -166,37 +166,31 @@ fun LudoBotScreen(
     }
 
     if (confirmRestart) {
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { confirmRestart = false },
-            title = { Text("Restart match?") },
-            text = { Text("This will reset the board and start a new match.") },
-            confirmButton = {
-                TextButton(onClick = {
+            title = "Restart match?",
+            body = "This will reset the board and start a new match.",
+            confirmLabel = "Restart match",
+            confirmDestructive = true,
+            onConfirm = {
                     confirmRestart = false
                     game.restart()
-                }) {
-                    Text("Restart match", color = androidx.compose.ui.graphics.Color(0xFFE53935))
-                }
             },
-            dismissButton = {
-                TextButton(onClick = { confirmRestart = false }) { Text("Keep playing") }
-            },
+            cancelLabel = "Keep playing",
+            onCancel = { confirmRestart = false },
         )
     }
 
     if (confirmQuit) {
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { confirmQuit = false },
-            title = { Text("Leave the game?") },
-            text = { Text("Your progress won't be saved.") },
-            confirmButton = {
-                TextButton(onClick = { game.stop(); onClose() }) {
-                    Text("Leave game", color = androidx.compose.ui.graphics.Color(0xFFE53935))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmQuit = false }) { Text("Keep playing") }
-            },
+            title = "Leave the game?",
+            body = "Your progress won't be saved.",
+            confirmLabel = "Leave game",
+            confirmDestructive = true,
+            onConfirm = { game.stop(); onClose() },
+            cancelLabel = "Keep playing",
+            onCancel = { confirmQuit = false },
         )
     }
 }

@@ -192,7 +192,11 @@ fun EventManagerDialog(event:EventService.Event,canManage:Boolean,canAssign:Bool
   }
  }
 
- if(cancel)AlertDialog(onDismissRequest={if(!busy)cancel=false},title={Text("Cancel event?")},text={Text("Registration and admission will stop. Records are kept; refunds are handled separately. This cannot be reversed.")},confirmButton={TextButton(enabled=!busy,onClick={transition("cancel")}){Text("Cancel event")}},dismissButton={TextButton(enabled=!busy,onClick={cancel=false}){Text("Keep event")}})
+ if(cancel)com.voiid.app.ui.components.VoiidDialog(
+  onDismissRequest={if(!busy)cancel=false},title="Cancel event?",
+  body="Registration and admission will stop. Records are kept; refunds are handled separately. This cannot be reversed.",
+  confirmLabel="Cancel event",onConfirm={transition("cancel")},confirmDestructive=true,
+  cancelLabel="Keep event",onCancel={cancel=false},busy=busy)
 }
 
 
@@ -220,9 +224,19 @@ private fun EventTeamDialog(id:String,onDismiss:()->Unit){
  var username by remember{mutableStateOf("")};var role by remember{mutableStateOf("volunteer")}
  var error by remember{mutableStateOf<String?>(null)};var busy by remember{mutableStateOf(false)}
  var retry by remember{mutableStateOf(0)}
+ var visible by remember{mutableStateOf(true)}
  LaunchedEffect(id,retry){try{team=service.team(id);error=null}catch(e:CancellationException){throw e}catch(_:Exception){team=emptyList();error="Unable to load team. Check your access."}}
  fun action(block:suspend()->Unit){scope.launch{busy=true;try{block();retry++}catch(e:CancellationException){throw e}catch(_:Exception){error="Unable to update team."}finally{busy=false}}}
- AlertDialog(onDismissRequest={if(!busy)onDismiss()},title={Text("Event team")},text={LazyColumn(verticalArrangement=Arrangement.spacedBy(12.dp)){
+ com.voiid.app.ui.components.VoiidSheet(
+  visible=visible,onDismiss=onDismiss,
+  detents=listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+  showHandle=true,dismissOnBack=!busy,tapOutsideToDismiss=!busy,dismissOnDrag=!busy,
+ ) {
+  Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
+   Text("Event team",style=com.voiid.app.ui.theme.VoiidFont.title,modifier=Modifier.weight(1f))
+   TextButton(enabled=!busy,onClick={visible=false}){Text("Done")}
+  }
+  LazyColumn(Modifier.weight(1f).padding(horizontal=20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
   item{
    OutlinedTextField(value=username,onValueChange={username=it},label={Text("Member username")},enabled=!busy)
    Row {TextButton(enabled=!busy,onClick={role="volunteer"}){Text(if(role=="volunteer")"✓ Volunteer" else "Volunteer")};TextButton(enabled=!busy,onClick={role="manager"}){Text(if(role=="manager")"✓ Manager" else "Manager")}}
@@ -231,7 +245,8 @@ private fun EventTeamDialog(id:String,onDismiss:()->Unit){
   }
   error?.let{item{Text(it);TextButton(onClick={retry++}){Text("Retry")}}}
   team.forEach{m->item{Text(m.full_name ?: m.username ?: "Member");Text("${m.role} · ${m.state} · ends ${m.expires_at}");if(m.state!="revoked")TextButton(enabled=!busy,onClick={action{service.removeStaff(id,m.user_id)}}){Text("Remove access")}}}
- }},confirmButton={TextButton(enabled=!busy,onClick=onDismiss){Text("Done")}})
+  }
+ }
 }
 
 @Composable
@@ -542,10 +557,11 @@ fun EventEditorDialog(communityId:String,event:EventService.Event?=null,isOwner:
   }
  }
  if(showVerify){ HostVerificationScreen{showVerify=false}; return }
- if(confirmClose) AlertDialog(onDismissRequest={confirmClose=false},title={Text("Discard event changes?")},
-  text={Text("Your changes haven’t been saved.")},
-  confirmButton={TextButton(onClick={confirmClose=false;onDismiss()}){Text("Discard")}},
-  dismissButton={TextButton(onClick={confirmClose=false}){Text("Keep editing")}})
+ if(confirmClose) com.voiid.app.ui.components.VoiidDialog(
+  onDismissRequest={confirmClose=false},title="Discard event changes?",
+  body="Your changes haven’t been saved.",
+  confirmLabel="Discard",onConfirm={confirmClose=false;onDismiss()},confirmDestructive=true,
+  cancelLabel="Keep editing",onCancel={confirmClose=false})
  EventControlPage(if(event==null)"Create event" else "Edit event",{if(!busy)confirmClose=true},closeLabel="Close") {
 
   LazyColumn(state=listState,contentPadding=PaddingValues(20.dp),modifier=Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(24.dp)) {
@@ -666,5 +682,12 @@ private fun CommunityPeoplePanel(card:CommunityService.CommunityCard,isOwner:Boo
    if(more&&!loading)item{TextButton(onClick={scope.launch{load(true)}}){Text("Load more")}}
   }
  }
- confirm?.let{(member,action)->AlertDialog(onDismissRequest={if(!busy)confirm=null},title={Text(if(action=="admin")"Grant community admin access?" else "Update this member's access?")},text={Text(if(action=="admin")"They can manage the community and its events. Event-only managers should be invited from the event team screen." else if(action=="ban")"They will be removed and cannot rejoin until unblocked." else "This changes their access to this community.")},confirmButton={TextButton(enabled=!busy,onClick={act(member,action)}){Text("Confirm")}},dismissButton={TextButton(enabled=!busy,onClick={confirm=null}){Text("Cancel")}})}
+ confirm?.let{(member,action)->com.voiid.app.ui.components.VoiidDialog(
+  onDismissRequest={if(!busy)confirm=null},
+  title=if(action=="admin")"Grant community admin access?" else "Update this member's access?",
+  body=if(action=="admin")"They can manage the community and its events. Event-only managers should be invited from the event team screen."
+   else if(action=="ban")"They will be removed and cannot rejoin until unblocked."
+   else "This changes their access to this community.",
+  confirmLabel="Confirm",onConfirm={act(member,action)},confirmDestructive=action=="ban",
+  onCancel={confirm=null},busy=busy)}
 }

@@ -63,6 +63,8 @@ import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material3.Icon
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
@@ -550,6 +552,27 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
             com.voiid.app.main.walkthrough.AppWalkthroughOverlay(walkthrough)
         }
 
+        // Covers drawn below are siblings of the tabs. A screen that is still sliding in or
+        // out must own the entire hit area, including its transparent edges. Keep this barrier
+        // until the longest cover exit finishes so the previous screen cannot receive taps.
+        AnimatedVisibility(
+            visible = openConversation != null || openCreator != null || openClip != null ||
+                showDaily || showLeaderboard || showSkinPicker || botGame != null ||
+                lobby != null || openGameMatch != null || openStoryContext != null ||
+                callState != null || groupCallState != null,
+            enter = fadeIn(tween(0)),
+            exit = fadeOut(tween(300)),
+        ) {
+            Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Final)
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            })
+        }
+
         // Chat detail — slides in over everything (covers the tab bar), like the iOS push.
         AnimatedVisibility(
             visible = openConversation != null,
@@ -763,6 +786,28 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                     }
                 },
                 onDismiss = { pendingCricket = null },
+            )
+        }
+
+        // A full-screen game can have transparent margins and its slide transition exposes the
+        // previous screen. Keep a full-size input barrier through the exit animation so taps
+        // never reach the tab bar or another game underneath.
+        AnimatedVisibility(
+            visible = showDaily || showLeaderboard || showSkinPicker || botGame != null ||
+                lobby != null || openGameMatch != null,
+            enter = fadeIn(tween(0)),
+            exit = fadeOut(tween(250)),
+        ) {
+            Box(
+                Modifier.fillMaxSize().background(VoiidColor.background)
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Final)
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    },
             )
         }
 

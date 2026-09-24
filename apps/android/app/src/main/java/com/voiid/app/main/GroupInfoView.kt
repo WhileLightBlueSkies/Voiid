@@ -267,24 +267,24 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
         }
     }
 
-    if (showAddMembers) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showAddMembers = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            AddGroupMembersScreen(
-                existingUserIds = members.map { it.id }.toSet(),
-                onClose = { showAddMembers = false },
-                onAdd = { userId -> chat.addGroupMember(conversation.id, userId) { reloadMembers() } },
-            )
-        }
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = showAddMembers,
+        onDismiss = { showAddMembers = false; reloadMembers() },
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+    ) {
+        AddGroupMembersScreen(
+            existingUserIds = members.map { it.id }.toSet(),
+            onClose = { showAddMembers = false },
+            onAdd = { userId -> chat.addGroupMember(conversation.id, userId) { reloadMembers() } },
+        )
     }
 
     if (showAllMedia) {
         SharedMediaSheet(conversationId = conversation.id, onDismiss = { showAllMedia = false })
     }
     if (viewPhoto) {
-        ProfilePhotoViewer(title = conversation.title, onClose = { viewPhoto = false })
+        ProfilePhotoViewer(title = conversation.title, photoRef = conversation.photoURL,
+            onClose = { viewPhoto = false })
     }
 }
 
@@ -308,7 +308,7 @@ private fun AddGroupMembersScreen(existingUserIds: Set<String>, onClose: () -> U
         loading = false
     }
 
-    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(VoiidColor.background)) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Cancel", style = VoiidFont.rounded(16), color = VoiidColor.primary, modifier = Modifier.clickable { onClose() })
             Spacer(Modifier.weight(1f))

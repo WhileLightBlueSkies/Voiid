@@ -18,7 +18,6 @@ import androidx.compose.material3.IconButton
 import com.voiid.app.ui.theme.VoiidColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -41,6 +40,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -66,7 +66,7 @@ object VoiidPhotoViewerDefaults {
     const val MAX_SCALE: Float = 5f
     /** Fraction of the viewport height the photo must travel before release closes. */
     const val DISMISS_TRAVEL_FRACTION: Float = 0.22f
-    /** Downward release velocity (px/s… actually px/frame here) that closes outright. */
+    /** Downward release velocity in px/s that closes outright. */
     const val DISMISS_FLING: Float = 1400f
 }
 
@@ -123,11 +123,16 @@ fun VoiidPhotoViewer(
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
                         var travel = Offset.Zero
+                        val velocity = VelocityTracker()
                         do {
                             val event = awaitPointerEvent()
                             val pan = event.calculatePan()
                             val zoom = event.calculateZoom()
                             travel += pan
+                            if (event.changes.size == 1) {
+                                val pointer = event.changes.first()
+                                velocity.addPosition(pointer.uptimeMillis, pointer.position)
+                            }
                             if (zoom != 1f || scale > 1f) {
                                 scale = (scale * zoom).coerceIn(1f, VoiidPhotoViewerDefaults.MAX_SCALE)
                                 val x = size.width * (scale - 1f) / 2f
@@ -140,7 +145,9 @@ fun VoiidPhotoViewer(
                             }
                         } while (event.changes.any { it.pressed })
                         if (scale == 1f) {
-                            if (kotlin.math.abs(dragY) > size.height * VoiidPhotoViewerDefaults.DISMISS_TRAVEL_FRACTION) onClose()
+                            val release = velocity.calculateVelocity()
+                            if (dragY > size.height * VoiidPhotoViewerDefaults.DISMISS_TRAVEL_FRACTION ||
+                                (dragY > 0f && release.y > VoiidPhotoViewerDefaults.DISMISS_FLING)) onClose()
                             else if (kotlin.math.abs(travel.x) > size.width * 0.18f && kotlin.math.abs(travel.x) > kotlin.math.abs(travel.y)) {
                                 current = (current + if (travel.x < 0) 1 else -1).coerceIn(entries.indices)
                             }

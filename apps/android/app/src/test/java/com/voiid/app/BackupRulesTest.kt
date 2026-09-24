@@ -79,6 +79,8 @@ class BackupRulesTest {
         "voiid_snake_choice" to "local game choice",
         "voiid_snake_records" to "local records",
         "app_walkthrough" to "local walkthrough completed state",
+        "community_setup" to "per-community setup dismissal keyed by community id",
+        "games_shelf" to "disposable server catalog cache",
     )
 
     private fun moduleDir(): File {

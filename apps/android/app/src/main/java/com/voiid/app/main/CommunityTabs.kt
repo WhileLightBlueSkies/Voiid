@@ -134,6 +134,7 @@ fun CommunitySpacesTab(
     var editing by remember { mutableStateOf<CommunityService.Channel?>(null) }
     var deleting by remember { mutableStateOf<CommunityService.Channel?>(null) }
     var feed by remember { mutableStateOf<CommunityService.Channel?>(null) }
+    var presentedFeed by remember { mutableStateOf<CommunityService.Channel?>(null) }
     var settings by remember { mutableStateOf<CommunityService.Channel?>(null) }
     var saving by remember { mutableStateOf(false) }
     var channels by remember { mutableStateOf<List<CommunityService.Channel>>(emptyList()) }
@@ -178,14 +179,18 @@ fun CommunitySpacesTab(
             scope.launch { runCatching { svc.channels(communityId) }.onSuccess { channels = it }.onFailure { error = it.message } }
         }, onClose = { settings = null })
     }
-    feed?.let { channel ->
+    LaunchedEffect(feed) { if (feed != null) presentedFeed = feed }
+    presentedFeed?.let { channel ->
         val feedPull = com.voiid.app.ui.components.rememberVoiidPullRefresh {
             scope.launch { feedRefreshSignal += 1 }
         }
-        androidx.compose.ui.window.Dialog(onDismissRequest = { feed = null },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        com.voiid.app.ui.components.VoiidSheet(
+            visible = feed != null,
+            onDismiss = { feed = null; presentedFeed = null },
+            detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+        ) {
             androidx.compose.material3.Surface(Modifier.fillMaxSize()) {
-                Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                Column(Modifier.fillMaxSize()
                     .voiidPullRefresh(feedPull, VoiidColor.primary)) {
                     // Title scrolls with the feed like a native large title, rather than
                     // sitting in a separate bar with a hard edge underneath it.
@@ -210,11 +215,15 @@ fun CommunitySpacesTab(
             }
         }
     }
-    if (editor != null) androidx.compose.material3.AlertDialog(
+    if (editor != null) com.voiid.app.ui.components.VoiidDialogCustom(
         onDismissRequest = { if (!saving) editor = null },
-        title = { Text(if (editing == null) "Create a Space" else "Rename Space") },
-        text = { Column { androidx.compose.material3.OutlinedTextField(value = editor ?: "", onValueChange = { editor = it.take(60) }, label = { Text("Space name") }); error?.let { Text(it, color = VoiidColor.error) } } },
-        confirmButton = { androidx.compose.material3.TextButton(enabled = !saving && !editor.isNullOrBlank(), onClick = { scope.launch {
+        backDismissable = !saving,
+        scrimDismissable = !saving,
+    ) {
+        Text(if (editing == null) "Create a Space" else "Rename Space")
+        androidx.compose.material3.OutlinedTextField(value = editor ?: "", onValueChange = { editor = it.take(60) }, label = { Text("Space name") })
+        error?.let { Text(it, color = VoiidColor.error) }
+        com.voiid.app.ui.components.VoiidDialogAction("Save", enabled = !saving && !editor.isNullOrBlank()) { scope.launch {
             saving = true; error = null
             try {
                 val old = editing
@@ -223,18 +232,21 @@ fun CommunitySpacesTab(
                 channels = svc.channels(communityId); editor = null
             } catch (e: Exception) { error = e.message }
             finally { saving = false }
-        } }) { Text("Save") } },
-        dismissButton = { androidx.compose.material3.TextButton(enabled = !saving, onClick = { editor = null }) { Text("Cancel") } })
-    if (deleting != null) androidx.compose.material3.AlertDialog(
-        onDismissRequest = { if (!saving) deleting = null }, title = { Text("Remove this Space?") },
-        text = { Text(error ?: "This removes the Space from the community.") },
-        confirmButton = { androidx.compose.material3.TextButton(enabled = !saving, onClick = { scope.launch {
+        } }
+        com.voiid.app.ui.components.VoiidDialogAction("Cancel", enabled = !saving) { editor = null }
+    }
+    if (deleting != null) com.voiid.app.ui.components.VoiidDialog(
+        onDismissRequest = { if (!saving) deleting = null }, title = "Remove this Space?",
+        body = error ?: "This removes the Space from the community.",
+        confirmLabel = "Remove", confirmDestructive = true, busy = saving,
+        onConfirm = { scope.launch {
             saving = true; error = null
             try { svc.deleteChannel(communityId, deleting!!.conversation_id); channels = svc.channels(communityId); deleting = null }
             catch (e: Exception) { error = e.message }
             finally { saving = false }
-        } }) { Text("Remove") } },
-        dismissButton = { androidx.compose.material3.TextButton(enabled = !saving, onClick = { deleting = null }) { Text("Cancel") } })
+        } },
+        onCancel = { deleting = null },
+    )
 
 }
 
@@ -809,15 +821,16 @@ fun CommunityAboutTab(
         }
     }
 
-    if (authoring != null) androidx.compose.material3.AlertDialog(
+    if (authoring != null) com.voiid.app.ui.components.VoiidDialogCustom(
         onDismissRequest = { if (!saving) authoring = null },
-        title = { Text(if (authoring == "link") "Add link" else if (selectedRule == null) "Add rule" else "Edit rule") },
-        text = { Column {
+        backDismissable = !saving,
+        scrimDismissable = !saving,
+    ) {
+            Text(if (authoring == "link") "Add link" else if (selectedRule == null) "Add rule" else "Edit rule")
             androidx.compose.material3.OutlinedTextField(value = entryTitle, onValueChange = { if (it.length <= 80) entryTitle = it }, label = { Text("Title") })
             androidx.compose.material3.OutlinedTextField(value = entryBody, onValueChange = { if (it.length <= (if (authoring == "link") 2048 else 400)) entryBody = it }, label = { Text(if (authoring == "link") "https://…" else "Details") })
             writeError?.let { Text(it, color = VoiidColor.error) }
-        } },
-        confirmButton = { androidx.compose.material3.TextButton(enabled = !saving && entryTitle.isNotBlank(), onClick = { scope.launch {
+        com.voiid.app.ui.components.VoiidDialogAction("Save", enabled = !saving && entryTitle.isNotBlank()) { scope.launch {
             saving = true
             runCatching {
                 if (authoring == "link") links = links + svc.createLink(card.id, entryTitle, entryBody)
@@ -828,8 +841,9 @@ fun CommunityAboutTab(
                 }
             }.onSuccess { authoring = null; writeError = null }.onFailure { writeError = it.message ?: "Couldn't save." }
             saving = false
-        } }) { Text("Save") } },
-        dismissButton = { androidx.compose.material3.TextButton(enabled = !saving, onClick = { authoring = null }) { Text("Cancel") } })
+        } }
+        com.voiid.app.ui.components.VoiidDialogAction("Cancel", enabled = !saving) { authoring = null }
+    }
     deletingRule?.let { rule -> VoiidConfirmDialog(title = "Delete this rule?", message = "This removes the rule from the community.", confirmLabel = "Delete", destructive = true,
         onCancel = { deletingRule = null }, onConfirm = { deletingRule = null; scope.launch {
             runCatching { svc.deleteRule(card.id, rule.id) }.onSuccess { rules = rules.filterNot { it.id == rule.id } }.onFailure { writeError = it.message ?: "Couldn't delete rule." }

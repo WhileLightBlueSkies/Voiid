@@ -757,6 +757,7 @@ internal fun CommunityInviteSheet(card: CommunityService.CommunityCard, service:
     var url by remember(card.id) { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var sheetVisible by remember { mutableStateOf(true) }
     var invites by remember { mutableStateOf<List<CommunityService.Invite>>(emptyList()) }
     suspend fun create() {
         if (busy) return
@@ -769,11 +770,18 @@ internal fun CommunityInviteSheet(card: CommunityService.CommunityCard, service:
         finally { busy = false }
     }
     LaunchedEffect(card.id) { create() }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text(card.name) },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = sheetVisible,
+        onDismiss = onClose,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+        showHandle = true,
+    ) {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Community QR", style = VoiidFont.title, color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.TextButton(onClick = { sheetVisible = false }) { Text("Done") }
+                }
+                Text(card.name, style = VoiidFont.title, color = VoiidColor.textPrimary)
                 val image = remember(url) {
                     url?.let { value -> runCatching {
                         val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(value, com.google.zxing.BarcodeFormat.QR_CODE, 600, 600)
@@ -782,7 +790,8 @@ internal fun CommunityInviteSheet(card: CommunityService.CommunityCard, service:
                         }
                     }.getOrNull() }
                 }
-                if (image != null) androidx.compose.foundation.Image(image.asImageBitmap(), "Community invite QR", Modifier.fillMaxWidth())
+                if (image != null) androidx.compose.foundation.Image(
+                    image.asImageBitmap(), "Community invite QR", Modifier.size(240.dp).align(Alignment.CenterHorizontally))
                 Text("Scanning opens a preview. Joining never grants an admin role.")
                 if (card.canInvite) Text("Links expire in 7 days or after 100 joins.")
                 if (error != null) Text(error!!, color = VoiidColor.error)
@@ -804,7 +813,5 @@ internal fun CommunityInviteSheet(card: CommunityService.CommunityCard, service:
                     } }) { Text("Revoke link · " + (invite.expires_at?.take(10) ?: "No expiry")) }
                 }
             }
-        },
-        confirmButton = { androidx.compose.material3.TextButton(onClick = onClose) { Text("Done") } },
-    )
+    }
 }

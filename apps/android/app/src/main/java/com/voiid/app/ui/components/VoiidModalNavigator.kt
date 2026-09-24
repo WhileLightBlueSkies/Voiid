@@ -1,6 +1,5 @@
 package com.voiid.app.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -9,9 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import com.voiid.app.ui.theme.VoiidColor
 
 /**
  * A sheet-local BACK STACK hosted in ONE window — the Compose spelling of keeping Settings and
@@ -64,18 +60,21 @@ fun VoiidModalHost(
     navigator: VoiidModalNavigator,
     content: @Composable (route: String) -> Unit,
 ) {
-    val route = navigator.current ?: return
+    val route = navigator.current
+    var previousRoute by remember { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.LaunchedEffect(route) {
+        if (route != null) previousRoute = route
+    }
     val registry = com.voiid.app.main.walkthrough.LocalSpotlightRegistry.current
     val walkthrough = com.voiid.app.main.walkthrough.LocalWalkthroughState.current
 
-    Dialog(
-        onDismissRequest = {},
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-            dismissOnBackPress = false,
-            dismissOnClickOutside = false,
-        ),
+    VoiidSheet(
+        visible = route != null,
+        onDismiss = { previousRoute = null; navigator.closeAll() },
+        detents = listOf(VoiidDetent.Large),
+        showHandle = true,
+        dismissOnBack = false,
+        dismissOnDrag = navigator.stack.size <= 1,
     ) {
         androidx.activity.compose.BackHandler(enabled = true) {
             if (navigator.stack.size > 1) navigator.pop() else navigator.closeAll()
@@ -84,8 +83,9 @@ fun VoiidModalHost(
             com.voiid.app.main.walkthrough.LocalSpotlightRegistry provides registry,
             com.voiid.app.main.walkthrough.LocalWalkthroughState provides walkthrough,
         ) {
-            Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
-                content(route)
+            Box(Modifier.fillMaxSize()) {
+                val displayedRoute = route ?: previousRoute
+                if (displayedRoute != null) content(displayedRoute)
                 if (walkthrough != null && walkthrough.presented &&
                     walkthrough.step.destination == com.voiid.app.main.walkthrough.TourDestination.SETTINGS) {
                     com.voiid.app.main.walkthrough.AppWalkthroughOverlay(walkthrough)
