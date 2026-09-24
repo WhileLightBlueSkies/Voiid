@@ -144,6 +144,61 @@ class AppSession(app: Application) : AndroidViewModel(app) {
 class ChatStore(app: Application) : AndroidViewModel(app) {
     private val appContext: android.content.Context = app.applicationContext
 
+    init {
+        // The connection came back: send every text that was waiting for it now, rather
+        // than whenever each chat is next opened. Media loops wake on their own.
+        com.voiid.app.net.ChatNetwork.start(appContext)
+        viewModelScope.launch {
+            var last = com.voiid.app.net.ChatNetwork.generation.value
+            com.voiid.app.net.ChatNetwork.generation.collect { g ->
+                if (g != last) { last = g; flushAllPending() }
+            }
+        }
+    }
+
+    private fun flushAllPending() {
+        for (conversationId in engine.conversationsWithPendingText()) {
+            val conv = directConversations.firstOrNull { it.id == conversationId } ?: continue
+            viewModelScope.launch {
+                runCatching {
+                    engine.flushPending(conversationId, peerUserId(conv))
+                    refresh(conversationId)
+                }
+            }
+        }
+    }
+
+    /** What a media send needs to be tried again from its red bubble. In memory only. */
+    private class MediaPayload(val data: ByteArray, val mime: String, val caption: String, val filename: String?)
+    private val failedMediaPayloads = mutableMapOf<String, MediaPayload>()
+
+    /** Tap on a red "Not sent · Retry": media restarts from the bytes it kept; text is flushed. */
+    fun retryFailed(message: VMessage) {
+        val conversationId = message.conversationId
+        failedMediaPayloads.remove(message.id)?.let { p ->
+            pendingMediaMessages.remove(message.id)
+            removeMessage(message.id, conversationId)
+            sendMedia(p.data, p.mime, p.caption, conversationId, p.filename)
+            return
+        }
+        engine.clearFailed(message.id, conversationId)
+        refresh(conversationId)
+        val conv = directConversations.firstOrNull { it.id == conversationId } ?: return
+        viewModelScope.launch {
+            runCatching {
+                engine.flushPending(conversationId, peerUserId(conv))
+                refresh(conversationId)
+            }
+        }
+    }
+
+    /** Offline or a slow network is not an error to put on screen. */
+    private fun showUnlessOffline(e: Exception, fallback: String) {
+        if (!com.voiid.app.net.SendRetry.isRetryable(e)) {
+            loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: fallback
+        }
+    }
+
     // REAL backend data — starts empty, loaded via loadConversations(). A new
     // account shows an empty list, confirming we read the live server (not mock).
     /**
@@ -322,7 +377,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly (preview col preserved by the upsert)
             loadError = null
         } catch (e: Exception) {
-            loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t load chats."
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            showUnlessOffline(e, "Couldn’t load chats.")
         } finally {
             // Set on BOTH paths — success and failure. A load that failed is still a load
             // that finished; leaving this false would strand the user on a skeleton forever
@@ -451,7 +507,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 // Only for the chat ON SCREEN — see `openConversationId`.
                 markOpenConversationRead(conv.id)
             } catch (e: Exception) {
-                loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t load messages."
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                showUnlessOffline(e, "Couldn’t load messages.")
             }
             return
         }
@@ -468,7 +525,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             markOpenConversationRead(conv.id)
             fetchPresence(conv.id, peer)
         } catch (e: Exception) {
-            loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t load messages."
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            showUnlessOffline(e, "Couldn’t load messages.")
             // MARK THE READ ANYWAY. Everything above can throw — resolving the peer, the
             // fetch itself — and every one of those throws used to skip the receipt because
             // it sat inside the try. The messages already on screen were still read by a
@@ -577,22 +635,43 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             actionError = "Media sending isn’t available in this conversation."
             return
         }
+        // SLOW NETWORK IS NOT A FAILURE. A timeout, a dropped request or a server hiccup keeps
+        // the bubble at "sending" ("Waiting for network" while offline) and tries again in the
+        // background — 2s, 4s, 8s … up to a minute apart, and at once when the connection
+        // returns — with the same id every time, so the server dedupes a repeat whose reply
+        // was lost. Red is kept for a real refusal only. Mirrors iOS ChatStore.sendMedia.
         viewModelScope.launch {
-            try {
-                val peer = peerUserId(conv)
-                val echo = engine.sendMedia(data, mime, caption, conversationId, peer, filename)
-                // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender
-                // renders its own photo/voice instantly and offline — never re-downloads it.
-                echo.media?.mediaUrl?.let { com.voiid.app.main.MediaCache.putData(appContext, it, data) }
-                pendingMediaMessages.remove(tempId)
-                removeMessage(tempId, conversationId)
-                refresh(conversationId)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                pendingMediaMessages[tempId]?.let { pendingMediaMessages[tempId] = it.copy(status = MessageStatus.FAILED) }
-                refresh(conversationId)
-                actionError = "Couldn’t send media. Please try again."
-                loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t send media."
+            var wait = 2.0
+            while (true) {
+                if (!pendingMediaMessages.containsKey(tempId)) return@launch
+                try {
+                    val peer = peerUserId(conv)
+                    val echo = engine.sendMedia(data, mime, caption, conversationId, peer, filename,
+                        clientMessageId = tempId)
+                    // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender
+                    // renders its own photo/voice instantly and offline — never re-downloads it.
+                    echo.media?.mediaUrl?.let { com.voiid.app.main.MediaCache.putData(appContext, it, data) }
+                    pendingMediaMessages.remove(tempId)
+                    removeMessage(tempId, conversationId)
+                    refresh(conversationId)
+                    return@launch
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    if (!pendingMediaMessages.containsKey(tempId)) return@launch
+                    if (com.voiid.app.net.SendRetry.isRetryable(e)) {
+                        android.util.Log.w("VOIID", "⏳ media send will retry in ${wait.toInt()}s: ${e.message}")
+                        com.voiid.app.net.ChatNetwork.wait(wait)
+                        wait = minOf(wait * 2, 60.0)
+                        continue
+                    }
+                    android.util.Log.e("VOIID", "❌ media send gave up", e)
+                    failedMediaPayloads[tempId] = MediaPayload(data, mime, caption, filename)
+                    pendingMediaMessages[tempId]?.let { pendingMediaMessages[tempId] = it.copy(status = MessageStatus.FAILED) }
+                    refresh(conversationId)
+                    actionError = (e as? com.voiid.app.net.ApiError)?.userMessage
+                        ?: "Couldn't send this. Tap Retry on the message to try again."
+                    return@launch
+                }
             }
         }
     }
@@ -718,7 +797,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                     refresh(conversationId)
                     bumpPreview(conversationId, text)
                 } catch (e: Exception) {
-                    loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t send group message."
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    showUnlessOffline(e, "Couldn’t send group message.")
                 }
             }
             refresh(conversationId)
@@ -754,7 +834,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                     engine.sendReply(text, quotedId, preview, sender, conversationId, peer)
                     refresh(conversationId)
                 } catch (e: Exception) {
-                    loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t resolve the recipient."
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    showUnlessOffline(e, "Couldn’t resolve the recipient.")
                 }
             }
             return
@@ -771,7 +852,9 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 engine.flushPending(conversationId, peer)
                 refresh(conversationId)
             } catch (e: Exception) {
-                loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t resolve the recipient."
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                // Offline: the text stays queued and goes when the connection returns.
+                showUnlessOffline(e, "Couldn’t resolve the recipient.")
             }
         }
     }

@@ -306,9 +306,8 @@ class ChatEngine private constructor(context: Context) {
                 // keep the message PENDING (clock, not red "failed") so the 4s poll
                 // retries and it delivers the moment the peer publishes keys. Only
                 // surface a hard failure for unexpected errors.
-                val retryable = (e as? ApiError.Http)?.let { it.status == 409 || it.status == 404 } == true ||
-                    e is java.io.IOException
-                if (retryable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (SendRetry.isRetryable(e)) {
                     android.util.Log.w("VOIID", "⏳ send pending (peer not ready) conv=$conversationId: ${e.message}")
                 } else {
                     markFailed(p.id, conversationId)
@@ -324,6 +323,20 @@ class ChatEngine private constructor(context: Context) {
         val i = arr.indexOfFirst { it.id == localId }
         if (i < 0 || arr[i].failed) return
         arr[i] = arr[i].copy(failed = true)
+        markDirty(conversationId)
+        persist()
+    }
+
+    /** Conversations holding a text that has not gone yet — flushed when the connection returns. */
+    fun conversationsWithPendingText(): List<String> =
+        store.filter { (_, msgs) -> msgs.any { it.isMine && it.pending && !it.deletedForMe && it.media == null } }.keys.toList()
+
+    /** The person tapped a failed text: back to the clock, ready for the next flush. */
+    fun clearFailed(localId: String, conversationId: String) {
+        val arr = store[conversationId] ?: return
+        val i = arr.indexOfFirst { it.id == localId }
+        if (i < 0 || !arr[i].failed) return
+        arr[i] = arr[i].copy(failed = false)
         markDirty(conversationId)
         persist()
     }
@@ -354,6 +367,8 @@ class ChatEngine private constructor(context: Context) {
         data: ByteArray, mime: String, caption: String = "",
         conversationId: String, peerUserId: String,
         filename: String? = null,
+        /** The bubble's own id, the same on every retry, so the server dedupes a repeat. */
+        clientMessageId: String? = null,
     ): DecryptedMessage {
         // 1. Encrypt the blob (e2e-core) → ciphertext + media key.
         val enc = encryptMedia(data)
@@ -373,8 +388,13 @@ class ChatEngine private constructor(context: Context) {
                            // WITHOUT THIS THE SERVER CANNOT DEDUPE: its unique index is on
                            // (sender, device, client_message_id) and NULL never conflicts with
                            // NULL, so a retried send became a second row and a second bubble.
-                           client_message_id = java.util.UUID.randomUUID().toString()))
-        val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
+                           client_message_id = clientMessageId ?: java.util.UUID.randomUUID().toString()))
+        val res: SendResponse = try {
+            api.requestAs("POST", "messages/send", jsonBody = body)
+        } catch (e: ApiError.AlreadySent) {
+            // An earlier attempt landed and only its reply was lost. Show it as sent.
+            SendResponse(message_id = e.messageId, duplicate = true)
+        }
         val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption, res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true, ref)
         append(conversationId, echo)
         return echo

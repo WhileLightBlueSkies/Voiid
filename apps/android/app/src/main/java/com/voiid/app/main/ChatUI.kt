@@ -69,6 +69,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import com.voiid.app.ui.components.applyVoiidGlassBlur
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -607,6 +608,9 @@ private fun TextWithMeta(message: VMessage, isLastMine: Boolean) {
     }
 }
 
+/** Resend a message that really failed — tapped from its red "Not sent · Retry". */
+val LocalMessageRetry = androidx.compose.runtime.staticCompositionLocalOf<(VMessage) -> Unit> { {} }
+
 /** Time + delivery-tick row that flows inline after text (or beneath media) — iOS `metaRow`. */
 @Composable
 private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier = Modifier, onImage: Boolean = false) {
@@ -627,8 +631,20 @@ private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier =
                 MessageStatus.READ -> "Seen"
                 MessageStatus.FAILED -> "Failed"
             }
+            val reachable by com.voiid.app.net.ChatNetwork.isReachable.collectAsState()
+            val retry = LocalMessageRetry.current
             if (message.status == MessageStatus.SENDING) {
+                // Never red for a slow or missing connection: it goes by itself when one returns.
                 Icon(Icons.Default.Schedule, "Sending", tint = metaTint, modifier = Modifier.size(11.dp))
+                if (!reachable) Text("Waiting for network", style = VoiidFont.rounded(10, FontWeight.Medium), color = metaTint)
+            } else if (message.status == MessageStatus.FAILED) {
+                // The one state the person must act on — and the action itself.
+                Text(
+                    "Not sent · Retry",
+                    style = VoiidFont.rounded(10, FontWeight.SemiBold),
+                    color = VoiidColor.error,
+                    modifier = Modifier.clickable { retry(message) }.padding(vertical = 6.dp),
+                )
             } else Text(
                 label,
                 // Seen steps up in WEIGHT rather than changing colour, so the distinction

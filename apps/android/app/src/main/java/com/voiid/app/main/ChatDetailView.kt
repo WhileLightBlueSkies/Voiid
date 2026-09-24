@@ -487,6 +487,7 @@ fun ChatDetailView(
                 sortedDays.forEach { day ->
                     item(key = "sep-$day") { DateSeparator(VoiidDate.separator(day)) }
                     items(grouped[day].orEmpty(), key = { it.id }) { msg ->
+                        androidx.compose.runtime.CompositionLocalProvider(LocalMessageRetry provides { m -> chat.retryFailed(m) }) {
                         MessageBubble(
                             message = msg,
                             isLastMine = msg.id == lastMineId,
@@ -515,6 +516,7 @@ fun ChatDetailView(
                             onDelete = { deleteMessage = msg },
                             onVote = { optId -> chat.vote(msg.id, optId, conversation.id) },
                         )
+                        }
                     }
                 }
                 if (typing) item(key = "typing") { TypingBubble() }
