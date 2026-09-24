@@ -308,6 +308,7 @@ internal fun CommunityDetailView(
     var tab by remember { mutableStateOf(CommunityTab.HOME) }
     var showHostInbox by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var confirmLeave by remember { mutableStateOf(false) }
     var notificationMode by remember(card.id) { mutableStateOf<String?>(null) }
     var savingNotifications by remember { mutableStateOf(false) }
     LaunchedEffect(card.id, state.isMember) {
@@ -553,18 +554,28 @@ internal fun CommunityDetailView(
                                 destructive = true) {
                                 menuOpen = false
                                 haptics.tap()
-                                scope.launch {
-                                    runCatching { service.leave(state.id) }
-                                        .onSuccess { reload() }
-                                        .onFailure {
-                                            actionError = it.message ?: "Couldn't leave."
-                                        }
-                                }
+                                confirmLeave = true
                             }
                         }
                     }
                 }
             }
+
+            // iOS asks before leaving ("Leave this community?"); Android used to leave on tap.
+            if (confirmLeave) com.voiid.app.ui.components.VoiidDialog(
+                onDismissRequest = { confirmLeave = false },
+                title = "Leave this community?",
+                confirmLabel = "Leave",
+                confirmDestructive = true,
+                onConfirm = {
+                    confirmLeave = false
+                    scope.launch {
+                        runCatching { service.leave(state.id) }
+                            .onSuccess { reload() }
+                            .onFailure { actionError = it.message ?: "Couldn't leave." }
+                    }
+                },
+            )
 
             actionError?.let {
                 Spacer(Modifier.height(VoiidSpacing.sm))
