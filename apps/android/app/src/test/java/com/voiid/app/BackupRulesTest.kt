@@ -54,6 +54,7 @@ class BackupRulesTest {
         "voiid_e2e" to "E2E identity and Olm sessions",
         "voiid_chat" to "message plaintext",
         "voiid_recovery" to "the account backup master secret",
+        "voiid.muted.conversations" to "per-device chat mutes (iOS keeps MuteStore device-local too); conversation ids",
         "voiid_location" to "live location share keys",
         "voiid_map" to "map presence keys",
         "voiid_map_inbound_keys" to "inbound map share keys",
