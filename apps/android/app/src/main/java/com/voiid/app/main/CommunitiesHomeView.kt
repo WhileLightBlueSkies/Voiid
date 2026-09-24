@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import androidx.compose.material.icons.filled.Groups
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.background
@@ -212,9 +213,24 @@ fun CommunitiesHomeView(
                 }
             listLoading && shown.isEmpty() -> Message("Finding communities…")
             shown.isEmpty() && browsing -> Message(if (searching) "No communities match that." else "Nothing to discover yet.")
-            shown.isEmpty() -> Message("You’re not in any communities yet. Tap Discover communities above, scan a QR code, or open an invite link.")
+            shown.isEmpty() -> Column(
+                Modifier.fillMaxSize().padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+            ) {
+                Icon(Icons.Default.Groups, null, tint = VoiidColor.primary, modifier = Modifier.size(34.dp))
+                Text("No communities yet", style = VoiidFont.rounded(20, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                Text("Discover a community above, scan its QR code, or start your own.", style = VoiidFont.rounded(15),
+                    color = VoiidColor.textSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                Text("Create a community", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textOnPrimary,
+                    modifier = Modifier.padding(top = 8.dp).clip(CircleShape).background(VoiidColor.primary)
+                        .softClickable { haptics.tap(); showCreate = true }.padding(horizontal = 24.dp, vertical = 10.dp))
+            }
             else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp)) {
-                if (recommended) item { Text("Recommended communities", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textSecondary); Spacer(Modifier.height(12.dp)) }
+                if (!searching) item {
+                    Text(if (recommended) "Recommended communities" else if (discovering) "Discover" else "Your communities",
+                        style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textSecondary)
+                    Spacer(Modifier.height(12.dp))
+                }
                 items(shown, key = { it.id }) { card ->
                     CommunityRow(card) { haptics.tap(); open = card }
                     Spacer(Modifier.height(10.dp))
@@ -231,43 +247,70 @@ fun CommunitiesHomeView(
 
 }
 
+/**
+ * Twin of iOS `CommunityCardRow`: a vertical card — mark, name (+ official seal, HOST), policy
+ * glyph and member count, membership badge top-right (Joined / Requested / Blocked), the
+ * description on its own line, and a footer with @handle and, for non-members, the join policy.
+ * A community you host gets an accent edge.
+ */
 @Composable
 private fun CommunityRow(card: CommunityService.CommunityCard, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clip(com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg))
-            .background(VoiidColor.surfaceCard).softClickable(onClick = onClick).padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val myId = remember { com.voiid.app.net.TokenStore.get(context).userId }
+    val isHost = card.owner_id != null && card.owner_id == myId
+    val shape = com.voiid.app.ui.theme.SquircleShape(VoiidRadius.lg)
+    Column(
+        Modifier.fillMaxWidth().clip(shape).background(VoiidColor.surfaceCard)
+            .border(1.dp, if (isHost) VoiidColor.accent.copy(alpha = 0.35f) else VoiidColor.divider, shape)
+            .softClickable(onClick = onClick).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Box(
-            Modifier.size(52.dp).clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.fieldFill),
-            contentAlignment = Alignment.Center,
-        ) { Text(AvatarPalette.initialsFor(card.name ?: card.handle), style = VoiidFont.rounded(18, FontWeight.Bold), color = VoiidColor.accentInk) }
-
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(card.name ?: "@${card.handle}",
-                    style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (card.official == true) Icon(Icons.Default.Verified, "Verified community", Modifier.size(16.dp), tint = VoiidColor.info)
-                if (card.isMember) {
-                    Text("joined", style = VoiidFont.rounded(10, FontWeight.SemiBold),
-                        color = VoiidColor.primary,
-                        modifier = Modifier.clip(CircleShape)
-                            .background(VoiidColor.accent.copy(alpha = 0.35f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp))
-                } else if (card.isPending) {
-                    Text("requested", style = VoiidFont.rounded(10), color = VoiidColor.textSecondary)
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                Modifier.size(46.dp).clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.fieldFill),
+                contentAlignment = Alignment.Center,
+            ) { Text(AvatarPalette.initialsFor(card.name ?: card.handle), style = VoiidFont.rounded(17, FontWeight.Bold), color = VoiidColor.accentInk) }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(card.name ?: "@${card.handle}", style = VoiidFont.rounded(15.5f, FontWeight.SemiBold),
+                        color = VoiidColor.textPrimary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false))
+                    if (card.official == true) Icon(Icons.Default.Verified, "Official Voiid community", Modifier.size(15.dp), tint = VoiidColor.accentInk)
+                    if (isHost) Text("HOST", style = VoiidFont.rounded(9.5f, FontWeight.Bold), color = VoiidColor.textOnAccent,
+                        modifier = Modifier.clip(CircleShape).background(VoiidColor.accent).padding(horizontal = 6.dp, vertical = 2.dp))
+                }
+                InstitutionMark(card.institution_name, compact = true)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    CommunityGlyph(JoinPolicyOption.icon(card.join_policy), size = 10.dp, tint = VoiidColor.textSecondary)
+                    Text("${card.member_count} member${if (card.member_count == 1) "" else "s"}", style = VoiidFont.rounded(11.5f), color = VoiidColor.textSecondary)
+                    if (card.suspended) {
+                        Text("•", style = VoiidFont.rounded(11.5f), color = VoiidColor.textSecondary)
+                        Text("Suspended", style = VoiidFont.rounded(11.5f), color = VoiidColor.error)
+                    }
                 }
             }
-            InstitutionMark(card.institution_name, compact = true)
-            Text("@${card.handle}", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
-            card.description?.takeIf { it.isNotBlank() }?.let {
-                Text(it, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary, maxLines = 2)
+            when (card.membership_state) {
+                "active" -> Badge("Joined", VoiidColor.textOnAccent, VoiidColor.accent)
+                "pending" -> Badge("Requested", VoiidColor.accentInk, VoiidColor.accentTint)
+                "banned" -> Badge("Blocked", VoiidColor.error, VoiidColor.error.copy(alpha = 0.14f))
+                else -> Unit
             }
-            Text("${card.member_count} member${if (card.member_count == 1) "" else "s"}",
-                style = VoiidFont.rounded(11), color = VoiidColor.textSecondary)
+        }
+        card.description?.takeIf { it.isNotBlank() }?.let {
+            Text(it, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary, maxLines = 2)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("@${card.handle}", style = VoiidFont.rounded(11.5f), color = VoiidColor.placeholder, modifier = Modifier.weight(1f))
+            if (!card.isMember && !card.isPending && !card.isBanned && !card.suspended)
+                Text(JoinPolicyOption.shortLabel(card.join_policy), style = VoiidFont.rounded(11, FontWeight.SemiBold), color = VoiidColor.textSecondary)
         }
     }
+}
+
+@Composable
+private fun Badge(text: String, fg: androidx.compose.ui.graphics.Color, bg: androidx.compose.ui.graphics.Color) {
+    Text(text, style = VoiidFont.rounded(10, FontWeight.SemiBold), color = fg,
+        modifier = Modifier.clip(CircleShape).background(bg).padding(horizontal = 7.dp, vertical = 3.dp))
 }
 
 @Composable
