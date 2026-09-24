@@ -214,7 +214,10 @@ fun LocationComposeSheet(conv: VConversation, onDismiss: () -> Unit) {
                 }
                 if (live) {
                     Text("Let them follow your journey", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-                    Text("${conv.title} can see your live location until the timer ends. You can stop at any time.",
+                    // iOS LocationComposeSheet: name the audience; a group says how many people that is.
+                    Text(if (conv.type == ConversationType.GROUP)
+                            "Everyone in ${conv.title} (${maxOf(1, conv.memberCount - 1)} people) can see your live location."
+                        else "Only ${conv.title} can see your live location.",
                         style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
                     Text("SHARE FOR", style = VoiidFont.rounded(12, FontWeight.SemiBold), color = VoiidColor.textSecondary)
                     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(VoiidColor.surfaceCard)) {
