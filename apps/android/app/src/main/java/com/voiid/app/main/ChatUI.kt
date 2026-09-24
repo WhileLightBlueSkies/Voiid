@@ -1,5 +1,8 @@
 package com.voiid.app.main
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 
@@ -324,17 +327,39 @@ fun MessageBubble(
                         }
                     }
                     if (!message.deletedForEveryone && message.reactions.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        // Twin of iOS MessageReactionBadges: YOUR reaction is tinted and outlined in
+                        // the accent, so a tap reads as "remove mine"; others' are neutral. 44dp tall
+                        // hit target, emoji 16sp, count 11sp semibold.
+                        val appContext = androidx.compose.ui.platform.LocalContext.current
+                        val myId = remember { com.voiid.app.net.TokenStore.get(appContext).userId }
+                        val enabled = !selectionMode && message.status != MessageStatus.SENDING && message.status != MessageStatus.FAILED
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                             message.reactions.values.groupingBy { it }.eachCount().toSortedMap().forEach { (emoji, count) ->
-                                Text(
-                                    if (count > 1) "$emoji $count" else emoji, fontSize = 13.sp,
-                                    modifier = Modifier
-                                        .clip(CircleShape)
-                                        .background(VoiidColor.background)
-                                        .border(0.5.dp, VoiidColor.divider.copy(alpha = 0.5f), CircleShape)
-                                        .clickable(enabled = !selectionMode && message.status != MessageStatus.SENDING && message.status != MessageStatus.FAILED) { onReact(emoji) }
-                                        .padding(horizontal = 9.dp, vertical = 8.dp),
-                                )
+                                val mine = myId != null && message.reactions[myId] == emoji
+                                val shape = RoundedCornerShape(14.dp)
+                                Box(
+                                    Modifier
+                                        .heightIn(min = 44.dp)
+                                        .widthIn(min = 44.dp)
+                                        .clickable(enabled = enabled) { onReact(emoji) }
+                                        .semantics(mergeDescendants = true) {
+                                            contentDescription = "$emoji, $count reaction${if (count == 1) "" else "s"}${if (mine) ", including yours" else ""}"
+                                            onClick(label = if (mine) "Remove your reaction" else "Add this reaction") { onReact(emoji); true }
+                                        },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Row(
+                                        Modifier
+                                            .clip(shape)
+                                            .background(if (mine) VoiidColor.accent.copy(alpha = 0.14f) else VoiidColor.surfaceCard)
+                                            .border(1.dp, if (mine) VoiidColor.accent else VoiidColor.divider, shape)
+                                            .padding(horizontal = 9.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(emoji, fontSize = 16.sp)
+                                        if (count > 1) Text(" $count", style = VoiidFont.rounded(11, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                                    }
+                                }
                             }
                         }
                     }
