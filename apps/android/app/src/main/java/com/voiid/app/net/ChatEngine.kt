@@ -1754,7 +1754,12 @@ class ChatEngine private constructor(context: Context) {
         val client_message_id: String? = null,
     )
     @Serializable private data class SendResponse(
-        val message_id: String,
+        /**
+         * Null from a server that accepted the send and will not deliver it (the recipient
+         * blocked us). coerceInputValues swaps the null for this default, so the message shows
+         * Sent and never Delivered instead of failing — failing would reveal the block.
+         */
+        val message_id: String = java.util.UUID.randomUUID().toString(),
         val created_at: String? = null,
         val delivered_devices: Int = 0,
         /** True when the server recognised this as a retry of a send it already accepted. */

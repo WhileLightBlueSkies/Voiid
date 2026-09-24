@@ -2038,7 +2038,10 @@ final class ChatEngine {
         }
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
-            message_id = try values.decode(String.self, forKey: .message_id)
+            // A null id is a send the server accepted and will not deliver (the recipient
+            // blocked us, answered by older servers with null). Accepted is what it is: the
+            // message shows Sent and never Delivered, rather than failing and revealing why.
+            message_id = try values.decodeIfPresent(String.self, forKey: .message_id) ?? UUID().uuidString
             created_at = try values.decodeIfPresent(String.self, forKey: .created_at)
             delivered_devices = try values.decodeIfPresent(Int.self, forKey: .delivered_devices) ?? 0
             // Fresh sends omit this field; only idempotent retries return true.

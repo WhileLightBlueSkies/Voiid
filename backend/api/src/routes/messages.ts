@@ -7,6 +7,7 @@
 //     `message_ciphertexts`. This closes the recipient-multi-device gap: each device (incl. the
 //     sender's own linked devices) receives a blob it can actually decrypt with its own session.
 import { Router } from 'express';
+import { randomUUID } from 'crypto';
 import { assertOpaque } from '@voiid/common-utils';
 import { query, withTransaction } from '../db';
 import { resolveActiveDevice, UUID_RE } from '../deviceAuthorization';
@@ -170,8 +171,14 @@ async function blockGuardForSend(
       body: { error: 'you have blocked this user', blocked_user_id: counterpart },
     };
   }
-  // Silently accepted, deliberately never delivered.
-  return { status: 200, body: { message_id: null, delivered_devices: 0 } };
+  // Silently accepted, deliberately never delivered — and shaped exactly like a real accept.
+  // It used to answer `message_id: null`, which both apps failed to decode, so the blocked
+  // sender's message turned red: the one tell blocking must not give. With an ordinary id
+  // it sits at "Sent" and never reaches "Delivered", the same as a phone that is off.
+  return {
+    status: 200,
+    body: { message_id: randomUUID(), created_at: new Date().toISOString(), delivered_devices: 0 },
+  };
 }
 
 router.post('/send', requireAuth, asyncHandler(async (req, res) => {
