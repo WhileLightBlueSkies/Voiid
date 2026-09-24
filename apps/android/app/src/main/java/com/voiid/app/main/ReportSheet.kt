@@ -123,10 +123,15 @@ fun ReportSheet(target: ReportTarget, onDone: () -> Unit) {
         Spacer(Modifier.height(10.dp))
         // The one sentence that matters most on this screen.
         Text(
-            if (target is ReportTarget.Person)
-                "We can see who you are reporting and what you write here. We cannot read "
-                    + "your messages with them — those are encrypted and we hold no key."
-            else "We can see the content you are reporting.",
+            // Differs by target like iOS privacyFooter: community reports also reach its host.
+            when (target) {
+                is ReportTarget.Person -> "We can see who you are reporting and what you write here. We cannot read " +
+                    "your messages with them — those are encrypted and we hold no key."
+                is ReportTarget.Community, is ReportTarget.CommunityPost ->
+                    "Posts and communities are not end-to-end encrypted, so we can see what you " +
+                        "are reporting. This community's host and admins can see it too."
+                else -> "We can see the content you are reporting."
+            },
             style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
         )
 
@@ -149,7 +154,7 @@ fun ReportSheet(target: ReportTarget, onDone: () -> Unit) {
                     scope.launch {
                         runCatching { svc.submit(target, reason, note.trim()) }
                             .onSuccess { sent = true }
-                            .onFailure { error = it.message ?: "Couldn't send that report." }
+                            .onFailure { error = "Couldn't send this report. Check your connection and try again." }
                         busy = false
                     }
                 })

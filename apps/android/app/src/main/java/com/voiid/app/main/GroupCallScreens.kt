@@ -138,10 +138,12 @@ fun GroupCallOverlay(state: GroupCallManager.GroupCallState) {
             Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 12.dp, vertical = 12.dp)) {
                 if (state.participants.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            "Waiting for others to join…",
-                            style = VoiidFont.rounded(15), color = Color.White.copy(alpha = 0.7f),
-                        )
+                        // iOS GroupCallScreen empty state.
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Joining the call…", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = Color.White)
+                            Text("Participants will appear when connected.",
+                                style = VoiidFont.rounded(14), color = Color.White.copy(alpha = 0.7f))
+                        }
                     }
                 } else {
                     ParticipantGrid(state.participants)

@@ -48,6 +48,8 @@ fun StoryViewersSheet(
                     style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary,
                 )
             }
+            if (viewers.isEmpty()) Text("When someone views it, you'll see who and when.",
+                style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
             Column(
                 Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
