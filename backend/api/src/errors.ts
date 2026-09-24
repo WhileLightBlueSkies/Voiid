@@ -82,7 +82,10 @@ export function installErrorHandler(app: Express): void {
     if (status >= 500) {
       // The message is logged and never returned: this is where SQL text, connection strings
       // and provider detail would otherwise reach the caller.
-      console.error(`[voiid:api] ${requestId} unhandled error:`, err?.message ?? err);
+      // The route PATTERN (`/clips/:id`), not the concrete path: which endpoint failed is
+      // what makes the line actionable, and a pattern carries no ids or tokens.
+      const route = `${req.method} ${req.baseUrl ?? ''}${req.route?.path ?? '(unmatched)'}`;
+      console.error(`[voiid:api] ${requestId} ${route} unhandled error:`, err?.message ?? err);
     }
 
     // A handler that already began a response cannot be given another one. Ending the
