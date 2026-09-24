@@ -34,7 +34,7 @@ class TournamentService(private val api: ApiClient) {
         val name: String,
         /** single_elim | double_elim | round_robin — decides what the bracket looks like. */
         val format: String? = null,
-        /** draft | registering | running | finished | cancelled. */
+        /** open | active | finished | cancelled (031_tournaments.sql). */
         val status: String? = null,
         val game_name: String? = null,
         val game_slug: String? = null,

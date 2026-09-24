@@ -17,6 +17,9 @@ import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.ui.graphics.Color
+import com.voiid.app.ui.components.pressableClickable
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,9 +54,9 @@ import kotlinx.coroutines.launch
  *  2. No device id ever reaches the screen as visible/selectable text — see
  *     [DeviceDirectoryService]'s security note. The id is used only as list key and as the
  *     revoke call's argument.
- *  3. No "Link a Device" button: that would pair a web companion via QR (routes/linking.ts),
- *     which needs camera capture + a scanner screen that does not exist yet. A button here
- *     with no scanner behind it would open nothing.
+ *  3. "Link a Browser" pairs Voiid Web via QR (routes/linking.ts) — [LinkBrowserScreen].
+ *     Disabled until this phone has an E2E device id, as on iOS: there is nothing to link a
+ *     browser TO before this device is registered.
 */
 import com.voiid.app.ui.components.voiidPullRefresh
 import com.voiid.app.ui.components.rememberVoiidPullRefresh
@@ -87,6 +90,15 @@ fun LinkedDevicesScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) { load(showSpinner = true) }
 
+    var showingLinkBrowser by remember { mutableStateOf(false) }
+    if (showingLinkBrowser) {
+        LinkBrowserScreen(onClose = {
+            showingLinkBrowser = false
+            scope.launch { load(showSpinner = false) }
+        })
+        return
+    }
+
     val thisDevice = devices.firstOrNull { it.id == currentDeviceId }
     val otherDevices = devices.filter { it.id != currentDeviceId }
 
@@ -96,6 +108,21 @@ fun LinkedDevicesScreen(onBack: () -> Unit) {
         modifier = Modifier.voiidPullRefresh(pull, VoiidColor.primary),
     ) {
         Spacer(Modifier.height(8.dp))
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .clip(RoundedCornerShape(VoiidRadius.md))
+                .background(VoiidColor.primary.copy(alpha = if (currentDeviceId == null) 0.4f else 1f))
+                .pressableClickable(enabled = currentDeviceId != null) { showingLinkBrowser = true },
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.QrCodeScanner, null, tint = Color.White, modifier = Modifier.size(20.dp))
+            Text("Link a Browser", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = Color.White)
+        }
+        Spacer(Modifier.height(16.dp))
 
         when {
             loading -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {

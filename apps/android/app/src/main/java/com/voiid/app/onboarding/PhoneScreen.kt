@@ -87,6 +87,14 @@ internal fun normalisePhone(raw: String, country: Country): String {
     var d = raw.filter { it.isDigit() }
     val code = country.dialCode.removePrefix("+")
 
+    // A LEADING "+" is unambiguous: what follows is a dial code, so it is stripped at ANY
+    // length. Without this, someone typing "+91…" by hand hit the length guard below mid-way
+    // ("+91987654321" → 9 digits after stripping, under the minimum), was capped to
+    // "9198765432" — a full-length WRONG number — and lost the keyboard with Continue lit.
+    if (raw.trimStart().startsWith("+") && d.startsWith(code)) {
+        return d.removePrefix(code).take(country.maxDigits)
+    }
+
     if (d.length > country.maxDigits && d.startsWith(code)) {
         val stripped = d.removePrefix(code)
         if (stripped.length >= country.minDigits) d = stripped

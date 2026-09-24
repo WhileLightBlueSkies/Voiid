@@ -106,7 +106,7 @@ fun CommunityTournamentsSection(communityId: String, modifier: Modifier = Modifi
                 // Registration is only offered while the server would actually accept it.
                 // Every other state gets no button rather than a button that 409s — an
                 // affordance that always fails is worse than no affordance.
-                if (t.status == "registering") {
+                if (t.status == "open") {
                     Text(
                         if (t.registered) "Withdraw" else "Register",
                         style = VoiidFont.rounded(13, FontWeight.SemiBold),
@@ -153,9 +153,12 @@ private fun subtitle(t: TournamentService.Tournament): String {
  * keeps the API free to name states for what they ARE rather than how they read.
  */
 private fun label(status: String): String = when (status) {
-    "draft" -> "Not open yet"
-    "registering" -> "Open for entries"
-    "running" -> "In progress"
+    // The REAL vocabulary, per `tournaments_status_check` in 031_tournaments.sql:
+    // open | active | finished | cancelled. This used to read draft/registering/running,
+    // which the schema never allows — so every live tournament rendered the raw "open" and
+    // the Register button (which tested "registering") could never appear. Same fix as iOS.
+    "open" -> "Open for entries"
+    "active" -> "In progress"
     "finished" -> "Finished"
     "cancelled" -> "Cancelled"
     else -> status

@@ -356,10 +356,13 @@ fun CommunityHomeTab(
             },
         )
     }
-    if (composing || pinning) androidx.compose.material3.AlertDialog(
+    if (composing || pinning) com.voiid.app.ui.components.VoiidDialogCustom(
         onDismissRequest = { if (!authoringBusy) { composing = false; pinning = false } },
-        title = { Text(if (pinning) "Pin announcement" else "New post") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        backDismissable = !authoringBusy,
+        scrimDismissable = !authoringBusy,
+    ) {
+        Text(if (pinning) "Pin announcement" else "New post")
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (pinning) androidx.compose.material3.OutlinedTextField(value = draftTitle, onValueChange = { draftTitle = it.take(140) }, label = { Text("Title") })
             androidx.compose.material3.OutlinedTextField(value = draft, onValueChange = { draft = it.take(if (pinning) 2000 else 5000) }, label = { Text("Write something") }, minLines = 3, enabled = !authoringBusy)
             if (!pinning) {
@@ -390,8 +393,9 @@ fun CommunityHomeTab(
             }
             Text("Community posts are visible to the server and the community’s audience.", style = VoiidFont.rounded(12))
             authoringError?.let { Text(it, color = VoiidColor.error) }
-        } },
-        confirmButton = { androidx.compose.material3.TextButton(enabled = !authoringBusy && !preparingPhoto && draft.isNotBlank() && (pinning || selectedDestinations.isNotEmpty()) && (!pinning || draftTitle.isNotBlank()), onClick = { scope.launch {
+        }
+        com.voiid.app.ui.components.VoiidDialogAction(if (authoringBusy) "Publishing…" else "Publish",
+            enabled = !authoringBusy && !preparingPhoto && draft.isNotBlank() && (pinning || selectedDestinations.isNotEmpty()) && (!pinning || draftTitle.isNotBlank())) { scope.launch {
             authoringBusy = true; authoringError = null
             try {
                 if (pinning) pinned = svc.pinAnnouncement(communityId, draftTitle.trim(), draft.trim())
@@ -412,9 +416,9 @@ fun CommunityHomeTab(
                 composing = false; pinning = false; draft = ""; draftTitle = ""; haptics.success()
             } catch (e: Exception) { authoringError = e.message ?: "Couldn’t publish. Your draft is still here." }
             finally { authoringBusy = false }
-        } }) { Text(if (authoringBusy) "Publishing…" else "Publish") } },
-        dismissButton = { androidx.compose.material3.TextButton(enabled = !authoringBusy, onClick = { composing = false; pinning = false }) { Text("Cancel") } },
-    )
+        } }
+        com.voiid.app.ui.components.VoiidDialogAction("Cancel", enabled = !authoringBusy, onClick = { composing = false; pinning = false })
+    }
 
 }
 

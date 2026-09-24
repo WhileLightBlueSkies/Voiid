@@ -35,6 +35,30 @@ class DeviceDirectoryService(context: Context) {
     )
     @Serializable private data class DevicesResponse(val devices: List<DeviceDTO> = emptyList())
 
+    /** What a scanned browser-linking code resolves to, before anything is granted. */
+    @Serializable data class LinkPreview(
+        val device_name: String,
+        val platform: String,
+        val identity_public_key: String,
+        val verification_code: String,
+        val expires_at: String,
+    )
+    @Serializable private data class PreviewBody(val link_token: String)
+    @Serializable private data class ApproveBody(val link_token: String, val identity_public_key: String)
+    @Serializable private data class Approval(val approved: Boolean, val device_id: String? = null)
+
+    /** Resolve a Voiid Web linking token. Grants nothing — approval is a separate call. */
+    suspend fun preview(linkToken: String): LinkPreview =
+        api.requestAs("POST", "linking/preview",
+            jsonBody = ApiClient.json.encodeToString(PreviewBody.serializer(), PreviewBody(linkToken)))
+
+    /** Approve the previewed browser. Pins the identity key the user saw in the preview. */
+    suspend fun approve(linkToken: String, identityKey: String) {
+        val res: Approval = api.requestAs("POST", "linking/approve",
+            jsonBody = ApiClient.json.encodeToString(ApproveBody.serializer(), ApproveBody(linkToken, identityKey)))
+        if (!res.approved) throw ApiError.Http(409, "This browser could not be linked.")
+    }
+
     /** Active (non-revoked) devices on this account, most recently seen first (server order). */
     suspend fun devices(): List<LinkedDevice> {
         val userId = TokenStore.get(appContext).userId ?: throw ApiError.NotAuthenticated

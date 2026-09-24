@@ -769,10 +769,10 @@ internal fun CommunityInviteSheet(card: CommunityService.CommunityCard, service:
         finally { busy = false }
     }
     LaunchedEffect(card.id) { create() }
-    androidx.compose.material3.AlertDialog(
+    com.voiid.app.ui.components.VoiidDialogCustom(
         onDismissRequest = onClose,
-        title = { Text(card.name) },
-        text = {
+    ) {
+            Text(card.name)
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 val image = remember(url) {
                     url?.let { value -> runCatching {
@@ -804,7 +804,6 @@ internal fun CommunityInviteSheet(card: CommunityService.CommunityCard, service:
                     } }) { Text("Revoke link · " + (invite.expires_at?.take(10) ?: "No expiry")) }
                 }
             }
-        },
-        confirmButton = { androidx.compose.material3.TextButton(onClick = onClose) { Text("Done") } },
-    )
+            com.voiid.app.ui.components.VoiidDialogAction("Done", onClick = onClose)
+    }
 }
