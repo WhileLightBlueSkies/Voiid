@@ -55,7 +55,19 @@ struct StoryViewersSheet: View {
             Text("If you turn this off, people won't know when you've viewed their moment — and you won't see who viewed yours.")
                 .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)
-            Text("Turn on view receipts in Settings → Privacy.")
+            Button {
+                Haptics.success()
+                settings.sendViewReceipts = true
+            } label: {
+                Text("Turn on view receipts")
+                    .font(VoiidFont.rounded(15, .semibold))
+                    .foregroundColor(VoiidColor.textOnAccent)
+                    .padding(.horizontal, 22)
+                    .frame(height: 44)
+                    .background(Capsule().fill(VoiidColor.accent))
+            }
+            .buttonStyle(PressableButtonStyle())
+            Text("Views from now on will show here.")
                 .font(VoiidFont.caption).foregroundColor(VoiidColor.placeholder)
         }
         .padding(VoiidSpacing.xl)
@@ -65,6 +77,9 @@ struct StoryViewersSheet: View {
         VStack(spacing: VoiidSpacing.sm) {
             Image(systemName: "eye").font(.system(size: 40)).foregroundColor(VoiidColor.textSecondary)
             Text("No views yet").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
+            Text("People who've turned off view receipts won't show here.")
+                .font(VoiidFont.caption).foregroundColor(VoiidColor.textSecondary)
+                .multilineTextAlignment(.center)
         }
         .padding(VoiidSpacing.xl)
     }

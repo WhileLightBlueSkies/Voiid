@@ -29,7 +29,7 @@ object StoryPrefs {
     const val NAME = "voiid_story_prefs"
     const val KEY_RECEIPTS = "view_receipts"
     fun receiptsEnabled(context: android.content.Context): Boolean =
-        context.getSharedPreferences(NAME, 0).getBoolean(KEY_RECEIPTS, false)
+        context.getSharedPreferences(NAME, 0).getBoolean(KEY_RECEIPTS, true)
     fun setReceiptsEnabled(context: android.content.Context, on: Boolean) =
         context.getSharedPreferences(NAME, 0).edit().putBoolean(KEY_RECEIPTS, on).apply()
 }
@@ -65,11 +65,11 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
         private set
 
     /**
-     * Per-device opt-in for view receipts (default OFF). Read fresh from prefs each access so a
+     * Per-device view receipts, ON by default (reciprocal — off-by-default meant nobody ever saw a view). Read fresh from prefs each access so a
      * toggle flipped in Settings (which writes the SAME prefs directly, without a handle to this
      * store) is honoured immediately — no cross-store observation needed.
      */
-    val receiptsEnabled: Boolean get() = prefs.getBoolean(StoryPrefs.KEY_RECEIPTS, false)
+    val receiptsEnabled: Boolean get() = prefs.getBoolean(StoryPrefs.KEY_RECEIPTS, true)
 
     fun setReceiptsEnabled(on: Boolean) {
         prefs.edit().putBoolean(StoryPrefs.KEY_RECEIPTS, on).apply()

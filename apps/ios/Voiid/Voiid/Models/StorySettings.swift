@@ -2,11 +2,13 @@
 //  StorySettings.swift
 //  Voiid
 //
-//  Per-device Stories preferences. Kept separate from PrivacySettings because that type
-//  guarantees "absent key reads as ON" (its three receipts default on), whereas story view
-//  receipts are DELIBERATELY OFF by default (§4.1): sending one tells the Voiid server that
-//  you opened someone's story, a behavioural fact it otherwise never learns. The
-//  privacy-preserving default is that the viewer list starts empty until you opt in.
+//  Per-device Stories preferences.
+//
+//  View receipts are ON by default. They began OFF (§4.1: sending one tells the Voiid server that
+//  you opened someone's moment, which it otherwise never learns) — but they are reciprocal, so
+//  with both sides off by default no receipt was ever sent and every moment showed no views.
+//  The server-can-see-it trade-off is stated beside the switch, and turning it off stays a
+//  one-tap choice in Moments settings.
 //
 //  Consumer (required, or the toggle would be a lie): StoryEngine reads `sendViewReceipts`
 //  before fanning out any receipt AND before reading/showing the local viewer list. When
@@ -93,7 +95,7 @@ final class StorySettings: ObservableObject {
         didSet { UserDefaults.standard.set(Array(hiddenFrom), forKey: Key.hiddenFrom) }
     }
 
-    /// OFF by default. Reciprocal: off means you send no receipts AND see no viewer names.
+    /// ON by default. Reciprocal: off means you send no receipts AND see no viewer names.
     @Published var sendViewReceipts: Bool {
         didSet { UserDefaults.standard.set(sendViewReceipts, forKey: Key.sendViewReceipts) }
     }
@@ -108,9 +110,10 @@ final class StorySettings: ObservableObject {
     }
 
     private init() {
-        // Absent key → false (the privacy-preserving default), so this uses the plain bool
-        // read, NOT PrivacySettings' "absent = true" read.
-        sendViewReceipts = UserDefaults.standard.bool(forKey: Key.sendViewReceipts)
+        // Absent key → ON. Receipts are reciprocal, so an off-by-default meant NOBODY ever sent
+        // one and every moment showed no views (0 receipts had ever reached the server). On by
+        // default, as moments work elsewhere; anyone who turned it off keeps their choice.
+        sendViewReceipts = (UserDefaults.standard.object(forKey: Key.sendViewReceipts) as? Bool) ?? true
         // Absent key → true, so an upgrading user starts keeping their own moments rather
         // than silently losing them. Uses object(forKey:) because plain `bool` reads a
         // missing key as false, which would be the wrong default here.
@@ -151,7 +154,7 @@ final class StorySettings: ObservableObject {
     }
 
     func resetForSignOut() {
-        sendViewReceipts = false
+        sendViewReceipts = true
         archiveByDefault = true
         audienceMode = .connections
         selectedPeople = []
