@@ -1,3 +1,5 @@
+@file:androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+
 package com.voiid.app.main.clips
 
 import androidx.compose.animation.core.Animatable

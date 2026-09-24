@@ -1,5 +1,5 @@
 {
-  "maxErrors": 90,
-  "recorded": "2026-09-06",
-  "note": "Android lintDebug error count. This number may only DECREASE. A03 removed the 26 java.time NewApi errors by enabling core-library desugaring (116 -> 90). What remains is largely media3 UnstableApi opt-ins and Compose state/remember errors, plus 11 platform NewApi calls that are NOT java.time \u2014 Vibrator/VibrationEffect (API 26/30) and java.lang.ref.Cleaner (API 33). Those are unguarded-API questions of their own and are not tracked by any issue yet. Lower this line whenever the count drops."
+  "maxErrors": 21,
+  "recorded": "2026-09-24",
+  "note": "Android lintDebug error count. This number may only DECREASE. A03 removed the 26 java.time NewApi errors (116 -> 90). The media3 UnstableApi opt-ins are now declared per file on the files built on Transformer and effects (90 -> 21). What remains is Compose state/remember errors and platform NewApi calls that are NOT java.time \u2014 Vibrator/VibrationEffect (API 26/30) and java.lang.ref.Cleaner (API 33). Lower this line whenever the count drops."
 }
