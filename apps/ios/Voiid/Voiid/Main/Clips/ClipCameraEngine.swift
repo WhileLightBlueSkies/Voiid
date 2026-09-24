@@ -392,6 +392,7 @@ final class ClipCameraController: NSObject, ObservableObject,
 
             self.session.commitConfiguration()
             self.applyConnectionGeometry()
+            self.openAtOneX()
             self.session.startRunning()
         }
     }
@@ -439,6 +440,7 @@ final class ClipCameraController: NSObject, ObservableObject,
             self.attachCamera(position: self.position)
             self.session.commitConfiguration()
             self.applyConnectionGeometry()
+            self.openAtOneX()
             if !self.session.isRunning { self.session.startRunning() }
         }
     }
@@ -520,12 +522,8 @@ final class ClipCameraController: NSObject, ObservableObject,
         // user's: on a phone with an ultra-wide, device 1.0 IS the ultra-wide, so a
         // user-facing 1× is `switchOvers[0]` in device units.
         let userScaleBase = base
-        // Open at the user's 1× — the wide lens. A virtual device starts at ITS 1.0, which on
-        // a phone with an ultra-wide is the 0.5× lens, so every camera opened zoomed out.
-        if (try? dev.lockForConfiguration()) != nil {
-            dev.videoZoomFactor = min(max(base, dev.minAvailableVideoZoomFactor), ceiling)
-            dev.unlockForConfiguration()
-        }
+        // Remembered for `openAtOneX()`, which runs once the configuration is committed.
+        oneXFactor = min(max(base, dev.minAvailableVideoZoomFactor), ceiling)
         let clampedZoom = min(dev.videoZoomFactor / userScaleBase, ceiling / userScaleBase)
         let front = position == .front
         DispatchQueue.main.async {
@@ -536,6 +534,24 @@ final class ClipCameraController: NSObject, ObservableObject,
             self.availableZoomPresets = presets
             self.currentZoom = clampedZoom
         }
+    }
+
+    /// Device zoom for the user's 1× on the attached camera. Session queue only.
+    private var oneXFactor: CGFloat = 1
+
+    /// Open at the user's 1× — the wide lens. A virtual device starts at ITS 1.0, which on a
+    /// phone with an ultra-wide is the 0.5× lens.
+    ///
+    /// Runs AFTER the configuration is committed. Setting it inside `attachCamera` did not
+    /// stick: `start()` sets the session preset after attaching, and a preset change resets the
+    /// device's zoom to 1.0 — so the camera showed 0.5× while the pill, computed before the
+    /// reset, said 1×. The pill is now set from what the device actually reports.
+    private func openAtOneX() {
+        guard let dev = device, (try? dev.lockForConfiguration()) != nil else { return }
+        dev.videoZoomFactor = min(max(oneXFactor, dev.minAvailableVideoZoomFactor), dev.maxAvailableVideoZoomFactor)
+        dev.unlockForConfiguration()
+        let actual = dev.videoZoomFactor / max(oneXFactor, 0.01)
+        DispatchQueue.main.async { self.currentZoom = actual }
     }
 
     private func attachMicrophone() {
@@ -571,6 +587,7 @@ final class ClipCameraController: NSObject, ObservableObject,
             self.attachCamera(position: self.position)
             self.session.commitConfiguration()
             self.applyConnectionGeometry()
+            self.openAtOneX()
         }
     }
 
