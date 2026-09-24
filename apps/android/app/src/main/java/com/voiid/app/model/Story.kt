@@ -53,6 +53,9 @@ fun StoryUploadState.wire(): String = when (this) {
     StoryUploadState.NONE -> "none"
 }
 
+/** The media key of a moment that was never uploaded — the same marker iOS uses. */
+const val PRIVATE_PREFIX = "local:"
+
 /** One story (ours or someone else's). Times in epoch MILLIS. */
 data class Story(
     val id: String,
@@ -76,6 +79,8 @@ data class Story(
 ) {
     val isImage: Boolean get() = media.mime.startsWith("image/")
     val isVideo: Boolean get() = media.mime.startsWith("video/")
+    /** A moment shared with nobody: kept on this phone, never uploaded (iOS `isPrivate`). */
+    val isPrivate: Boolean get() = media.mediaUrl.startsWith(PRIVATE_PREFIX)
     fun isExpired(nowMs: Long = System.currentTimeMillis()): Boolean = expiresAt <= nowMs
 }
 

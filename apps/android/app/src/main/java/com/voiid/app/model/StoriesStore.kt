@@ -137,50 +137,6 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
         contexts.clear(); contexts.addAll(ordered)
     }
 
-    // MARK: - Audience
-
-    /** One selectable recipient in the composer's audience picker. */
-    data class AudienceEntry(val userId: String, val name: String, val photoUrl: String?)
-
-    /**
-     * Everyone you can reach: every direct-conversation peer in the local store, name-resolved
-     * through [UserDirectory]. Local-first (no network needed to open the composer).
-     */
-    suspend fun candidateAudience(): List<AudienceEntry> {
-        val convs = runCatching { LocalStore.conversations(appContext) }.getOrDefault(emptyList())
-        val peers = convs.asSequence()
-            .filter { it.type == ConversationType.DIRECT }
-            .mapNotNull { it.peerUserId }
-        // UNION with the address-book directory. Conversation peers alone missed every saved
-        // contact you have not messaged yet; the directory alone (what iOS used to do) missed
-        // everyone you chat with but never saved. Both platforms now offer the same set.
-        val me = com.voiid.app.net.TokenStore.get(appContext).userId
-        return (peers + UserDirectory.knownUserIds())
-            .distinct()
-            .filter { it.isNotEmpty() && it != me }
-            .map { AudienceEntry(it, UserDirectory.displayName(it), UserDirectory.photoUrl(it)) }
-            .sortedBy { it.name.lowercase() }
-            .toList()
-    }
-
-    /** The remembered audience for the NEXT post. "All contacts" re-expands to include new ones;
-     *  a custom selection is remembered verbatim (intersected with who's still reachable). */
-    fun rememberedSelection(candidates: List<AudienceEntry>): Set<String> {
-        val all = candidates.map { it.userId }.toSet()
-        if (prefs.getBoolean(KEY_AUDIENCE_ALL, true)) return all
-        val saved = prefs.getStringSet(KEY_AUDIENCE_CUSTOM, emptySet()) ?: emptySet()
-        return saved.intersect(all)
-    }
-
-    fun saveSelection(selected: Set<String>, candidates: List<AudienceEntry>) {
-        val all = candidates.map { it.userId }.toSet()
-        val isAll = selected.size == all.size && selected.containsAll(all)
-        prefs.edit()
-            .putBoolean(KEY_AUDIENCE_ALL, isAll)
-            .putStringSet(KEY_AUDIENCE_CUSTOM, if (isAll) emptySet() else selected)
-            .apply()
-    }
-
     // MARK: - Post
 
     /**
@@ -220,14 +176,30 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
             StoryLocalStore.saveAudience(appContext, tempId, audienceUserIds, epoch)
             loadLocal()
             try {
-                engine.postStory(bytes, mime, caption, width, height, durationMs, allowsReplies, audienceUserIds)
+                val posted = engine.postStory(bytes, mime, caption, width, height, durationMs, allowsReplies, audienceUserIds)
                 loadError = engine.deliveryWarning
+                // "Keep my moments": the author's own copy stays in the archive after 24 hours.
+                if (MomentSettings.keepByDefault) runCatching { StoryLocalStore.keepMoment(appContext, posted.id, epoch) }
                 StoryLocalStore.deleteStory(appContext, tempId)   // real row replaces the placeholder
             } catch (e: Exception) {
                 StoryLocalStore.setUpload(appContext, tempId, StoryUploadState.FAILED)
                 loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn't post your moment."
             } finally {
                 posting = false
+                loadLocal()
+            }
+        }
+    }
+
+    /** Share with nobody: kept on this phone only. */
+    fun savePrivately(bytes: ByteArray, mime: String, caption: String, width: Int?, height: Int?, durationMs: Long?) {
+        viewModelScope.launch {
+            try {
+                engine.savePrivately(bytes, mime, caption, width, height, durationMs)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                loadError = "Couldn't save your moment."
+            } finally {
                 loadLocal()
             }
         }
@@ -351,9 +323,6 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
-        private const val KEY_AUDIENCE_ALL = "audience_all"
-        private const val KEY_AUDIENCE_CUSTOM = "audience_custom"
-
         /**
          * How many stories ahead of the one on screen to warm. Three matches what Signal keeps
          * ahead of the current item; past that it is bandwidth spent on stories most viewers

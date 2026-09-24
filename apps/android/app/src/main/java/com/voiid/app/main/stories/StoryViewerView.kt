@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RemoveRedEye
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
@@ -172,7 +173,7 @@ private fun ContextPage(
     // writes this page's state, so a page the pager recycles should take it down with it.
     LaunchedEffect(story.id, active) {
         if (!active) return@LaunchedEffect
-        if (story.isMine) stories.loadViewers(story.id)
+        if (story.isMine && !story.isPrivate) stories.loadViewers(story.id)
         progress = 0f
         loadState = StoryDownloadState.DOWNLOADING
         localPath = stories.ensureDownloaded(story)
@@ -371,7 +372,20 @@ private fun ContextPage(
             // Footer
             Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(16.dp)) {
                 actionError?.let { Text(it, color = Color.White, style = VoiidFont.rounded(13), modifier = Modifier.padding(bottom = 8.dp)) }
-                if (story.isMine) {
+                if (story.isMine && story.isPrivate) {
+                    // Shared with nobody: there is no one to have viewed it.
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(999.dp))
+                            .background(Color.White.copy(alpha = 0.15f))
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Default.Lock, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.size(8.dp))
+                        Text("Only you", style = VoiidFont.rounded(14, FontWeight.SemiBold), color = Color.White)
+                    }
+                } else if (story.isMine) {
                     val count = stories.viewersByStory[story.id]?.size
                     Row(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(999.dp))

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -85,17 +86,23 @@ fun StoryComposerSheet(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showCamera by remember { mutableStateOf(false) }
-    var showAudience by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
-    // Audience state, remembered across posts.
-    var candidates by remember { mutableStateOf<List<StoriesStore.AudienceEntry>>(emptyList()) }
-    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        candidates = stories.candidateAudience()
-        selected = stories.rememberedSelection(candidates)
+    // Who it goes to is ONE setting (Moments settings), shown here and changed there.
+    var people by remember { mutableStateOf<com.voiid.app.model.MomentSettings.People?>(null) }
+    androidx.compose.runtime.LaunchedEffect(showSettings) {
+        if (showSettings) return@LaunchedEffect
+        com.voiid.app.model.MomentSettings.load(context)
+        people = com.voiid.app.model.MomentSettings.people(context)
     }
-    val isAll = candidates.isNotEmpty() && selected.size == candidates.size
-    val audienceLabel = if (isAll) "My Contacts (${selected.size})" else "Custom (${selected.size})"
+    val mode = com.voiid.app.model.MomentSettings.audienceMode
+    val audience = people?.let { com.voiid.app.model.MomentSettings.resolved(it) }
+    val isPrivate = mode == com.voiid.app.model.MomentAudience.NOBODY
+    val audienceLabel = when {
+        isPrivate -> "Only you"
+        audience == null -> mode.title
+        else -> "${mode.title} · ${audience.size}"
+    }
 
     val galleryPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
@@ -170,21 +177,34 @@ fun StoryComposerSheet(
                         VoiidTextField(placeholder = "Add a caption…", value = caption, onValueChange = { caption = it })
                         Row(
                             Modifier.fillMaxWidth().clip(RoundedCornerShape(999.dp))
-                                .background(VoiidColor.fieldFill).softClickable { showAudience = true }
+                                .background(VoiidColor.fieldFill).softClickable { showSettings = true }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Icon(Icons.Default.People, null, tint = VoiidColor.primary, modifier = Modifier.size(18.dp))
-                            Text(audienceLabel, style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                            Icon(if (isPrivate) Icons.Default.Lock else Icons.Default.People, null,
+                                tint = VoiidColor.primary, modifier = Modifier.size(18.dp))
+                            Text(audienceLabel, style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textPrimary,
+                                modifier = Modifier.weight(1f))
+                            Text("Change", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.accentInk)
                         }
                         error?.let { Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error) }
-                        VoiidPrimaryButton(title = "Share", enabled = !busy && selected.isNotEmpty()) {
-                            stories.saveSelection(selected, candidates)
-                            stories.post(
-                                m.bytes, m.mime, caption.trim(), m.width, m.height, m.durationMs,
-                                allowsReplies = true, audienceUserIds = selected.toList(),
-                            )
+                        if (!isPrivate && audience != null && audience.isEmpty()) {
+                            Text("No one is in this audience yet. Change who can see your moments, or choose Nobody to keep it for yourself.",
+                                style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                        }
+                        VoiidPrimaryButton(
+                            title = if (isPrivate) "Save for me" else "Share",
+                            enabled = !busy && (isPrivate || !audience.isNullOrEmpty()),
+                        ) {
+                            if (isPrivate) {
+                                stories.savePrivately(m.bytes, m.mime, caption.trim(), m.width, m.height, m.durationMs)
+                            } else {
+                                stories.post(
+                                    m.bytes, m.mime, caption.trim(), m.width, m.height, m.durationMs,
+                                    allowsReplies = true, audienceUserIds = audience.orEmpty(),
+                                )
+                            }
                             onDismiss()
                         }
                     }
@@ -199,14 +219,7 @@ fun StoryComposerSheet(
         }
     }
 
-    if (showAudience) {
-        StoryAudiencePicker(
-            candidates = candidates,
-            initialSelection = selected,
-            onConfirm = { selected = it; showAudience = false },
-            onDismiss = { showAudience = false },
-        )
-    }
+    if (showSettings) MomentsSettingsScreen(onClose = { showSettings = false })
 }
 
 @Composable

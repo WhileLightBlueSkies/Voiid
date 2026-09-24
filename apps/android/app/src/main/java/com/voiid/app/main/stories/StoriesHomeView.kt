@@ -24,6 +24,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -72,6 +74,8 @@ fun StoriesHomeView(
     val session: com.voiid.app.model.AppSession = androidx.lifecycle.viewmodel.compose.viewModel()
     var showArchive by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     if (showArchive) StoryArchiveScreen(onClose = { showArchive = false })
+    var showSettings by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (showSettings) MomentsSettingsScreen(onClose = { showSettings = false })
     val largeText = LocalDensity.current.fontScale >= 1.5f
     val newContexts = stories.othersContexts.filter { it.hasUnviewed }
     val seenContexts = stories.othersContexts.filter { !it.hasUnviewed }
@@ -92,7 +96,13 @@ fun StoriesHomeView(
                     "Moments", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary,
                     modifier = Modifier.weight(1f).padding(vertical = 12.dp),
                 )
-                androidx.compose.material3.TextButton(onClick = { showArchive = true }) { Text("Archive", color = VoiidColor.accentInk) }
+                androidx.compose.material3.IconButton(onClick = { showArchive = true }) {
+                    Icon(Icons.Default.Archive, "Archive", tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
+                }
+                // Moments settings: who sees your moments, and what's kept.
+                androidx.compose.material3.IconButton(onClick = { showSettings = true }) {
+                    Icon(Icons.Default.Settings, "Moments settings", tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
+                }
                 }
             }
 

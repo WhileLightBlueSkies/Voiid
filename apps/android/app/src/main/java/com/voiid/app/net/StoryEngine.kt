@@ -56,6 +56,7 @@ class StoryEngine private constructor(context: Context) {
         StoryLocalStore.invalidateAccount()
         prefs.edit().clear().apply()
         appContext.getSharedPreferences(com.voiid.app.model.StoryPrefs.NAME, Context.MODE_PRIVATE).edit().clear().apply()
+        com.voiid.app.model.MomentSettings.forget()
         deliveryWarning = null
         com.voiid.app.main.stories.clearStoryFrameCache()
         kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) { StoryLocalStore.clearMediaForSignOut(appContext) }
@@ -171,6 +172,33 @@ class StoryEngine private constructor(context: Context) {
         return story
     }
 
+    /**
+     * A moment for nobody: written to this phone and kept, never encrypted or uploaded. It
+     * shows in "Your moment" for 24 hours like any other and stays in the archive after.
+     */
+    suspend fun savePrivately(
+        bytes: ByteArray, mime: String, caption: String,
+        width: Int?, height: Int?, durationMs: Long?,
+    ): Story {
+        val myId = tokens.userId ?: throw ApiError.NotAuthenticated
+        val epoch = StoryLocalStore.accountGeneration
+        val storyId = UUID.randomUUID().toString()
+        val localPath = File(StoryLocalStore.mediaDir(appContext), "$storyId.bin")
+            .also { it.writeBytes(bytes) }.absolutePath
+        val now = System.currentTimeMillis()
+        val story = Story(
+            id = storyId, authorId = myId, isMine = true,
+            createdAt = now, expiresAt = now + TWENTY_FOUR_HOURS_MS,
+            media = ChatEngine.MediaRef(com.voiid.app.model.PRIVATE_PREFIX + storyId, mime, "", "", ""),
+            caption = caption, durationMs = durationMs, width = width, height = height, allowsReplies = false,
+            viewedAt = now, localPath = localPath,
+            downloadState = StoryDownloadState.READY, uploadState = StoryUploadState.SENT,
+        )
+        StoryLocalStore.upsert(appContext, story, epoch)
+        runCatching { StoryLocalStore.keepMoment(appContext, storyId, epoch) }
+        return story
+    }
+
     // MARK: - Feed sync
 
     /** Fetch this device's pending story keys, decrypt+validate each, persist. Local-first: a failed
@@ -190,7 +218,8 @@ class StoryEngine private constructor(context: Context) {
         // the local contact/chat list before consuming the deliver-once feed.
         if (reachable.isEmpty()) return SyncResult(emptyList())
         val live = runCatching { StoryLocalStore.liveStories(appContext) }.getOrDefault(emptyList())
-        for (batch in live.filter { !it.id.startsWith("pending-") }.chunked(1000)) {
+        // A moment kept for nobody was never on the server; asking about it would delete it.
+        for (batch in live.filter { !it.id.startsWith("pending-") && !it.isPrivate }.chunked(1000)) {
             // A network failure or an older server without this route must retain local media.
             val available = runCatching { service.available(batch.map { it.id }) }.getOrNull() ?: continue
             checkAccount(epoch)
@@ -477,6 +506,12 @@ class StoryEngine private constructor(context: Context) {
      *  straight back. A 404 is treated as success: the row is already gone, which is the outcome
      *  we wanted. */
     suspend fun deleteStory(storyId: String) {
+        val private = runCatching { StoryLocalStore.liveStories(appContext) }.getOrDefault(emptyList())
+            .any { it.id == storyId && it.isPrivate }
+        if (private) {
+            StoryLocalStore.deleteStory(appContext, storyId)
+            return
+        }
         try {
             service.deleteStory(storyId)
         } catch (e: ApiError.Http) {
