@@ -59,6 +59,11 @@ struct MomentsPrivacyView: View {
             .padding(VoiidSpacing.md)
             .animation(.easeOut(duration: 0.2), value: settings.audienceMode)
         }
+        // Pushed from the Moments tab the floating tab bar stays up, and it covered the last
+        // card (Archive). Room to scroll it clear. A fixed margin rather than AppSession's
+        // measured inset: this screen is also presented in a sheet from the composer, where
+        // there is no tab bar and no session in the environment to ask.
+        .contentMargins(.bottom, 130, for: .scrollContent)
         .font(.body)
         .foregroundStyle(VoiidColor.textPrimary)
         .fontDesign(.rounded)
