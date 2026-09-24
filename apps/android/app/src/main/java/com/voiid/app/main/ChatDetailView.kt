@@ -95,8 +95,6 @@ import com.voiid.app.model.VMember
 import com.voiid.app.model.VMessage
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
-import com.voiid.app.ui.components.VoiidMenu
-import com.voiid.app.ui.components.VoiidMenuItem
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -193,15 +191,35 @@ fun ChatDetailView(
     }
 
     var cameraPath by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    // A picked file over 25 MB that needs a choice (a video, a PDF) — the compress sheet.
+    var oversize by remember { mutableStateOf<com.voiid.app.net.ChatOversizeFile?>(null) }
+    var preparingAttachment by remember { mutableStateOf(false) }
+
     fun sendPickedMedia(uri: android.net.Uri, capturedFile: java.io.File? = null) {
         scope.launch {
             try {
+                val picked = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.voiid.app.net.ChatAttachmentIntake.describe(context, uri)
+                }
+                // Over the limit: a video asks how to shrink it; a photo is shrunk quietly.
+                if (picked.bytes > com.voiid.app.net.ChatMediaLimit.BYTES && picked.mime.startsWith("video/")) {
+                    preparingAttachment = true
+                    oversize = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.voiid.app.net.ChatAttachmentIntake.oversize(context, picked)
+                    }
+                    preparingAttachment = false
+                    return@launch
+                }
                 val (bytes, mime) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    val type = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    val type = picked.mime.takeIf { it != "application/octet-stream" } ?: "image/jpeg"
                     val data = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw java.io.IOException("Media unavailable")
                     if (data.isEmpty()) throw java.io.IOException("Empty media")
-                    data to type
+                    if (data.size > com.voiid.app.net.ChatMediaLimit.BYTES && type.startsWith("image/")) {
+                        val fitted = com.voiid.app.net.ChatPhotoCompressor.fit(data)
+                            ?: throw java.io.IOException("Unreadable photo")
+                        fitted to "image/jpeg"
+                    } else data to type
                 }
                 chat.sendMedia(bytes, mime, conversationId = conversation.id)
             } catch (e: Exception) {
@@ -212,6 +230,48 @@ fun ChatDetailView(
     }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) sendPickedMedia(uri)
+    }
+
+    /** A compressed file (or one under the limit) read from disk and sent. */
+    fun sendPreparedFile(file: java.io.File, mime: String, documentName: String?) {
+        scope.launch {
+            val data = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { file.readBytes() }.getOrNull()
+            }
+            cleanUpCompressed(context, file, oversize?.file)
+            if (data == null) {
+                chat.actionError = "Couldn't read that file."
+                return@launch
+            }
+            chat.sendMedia(data, mime, caption = documentName ?: "", conversationId = conversation.id,
+                filename = documentName)
+        }
+    }
+
+    val pickDocument = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            preparingAttachment = true
+            try {
+                val picked = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.voiid.app.net.ChatAttachmentIntake.describe(context, uri)
+                }
+                if (picked.bytes > com.voiid.app.net.ChatMediaLimit.BYTES) {
+                    oversize = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.voiid.app.net.ChatAttachmentIntake.oversize(context, picked)
+                    }
+                } else {
+                    val data = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+                    }
+                    if (data == null || data.isEmpty()) chat.actionError = "Couldn't read that file."
+                    else chat.sendMedia(data, picked.mime, caption = picked.name, conversationId = conversation.id,
+                        filename = picked.name)
+                }
+            } finally {
+                preparingAttachment = false
+            }
+        }
     }
     val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
         val file = cameraPath?.let { java.io.File(it) }
@@ -532,28 +592,20 @@ fun ChatDetailView(
                                 modifier = Modifier.size(46.dp)) {
                                 Icon(Icons.Default.Add, "Attach", tint = VoiidColor.primary, modifier = Modifier.size(25.dp))
                             }
-                        VoiidMenu(
-                            expanded = showAttach,
-                            onDismissRequest = { showAttach = false },
-                            alignEnd = false,
-                        ) {
-                            VoiidMenuItem("Photos and videos", Icons.Default.Photo) {
-                                showAttach = false
-                                pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                            }
-                            VoiidMenuItem("Camera", Icons.Default.CameraAlt) {
-                                showAttach = false; requestCamera()
-                            }
-                            VoiidMenuItem("Location", Icons.Default.LocationOn) {
-                                showAttach = false; showLocation = true
-                            }
-                            VoiidMenuItem("Games · Ludo", Icons.Default.SportsEsports) {
-                                showAttach = false; showLudoSetup = true
-                            }
-                            if (isGroup) {
-                                VoiidMenuItem("Poll", Icons.Default.BarChart) {
-                                    showAttach = false; showPollCompose = true
-                                }
+                        ChatAttachSheet(
+                            visible = showAttach,
+                            allowsPoll = isGroup,
+                            onDismiss = { showAttach = false },
+                        ) { action ->
+                            showAttach = false
+                            when (action) {
+                                ChatAttachAction.PHOTOS -> pickMedia.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                                ChatAttachAction.CAMERA -> requestCamera()
+                                ChatAttachAction.DOCUMENT -> pickDocument.launch(arrayOf("*/*"))
+                                ChatAttachAction.LOCATION -> showLocation = true
+                                ChatAttachAction.GAME -> showLudoSetup = true
+                                ChatAttachAction.POLL -> showPollCompose = true
                             }
                         }
                         }
@@ -657,6 +709,27 @@ fun ChatDetailView(
             },
         )
     }
+    ChatCompressSheet(
+        file = oversize,
+        onDismiss = {
+            // Our own copy of the original is dropped whether it was sent or not.
+            oversize?.file?.let { com.voiid.app.net.ChatAttachmentIntake.removeTemporary(context, it) }
+            oversize = null
+        },
+        onReady = { file, mime, name -> sendPreparedFile(file, mime, name) },
+    )
+
+    if (preparingAttachment) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Row(Modifier.clip(RoundedCornerShape(50)).background(VoiidColor.surfaceCard)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                androidx.compose.material3.CircularProgressIndicator(color = VoiidColor.primary, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                Text("Preparing…", style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.textPrimary)
+            }
+        }
+    }
+
     if (showPollCompose) {
         PollComposeSheet(onSend = { q, opts -> chat.sendPoll(q, opts, conversation.id) }, onDismiss = { showPollCompose = false })
     }

@@ -250,8 +250,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 val kind = when {
                     last.location != null -> MessageKind.LOCATION
                     last.media == null -> MessageKind.TEXT
-                    last.media.mime.startsWith("audio/") -> MessageKind.VOICE
-                    else -> MessageKind.IMAGE
+                    else -> mediaKind(last.media.mime, last.media.filename)
                 }
                 val preview = if (kind == MessageKind.TEXT) last.text else previewFor(kind)
                 if (preview.isNotBlank()) {
@@ -510,8 +509,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             val kind = when {
                 d.location != null -> MessageKind.LOCATION
                 d.media == null -> MessageKind.TEXT
-                d.media.mime.startsWith("audio/") -> MessageKind.VOICE
-                else -> MessageKind.IMAGE
+                else -> mediaKind(d.media.mime, d.media.filename)
             }
             val status = when {
                 !d.isMine -> MessageStatus.READ
@@ -556,8 +554,11 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     /** Send a media (image/voice) message: encrypt the blob on-device, upload the
      *  ciphertext to R2, pack the key into the E2EE message (direct chats only). */
-    fun sendMedia(data: ByteArray, mime: String, caption: String = "", conversationId: String) {
-        val kind = if (mime.startsWith("audio/")) MessageKind.VOICE else MessageKind.IMAGE
+    fun sendMedia(
+        data: ByteArray, mime: String, caption: String = "", conversationId: String,
+        filename: String? = null,
+    ) {
+        val kind = mediaKind(mime, filename)
         val tempId = UUID.randomUUID().toString()
         list(conversationId).add(
             VMessage(
@@ -579,7 +580,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val peer = peerUserId(conv)
-                val echo = engine.sendMedia(data, mime, caption, conversationId, peer)
+                val echo = engine.sendMedia(data, mime, caption, conversationId, peer, filename)
                 // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender
                 // renders its own photo/voice instantly and offline — never re-downloads it.
                 echo.media?.mediaUrl?.let { com.voiid.app.main.MediaCache.putData(appContext, it, data) }
@@ -1068,3 +1069,14 @@ class AIStore : ViewModel() {
 // REMOVED. Clips are a real, server-backed feature now — see model/ClipsStore.kt (paging,
 // uploads, optimistic-but-reconciled likes/comments) and net/ClipService.kt. The store
 // here held DummyData arrays whose likes and comments were lost on every relaunch.
+
+/**
+ * The same rule as iOS Stores.swift: a named file is a document; otherwise audio is a voice
+ * note, a photo or video is shown inline, and anything else is a document.
+ */
+internal fun mediaKind(mime: String, filename: String?): MessageKind = when {
+    filename != null -> MessageKind.DOCUMENT
+    mime.startsWith("audio/") -> MessageKind.VOICE
+    mime.startsWith("image/") || mime.startsWith("video/") -> MessageKind.IMAGE
+    else -> MessageKind.DOCUMENT
+}

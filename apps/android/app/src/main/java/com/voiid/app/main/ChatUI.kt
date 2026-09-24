@@ -459,6 +459,12 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
                 MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
             }
         }
+        MessageKind.DOCUMENT -> {
+            ChatDocumentBubble(message)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
+            }
+        }
         MessageKind.POLL -> {
             message.poll?.let { PollBubble(it, onVote) }
             MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))

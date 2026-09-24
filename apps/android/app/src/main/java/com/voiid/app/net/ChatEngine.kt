@@ -131,6 +131,8 @@ class ChatEngine private constructor(context: Context) {
         val key: String,
         val nonce: String,
         val sha256: String,
+        /** A document's name, carried only inside the encrypted envelope (iOS `filename`). */
+        val filename: String? = null,
     )
 
     /**
@@ -351,12 +353,13 @@ class ChatEngine private constructor(context: Context) {
     suspend fun sendMedia(
         data: ByteArray, mime: String, caption: String = "",
         conversationId: String, peerUserId: String,
+        filename: String? = null,
     ): DecryptedMessage {
         // 1. Encrypt the blob (e2e-core) → ciphertext + media key.
         val enc = encryptMedia(data)
         // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
         val key = media.upload(enc.ciphertext, mime)
-        val ref = MediaRef(key, mime, enc.mediaKey.key, enc.mediaKey.nonce, enc.mediaKey.ciphertextSha256)
+        val ref = MediaRef(key, mime, enc.mediaKey.key, enc.mediaKey.nonce, enc.mediaKey.ciphertextSha256, filename)
         // 3. The E2EE message plaintext is a media envelope (key never leaves E2E). The
         //    SAME envelope is encrypted per target device (fan-out); every device's copy
         //    references the one shared R2 blob via [key], so the media key stays E2E.

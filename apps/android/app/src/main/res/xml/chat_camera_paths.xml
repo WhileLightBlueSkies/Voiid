@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="chat_camera" path="chat-camera/" />
+    <!-- Received documents, decrypted to open in a viewer app (ChatDocumentBubble). -->
+    <cache-path name="chat_docs" path="chat-docs/" />
 </paths>

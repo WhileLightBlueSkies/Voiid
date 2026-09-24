@@ -36,7 +36,8 @@ class MediaService(private val tokens: TokenStore) {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    @Serializable private data class PresignUploadBody(val mime: String)
+    /** [size]: the ciphertext length about to be PUT, so the server refuses an oversize file up front. */
+    @Serializable private data class PresignUploadBody(val mime: String, val size: Int? = null)
     @Serializable private data class PresignUploadResp(val key: String, val upload_url: String)
     @Serializable private data class PresignDownloadBody(val key: String)
     @Serializable private data class PresignDownloadResp(val download_url: String)
@@ -51,7 +52,7 @@ class MediaService(private val tokens: TokenStore) {
      * encrypted is the CALLER's responsibility, and the two callers now say which they are.
      */
     suspend fun upload(payload: ByteArray, mime: String): String {
-        val body = ApiClient.json.encodeToString(PresignUploadBody.serializer(), PresignUploadBody(mime))
+        val body = ApiClient.json.encodeToString(PresignUploadBody.serializer(), PresignUploadBody(mime, payload.size))
         val presign: PresignUploadResp = api.requestAs("POST", "media/presign-upload", jsonBody = body)
         withContext(Dispatchers.IO) {
             val req = Request.Builder()
