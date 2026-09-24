@@ -314,6 +314,10 @@ final class ChatStore: ObservableObject {
     // Uploads have no engine row until the server accepts them. Keep their UI rows
     // separately so incoming messages/receipts cannot erase an in-flight or failed send.
     private var pendingMediaMessages: [String: VMessage] = [:]
+    /// What a media send needs to be tried again from its red bubble. Held in memory only,
+    /// for the bubbles that gave up — the bytes are already on the person's phone.
+    private struct MediaPayload { let data: Data; let mime: String; let caption: String; let filename: String? }
+    private var failedMediaPayloads: [String: MediaPayload] = [:]
     private struct ReactionKey: Hashable {
         let conversationId: String
         let messageId: String
@@ -336,6 +340,24 @@ final class ChatStore: ObservableObject {
                                                queue: .main) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in self.reset() }
+        }
+        // The connection came back: send every text that was waiting for it, now, rather
+        // than whenever each chat is next opened. Media loops wake on their own.
+        networkObserver = ChatNetwork.shared.$generation.dropFirst().sink { [weak self] _ in
+            Task { @MainActor in self?.flushAllPending() }
+        }
+    }
+
+    private var networkObserver: AnyCancellable?
+
+    private func flushAllPending() {
+        for conversationId in ChatEngine.shared.conversationsWithPendingText() {
+            guard let conv = directConversations.first(where: { $0.id == conversationId }) else { continue }
+            Task {
+                guard let peer = try? await peerUserId(for: conv) else { return }
+                await ChatEngine.shared.flushPending(conversationId: conversationId, peerUserId: peer)
+                refresh(conversationId)
+            }
         }
     }
 
@@ -448,7 +470,7 @@ final class ChatStore: ObservableObject {
             // Only surface the failure if we have nothing to show. With cached
             // conversations on screen, a dropped connection is not worth an error
             // banner — the list is simply as fresh as the last successful sync.
-            if directConversations.isEmpty && groupConversations.isEmpty {
+            if directConversations.isEmpty && groupConversations.isEmpty && !SendRetry.isRetryable(error) {
                 loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load chats."
             } else {
                 loadError = nil
@@ -728,7 +750,11 @@ final class ChatStore: ObservableObject {
             await markOpenConversationRead(conv.id)
             await fetchPresence(conv.id, peerUserId: peer)
         } catch {
-            loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load messages."
+            // Offline or a slow network is not an error to show: the thread on screen is as
+            // fresh as the last sync, and the next one catches up by itself.
+            if !SendRetry.isRetryable(error) {
+                loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load messages."
+            }
             // MARK THE READ ANYWAY.
             //
             // Everything above can throw — resolving the peer, the fetch itself — and every
@@ -893,32 +919,69 @@ final class ChatStore: ObservableObject {
             mediaSendError = "Media sending isn’t available in this conversation."
             return
         }
+        // SLOW NETWORK IS NOT A FAILURE. A timeout, a dropped or system-cancelled request, or
+        // a server hiccup keeps the bubble at "sending" ("Waiting for network" while offline)
+        // and tries again in the background — 2s, 4s, 8s … up to a minute apart, and at once
+        // when the connection returns — with the same id every time, so the server dedupes a
+        // repeat whose reply was lost. Red is kept for a real refusal only.
         Task {
-            do {
-                guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
-                if isGroup {
-                    try await GroupEngine.shared.sendGroupMedia(data, mime: mime, filename: filename,
-                                                               caption: caption, conversationId: conversationId)
-                } else if let conv {
-                    let peer = try await peerUserId(for: conv)
+            var wait: Double = 2
+            while true {
+                do {
                     guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
-                    _ = try await ChatEngine.shared.sendMedia(data, mime: mime, caption: caption, filename: filename,
-                                                              conversationId: conversationId, peerUserId: peer)
+                    if isGroup {
+                        try await GroupEngine.shared.sendGroupMedia(data, mime: mime, filename: filename,
+                                                                   caption: caption, conversationId: conversationId,
+                                                                   clientMessageId: tempId)
+                    } else if let conv {
+                        let peer = try await peerUserId(for: conv)
+                        guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
+                        _ = try await ChatEngine.shared.sendMedia(data, mime: mime, caption: caption, filename: filename,
+                                                                  conversationId: conversationId, peerUserId: peer,
+                                                                  clientMessageId: tempId)
+                    }
+                    guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
+                    pendingMediaMessages[tempId] = nil
+                    removeMessage(tempId, in: conversationId)
+                    refresh(conversationId)
+                    return
+                } catch {
+                    guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
+                    if SendRetry.isRetryable(error) {
+                        NSLog("[VOIID] ⏳ media send will retry in \(Int(wait))s: \(error)")
+                        await ChatNetwork.shared.wait(seconds: wait)
+                        wait = min(wait * 2, 60)
+                        continue
+                    }
+                    NSLog("[VOIID] ❌ media send gave up: \(error)")
+                    failedMediaPayloads[tempId] = MediaPayload(data: data, mime: mime, caption: caption, filename: filename)
+                    pendingMediaMessages[tempId]?.status = .failed
+                    refresh(conversationId)
+                    mediaSendError = SendRetry.message(for: error)
+                    return
                 }
-                guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
-                pendingMediaMessages[tempId] = nil
-                removeMessage(tempId, in: conversationId)
-                refresh(conversationId)
-            } catch {
-                guard TokenStore.shared.userId == senderId, pendingMediaMessages[tempId] != nil else { return }
-                pendingMediaMessages[tempId]?.status = .failed
-                refresh(conversationId)
-                // The underlying error, not a generic string: "Couldn't send media" is
-                // indistinguishable between a dropped connection, a rejected upload and a
-                // crypto failure, and that ambiguity has cost real debugging time.
-                mediaSendError = (error as? APIError)?.errorDescription
-                    ?? "Couldn’t send media: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// Tap on a red "Failed": send it again. Media restarts from the bytes it kept; text goes
+    /// back to the clock and is flushed now.
+    func retryFailed(_ message: VMessage) {
+        let conversationId = message.conversationId
+        if let payload = failedMediaPayloads.removeValue(forKey: message.id) {
+            pendingMediaMessages[message.id] = nil
+            removeMessage(message.id, in: conversationId)
+            sendMedia(payload.data, mime: payload.mime, caption: payload.caption,
+                      filename: payload.filename, to: conversationId)
+            return
+        }
+        ChatEngine.shared.clearFailed(localId: message.id, conversationId: conversationId)
+        refresh(conversationId)
+        guard let conv = directConversations.first(where: { $0.id == conversationId }) else { return }
+        Task {
+            guard let peer = try? await peerUserId(for: conv) else { return }
+            await ChatEngine.shared.flushPending(conversationId: conversationId, peerUserId: peer)
+            refresh(conversationId)
         }
     }
 
@@ -963,8 +1026,10 @@ final class ChatStore: ObservableObject {
                     do {
                         try await GroupEngine.shared.sendGroupMessage(conversationId: conversationId, text: text)
                         refresh(conversationId)
-                    } catch {
+                    } catch where !SendRetry.isRetryable(error) {
                         loadError = (error as? APIError)?.errorDescription ?? "Couldn’t send the group message."
+                    } catch {
+                        NSLog("[VOIID] ⏳ group send waiting for network: \(error)")
                     }
                 }
                 return
@@ -991,7 +1056,9 @@ final class ChatStore: ObservableObject {
             let sender = r.isMine ? "You" : (r.senderName.isEmpty ? "" : r.senderName)
             Task {
                 guard let peer = try? await peerUserId(for: conv) else {
-                    loadError = "Couldn’t resolve the recipient."; return
+                    // Offline: the message stays queued and goes when the connection returns.
+                if ChatNetwork.shared.isReachable { loadError = "Couldn’t resolve the recipient." }
+                return
                 }
                 _ = try? await ChatEngine.shared.sendReply(text: text, quotedId: quotedId,
                                                            quotedPreview: preview, quotedSender: sender,
@@ -1008,7 +1075,9 @@ final class ChatStore: ObservableObject {
         bumpPreview(conversationId, preview: text)
         Task {
             guard let peer = try? await peerUserId(for: conv) else {
-                loadError = "Couldn’t resolve the recipient."; return
+                // Offline: the message stays queued and goes when the connection returns.
+                if ChatNetwork.shared.isReachable { loadError = "Couldn’t resolve the recipient." }
+                return
             }
             await ChatEngine.shared.flushPending(conversationId: conversationId, peerUserId: peer)
             refresh(conversationId)

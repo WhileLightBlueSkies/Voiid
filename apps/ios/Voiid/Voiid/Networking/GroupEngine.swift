@@ -396,20 +396,24 @@ final class GroupEngine {
         var sender_device_id: String? = nil
         let messages: [DeviceCiphertext]
         var content_type: String? = nil
+        /// The same on every retry of one message, so the server can dedupe a repeat.
+        var client_message_id: String? = nil
     }
     private struct SendResponse: Decodable { let message_id: String; var created_at: String? = nil }
 
     /// Encrypt `text` ONCE with the group session and fan the SAME ciphertext out to
     /// every member device (all conversation members' devices + our other devices,
     /// excluding this sending device). Appends a local echo so the UI renders it.
-    func sendGroupMessage(conversationId: String, text: String) async throws {
+    func sendGroupMessage(conversationId: String, text: String, clientMessageId: String? = nil) async throws {
         await syncGroupEvents()
-        try await withGroupState { try await sendGroupMessageLocked(conversationId: conversationId, text: text) }
+        try await withGroupState {
+            try await sendGroupMessageLocked(conversationId: conversationId, text: text, clientMessageId: clientMessageId)
+        }
     }
 
     #if !NSE_EXTENSION
     func sendGroupMedia(_ data: Data, mime: String, filename: String?, caption: String,
-                        conversationId: String) async throws {
+                        conversationId: String, clientMessageId: String? = nil) async throws {
         let account = TokenStore.shared.userId
         let encrypted = try encryptMedia(plaintext: data)
         let key = try await MediaService.shared.upload(body: encrypted.ciphertext, mime: mime)
@@ -419,11 +423,12 @@ final class GroupEngine {
                            nonce: encrypted.mediaKey.nonce, sha256: encrypted.mediaKey.ciphertextSha256,
                            filename: filename)
         let envelope = try JSONEncoder().encode(ChatEngine.MediaEnvelope(media: ref, caption: caption))
-        try await sendGroupMessage(conversationId: conversationId, text: String(decoding: envelope, as: UTF8.self))
+        try await sendGroupMessage(conversationId: conversationId, text: String(decoding: envelope, as: UTF8.self),
+                                   clientMessageId: clientMessageId)
     }
     #endif
 
-    private func sendGroupMessageLocked(conversationId: String, text: String) async throws {
+    private func sendGroupMessageLocked(conversationId: String, text: String, clientMessageId: String? = nil) async throws {
         guard let m = ensureMember() else { throw APIError.notAuthenticated }
         do {
             try await flushCommunityOutboxLocked(conversationId: conversationId)
@@ -441,7 +446,8 @@ final class GroupEngine {
                 "POST", "messages/send",
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
-                                     messages: messages, content_type: "group"))
+                                     messages: messages, content_type: "group",
+                                     client_message_id: clientMessageId))
             // Local echo (we can't decrypt our own MLS output) — use the server id so it
             // dedups against the inbound copy and never double-renders.
             // A location envelope rides the MLS text plaintext; decode it back so the

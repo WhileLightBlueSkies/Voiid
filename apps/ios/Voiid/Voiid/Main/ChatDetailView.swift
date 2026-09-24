@@ -25,6 +25,8 @@ import QuickLook
 private struct MessageTextMetadataLayout: Layout {
     let hasLineBreak: Bool
     private let inlineGap: CGFloat = 8
+    /// The text width of a full bubble: its 300pt cap less 14pt padding either side.
+    static let fullLineWidth: CGFloat = 300 - 28
     private let footerGap: CGFloat = 2
 
     private struct Measurement {
@@ -39,7 +41,11 @@ private struct MessageTextMetadataLayout: Layout {
         let metadata = subviews[1].sizeThatFits(.unspecified)
         let inlineWidth = bodyIdeal.width + inlineGap + metadata.width
         let available = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? inlineWidth
-        if !hasLineBreak && inlineWidth <= available {
+        // A message whose text and time fit on one line of a full bubble stays on one line,
+        // whatever width a sizing pass happened to offer. The stack probes a bubble with less
+        // than its share before settling, and a short message ("Hiii") that answered that
+        // probe with the stacked layout kept it: the time dropped under one word.
+        if !hasLineBreak && inlineWidth <= max(available, Self.fullLineWidth) {
             return Measurement(size: CGSize(width: inlineWidth, height: max(bodyIdeal.height, metadata.height)),
                                body: bodyIdeal, metadata: metadata, inline: true)
         }
@@ -838,6 +844,7 @@ struct ChatDetailView: View {
                           onCopy: { UIPasteboard.general.string = msg.text },
                           onInfo: { infoMessage = msg },
                           onDelete: { deleteMessage = msg },
+                          onRetry: { chat.retryFailed(msg) },
                           onSelect: {
                               // Enter selection ALREADY holding this message. Entering empty
                               // (which the old toolbar menu did) made the first tap after
@@ -865,7 +872,7 @@ struct ChatDetailView: View {
 
     // MARK: input bar (text + attach image + voice note)
 
-    private var hasText: Bool { !draft.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var hasText: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     // @mentions — suggest members when the draft's current token starts with "@" (group only).
     private var mentionQuery: String? {
@@ -1347,7 +1354,7 @@ struct ChatDetailView: View {
     private var sendButton: some View {
             Button {
                 Haptics.tap()
-                chat.send(draft.trimmingCharacters(in: .whitespaces), to: conversation.id, replyTo: replyingTo)
+                chat.send(draft.trimmingCharacters(in: .whitespacesAndNewlines), to: conversation.id, replyTo: replyingTo)
                 draft = ""
                 withAnimation { replyingTo = nil }
             } label: {
@@ -1516,6 +1523,8 @@ struct MessageBubble: View {
     var onCopy: () -> Void = {}
     var onInfo: () -> Void = {}
     var onDelete: () -> Void = {}
+    /// A red "Failed" is a button: tap to send it again.
+    var onRetry: () -> Void = {}
     /// Enter multi-select, starting with THIS message chosen. Lives on the long-press pill
     /// rather than in a toolbar menu: selecting messages begins with a message, so the
     /// affordance belongs on one.
@@ -1526,6 +1535,7 @@ struct MessageBubble: View {
     var onCallBack: (Bool) -> Void = { _ in }
 
     @State private var swipeX: CGFloat = 0
+    @ObservedObject private var network = ChatNetwork.shared
     @State private var voiceScrubbing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .body) private var bodyFontSize = 16.0
@@ -1808,8 +1818,11 @@ struct MessageBubble: View {
     // Measure and place with the same layout so transcript cells include the footer
     // in their height. Wrapped text gets the full bubble width, not a metadata column.
     private var textWithMeta: some View {
-        MessageTextMetadataLayout(hasLineBreak: message.text.contains(where: \.isNewline)) {
-            styledText(message.text)
+        // Trimmed: a trailing return (sent before send trimmed newlines) is not a second line,
+        // and treating it as one dropped the time under a one-word message.
+        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return MessageTextMetadataLayout(hasLineBreak: text.contains(where: \.isNewline)) {
+            styledText(text)
                 .fixedSize(horizontal: false, vertical: true)
             metaRow
         }
@@ -1885,18 +1898,37 @@ struct MessageBubble: View {
         switch message.status {
         case .sending:
             // Still a glyph: "Sending" is transient and would make the row jump in width the
-            // instant it resolved.
-            Image(systemName: "clock")
-                .font(.system(size: 9))
+            // instant it resolved. Offline, it says why it is waiting — never red: it will go
+            // by itself when the connection returns.
+            if network.isReachable {
+                Image(systemName: "clock")
+                    .font(.system(size: 9))
+                    .foregroundColor(bubbleTextSecondary)
+            } else {
+                HStack(spacing: 3) {
+                    Image(systemName: "clock").font(.system(size: 9))
+                    Text("Waiting for network").font(VoiidFont.rounded(10, .medium))
+                }
                 .foregroundColor(bubbleTextSecondary)
+                .accessibilityLabel("Waiting for network")
+            }
         case .failed:
             // The one state that gets colour AND an icon — it is the only one the user must
-            // act on, and state must never be carried by hue alone.
-            HStack(spacing: 3) {
-                Image(systemName: "exclamationmark.circle.fill").font(.system(size: 9))
-                Text("Failed").font(VoiidFont.rounded(10, .semibold))
+            // act on, and state must never be carried by hue alone. It is also the action.
+            Button {
+                Haptics.tap()
+                onRetry()
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "exclamationmark.circle.fill").font(.system(size: 9))
+                    Text("Not sent · Retry").font(VoiidFont.rounded(10, .semibold))
+                }
+                .foregroundColor(VoiidColor.error)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
             }
-            .foregroundColor(VoiidColor.error)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Not sent. Retry")
         case .sent:
             statusLabel("Sent")
         case .delivered:

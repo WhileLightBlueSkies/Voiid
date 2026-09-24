@@ -83,6 +83,33 @@ enum APIConfig {
 /// root view observes this to show a blocking "update required" screen.
 extension Notification.Name { static let voiidUpdateRequired = Notification.Name("voiidUpdateRequired") }
 
+/// Whether a failed send is worth trying again by itself, in the background.
+///
+/// A slow or dropped connection, a timeout, a request the system cancelled, and a server that
+/// is briefly unwell all clear up on their own — the message should wait (the clock), not turn
+/// red. Only a real refusal is a failure the person has to see.
+nonisolated enum SendRetry {
+    static func isRetryable(_ error: Error) -> Bool {
+        if error is URLError { return true }
+        switch error {
+        case APIError.transport: return true
+        // 404/409: the peer has no keys yet or a session race; 408/425/429: slow down and
+        // come back; 5xx: the server's problem, not the message's. Status 0 is a client-side
+        // "no recipient devices yet", which a later attempt can find.
+        case APIError.http(let status, _, _):
+            return status == 0 || status == 404 || status == 408 || status == 409
+                || status == 425 || status == 429 || (500...599).contains(status)
+        default: return false
+        }
+    }
+
+    /// The plain words for a send that has given up — never URLSession's "cancelled".
+    static func message(for error: Error) -> String {
+        if isRetryable(error) { return "Couldn't send yet. It will go when the connection is back." }
+        return (error as? APIError)?.errorDescription ?? "Couldn't send this. Tap Retry on the message to try again."
+    }
+}
+
 enum APIError: Error, LocalizedError {
     /// `code` is the backend's stable machine-readable discriminator (e.g. "profile_required"),
     /// carried alongside the human `message`. Matching on a bare status is not enough: 428 is a

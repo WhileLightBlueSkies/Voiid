@@ -471,13 +471,7 @@ final class ChatEngine {
                 // message PENDING (clock, not red "failed") so the 4s poll retries and it
                 // delivers the moment the peer publishes keys. Only surface a hard failure
                 // for unexpected errors.
-                let retryable: Bool
-                switch error {
-                case APIError.http(let status, _, _): retryable = (status == 409 || status == 404)
-                case APIError.transport: retryable = true
-                default: retryable = false
-                }
-                if retryable {
+                if SendRetry.isRetryable(error) {
                     NSLog("[VOIID] ⏳ send pending (peer not ready) conv=\(conversationId): \(error)")
                 } else {
                     markFailed(localId: p.id, conversationId: conversationId)
@@ -486,6 +480,24 @@ final class ChatEngine {
             }
         }
         await persist()
+    }
+
+    /// Conversations holding a text that has not gone yet — flushed when the connection returns.
+    func conversationsWithPendingText() -> [String] {
+        store.compactMap { conv, msgs in
+            msgs.contains { $0.isMine && $0.pending && $0.media == nil && $0.deletedForMe != true } ? conv : nil
+        }
+    }
+
+    /// The person tapped a failed text: back to the clock, ready for the next flush.
+    func clearFailed(localId: String, conversationId: String) {
+        guard var arr = store[conversationId],
+              let i = arr.firstIndex(where: { $0.id == localId }), arr[i].failed else { return }
+        arr[i].failed = false
+        store[conversationId] = arr
+        markDirty(conversationId)
+        persistSoon()
+        onMessageStateChanged?(conversationId)
     }
 
     /// Flag a still-pending message as failed so the UI can show an error + retry.
@@ -526,8 +538,11 @@ final class ChatEngine {
     /// plaintext as a JSON envelope — so the key stays end-to-end. `caption` is
     /// optional text shown alongside the media.
     @discardableResult
+    /// `clientMessageId` is the bubble's own id, the same on every retry, so the server
+    /// recognises a repeat of a send whose reply was lost instead of delivering it twice.
     func sendMedia(_ data: Data, mime: String, caption: String = "", filename: String? = nil,
-                   conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+                   conversationId: String, peerUserId: String,
+                   clientMessageId: String? = nil) async throws -> DecryptedMessage {
         // Bracket logging so a failure is attributable in the console: if "start" prints but
         // "uploaded" does not, it failed at encrypt or R2 upload; if both print but nothing
         // arrives, it failed in the fan-out/send below (the caller logs that catch).
@@ -558,9 +573,11 @@ final class ChatEngine {
             let messages = try await encryptFanout(envelopeData, peerUserId: peerUserId)
             // Minted ONCE per logical send, before the request, so a transport retry of this
             // same upload reuses it and the server recognises the repeat.
-            let idempotencyKey = UUID().uuidString
+            let idempotencyKey = clientMessageId ?? UUID().uuidString
             // 4. Send the per-device bundle, tagging it as media + the opaque ref for the server.
-            let res: SendResponse = try await api.request(
+            let res: SendResponse
+            do {
+                res = try await api.request(
                 "POST", "messages/send",
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
@@ -572,6 +589,10 @@ final class ChatEngine {
                                      // and every other send below did not.
                                      media_url: key, media_mime: mime,
                                      client_message_id: idempotencyKey))
+            } catch APIError.alreadySent(let serverId) {
+                // An earlier attempt landed and only its reply was lost. Show it as sent.
+                res = SendResponse(message_id: serverId, duplicate: true, created_at: nil)
+            }
             let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                         text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true, media: ref)
@@ -2009,6 +2030,11 @@ final class ChatEngine {
 
         private enum CodingKeys: String, CodingKey {
             case message_id, created_at, delivered_devices, duplicate
+        }
+        init(message_id: String, duplicate: Bool, created_at: String?) {
+            self.message_id = message_id
+            self.duplicate = duplicate
+            self.created_at = created_at
         }
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
