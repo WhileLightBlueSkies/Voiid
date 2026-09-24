@@ -1,5 +1,11 @@
 package com.voiid.app.main.games
 
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.foundation.border
+import com.voiid.app.ui.components.pressableClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -98,7 +104,8 @@ fun GamesHomeScreen(
     onAcceptInvite: (GamesService.PendingInvite) -> Unit = {},
 ) {
     val context = LocalContext.current
-    var category by remember { mutableStateOf("All") }
+    /** The coming-soon game whose sheet is open. iOS `selectedUpcoming`. */
+    var upcoming by remember { mutableStateOf<SoonItem?>(null) }
     val service = remember { GamesService(ApiClient(TokenStore.get(context))) }
 
     var games by remember { mutableStateOf<List<GamesService.CatalogGame>>(emptyList()) }
@@ -128,6 +135,7 @@ fun GamesHomeScreen(
 
     val shelf = shelfFor(catalog)
     val soon = comingSoonFor(catalog)
+    upcoming?.let { UpcomingGameSheet(it, onClose = { upcoming = null }) }
     val toastUpdate = {
         android.widget.Toast.makeText(context, "Update Voiid to play this game.", android.widget.Toast.LENGTH_SHORT).show()
     }
@@ -167,8 +175,8 @@ fun GamesHomeScreen(
                 Spacer(Modifier.weight(1f))
                 // Communities' header treatment: each action is a 40dp filled circle, not a
                 // bare glyph, so the tap target is visible before it is touched.
-                HeaderAction(Icons.Outlined.EmojiEvents, "Leaderboard", onLeaderboard)
-                HeaderAction(Icons.Outlined.Tune, "Game settings") { showSettings = true }
+                // iOS: gear + profile only. The leaderboard is not a tab-level action there.
+                HeaderAction(Icons.Outlined.Settings, "Game settings") { showSettings = true }
 
                 // The same identity, in the same corner, as Clips and Communities.
                 com.voiid.app.main.clips.SocialProfileButton(
@@ -267,15 +275,9 @@ fun GamesHomeScreen(
                 color = VoiidColor.textPrimary,
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("All", "Board", "Arcade").forEach { label ->
-                    androidx.compose.material3.FilterChip(selected = category == label, onClick = { category = label }, label = {
-                        Text(label, style = VoiidFont.rounded(13), color = VoiidColor.textPrimary)
-                    })
-                }
-            }
-            // The shelf, as the server catalog allows it (see shelfFor).
-            shelf.filter { category == "All" || it.def.category == category }.forEach { item ->
+            // The shelf, as the server catalog allows it (see shelfFor). No category filter —
+            // iOS lists the playable shelf straight, and two games do not need one.
+            shelf.forEach { item ->
                 val d = item.def
                 HeroGameCard(
                     title = d.title,
@@ -310,7 +312,8 @@ fun GamesHomeScreen(
             )
 
             soon.forEach { item ->
-                ComingSoonRow(title = item.title, pitch = item.pitch, icon = item.icon, tint = item.tint)
+                ComingSoonRow(title = item.title, pitch = item.pitch, icon = item.icon, tint = item.tint,
+                    onClick = { upcoming = item })
             }
         }
     }
@@ -434,12 +437,16 @@ private fun ComingSoonRow(
     pitch: String,
     icon: ImageVector,
     tint: Color,
+    onClick: () -> Unit,
 ) {
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(VoiidRadius.md))
             .background(VoiidColor.surfaceCard.copy(alpha = 0.6f))
+            .border(1.dp, VoiidColor.divider.copy(alpha = 0.6f), RoundedCornerShape(VoiidRadius.md))
+            .pressableClickable { haptics.tap(); onClick() }
             .padding(VoiidSpacing.sm + 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm + 2.dp),
@@ -580,4 +587,61 @@ private object ShelfCache {
             .getString(KEY, null)
             ?.let { json.decodeFromString<List<GamesService.CatalogGame>>(it) }
     }.getOrNull()
+}
+
+
+/**
+ * Twin of iOS `UpcomingGameSheet`: the announced game, its teaser, and a launch reminder.
+ *
+ * The bell toggles LOCALLY, exactly as on iOS — no launch-notification backend exists yet on
+ * either platform, so the state is not persisted. Wire both apps to it together when it lands.
+ */
+@Composable
+private fun UpcomingGameSheet(game: SoonItem, onClose: () -> Unit) {
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
+    var notified by remember { mutableStateOf(false) }
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onClose,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = VoiidSpacing.lg, vertical = VoiidSpacing.md),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("Close", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.primary,
+                    modifier = Modifier.pressableClickable { onClose() })
+            }
+            Box(
+                Modifier.size(96.dp).clip(RoundedCornerShape(24.dp))
+                    .background(Brush.linearGradient(listOf(game.tint, game.tint.copy(alpha = 0.6f)))),
+                contentAlignment = Alignment.Center,
+            ) { Icon(game.icon, null, tint = Color.White, modifier = Modifier.size(44.dp)) }
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(game.title, style = VoiidFont.rounded(26, FontWeight.Bold), color = VoiidColor.textPrimary)
+                Text(game.pitch.uppercase(), style = VoiidFont.rounded(13, FontWeight.Bold), color = VoiidColor.accent,
+                    letterSpacing = 1.sp)
+            }
+            Text(
+                "Custom matchmaking, real-time board physics, and ranked seasons for ${game.title} are in final polish. Be the first to play when it goes live.",
+                style = VoiidFont.rounded(14), color = VoiidColor.textSecondary, textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+            Row(
+                Modifier.fillMaxWidth().clip(CircleShape)
+                    .background(if (notified) Color(0xFF2FA36B) else VoiidColor.primary)
+                    .pressableClickable { haptics.tap(); notified = !notified; if (notified) haptics.success() }
+                    .padding(vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(if (notified) Icons.Default.NotificationsActive else Icons.Default.Notifications, null,
+                    tint = Color.White, modifier = Modifier.size(18.dp))
+                Text(if (notified) "Notification Set!" else "Notify Me at Launch",
+                    style = VoiidFont.rounded(15, FontWeight.SemiBold), color = Color.White)
+            }
+        }
+    }
 }
