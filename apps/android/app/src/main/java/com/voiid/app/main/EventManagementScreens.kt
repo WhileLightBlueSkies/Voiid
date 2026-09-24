@@ -1,5 +1,7 @@
 package com.voiid.app.main
 
+import androidx.compose.material3.FilterChip
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -395,6 +397,16 @@ fun CommunityControlPanel(card:CommunityService.CommunityCard,isOwner:Boolean,on
  var error by remember{mutableStateOf<String?>(null)}
  var retry by remember{mutableStateOf(0)}
  var destination by remember{mutableStateOf<String?>(null)}
+ // iOS CommunityAdminPanel sections: Overview · Queue · People.
+ var section by remember{mutableStateOf("Overview")}
+ var queue by remember{mutableStateOf<List<CommunityService.QueueItem>>(emptyList())}
+ var queueError by remember{mutableStateOf<String?>(null)}
+ var busy by remember{mutableStateOf(setOf<String>())}
+ val scope=rememberCoroutineScope()
+ LaunchedEffect(card.id,retry,section){
+  if(section=="Queue") try{queue=community.moderationQueue(card.id);queueError=null}
+  catch(e:CancellationException){throw e}catch(_:Exception){queueError="Couldn't load the queue."}
+ }
  LaunchedEffect(card.id,retry){
   try {val s=community.stats(card.id);val e=eventsService.list(card.id);stats=s;events=e;error=null}
   catch(e:CancellationException){throw e}catch(_:Exception){stats=null;error="Unable to load the community overview. Check your access and connection."}
@@ -428,11 +440,32 @@ fun CommunityControlPanel(card:CommunityService.CommunityCard,isOwner:Boolean,on
  EventControlPage("Admin panel",onDismiss) {
   LazyColumn(contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
    item{Text(card.name,style=MaterialTheme.typography.headlineLarge)}
+   item{Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){listOf("Overview","Queue","People").forEach{label->
+    FilterChip(selected=section==label,onClick={ if(label=="People") destination="People" else section=label },label={Text(label)})}}}
+   if(section=="Queue"){
+    queueError?.let{item{Text(it,color=VoiidColor.error);TextButton(onClick={retry++}){Text("Retry")}}}
+    if(queueError==null&&queue.isEmpty())item{Surface(shape=RoundedCornerShape(22.dp),color=VoiidColor.surfaceCard){
+     Text("Nothing needs you right now.",Modifier.fillMaxWidth().padding(18.dp),color=VoiidColor.textSecondary)}}
+    queue.forEach{q->item(key=q.id){Surface(shape=RoundedCornerShape(22.dp),color=VoiidColor.surfaceCard){
+     Column(Modifier.fillMaxWidth().padding(18.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+      Row{Text(q.name,style=MaterialTheme.typography.titleSmall,modifier=Modifier.weight(1f))
+       q.reporter_count?.takeIf{it>1}?.let{Text("$it reports",color=VoiidColor.warning,style=MaterialTheme.typography.labelMedium)}}
+      (q.detail?:q.reason)?.takeIf{it.isNotBlank()}?.let{Text(it,color=VoiidColor.textSecondary,style=MaterialTheme.typography.bodyMedium)}
+      val uid=q.user_id
+      if(q.resolvedKind==CommunityService.QueueItem.Kind.JOIN_REQUEST&&uid!=null)Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+       listOf(true,false).forEach{approve->TextButton(enabled=q.id !in busy,onClick={scope.launch{
+        busy=busy+q.id
+        try{if(approve)community.approveMember(card.id,uid) else community.removeMember(card.id,uid);queue=queue.filterNot{it.id==q.id};retry++}
+        catch(e:CancellationException){throw e}catch(_:Exception){queueError="Couldn't complete that."}
+        busy=busy-q.id}}){Text(if(approve)"Approve" else "Decline",color=if(approve)VoiidColor.accentInk else VoiidColor.error)}}
+      }
+     }}}}
+   } else {
    error?.let{item{Text(it);TextButton(onClick={retry++}){Text("Retry")}}}
    stats?.let{s->
     val waiting=s.pendingCount+s.openReports
     item{
-     if(waiting>0) Card(onClick={destination="People"},modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(22.dp),
+     if(waiting>0) Card(onClick={section="Queue"},modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(22.dp),
       colors=CardDefaults.cardColors(containerColor=VoiidColor.surfaceCard),border=androidx.compose.foundation.BorderStroke(1.dp,VoiidColor.warning.copy(alpha=0.45f))){
       Row(Modifier.padding(18.dp),verticalAlignment=Alignment.CenterVertically){
        Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)){
@@ -452,7 +485,7 @@ fun CommunityControlPanel(card:CommunityService.CommunityCard,isOwner:Boolean,on
     QuickAction("Invite people",Modifier.weight(1f)){destination="Invite"}
    }}
    item{Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
-    QuickAction("People & requests",Modifier.weight(1f)){destination="People"}
+    QuickAction("Review queue",Modifier.weight(1f)){section="Queue"}
     QuickAction("Settings",Modifier.weight(1f),onSettings)
    }}
    // Every unverified owner sees it, even before payments are switched on — the screen says so.
@@ -465,6 +498,7 @@ fun CommunityControlPanel(card:CommunityService.CommunityCard,isOwner:Boolean,on
    item{ControlEntry("Events","Manage events and check in guests"){destination="Events"}}
    item{ControlEntry("Insights","Community activity and event status"){destination="Insights"}}
    if(isOwner)item{ControlEntry("Earnings","Sales, commission and your share"){destination="Earnings"}}
+   }
   }
  }
 }
