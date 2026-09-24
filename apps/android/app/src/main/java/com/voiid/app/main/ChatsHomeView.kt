@@ -1,5 +1,9 @@
 package com.voiid.app.main
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -1038,13 +1042,6 @@ private fun Header(
         ) {
             VoiidWordmark(fontSize = 25, color = VoiidColor.textPrimary, alpha = 1f)
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = {
-                haptics.tap()
-                ChatLayoutPreference.set(context, if (ChatLayoutPreference.layout == ChatLayout.GRID) ChatLayout.LIST else ChatLayout.GRID)
-            }) {
-                Text(if (ChatLayoutPreference.layout == ChatLayout.GRID) "List" else "Grid",
-                    style = VoiidFont.rounded(12, FontWeight.Medium), color = VoiidColor.accentInk)
-            }
             Row(
                 Modifier.clip(CircleShape).background(VoiidColor.bubbleSent)
                     .clickable { haptics.tap(); onNewChat() }.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -1053,6 +1050,18 @@ private fun Header(
             ) {
                 Icon(Icons.Default.Create, null, Modifier.size(16.dp), tint = VoiidColor.textOnBubble)
                 Text("New chat", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textOnBubble)
+            }
+            // iOS: a 36dp circle after New chat, labelled by what it DOES, not what is shown.
+            val isGrid = ChatLayoutPreference.layout == ChatLayout.GRID
+            Box(
+                Modifier.size(36.dp).clip(CircleShape).background(VoiidColor.surfaceCard)
+                    .border(1.dp, VoiidColor.divider, CircleShape)
+                    .clickable { haptics.selection(); ChatLayoutPreference.set(context, if (isGrid) ChatLayout.LIST else ChatLayout.GRID) }
+                    .semantics { contentDescription = if (isGrid) "Switch to list view" else "Switch to grid view" },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(if (isGrid) Icons.Default.GridView else Icons.AutoMirrored.Filled.List, null,
+                    tint = VoiidColor.textPrimary, modifier = Modifier.size(16.dp))
             }
         }
     // Avatar - search - actions, on ONE row.
