@@ -1183,7 +1183,7 @@ private fun latestVideoFrame(context: Context): Bitmap? {
 private const val THUMB_PX = 192
 
 /** PreviewView builds its surface view lazily, so the search has to be by type, not index. */
-private fun findTextureView(root: View): TextureView? {
+internal fun findTextureView(root: View): TextureView? {
     if (root is TextureView) return root
     if (root is ViewGroup) {
         for (i in 0 until root.childCount) {

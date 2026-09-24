@@ -31,6 +31,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -41,6 +42,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.ui.graphics.asImageBitmap
+import com.voiid.app.main.clips.ClipFilter
+import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
@@ -162,6 +169,63 @@ fun StoryCameraView(
         onDispose { listener.disable() }
     }
 
+    // ── Tools (Voiid Ui MomentCameraScreen; iOS StoryCameraView) ──
+    var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
+    var currentZoom by remember { mutableStateOf(1f) }
+    var minZoom by remember { mutableStateOf(1f) }
+    var maxZoom by remember { mutableStateOf(1f) }
+    var flashOn by remember { mutableStateOf(false) }
+    var timerSeconds by remember { mutableIntStateOf(0) }
+    var countdown by remember { mutableStateOf<Int?>(null) }
+    var showGrid by remember { mutableStateOf(false) }
+    var showEffects by remember { mutableStateOf(false) }
+    var effectsTab by remember { mutableIntStateOf(0) }       // 0 faces, 1 filters
+    var look by remember { mutableStateOf(ClipFilter.NONE) }
+    var lookThumbs by remember { mutableStateOf<Map<ClipFilter, android.graphics.Bitmap>>(emptyMap()) }
+    var processing by remember { mutableStateOf(false) }
+    var recordMs by remember { mutableStateOf(0L) }
+
+    LaunchedEffect(camera) {
+        val cam = camera ?: return@LaunchedEffect
+        cam.cameraInfo.zoomState.observe(lifecycleOwner) { state ->
+            if (state != null) {
+                currentZoom = state.zoomRatio
+                minZoom = state.minZoomRatio
+                maxZoom = state.maxZoomRatio
+            }
+        }
+    }
+    val zoomPresets = remember(minZoom, maxZoom, lensFront) {
+        val list = mutableListOf<Float>()
+        if (!lensFront && minZoom <= 0.7f) list.add(0.6f)
+        list.add(1f)
+        if (maxZoom >= 2f) list.add(2f)
+        if (maxZoom >= 3f) list.add(3f)
+        list.filter { it in minZoom..maxZoom }
+    }
+
+    // The look is shown on the viewfinder only (the TextureView's layer paint), then baked into
+    // the photo or video once it is taken — the same colour matrix either way.
+    var previewTexture by remember { mutableStateOf<android.view.TextureView?>(null) }
+    DisposableEffect(previewView) {
+        previewTexture = com.voiid.app.main.clips.findTextureView(previewView)
+        previewView.setOnHierarchyChangeListener(object : android.view.ViewGroup.OnHierarchyChangeListener {
+            override fun onChildViewAdded(parent: android.view.View?, child: android.view.View?) {
+                previewTexture = com.voiid.app.main.clips.findTextureView(previewView)
+            }
+            override fun onChildViewRemoved(parent: android.view.View?, child: android.view.View?) {
+                if (child === previewTexture) previewTexture = null
+            }
+        })
+        onDispose { previewView.setOnHierarchyChangeListener(null) }
+    }
+    LaunchedEffect(previewTexture, look) {
+        val texture = previewTexture ?: return@LaunchedEffect
+        texture.setLayerPaint(look.colorMatrix()?.let {
+            android.graphics.Paint().apply { colorFilter = android.graphics.ColorMatrixColorFilter(it) }
+        })
+    }
+
     var isRecording by remember { mutableStateOf(false) }
     var recordSeconds by remember { mutableIntStateOf(0) }
     var activeRecording by remember { mutableStateOf<Recording?>(null) }
@@ -193,11 +257,14 @@ fun StoryCameraView(
                 is VideoRecordEvent.Start -> {
                     isRecording = true
                     recordSeconds = 0
+                    recordMs = 0
+                    val began = System.currentTimeMillis()
                     tickJob = scope.launch {
-                        while (isRecording && recordSeconds < maxSeconds) {
-                            delay(1000)
-                            recordSeconds += 1
-                            if (recordSeconds >= maxSeconds) activeRecording?.stop()
+                        while (isRecording) {
+                            delay(50)
+                            recordMs = System.currentTimeMillis() - began
+                            recordSeconds = (recordMs / 1000).toInt()
+                            if (recordMs >= maxSeconds * 1000L) { activeRecording?.stop(); break }
                         }
                     }
                 }
@@ -206,7 +273,15 @@ fun StoryCameraView(
                     tickJob?.cancel()
                     activeRecording = null
                     if (!event.hasError()) {
-                        onCaptured(null, event.outputResults.outputUri)
+                        val uri = event.outputResults.outputUri
+                        if (look == ClipFilter.NONE) onCaptured(null, uri)
+                        else scope.launch {
+                            processing = true
+                            val baked = bakeLookIntoVideo(context, uri, look)
+                            processing = false
+                            if (baked != null) onCaptured(null, baked)
+                            else recordingError = "Couldn't apply the filter to that video."
+                        }
                     } else {
                         recordingError = "Recording failed. Please try again."
                     }
@@ -271,7 +346,8 @@ fun StoryCameraView(
                 )
                 runCatching {
                     provider.unbindAll()
-                    provider.bindToLifecycle(lifecycleOwner, selector, group.build())
+                    camera = provider.bindToLifecycle(lifecycleOwner, selector, group.build())
+                    flashOn = false
                     previewView.post {
                         faceDetector.viewWidth = previewView.width.toFloat()
                         faceDetector.viewHeight = previewView.height.toFloat()
@@ -292,19 +368,53 @@ fun StoryCameraView(
         }
     }
 
+    fun deliverPhoto(bytes: ByteArray?) {
+        if (bytes == null) { recordingError = "Couldn't take that photo."; return }
+        if (look == ClipFilter.NONE) { onCaptured(bytes, null); return }
+        scope.launch {
+            val baked = withContext(Dispatchers.Default) { runCatching { applyLookToJpeg(bytes, look) }.getOrNull() }
+            onCaptured(baked ?: bytes, null)
+        }
+    }
+
     fun takePhoto() {
         // Filtered stills and the square selfie come from the preview frame; a plain photo
         // keeps ImageCapture's full sensor resolution.
         if (effectOn || selfie) {
-            val bytes = runCatching {
+            deliverPhoto(runCatching {
                 captureFilteredStill(previewView, faceDetector, faceEffect, squareCrop = selfie)
-            }.getOrNull()
-            if (bytes != null) onCaptured(bytes, null) else recordingError = "Couldn't take that photo."
+            }.getOrNull())
         } else {
-            capturePhoto(context, imageCapture) { bytes ->
-                if (bytes != null) onCaptured(bytes, null)
-                else recordingError = "Couldn't take that photo."
+            imageCapture.flashMode = if (flashOn && !lensFront) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
+            capturePhoto(context, imageCapture) { bytes -> deliverPhoto(bytes) }
+        }
+    }
+
+    fun shutterTap() {
+        if (isRecording || processing) return
+        if (countdown != null) return
+        if (timerSeconds == 0) { takePhoto(); return }
+        scope.launch {
+            for (n in timerSeconds downTo 1) { countdown = n; delay(1000) }
+            countdown = null
+            takePhoto()
+        }
+    }
+
+    fun openEffects() {
+        showEffects = true
+        val frame = runCatching { previewView.bitmap }.getOrNull() ?: return
+        scope.launch(Dispatchers.Default) {
+            val w = 160
+            val small = android.graphics.Bitmap.createScaledBitmap(frame, w, (w.toFloat() * frame.height / frame.width).toInt().coerceAtLeast(1), true)
+            val thumbs = ClipFilter.entries.associateWith { f ->
+                val m = f.colorMatrix() ?: return@associateWith small
+                val out = android.graphics.Bitmap.createBitmap(small.width, small.height, android.graphics.Bitmap.Config.ARGB_8888)
+                android.graphics.Canvas(out).drawBitmap(small, 0f, 0f,
+                    android.graphics.Paint().apply { colorFilter = android.graphics.ColorMatrixColorFilter(m) })
+                out
             }
+            withContext(Dispatchers.Main) { lookThumbs = thumbs }
         }
     }
 
@@ -312,6 +422,18 @@ fun StoryCameraView(
         if (cameraGranted) {
             AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
             FaceFilterOverlay(faceDetector, faceEffect)
+
+            if (showGrid) {
+                androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+                    val c = Color.White.copy(alpha = 0.3f)
+                    for (i in 1..2) {
+                        drawLine(c, androidx.compose.ui.geometry.Offset(size.width * i / 3f, 0f),
+                            androidx.compose.ui.geometry.Offset(size.width * i / 3f, size.height), 1f)
+                        drawLine(c, androidx.compose.ui.geometry.Offset(0f, size.height * i / 3f),
+                            androidx.compose.ui.geometry.Offset(size.width, size.height * i / 3f), 1f)
+                    }
+                }
+            }
 
             if (selfie) {
                 Box(
@@ -321,67 +443,193 @@ fun StoryCameraView(
                 )
             }
 
-            Row(
-                Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TopCircle(onClick = onClose) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                Spacer(Modifier.weight(1f))
-                TopCircle(active = showFilters, onClick = { showFilters = !showFilters }) {
-                    Icon(
-                        Icons.Default.Face,
-                        if (showFilters) "Hide filters" else "Show filters",
-                        tint = if (showFilters) Color.Black else Color.White,
-                    )
-                }
-                TopCircle(onClick = { if (!isRecording) lensFront = !lensFront }) {
-                    Icon(Icons.Default.Cameraswitch, "Flip", tint = Color.White)
+            countdown?.let {
+                Text("$it", style = VoiidFont.rounded(110, FontWeight.Bold), color = Color.White,
+                    modifier = Modifier.align(Alignment.Center))
+            }
+
+            // ── Top: close, and the time while recording ──
+            Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding()
+                .padding(horizontal = 14.dp, vertical = 8.dp)) {
+                if (!isRecording) TopCircle(onClick = onClose) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                if (isRecording) {
+                    Row(Modifier.align(Alignment.Center).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(VoiidColor.error))
+                        Spacer(Modifier.size(6.dp))
+                        Text("%d:%02d / %d:%02d".format(recordSeconds / 60, recordSeconds % 60, maxSeconds / 60, maxSeconds % 60),
+                            style = VoiidFont.rounded(14, FontWeight.SemiBold), color = Color.White)
+                    }
                 }
             }
 
-            Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding()
-                    .padding(bottom = 32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                if (isRecording) {
-                    Text(
-                        "%02d:%02d / %02d:%02d".format(recordSeconds / 60, recordSeconds % 60, maxSeconds / 60, maxSeconds % 60),
-                        style = VoiidFont.rounded(15, FontWeight.SemiBold),
-                        color = Color.White,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(VoiidColor.error)
-                            .padding(horizontal = 14.dp, vertical = 6.dp),
-                    )
-                } else if (showFilters) {
-                    FaceLensRail(
-                        selected = faceEffect,
-                        onSelect = { effect ->
-                            faceEffect = effect
-                            faceDetector.activeEffect = effect
-                            if (effect == ClipFaceEffect.NONE) faceDetector.reset()
-                        },
-                    )
+            // ── Right: tools ──
+            if (!isRecording && !showEffects) {
+                Column(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 64.dp, end = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    CameraTool(Icons.Default.Cameraswitch, "Flip") { lensFront = !lensFront }
+                    if (camera?.cameraInfo?.hasFlashUnit() == true) {
+                        CameraTool(if (flashOn) Icons.Default.FlashOn else Icons.Default.FlashOff, "Flash", active = flashOn) {
+                            flashOn = !flashOn
+                            // The torch lights video and preview-frame stills; ImageCapture fires its own flash.
+                            runCatching { camera?.cameraControl?.enableTorch(flashOn && (effectOn || !photoOnly)) }
+                        }
+                    }
+                    CameraTool(Icons.Default.Timer, if (timerSeconds == 0) "Timer" else "${timerSeconds}s", active = timerSeconds != 0) {
+                        timerSeconds = when (timerSeconds) { 0 -> 3; 3 -> 10; else -> 0 }
+                    }
+                    CameraTool(Icons.Default.GridOn, "Grid", active = showGrid) { showGrid = !showGrid }
                 }
-                Box(
-                    Modifier.size(78.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.25f))
-                        .border(4.dp, Color.White, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
+            }
+
+            // ── Bottom: zoom, then effects · shutter ──
+            if (!showEffects) Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.5f))))
+                    .navigationBarsPadding().padding(top = 50.dp, bottom = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                if (zoomPresets.size > 1 && !isRecording) {
+                    Row(Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.25f)).padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        val lit = zoomPresets.minByOrNull { kotlin.math.abs(it - currentZoom) }
+                        zoomPresets.forEach { preset ->
+                            val on = preset == lit
+                            Box(Modifier.size(42.dp).softClickable(scale = 0.92f) {
+                                camera?.cameraControl?.setZoomRatio(preset.coerceIn(minZoom, maxZoom))
+                            }, contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(if (on) 38.dp else 32.dp).clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = if (on) 0.55f else 0.3f)), contentAlignment = Alignment.Center) {
+                                    val label = if (preset < 1f) ".${(preset * 10).toInt()}" else "${preset.toInt()}"
+                                    Text(if (on) "$label×" else label, style = VoiidFont.rounded(if (on) 12 else 11, FontWeight.Bold),
+                                        color = if (on) VoiidColor.accent else Color.White)
+                                }
+                            }
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        if (!isRecording) {
+                            val styled = faceEffect != ClipFaceEffect.NONE || look != ClipFilter.NONE
+                            Column(Modifier.softClickable(scale = 0.9f) { openEffects() },
+                                horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(Modifier.size(44.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.35f)),
+                                    contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Face, "Effects", tint = if (styled) VoiidColor.accent else Color.White)
+                                }
+                                Text("Effects", style = VoiidFont.rounded(10, FontWeight.SemiBold), color = Color.White,
+                                    modifier = Modifier.padding(top = 3.dp))
+                            }
+                        }
+                    }
+                    // Shutter: TAP for a photo, HOLD for a video — the ring fills to the limit.
+                    val progress = if (maxSeconds > 0) (recordMs.toFloat() / (maxSeconds * 1000f)).coerceIn(0f, 1f) else 0f
                     Box(
-                        Modifier.size(if (isRecording) 34.dp else 62.dp).clip(CircleShape)
-                            .background(if (isRecording) VoiidColor.error else Color.White)
-                            .shutterGestures(
-                                holdEnabled = !photoOnly,
-                                onTapPhoto = { if (!isRecording) takePhoto() },
-                                onHoldStart = { startRecording() },
-                                onHoldEnd = { stopRecording() },
-                            ),
-                    )
+                        Modifier.size(84.dp).shutterGestures(
+                            holdEnabled = !photoOnly,
+                            onTapPhoto = { shutterTap() },
+                            onHoldStart = { if (!processing && countdown == null) startRecording() },
+                            onHoldEnd = { stopRecording() },
+                        ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val ring = VoiidColor.error
+                        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+                            val stroke = 5.dp.toPx()
+                            val inset = stroke / 2
+                            val arc = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)
+                            drawArc(Color.White, 0f, 360f, false, androidx.compose.ui.geometry.Offset(inset, inset), arc,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(stroke))
+                            if (isRecording) drawArc(ring, -90f, 360f * progress, false, androidx.compose.ui.geometry.Offset(inset, inset), arc,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                        }
+                        Box(Modifier.size(if (isRecording) 32.dp else 66.dp)
+                            .clip(if (isRecording) androidx.compose.foundation.shape.RoundedCornerShape(9.dp) else CircleShape)
+                            .background(if (isRecording) VoiidColor.error else Color.White))
+                    }
+                    Spacer(Modifier.weight(1f))
+                }
+                Text(
+                    when {
+                        isRecording -> "Release to stop"
+                        photoOnly -> "Tap to take a photo"
+                        else -> "Tap for photo, hold for video"
+                    },
+                    style = VoiidFont.rounded(12, FontWeight.Medium), color = Color.White.copy(alpha = 0.75f),
+                )
+            }
+
+            // ── Effects tray: faces and looks ──
+            if (showEffects) {
+                Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                    detectTapGestures { showEffects = false }
+                })
+                Column(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
+                        .background(Color(0xE6161A1C)).navigationBarsPadding().padding(bottom = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Spacer(Modifier.height(8.dp))
+                    Box(Modifier.size(width = 36.dp, height = 4.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.35f)))
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 60.dp)) {
+                        listOf("Faces", "Filters").forEachIndexed { i, t ->
+                            Column(Modifier.weight(1f).softClickable(scale = 0.96f) { effectsTab = i },
+                                horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(t, style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                                    color = if (effectsTab == i) Color.White else Color.White.copy(alpha = 0.55f))
+                                Spacer(Modifier.height(6.dp))
+                                Box(Modifier.size(width = 24.dp, height = 2.5.dp).clip(CircleShape)
+                                    .background(if (effectsTab == i) Color.White else Color.Transparent))
+                            }
+                        }
+                    }
+                    if (effectsTab == 0) {
+                        FaceLensRail(
+                            selected = faceEffect,
+                            onSelect = { effect ->
+                                faceEffect = effect
+                                faceDetector.activeEffect = effect
+                                if (effect == ClipFaceEffect.NONE) faceDetector.reset()
+                            },
+                        )
+                    } else {
+                        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp)) {
+                            items(ClipFilter.entries.size) { idx ->
+                                val f = ClipFilter.entries[idx]
+                                val on = look == f
+                                Column(Modifier.softClickable(scale = 0.94f) { look = f },
+                                    horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Box(Modifier.size(60.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.12f))
+                                        .border(if (on) 3.dp else 1.dp, if (on) VoiidColor.accent else Color.White.copy(alpha = 0.25f), CircleShape)) {
+                                        lookThumbs[f]?.let {
+                                            androidx.compose.foundation.Image(it.asImageBitmap(), null,
+                                                contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                        }
+                                    }
+                                    Text(f.label, style = VoiidFont.rounded(11, if (on) FontWeight.Bold else FontWeight.Medium),
+                                        color = Color.White.copy(alpha = if (on) 1f else 0.8f), modifier = Modifier.padding(top = 6.dp))
+                                }
+                            }
+                        }
+                    }
+                    Box(Modifier.clip(CircleShape).background(Color.White).softClickable(scale = 0.95f) { showEffects = false }
+                        .padding(horizontal = 28.dp, vertical = 11.dp)) {
+                        Text("Done", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = Color.Black)
+                    }
+                }
+            }
+
+            if (processing) {
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        androidx.compose.material3.CircularProgressIndicator(color = Color.White)
+                        Text("Applying the filter…", style = VoiidFont.rounded(14, FontWeight.Medium), color = Color.White)
+                    }
                 }
             }
         } else {
@@ -503,4 +751,80 @@ private fun TopCircle(active: Boolean = false, onClick: () -> Unit, content: @Co
             .softClickable(scale = 0.9f) { onClick() },
         contentAlignment = Alignment.Center,
     ) { content() }
+}
+
+/** A tool in the right-hand column: a glass disc and its label. */
+@Composable
+private fun CameraTool(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    active: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Column(Modifier.softClickable(scale = 0.9f, onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(42.dp).clip(CircleShape).background(if (active) Color.White else Color.Black.copy(alpha = 0.35f)),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, label, tint = if (active) Color.Black else Color.White, modifier = Modifier.size(20.dp))
+        }
+        Text(label, style = VoiidFont.rounded(10, FontWeight.SemiBold), color = Color.White, modifier = Modifier.padding(top = 3.dp))
+    }
+}
+
+/** The look drawn into a photo: upright (EXIF applied, since the re-encode drops it), then colour-matrixed. */
+private fun applyLookToJpeg(bytes: ByteArray, look: ClipFilter): ByteArray {
+    val matrix = look.colorMatrix() ?: return bytes
+    val src = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return bytes
+    val degrees = runCatching {
+        when (android.media.ExifInterface(bytes.inputStream()).getAttributeInt(
+            android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)) {
+            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+    }.getOrDefault(0f)
+    val upright = if (degrees == 0f) src else android.graphics.Bitmap.createBitmap(
+        src, 0, 0, src.width, src.height, android.graphics.Matrix().apply { postRotate(degrees) }, true)
+    val out = android.graphics.Bitmap.createBitmap(upright.width, upright.height, android.graphics.Bitmap.Config.ARGB_8888)
+    android.graphics.Canvas(out).drawBitmap(upright, 0f, 0f,
+        android.graphics.Paint().apply { colorFilter = android.graphics.ColorMatrixColorFilter(matrix) })
+    return java.io.ByteArrayOutputStream().use {
+        out.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it)
+        it.toByteArray()
+    }
+}
+
+/** Re-encode a recorded moment with the look burned in (the same Media3 effect the clip export uses). */
+private suspend fun bakeLookIntoVideo(context: Context, source: Uri, look: ClipFilter): Uri? {
+    val out = File(context.cacheDir, "moment_look_${System.currentTimeMillis()}.mp4")
+    val edited = androidx.media3.transformer.EditedMediaItem.Builder(androidx.media3.common.MediaItem.fromUri(source))
+        .setEffects(androidx.media3.transformer.Effects(com.google.common.collect.ImmutableList.of(),
+            com.google.common.collect.ImmutableList.copyOf(look.effects())))
+        .build()
+    val ok = withContext(Dispatchers.Main) {
+        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            val transformer = androidx.media3.transformer.Transformer.Builder(context)
+                .setVideoMimeType(androidx.media3.common.MimeTypes.VIDEO_H264)
+                .addListener(object : androidx.media3.transformer.Transformer.Listener {
+                    override fun onCompleted(composition: androidx.media3.transformer.Composition,
+                                             result: androidx.media3.transformer.ExportResult) {
+                        if (cont.isActive) cont.resume(true) {}
+                    }
+                    override fun onError(composition: androidx.media3.transformer.Composition,
+                                         result: androidx.media3.transformer.ExportResult,
+                                         exception: androidx.media3.transformer.ExportException) {
+                        android.util.Log.w("VOIID", "moment look bake failed: ${exception.message}")
+                        if (cont.isActive) cont.resume(false) {}
+                    }
+                })
+                .build()
+            transformer.start(edited, out.absolutePath)
+            cont.invokeOnCancellation {
+                kotlinx.coroutines.CoroutineScope(Dispatchers.Main.immediate).launch { transformer.cancel() }
+            }
+        }
+    }
+    // The clean take is ours to drop once the baked copy exists.
+    if (ok) runCatching { source.path?.let { File(it).delete() } }
+    return if (ok && out.exists()) Uri.fromFile(out) else null
 }
