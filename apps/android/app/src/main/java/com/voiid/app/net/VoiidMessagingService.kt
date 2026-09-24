@@ -371,6 +371,9 @@ object Notifier {
         title: String?,
         body: String?,
     ) {
+        // A muted conversation stays silent — banner and system notification alike. iOS checks
+        // MuteStore at the same point.
+        if (MuteStore.isMuted(ctx, conversationId)) return
         // In-app banners do not require the OS notification permission.
         if (AppPresence.isForeground()) {
             InAppMessageNotifications.show(conversationId, messageId, title, body)

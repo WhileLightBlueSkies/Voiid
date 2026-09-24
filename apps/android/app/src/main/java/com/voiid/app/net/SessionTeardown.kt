@@ -38,6 +38,7 @@ object SessionTeardown {
     fun wipeLocalAccountState(context: Context) {
         val appContext = context.applicationContext
         InAppMessageNotifications.clear()
+        MuteStore.clear(context)
         DeepLinkRouter.pendingConversation.value = null
         DeepLinkRouter.pendingMessage.value = null
 

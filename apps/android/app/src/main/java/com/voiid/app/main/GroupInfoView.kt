@@ -194,7 +194,7 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
 
             // Mute + exit
             ProfileCard {
-                ToggleRow(Icons.Default.Block, "Mute notifications", muted) { muted = it; haptics.selection() }
+                MuteRow(conversation.id)
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                 // iOS GroupInfoView: "Verify encryption — Compare security codes with members".
                 ProfileRow(Icons.Default.Security, "Verify encryption", tint = VoiidColor.textPrimary) {

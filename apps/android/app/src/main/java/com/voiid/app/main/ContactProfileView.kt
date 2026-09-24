@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import androidx.compose.material.icons.filled.Notifications
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -569,7 +570,7 @@ fun ContactProfileView(
             // the rows between them (search-in-chat, wallpaper — both unimplemented) were
             // removed, so the card drew separators separating nothing.
             ProfileCard {
-                ToggleRow(Icons.Default.NotificationsOff, "Mute notifications", muted) { muted = it; haptics.selection() }
+                MuteRow(conversation.id)
             }
 
             // Danger
@@ -933,5 +934,51 @@ private fun ProfileAboutSkeleton() {
                 .clip(RoundedCornerShape(999.dp))
                 .background(VoiidColor.textPrimary.copy(alpha = 0.08f * alpha * 2f)),
         )
+    }
+}
+
+/**
+ * "Notifications" row with a real, persisted mute — twin of iOS's mute menu (MuteStore
+ * durations, "Muted until …" subtitle). Replaces a toggle that was never saved and silenced
+ * nothing.
+ */
+@Composable
+fun MuteRow(conversationId: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
+    var muted by remember(conversationId) { mutableStateOf(com.voiid.app.net.MuteStore.isMuted(context, conversationId)) }
+    var until by remember(conversationId) { mutableStateOf(com.voiid.app.net.MuteStore.mutedUntil(context, conversationId)) }
+    var choosing by remember { mutableStateOf(false) }
+    val subtitle = when {
+        !muted -> "On"
+        until == null -> "Muted"
+        else -> "Muted until " + android.text.format.DateUtils.getRelativeTimeSpanString(
+            until!!, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS)
+    }
+    Row(
+        Modifier.fillMaxWidth().softClickable { haptics.tap(); choosing = true }.padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Icon(if (muted) Icons.Default.NotificationsOff else Icons.Default.Notifications, null,
+            tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Notifications", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
+            Text(subtitle, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+        }
+    }
+    if (choosing) com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest = { choosing = false }) {
+        Text("Notifications", style = VoiidFont.rounded(17, androidx.compose.ui.text.font.FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        if (muted) com.voiid.app.ui.components.VoiidDialogAction("Unmute") {
+            com.voiid.app.net.MuteStore.unmute(context, conversationId); muted = false; until = null; choosing = false
+        }
+        com.voiid.app.net.MuteStore.Duration.entries.forEach { d ->
+            com.voiid.app.ui.components.VoiidDialogAction("Mute for ${d.title}") {
+                com.voiid.app.net.MuteStore.mute(context, conversationId, d)
+                muted = true; until = com.voiid.app.net.MuteStore.mutedUntil(context, conversationId); choosing = false
+                haptics.selection()
+            }
+        }
+        com.voiid.app.ui.components.VoiidDialogAction("Cancel") { choosing = false }
     }
 }
