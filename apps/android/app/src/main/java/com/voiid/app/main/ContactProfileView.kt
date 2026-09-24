@@ -1,5 +1,9 @@
 package com.voiid.app.main
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Notifications
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.RepeatMode
@@ -569,6 +573,21 @@ fun ContactProfileView(
             // One toggle, no trailing dividers. Two HorizontalDividers were left behind when
             // the rows between them (search-in-chat, wallpaper — both unimplemented) were
             // removed, so the card drew separators separating nothing.
+            // iOS "Contact" card: tap a value to copy it; the trailing button acts on it.
+            if (!savedNumber.isNullOrBlank() || !username.isNullOrBlank()) ProfileCard {
+                savedNumber?.takeIf { it.isNotBlank() }?.let { phone ->
+                    ContactDetailRow(Icons.Default.Phone, "Phone", phone, Icons.Default.Call, "Call $phone") {
+                        haptics.tap(); onStartCall(CallKind.VOICE)
+                    }
+                }
+                if (!savedNumber.isNullOrBlank() && !username.isNullOrBlank())
+                    HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
+                username?.takeIf { it.isNotBlank() }?.let { handle ->
+                    ContactDetailRow(Icons.Default.AlternateEmail, "Username", "@$handle",
+                        Icons.AutoMirrored.Filled.Message, "Message @$handle") { haptics.tap(); onBack() }
+                }
+            }
+
             ProfileCard {
                 MuteRow(conversation.id)
             }
@@ -980,5 +999,27 @@ fun MuteRow(conversationId: String) {
             }
         }
         com.voiid.app.ui.components.VoiidDialogAction("Cancel") { choosing = false }
+    }
+}
+
+
+/** One Contact-card row: value copies on tap ("Copies to the clipboard"); trailing button acts. */
+@Composable
+private fun ContactDetailRow(icon: ImageVector, label: String, value: String, actionIcon: ImageVector, actionLabel: String, onAction: () -> Unit) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Icon(icon, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
+        Column(
+            Modifier.weight(1f).softClickable {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(value)); haptics.selection()
+            }.semantics(mergeDescendants = true) { contentDescription = "$label, $value. Copies to the clipboard" },
+        ) {
+            Text(label, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+            Text(value, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
+        }
+        androidx.compose.material3.IconButton(onClick = onAction) {
+            Icon(actionIcon, actionLabel, tint = VoiidColor.accentInk, modifier = Modifier.size(20.dp))
+        }
     }
 }
