@@ -21,7 +21,9 @@ final class MediaService {
     private let api = APIClient()
     private init() {}
 
-    private struct PresignUploadBody: Encodable { let mime: String }
+    /// `size` is the ciphertext length about to be PUT; the server refuses chat media over
+    /// 25 MB (ChatMediaLimit) with 413.
+    private struct PresignUploadBody: Encodable { let mime: String; let size: Int }
     private struct PresignUploadResp: Decodable { let key: String; let upload_url: String }
     private struct PresignDownloadBody: Encodable { let key: String }
     private struct PresignDownloadResp: Decodable { let download_url: String }
@@ -35,7 +37,7 @@ final class MediaService {
     /// encrypted is the CALLER's responsibility, and the two callers now say which they are.
     func upload(body: Data, mime: String) async throws -> String {
         let presign: PresignUploadResp = try await api.request(
-            "POST", "media/presign-upload", body: PresignUploadBody(mime: mime))
+            "POST", "media/presign-upload", body: PresignUploadBody(mime: mime, size: body.count))
         guard let url = URL(string: presign.upload_url) else {
             throw APIError.http(status: 0, message: "bad upload url")
         }

@@ -15,6 +15,12 @@ import { presignPut, presignGet, objectExists, r2Configured } from '../r2';
 
 const router = Router();
 
+// The chat limit: 25 MB of plaintext, as the apps show it (decimal megabytes). Encryption adds
+// a tag and nonce, so the ciphertext is allowed a little over. The apps compress anything
+// bigger on the phone before it gets here (ChatMediaCompressor.swift).
+export const CHAT_MEDIA_MAX_PLAINTEXT = 25_000_000;
+const CHAT_MEDIA_MAX_CIPHERTEXT = CHAT_MEDIA_MAX_PLAINTEXT + 4096;
+
 // POST /media/presign-upload  { mime? }  -> { key, upload_url }
 // `key` is an opaque object id the client then puts into the E2EE message's
 // media_url field. The actual bytes are ciphertext.
@@ -22,6 +28,19 @@ router.post('/presign-upload', requireAuth, asyncHandler(async (req, res) => {
   if (!r2Configured()) return res.status(503).json({ error: 'media storage not configured' });
   const { user_id } = (req as any).auth;
   const mime = typeof req.body?.mime === 'string' ? req.body.mime : 'application/octet-stream';
+
+  // `size` is the ciphertext length the client is about to PUT. Clients that predate the
+  // limit do not send it, and are let through rather than broken mid-rollout.
+  const size = req.body?.size;
+  if (size !== undefined) {
+    if (typeof size !== 'number' || !Number.isInteger(size) || size <= 0) {
+      return res.status(400).json({ error: 'size must be a positive integer' });
+    }
+    if (size > CHAT_MEDIA_MAX_CIPHERTEXT) {
+      return res.status(413).json({ error: 'Files can be up to 25 MB.', code: 'media_too_large',
+                                     max_bytes: CHAT_MEDIA_MAX_PLAINTEXT });
+    }
+  }
 
   // Namespace by uploader + random id. Content is ciphertext, so the key reveals
   // nothing about the media; the mime is the WRAPPER type (octet-stream), the

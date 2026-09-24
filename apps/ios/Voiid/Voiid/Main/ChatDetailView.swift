@@ -79,6 +79,13 @@ struct ChatDetailView: View {
     @State private var transcriptPosition = ScrollPosition(edge: .bottom)
     @State private var initialBottomAnchor = true
     @State private var photoItem: PhotosPickerItem?
+    /// The attach sheet, and what was chosen in it — acted on once the sheet has gone, since
+    /// a picker cannot present while the sheet is still dismissing.
+    @State private var showAttachSheet = false
+    @State private var pendingAttach: ChatAttachAction?
+    /// A picked file over 25 MB, waiting on the compressor (ChatAttachSheets.swift).
+    @State private var oversizeFile: ChatOversizeFile?
+    @State private var preparingAttachment = false
     /// The message whose media opened the gallery. An id, not a decoded UIImage: the
     /// viewer pages through the whole conversation, so it needs to know WHERE it started,
     /// not just what was tapped.
@@ -1044,15 +1051,11 @@ struct ChatDetailView: View {
     }
 
     private var attachButton: some View {
-        // Attach photos, files, locations, and group polls.
-        Menu {
-            Button { pickPhoto = true } label: { Label("Photo", systemImage: "photo") }
-            Button { showLocationCompose = true } label: { Label("Location", systemImage: "location") }
-            Button { pickDocument = true } label: { Label("Document", systemImage: "doc") }
-                .disabled(importingDocument)
-            if conversation.type == .group {
-                Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
-            }
+        // Photos and videos, the camera, files, locations and group polls — one sheet of large
+        // targets rather than a menu of small rows (ChatAttachSheets.swift).
+        Button {
+            Haptics.tap()
+            showAttachSheet = true
         } label: {
             // A tinted DISC, matching the mic and send buttons. These two were bare
             // glyphs sitting beside two filled circles, which is what made the row look
@@ -1067,8 +1070,35 @@ struct ChatDetailView: View {
                 .background(VoiidColor.fieldFill)
                 .clipShape(Circle())
                 .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+                .overlay {
+                    if preparingAttachment || importingDocument {
+                        ProgressView().controlSize(.small).tint(VoiidColor.accentInk)
+                            .frame(width: 44, height: 44)
+                            .background(VoiidColor.fieldFill, in: Circle())
+                    }
+                }
         }
-        .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityLabel("Attach")
+        .disabled(preparingAttachment || importingDocument)
+        .sheet(isPresented: $showAttachSheet, onDismiss: runPendingAttach) {
+            ChatAttachSheet(allowsPoll: conversation.type == .group) { action in
+                pendingAttach = action
+                showAttachSheet = false
+            }
+        }
+        .sheet(item: $oversizeFile) { file in
+            ChatCompressSheet(file: file) { url, mime, name in
+                sendPreparedFile(url, mime: mime, documentName: name, cleanup: [url, file.url])
+            }
+            .onDisappear {
+                // Cancelled or failed: the picked copy is not needed any more. After a send,
+                // sendPreparedFile has already removed it.
+                ChatAttachmentIntake.removeTemporary(file.url)
+            }
+        }
+        .photosPicker(isPresented: $pickPhoto, selection: $photoItem,
+                      matching: .any(of: [.images, .videos]), preferredItemEncoding: .compatible)
         .tint(VoiidColor.accentInk)
         .fileImporter(isPresented: $pickDocument, allowedContentTypes: [.item]) { result in
             switch result {
@@ -1077,6 +1107,12 @@ struct ChatDetailView: View {
                 let account = TokenStore.shared.userId
                 Task {
                     defer { importingDocument = false }
+                    // Over 25 MB: copy it in and hand it to the compressor instead.
+                    if let oversize = await ChatAttachmentIntake.oversizeDocument(url) {
+                        guard TokenStore.shared.userId == account else { return }
+                        oversizeFile = oversize
+                        return
+                    }
                     do {
                         let document = try await Task.detached(priority: .userInitiated) {
                             try ChatDocumentFile.read(url)
@@ -1114,13 +1150,86 @@ struct ChatDetailView: View {
             }
         }
         .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            photoItem = nil
+            preparingAttachment = true
             Task {
-                if let data = try? await item?.loadTransferable(type: Data.self) {
-                    // Encrypt + upload the real bytes (E2EE), not a placeholder.
-                    chat.sendMedia(data, mime: "image/jpeg", to: conversation.id)
-                }
-                photoItem = nil
+                defer { preparingAttachment = false }
+                await takePicked(item)
             }
+        }
+    }
+
+    /// Runs what was chosen in the attach sheet, now that it has gone.
+    private func runPendingAttach() {
+        guard let action = pendingAttach else { return }
+        pendingAttach = nil
+        switch action {
+        case .photos: pickPhoto = true
+        case .camera: showCamera = true
+        case .document: pickDocument = true
+        case .location: showLocationCompose = true
+        case .poll: showPollCompose = true
+        }
+    }
+
+    /// A photo or video from the library. Under 25 MB it goes as it is; a photo over it is
+    /// compressed quietly, and a video over it opens the compressor.
+    private func takePicked(_ item: PhotosPickerItem) async {
+        let account = TokenStore.shared.userId
+        let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+        if isVideo {
+            do {
+                guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
+                    chat.mediaSendError = "Couldn't open that video."
+                    return
+                }
+                guard TokenStore.shared.userId == account else { return }
+                let bytes = ChatMediaLimit.size(of: movie.url)
+                if bytes <= ChatMediaLimit.bytes {
+                    sendPreparedFile(movie.url, mime: movie.mime, documentName: nil, cleanup: [movie.url])
+                } else {
+                    let seconds = (try? await AVURLAsset(url: movie.url).load(.duration).seconds) ?? 0
+                    oversizeFile = ChatOversizeFile(url: movie.url, name: "Video", bytes: bytes,
+                                                    kind: .video(seconds: seconds))
+                }
+            } catch {
+                chat.mediaSendError = "Couldn't open that video."
+            }
+            return
+        }
+
+        guard let data = try? await item.loadTransferable(type: Data.self) else {
+            chat.mediaSendError = "Couldn't open that photo."
+            return
+        }
+        guard TokenStore.shared.userId == account else { return }
+        if Int64(data.count) <= ChatMediaLimit.bytes {
+            // Encrypt + upload the real bytes (E2EE), not a placeholder.
+            chat.sendMedia(data, mime: "image/jpeg", to: conversation.id)
+            return
+        }
+        // Rare — ProRAW, a huge PNG — and there is nothing to choose: shrink it and send.
+        let fitted = await Task.detached(priority: .userInitiated) { ChatPhotoCompressor.fit(data) }.value
+        if let fitted {
+            chat.sendMedia(fitted, mime: "image/jpeg", to: conversation.id)
+        } else {
+            chat.mediaSendError = "Couldn't prepare that photo."
+        }
+    }
+
+    /// A file already under the limit, on disk: read it, send it, remove the temp copies.
+    private func sendPreparedFile(_ url: URL, mime: String, documentName: String?, cleanup: [URL]) {
+        let conversationId = conversation.id
+        Task {
+            let data = await Task.detached(priority: .userInitiated) { try? Data(contentsOf: url) }.value
+            for file in Set(cleanup) { ChatAttachmentIntake.removeTemporary(file) }
+            guard let data else {
+                chat.mediaSendError = "Couldn't read that file."
+                return
+            }
+            chat.sendMedia(data, mime: mime, caption: documentName ?? "", filename: documentName,
+                           to: conversationId)
         }
     }
 
@@ -2164,13 +2273,14 @@ nonisolated struct ChatDocumentFile: Sendable {
     let data: Data
     let name: String
     let mime: String
-    static let maximumBytes = 50 * 1024 * 1024
+    /// The chat limit (ChatMediaLimit). A bigger PDF is offered the compressor before this runs.
+    static let maximumBytes = Int(ChatMediaLimit.bytes)
 
     enum ImportError: LocalizedError {
         case tooLarge, notAFile
         var errorDescription: String? {
             switch self {
-            case .tooLarge: "Choose a document smaller than 50 MB."
+            case .tooLarge: "Documents can be up to 25 MB."
             case .notAFile: "Choose a file, rather than a folder."
             }
         }
