@@ -583,30 +583,6 @@ internal fun AppearanceRow() {
 }
 
 @Composable
-internal fun StoryReceiptsRow() {
-    val context = LocalContext.current
-    var on by remember { mutableStateOf(com.voiid.app.model.StoryPrefs.receiptsEnabled(context)) }
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Icon(Icons.Default.RemoveRedEye, null, tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
-        Column(Modifier.weight(1f)) {
-            Text("Moment view receipts", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
-            Text(
-                "If you turn this off, people won't know when you've viewed their moment — and you " +
-                    "won't see who viewed yours.",
-                style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
-            )
-        }
-        com.voiid.app.ui.components.VoiidToggle(checked = on) {
-            on = it; com.voiid.app.model.StoryPrefs.setReceiptsEnabled(context, it)
-        }
-    }
-}
-
-@Composable
 private fun SettingsDivider() {
     Box(
         Modifier.fillMaxWidth().padding(start = 54.dp).height(1.dp)

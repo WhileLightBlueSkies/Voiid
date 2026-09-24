@@ -402,14 +402,13 @@ class StoryEngine private constructor(context: Context) {
 
     // MARK: - View receipts (opt-in, OFF by default)
 
-    /** Record that WE opened [story] on this device (always, never transmitted), and — only if the
-     *  per-device receipts setting is ON and it isn't our own story — send an encrypted view receipt
-     *  to the author's devices. */
-    suspend fun onViewed(story: Story, receiptsEnabled: Boolean) {
+    /** Record that WE opened [story] on this device, and — unless it is our own — send an encrypted
+     *  view receipt to the author's devices. Views always show: there is no setting to hide them. */
+    suspend fun onViewed(story: Story) {
         val current = StoryLocalStore.story(appContext, story.id) ?: return
         if (current.isExpired() || current.viewedAt != null) return
         StoryLocalStore.markViewed(appContext, story.id)
-        if (!receiptsEnabled || story.isMine) return
+        if (story.isMine) return
         val myId = tokens.userId ?: return
         val receipt = StoryViewReceipt(story_id = story.id, viewer_id = myId, viewed_at = System.currentTimeMillis())
         val json = ApiClient.json.encodeToString(StoryViewReceipt.serializer(), receipt)
@@ -423,16 +422,14 @@ class StoryEngine private constructor(context: Context) {
     }
 
     /**
-     * Author-side: pull pending view receipts and, IF our receipts setting is ON, upsert them into
-     * the local viewer list. When OFF, incoming receipts are discarded on decrypt (§4.4) — the
-     * opt-out is reciprocal. Returns the story ids whose viewer list changed.
+     * Author-side: pull pending view receipts and upsert them into the local viewer list.
+     * Returns the story ids whose viewer list changed.
      */
-    suspend fun fetchReceipts(receiptsEnabled: Boolean): Set<String> = receiptMutex.withLock {
-        fetchReceiptsLocked(receiptsEnabled)
+    suspend fun fetchReceipts(): Set<String> = receiptMutex.withLock {
+        fetchReceiptsLocked()
     }
 
-    private suspend fun fetchReceiptsLocked(receiptsEnabled: Boolean): Set<String> {
-        if (!receiptsEnabled) return emptySet()
+    private suspend fun fetchReceiptsLocked(): Set<String> {
         val epoch = StoryLocalStore.accountGeneration
         val rows = runCatching { service.receipts(e2e.deviceId) }.getOrDefault(emptyList())
         val changed = HashSet<String>()

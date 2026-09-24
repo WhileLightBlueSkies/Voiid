@@ -75,7 +75,7 @@ struct PrivacySettingsView: View {
                 }
                 VoiidRowDivider()
                 privacyLink("Moments", icon: "circle.dashed",
-                            detail: "Who sees your moments, view receipts, archive") {
+                            detail: "Who sees your moments, and your archive") {
                     MomentsPrivacyView()
                 }
                 VoiidRowDivider()

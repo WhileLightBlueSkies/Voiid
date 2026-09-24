@@ -26,15 +26,13 @@ import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 
 /**
- * Viewer list for one of YOUR stories. When receipts are OFF (the default), this shows the
- * reciprocity copy instead of names — the opt-out is reciprocal, and the local viewer list is not
- * even read. When ON, it lists who viewed, name-resolved through UserDirectory (never a raw id).
+ * Viewer list for one of YOUR stories: who viewed and when, name-resolved through UserDirectory
+ * (never a raw id). Always shown — there is no setting to hide views.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StoryViewersSheet(
     viewers: List<StoryViewer>,
-    receiptsEnabled: Boolean,
     deliveredCount: Int,
     onDismiss: () -> Unit,
 ) {
@@ -43,26 +41,6 @@ fun StoryViewersSheet(
             Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            if (!receiptsEnabled) {
-                // Reciprocity copy, verbatim from the spec.
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Icon(Icons.Default.VisibilityOff, null, tint = VoiidColor.textSecondary)
-                    Text("Views hidden", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-                }
-                Text(
-                    "If you turn this off, people won't know when you've viewed their moment — and you " +
-                        "won't see who viewed yours.",
-                    style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-                )
-                if (deliveredCount > 0) {
-                    Text(
-                        "Delivered to $deliveredCount ${if (deliveredCount == 1) "device" else "devices"}.",
-                        style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
-                    )
-                }
-                return@Column
-            }
-
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.Default.RemoveRedEye, null, tint = VoiidColor.primary)
                 Text(

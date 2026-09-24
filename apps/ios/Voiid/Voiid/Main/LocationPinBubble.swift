@@ -323,14 +323,12 @@ private struct MapThumbnail: View {
     }
 }
 
-/// The pulsing accent dot on a live marker.
+/// The live dot on a live marker — still, with a soft halo. The "Live until" line carries the
+/// state; a pulsing ring read as decoration.
 private struct LivePulse: View {
-    @State private var animate = false
     var body: some View {
         Circle().fill(VoiidColor.success)
             .frame(width: 10, height: 10)
-            .overlay(Circle().stroke(VoiidColor.success.opacity(0.5), lineWidth: 6)
-                .scaleEffect(animate ? 2 : 1).opacity(animate ? 0 : 1))
-            .onAppear { withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) { animate = true } }
+            .overlay(Circle().stroke(VoiidColor.success.opacity(0.3), lineWidth: 4))
     }
 }

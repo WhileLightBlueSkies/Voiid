@@ -212,17 +212,6 @@ fun ChatSettingsScreen(onBack: () -> Unit) {
             AppearanceRow()
         }
 
-        // Stories: view-receipts opt-in (default OFF). Sending one tells the SERVER you
-        // opened someone's story at time T — a fact it otherwise never learns, with no
-        // sealed sender to hide it. The opt-out is reciprocal: OFF = you send none AND see
-        // none. Written straight to the shared story prefs (see StoryPrefs).
-        ChatPrefGroup(
-            "Stories",
-            footer = "Reciprocal: with this off you send no view receipts and see none either.",
-        ) {
-            StoryReceiptsRow()
-        }
-
         Spacer(Modifier.height(16.dp))
     }
 }

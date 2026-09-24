@@ -172,7 +172,7 @@ private fun ContextPage(
     // writes this page's state, so a page the pager recycles should take it down with it.
     LaunchedEffect(story.id, active) {
         if (!active) return@LaunchedEffect
-        if (story.isMine && stories.receiptsEnabled) stories.loadViewers(story.id)
+        if (story.isMine) stories.loadViewers(story.id)
         progress = 0f
         loadState = StoryDownloadState.DOWNLOADING
         localPath = stories.ensureDownloaded(story)
@@ -384,7 +384,7 @@ private fun ContextPage(
                         Icon(Icons.Default.RemoveRedEye, null, tint = Color.White, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.size(8.dp))
                         Text(
-                            if (!stories.receiptsEnabled) "Views hidden" else if (count == null) "Viewers" else "$count ${if (count == 1) "view" else "views"}",
+                            if (count == null) "Viewers" else "$count ${if (count == 1) "view" else "views"}",
                             style = VoiidFont.rounded(14, FontWeight.SemiBold), color = Color.White,
                         )
                     }
@@ -501,7 +501,6 @@ private fun ContextPage(
     if (showViewers) {
         StoryViewersSheet(
             viewers = stories.viewersByStory[story.id] ?: emptyList(),
-            receiptsEnabled = stories.receiptsEnabled,
             deliveredCount = stories.deliveredCounts[story.id]?.first ?: 0,
             onDismiss = { showViewers = false },
         )

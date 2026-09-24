@@ -125,7 +125,6 @@ struct CallScreen: View {
     /// The tabular width stays either way — that is layout, not motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Drives the breathing ring behind Accept while a call is ringing in.
-    @State private var acceptPulse = false
 
     // Group calls are still simulated (a later increment); 1:1 uses CallService.
     @State private var connected = false
@@ -146,7 +145,6 @@ struct CallScreen: View {
     /// Drives the ringing pulse. A plain Bool toggled once in `onAppear` — a repeating
     /// animation needs a value that CHANGES to start, and `true` on appear is the cheapest
     /// one that cannot get out of sync with anything else.
-    @State private var ringPulse = false
     /// Which corner the self-preview is parked in. Persisted for the life of the call only —
     /// a corner choice is about THIS call's framing, not a lasting preference.
     @State private var previewCorner: PreviewCorner = .topTrailing
@@ -484,22 +482,11 @@ struct CallScreen: View {
             // `ProfileAvatarButton` resolves the photo through the shared cache and falls
             // back to their initials, which is at least a person.
             ZStack {
-                // A slow pulse behind the avatar while the call is not yet connected. A
-                // ringing call is a live event and a completely static screen reads as a
-                // screenshot — but this is on screen while the phone is buzzing, so it is
-                // deliberately gentle rather than attention-seeking.
-                if !isConnected {
-                    Circle()
-                        .fill(.white.opacity(0.10))
-                        .frame(width: 190, height: 190)
-                        .scaleEffect(ringPulse ? 1.06 : 0.94)
-                        .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true),
-                                   value: ringPulse)
-                }
+                // Still, not pulsing: the call status text says it is ringing, and a breathing
+                // halo read as decoration.
                 ProfileAvatarButton(photoURL: peerPhotoURL, name: request.title, size: 160)
                     .overlay(Circle().stroke(VoiidColor.accent, lineWidth: 3))
             }
-            .onAppear { ringPulse = true }
         }
     }
 
@@ -593,28 +580,9 @@ struct CallScreen: View {
                         // button people are trying to hit in a hurry.
                         .background(VoiidColor.success)
                         .clipShape(Circle())
-                        // THE ONE PLACE A PULSE EARNS ITS KEEP. An incoming call is the app
-                        // asking a question, and the answer button should read as the live
-                        // one. A slow breathing ring — not the button itself, which would
-                        // move the tap target under a finger already reaching for it.
-                        .overlay(
-                            Circle()
-                                .stroke(VoiidColor.success.opacity(0.5), lineWidth: 3)
-                                .scaleEffect(acceptPulse ? 1.28 : 1)
-                                .opacity(acceptPulse ? 0 : 0.9)
-                        )
                 }
                 .buttonStyle(SoftPressStyle(scale: 0.92))
                 .accessibilityLabel(request.kind == .video ? "Accept video call" : "Accept call")
-                .onAppear {
-                    // Reduce Motion: a repeating oscillation is precisely what that setting
-                    // exists to suppress, and it is decoration here — the button is already
-                    // green, round and labelled.
-                    guard !reduceMotion else { return }
-                    withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) {
-                        acceptPulse = true
-                    }
-                }
             }
         } else {
             // Hold is only offered on a real, connected 1:1 call — there is

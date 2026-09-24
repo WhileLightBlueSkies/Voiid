@@ -20,18 +20,9 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
 
-/**
- * Per-device Stories prefs, shared so the Settings toggle can read/write the view-receipts opt-in
- * without a handle to [StoriesStore]. Per-device, synced nowhere (like the rest of the app's local
- * prefs) — deliberately.
- */
+/** Per-device Stories prefs. Synced nowhere, like the rest of the app's local prefs. */
 object StoryPrefs {
     const val NAME = "voiid_story_prefs"
-    const val KEY_RECEIPTS = "view_receipts"
-    fun receiptsEnabled(context: android.content.Context): Boolean =
-        context.getSharedPreferences(NAME, 0).getBoolean(KEY_RECEIPTS, true)
-    fun setReceiptsEnabled(context: android.content.Context, on: Boolean) =
-        context.getSharedPreferences(NAME, 0).edit().putBoolean(KEY_RECEIPTS, on).apply()
 }
 
 /**
@@ -39,11 +30,8 @@ object StoryPrefs {
  * store (contrast the service singletons which use StateFlow). Local-first: the tray renders from
  * [StoryLocalStore] and a failed sync never blanks it.
  *
- * VIEW RECEIPTS ARE OFF BY DEFAULT and per-device (synced nowhere). Sending one tells the SERVER
- * that you opened someone's story at time T — a new behavioural fact it otherwise never learns
- * (delivering a key is not opening it), and there is no sealed sender to hide the viewer. The
- * privacy-preserving default is therefore "empty viewer list until people opt in". The opt-out is
- * reciprocal: OFF means you send none AND you see none.
+ * Views always show: opening someone's moment sends them an encrypted view receipt, and your own
+ * moments list who viewed them and when. There is no setting to hide views.
  */
 class StoriesStore(app: Application) : AndroidViewModel(app) {
 
@@ -64,16 +52,6 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     var posting by mutableStateOf(false)
         private set
 
-    /**
-     * Per-device view receipts, ON by default (reciprocal — off-by-default meant nobody ever saw a view). Read fresh from prefs each access so a
-     * toggle flipped in Settings (which writes the SAME prefs directly, without a handle to this
-     * store) is honoured immediately — no cross-store observation needed.
-     */
-    val receiptsEnabled: Boolean get() = prefs.getBoolean(StoryPrefs.KEY_RECEIPTS, true)
-
-    fun setReceiptsEnabled(on: Boolean) {
-        prefs.edit().putBoolean(StoryPrefs.KEY_RECEIPTS, on).apply()
-    }
 
     /** True when any unexpired, unviewed story exists — drives the tab's unread dot. */
     val hasUnread: Boolean get() = contexts.any { !it.isMine && it.hasUnviewed }
@@ -132,7 +110,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
             // nothing re-read `viewersByStory` — so a sheet that was already open (or one
             // opened before this refresh landed) kept showing "No views yet" even though the
             // receipts were sitting in the local store. loadViewers() is the only writer.
-            runCatching { engine.fetchReceipts(receiptsEnabled) }
+            runCatching { engine.fetchReceipts() }
                 .getOrDefault(emptySet())
                 .forEach { storyId ->
                     viewersByStory[storyId] = StoryLocalStore.viewers(appContext, storyId)
@@ -321,7 +299,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     /** First full display of a story: record it viewed locally (always) + send a receipt if opted in. */
     fun onViewed(story: Story) {
         viewModelScope.launch {
-            engine.onViewed(story, receiptsEnabled)
+            engine.onViewed(story)
             loadLocal()
         }
     }

@@ -436,7 +436,7 @@ final class StoryEngine: ObservableObject {
         guard let current = StoryStore.story(story.id), !current.isExpired, current.viewedAt == nil else { return }
         StoryStore.markViewed(story.id)
         reloadFromStore()
-        guard StorySettings.shared.sendViewReceipts, !story.isMine, let myUserId else { return }
+        guard !story.isMine, let myUserId else { return }
         let env = StoryViewEnvelope(story_id: story.id, viewer_id: myUserId,
                                     viewed_at: Int64(Date().timeIntervalSince1970 * 1000))
         guard let data = try? JSONEncoder().encode(env) else { return }
@@ -457,7 +457,7 @@ final class StoryEngine: ObservableObject {
     /// (the reciprocal opt-out, §4.4) — we simply do not pull or store them.
     private func syncReceipts() async {
         let epoch = generation
-        guard StorySettings.shared.sendViewReceipts, let deviceId = myDeviceId else { return }
+        guard let deviceId = myDeviceId else { return }
         let rows: [StoryService.ReceiptRow]
         do { rows = try await svc.receipts(deviceId: deviceId) }
         catch { return }

@@ -496,7 +496,7 @@ private struct StoryContextPlayer: View {
             Button { showViewers = true } label: {
                 let s = current
                 let count = s.map { StoryStore.viewers(storyId: $0.id).count } ?? 0
-                Label(StorySettings.shared.sendViewReceipts ? "\(count) views" : "Views",
+                Label("\(count) \(count == 1 ? "view" : "views")",
                       systemImage: "eye")
                     .font(VoiidFont.subhead).foregroundColor(.white)
                     .padding(.horizontal, VoiidSpacing.md).padding(.vertical, VoiidSpacing.sm)

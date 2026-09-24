@@ -16,15 +16,13 @@ struct StoryViewersSheet: View {
     @ObservedObject private var settings = StorySettings.shared
 
     private var viewers: [(userId: String, viewedAt: Date)] {
-        settings.sendViewReceipts ? StoryStore.viewers(storyId: story.id) : []
+        StoryStore.viewers(storyId: story.id)
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if !settings.sendViewReceipts {
-                    reciprocityCopy
-                } else if viewers.isEmpty {
+                if viewers.isEmpty {
                     empty
                 } else {
                     List {
@@ -43,41 +41,17 @@ struct StoryViewersSheet: View {
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
-            .navigationTitle(settings.sendViewReceipts ? "\(viewers.count) views" : "Views")
+            .navigationTitle("\(viewers.count) \(viewers.count == 1 ? "view" : "views")")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
         }
-    }
-
-    private var reciprocityCopy: some View {
-        VStack(spacing: VoiidSpacing.md) {
-            Image(systemName: "eye.slash").font(.system(size: 40)).foregroundColor(VoiidColor.textSecondary)
-            Text("If you turn this off, people won't know when you've viewed their moment — and you won't see who viewed yours.")
-                .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
-                .multilineTextAlignment(.center)
-            Button {
-                Haptics.success()
-                settings.sendViewReceipts = true
-            } label: {
-                Text("Turn on view receipts")
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textOnAccent)
-                    .padding(.horizontal, 22)
-                    .frame(height: 44)
-                    .background(Capsule().fill(VoiidColor.accent))
-            }
-            .buttonStyle(PressableButtonStyle())
-            Text("Views from now on will show here.")
-                .font(VoiidFont.caption).foregroundColor(VoiidColor.placeholder)
-        }
-        .padding(VoiidSpacing.xl)
     }
 
     private var empty: some View {
         VStack(spacing: VoiidSpacing.sm) {
             Image(systemName: "eye").font(.system(size: 40)).foregroundColor(VoiidColor.textSecondary)
             Text("No views yet").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
-            Text("People who've turned off view receipts won't show here.")
+            Text("When someone views it, you'll see who and when.")
                 .font(VoiidFont.caption).foregroundColor(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)
         }

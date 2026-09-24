@@ -152,14 +152,8 @@ struct MomentsPrivacyView: View {
     // MARK: Viewing
 
     private var viewingSection: some View {
-        VoiidCardSection("Viewing",
-                         footer: "View receipts work both ways: turn them off to hide your views and stop seeing who viewed yours. Keep my moments saves your own moments on this phone after 24 hours.") {
-            VoiidSettingsRow(icon: "eye.circle", title: "Moment view receipts") {
-                Toggle("Moment view receipts", isOn: $settings.sendViewReceipts)
-                    .labelsHidden()
-                    .tint(VoiidColor.primary)
-            }
-            VoiidRowDivider()
+        VoiidCardSection("Your moments",
+                         footer: "Keep my moments saves your own moments on this phone after 24 hours. Your moments show who viewed them and when.") {
             VoiidSettingsRow(icon: "archivebox", title: "Keep my moments") {
                 Toggle("Keep my moments", isOn: $settings.archiveByDefault)
                     .labelsHidden()

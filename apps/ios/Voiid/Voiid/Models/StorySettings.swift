@@ -2,18 +2,8 @@
 //  StorySettings.swift
 //  Voiid
 //
-//  Per-device Stories preferences.
-//
-//  View receipts are ON by default. They began OFF (§4.1: sending one tells the Voiid server that
-//  you opened someone's moment, which it otherwise never learns) — but they are reciprocal, so
-//  with both sides off by default no receipt was ever sent and every moment showed no views.
-//  The server-can-see-it trade-off is stated beside the switch, and turning it off stays a
-//  one-tap choice in Moments settings.
-//
-//  Consumer (required, or the toggle would be a lie): StoryEngine reads `sendViewReceipts`
-//  before fanning out any receipt AND before reading/showing the local viewer list. When
-//  OFF: no receipt is sent, your own viewer list is hidden, and incoming receipts are
-//  discarded on decrypt.
+//  Per-device Stories preferences: who your moments go to, and whether to keep your own.
+//  Views always show — who viewed your moment and when — so there is no setting for them.
 //
 
 import SwiftUI
@@ -95,10 +85,6 @@ final class StorySettings: ObservableObject {
         didSet { UserDefaults.standard.set(Array(hiddenFrom), forKey: Key.hiddenFrom) }
     }
 
-    /// ON by default. Reciprocal: off means you send no receipts AND see no viewer names.
-    @Published var sendViewReceipts: Bool {
-        didSet { UserDefaults.standard.set(sendViewReceipts, forKey: Key.sendViewReceipts) }
-    }
 
     /// ON by default. This keeps only YOUR OWN copy of YOUR OWN moment past its expiry,
     /// on this device — it is not a change to who can see it, and a viewer's copy still
@@ -110,10 +96,8 @@ final class StorySettings: ObservableObject {
     }
 
     private init() {
-        // Absent key → ON. Receipts are reciprocal, so an off-by-default meant NOBODY ever sent
-        // one and every moment showed no views (0 receipts had ever reached the server). On by
-        // default, as moments work elsewhere; anyone who turned it off keeps their choice.
-        sendViewReceipts = (UserDefaults.standard.object(forKey: Key.sendViewReceipts) as? Bool) ?? true
+        // The old view-receipts switch is gone; drop its stored value.
+        UserDefaults.standard.removeObject(forKey: Key.sendViewReceipts)
         // Absent key → true, so an upgrading user starts keeping their own moments rather
         // than silently losing them. Uses object(forKey:) because plain `bool` reads a
         // missing key as false, which would be the wrong default here.
@@ -154,7 +138,6 @@ final class StorySettings: ObservableObject {
     }
 
     func resetForSignOut() {
-        sendViewReceipts = true
         archiveByDefault = true
         audienceMode = .connections
         selectedPeople = []

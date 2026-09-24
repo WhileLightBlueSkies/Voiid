@@ -344,20 +344,12 @@ private fun IncomingCallUi(state: CallManager.CallState) {
             // showed a logo. `ProfileAvatar` resolves the peer's photo through the shared
             // cache and falls back to their initials, which is at least a person.
             //
-            // A slow pulse on the ring: a ringing call is a live event, and a completely
-            // static screen reads as a screenshot. Deliberately gentle — this is on screen
-            // while a phone is buzzing, and anything faster competes for attention.
-            val ringPulse = rememberInfiniteTransition(label = "ring")
-            val ringScale by ringPulse.animateFloat(
-                1f, 1.06f,
-                infiniteRepeatable(tween(1200, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-                label = "ringScale",
-            )
+            // Still, not pulsing: the status text says it is ringing; a breathing halo read as
+            // decoration.
             Box(contentAlignment = Alignment.Center) {
                 Box(
                     Modifier
                         .size(160.dp)
-                        .graphicsLayer { scaleX = ringScale; scaleY = ringScale }
                         .clip(CircleShape)
                         .background(Color.White.copy(alpha = 0.10f)),
                 )
@@ -708,22 +700,9 @@ private object RemoteFrameEvents : RendererCommon.RendererEvents {
 @Composable
 private fun VoiceCenter(state: CallManager.CallState, reduceMotion: Boolean) {
     val ringing = state.phase != CallManager.Phase.CONNECTED
-    val pulse = rememberInfiniteTransition(label = "voiceRing")
-    val scale by pulse.animateFloat(
-        0.94f, 1.06f,
-        infiniteRepeatable(tween(1200, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "voiceRingScale",
-    )
+    // No pulse: the status line says it is ringing. `ringing` and `reduceMotion` stay in the
+    // signature for the callers.
     Box(contentAlignment = Alignment.Center) {
-        if (ringing && !reduceMotion) {
-            Box(
-                Modifier
-                    .size(190.dp)
-                    .graphicsLayer { scaleX = scale; scaleY = scale }
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.10f)),
-            )
-        }
         Box(
             Modifier.size(160.dp).clip(CircleShape).background(VoiidColor.fieldFill)
                 .border(3.dp, VoiidColor.accent, CircleShape),
