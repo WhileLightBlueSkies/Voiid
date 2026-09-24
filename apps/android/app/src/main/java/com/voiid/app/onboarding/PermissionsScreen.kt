@@ -108,7 +108,7 @@ fun PermissionsScreen(onContinue: () -> Unit, onBack: (() -> Unit)? = null) {
     OnboardingScaffold(
         onBack = onBack,
         footer = {
-            OnboardingKitButton(title = "Allow All", enabled = !requesting, busy = requesting) {
+            OnboardingKitButton(title = "Allow All", enabled = !requesting, busy = requesting, usesBrandGradient = true) {
                 requesting = true
                 launcher.launch(permissions)
             }
