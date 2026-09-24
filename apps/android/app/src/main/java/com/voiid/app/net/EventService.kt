@@ -98,7 +98,28 @@ class EventService(private val api: ApiClient) {
     @Serializable data class TicketCode(val code:String,val expires_at:Long)
     suspend fun tickets():List<Ticket> = ApiClient.json.decodeFromString(Tickets.serializer(),api.request("GET","my/event-tickets")).tickets
     suspend fun ticketCode(id:String):TicketCode = ApiClient.json.decodeFromString(TicketCode.serializer(),api.request("GET","event-tickets/$id/code"))
-    @Serializable data class HostOrder(val id:String,val full_name:String?=null,val username:String?=null,val quantity:Int,val status:String,val checked_in:Int=0)
+    @Serializable data class HostOrder(val id:String,val full_name:String?=null,val username:String?=null,val quantity:Int,val status:String,val checked_in:Int=0,
+        val amount_minor:Int?=null,val currency:String?=null,
+        /** A refund on its way, why, and why it failed if it did (094). Twin of iOS `Order`. */
+        val refund_requested_at:String?=null,val refund_reason:String?=null,val refund_error:String?=null) {
+        val display:String get() = full_name?.takeIf{it.isNotBlank()} ?: username?.takeIf{it.isNotBlank()}?.let{"@$it"} ?: "Someone"
+        /** Paid and took money, and no refund already on its way (or the last one failed). */
+        val canRefund:Boolean get() = status=="paid" && (amount_minor ?: 0) > 0 && (refund_requested_at==null || refund_error!=null)
+    }
+    @Serializable private data class RefundBody(@EncodeDefault val refund:Boolean=true,val reason:String)
+    @Serializable private data class RefundCounts(val requested:Int=0,val failed:Int=0)
+    @Serializable private data class CancelRefundResponse(val refunds:RefundCounts?=null)
+    /** Cancel AND refund every paid order — an explicit choice, never the default. (requested, failed). */
+    @OptIn(ExperimentalSerializationApi::class)
+    suspend fun cancelAndRefund(id:String,reason:String="event_cancelled"):Pair<Int,Int> {
+        val r=ApiClient.json.decodeFromString(CancelRefundResponse.serializer(),
+            api.request("POST","events/$id/cancel",jsonBody=ApiClient.json.encodeToString(RefundBody.serializer(),RefundBody(reason=reason))))
+        return (r.refunds?.requested ?: 0) to (r.refunds?.failed ?: 0)
+    }
+    @Serializable private data class ReasonBody(val reason:String)
+    suspend fun refundOrder(id:String,orderId:String,reason:String) {
+        api.request("POST","events/$id/orders/$orderId/refund",jsonBody=ApiClient.json.encodeToString(ReasonBody.serializer(),ReasonBody(reason)))
+    }
     @Serializable private data class Orders(val orders:List<HostOrder>)
     suspend fun orders(id:String):List<HostOrder> = ApiClient.json.decodeFromString(Orders.serializer(),api.request("GET","events/$id/orders")).orders
     suspend fun transition(id:String,action:String) { require(action in listOf("publish","cancel"));api.request("POST","events/$id/$action") }

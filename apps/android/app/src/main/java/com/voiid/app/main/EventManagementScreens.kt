@@ -1,5 +1,7 @@
 package com.voiid.app.main
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.Image
@@ -143,6 +145,8 @@ fun EventManagerDialog(event:EventService.Event,canManage:Boolean,canAssign:Bool
  var editing by remember{mutableStateOf(false)}
  var tab by remember{mutableStateOf("Overview")}
  var search by remember{mutableStateOf("")}
+ var refundTarget by remember{mutableStateOf<EventService.HostOrder?>(null)}
+ var notice by remember{mutableStateOf<String?>(null)}
  if(editing) { EventEditorDialog(communityId="",event=event,onDismiss={editing=false},onSaved={onChanged();onDismiss()}); return }
  if(showScanner) { EventAdmissionScanner(event,onDismiss={showScanner=false},onAdmitted={ _ -> onChanged()}); return }
  if(showTeam) { EventTeamDialog(event.id) { showTeam=false }; return }
@@ -163,6 +167,7 @@ fun EventManagerDialog(event:EventService.Event,canManage:Boolean,canAssign:Bool
     item{Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){listOf("Overview","Guests","Check-in").forEach{label->FilterChip(selected=tab==label,onClick={tab=label},label={Text(label)})}}}
    }
    error?.let{item{Text(it);TextButton(onClick={retry++}){Text("Refresh")}}}
+   notice?.let{item{Text(it,color=VoiidColor.accentInk)}}
    if(canManage&&tab=="Overview") {
     item{Surface(shape=RoundedCornerShape(24.dp),color=VoiidColor.surfaceCard){Column(Modifier.fillMaxWidth().padding(22.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
      Text("Event details",style=MaterialTheme.typography.titleLarge)
@@ -180,7 +185,11 @@ fun EventManagerDialog(event:EventService.Event,canManage:Boolean,canAssign:Bool
     if(orders==null&&error==null)item{CircularProgressIndicator()}
     if(orders?.isEmpty()==true)item{Text("No registrations yet.")}
     orders?.filter{search.isBlank()||it.full_name.orEmpty().contains(search,true)||it.username.orEmpty().contains(search,true)}?.forEach{o->item{
-     Surface(shape=RoundedCornerShape(20.dp),color=VoiidColor.surfaceCard){Column(Modifier.fillMaxWidth().padding(20.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){Text(o.full_name ?: o.username ?: "Guest",style=MaterialTheme.typography.titleMedium);Text("${o.status} · ${o.quantity} places · ${o.checked_in} checked in")}}
+     Surface(shape=RoundedCornerShape(20.dp),color=VoiidColor.surfaceCard){Row(Modifier.fillMaxWidth().padding(20.dp),verticalAlignment=Alignment.CenterVertically){
+      Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(6.dp)){Text(o.display,style=MaterialTheme.typography.titleMedium);Text(orderDetail(o),style=MaterialTheme.typography.bodySmall,
+       color=if(o.refund_error!=null)VoiidColor.error else VoiidColor.textSecondary)}
+      if(o.canRefund)TextButton(enabled=!busy,onClick={refundTarget=o},modifier=Modifier.semantics{contentDescription="Refund ${o.display}"}){Text(if(o.refund_error==null)"Refund" else "Retry",color=VoiidColor.error)}
+     }}
     }}
    }
    if(event.status=="published"&&(!canManage||tab=="Check-in"))item{
@@ -194,7 +203,26 @@ fun EventManagerDialog(event:EventService.Event,canManage:Boolean,canAssign:Bool
   }
  }
 
- if(cancel)AlertDialog(onDismissRequest={if(!busy)cancel=false},title={Text("Cancel event?")},text={Text("Registration and admission will stop. Records are kept; refunds are handled separately. This cannot be reversed.")},confirmButton={TextButton(enabled=!busy,onClick={transition("cancel")}){Text("Cancel event")}},dismissButton={TextButton(enabled=!busy,onClick={cancel=false}){Text("Keep event")}})
+ // iOS EventHostView: with paid orders, cancelling offers "refund everyone" as an explicit choice.
+ val paidCount=orders.orEmpty().count{it.status=="paid"&&(it.amount_minor?:0)>0}
+ if(cancel)com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest={if(!busy)cancel=false},backDismissable=!busy,scrimDismissable=!busy){
+  Text("Cancel this event?",style=MaterialTheme.typography.titleMedium)
+  Text(if(paidCount>0)"Cancelling stops registration and admission. $paidCount ${if(paidCount==1)"person has" else "people have"} paid — refunding everyone returns their full amount to how they paid, usually within 5–7 working days. This cannot be reversed."
+   else "Cancelling stops admission. Refunds are handled separately.",style=MaterialTheme.typography.bodyMedium,color=VoiidColor.textSecondary)
+  if(paidCount>0)com.voiid.app.ui.components.VoiidDialogAction("Cancel and refund everyone",destructive=true,enabled=!busy){scope.launch{busy=true;error=null
+   try{val(req,failed)=service.cancelAndRefund(event.id);cancel=false
+    notice=if(failed==0)"Cancelled. $req refund${if(req==1)"" else "s"} on the way." else "Cancelled. $req refund${if(req==1)"" else "s"} on the way, $failed failed — retry them from the attendee list.";onChanged();retry++}
+   catch(e:CancellationException){throw e}catch(_:Exception){error="Unable to update event. Refresh and try again."}finally{busy=false}}}
+  com.voiid.app.ui.components.VoiidDialogAction(if(paidCount>0)"Cancel without refunds" else "Cancel event",destructive=true,enabled=!busy){transition("cancel")}
+  com.voiid.app.ui.components.VoiidDialogAction("Keep it",enabled=!busy){cancel=false}
+ }
+ refundTarget?.let{o->com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest={refundTarget=null}){
+  Text("Refund ${o.amount_minor?.let{java.text.NumberFormat.getCurrencyInstance().apply{currency=java.util.Currency.getInstance(o.currency?:"INR")}.format(it/100.0)} ?: ""} to ${o.display}?",style=MaterialTheme.typography.titleMedium)
+  listOf("attendee_request" to "Requested by the attendee","event_changed" to "Event changed","duplicate_payment" to "Duplicate payment","event_cancelled" to "Event cancelled").forEach{(code,label)->
+   com.voiid.app.ui.components.VoiidDialogAction(label){refundTarget=null;scope.launch{busy=true;error=null
+    try{service.refundOrder(event.id,o.id,code);notice="Refund on the way to ${o.display}."}catch(e:CancellationException){throw e}catch(e:Exception){error=e.message?:"Refund failed."}finally{busy=false;retry++}}}}
+  com.voiid.app.ui.components.VoiidDialogAction("Don't refund"){refundTarget=null}
+ }}
 }
 
 
@@ -701,4 +729,16 @@ private fun CommunityPeoplePanel(card:CommunityService.CommunityCard,isOwner:Boo
   }
  }
  confirm?.let{(member,action)->AlertDialog(onDismissRequest={if(!busy)confirm=null},title={Text(if(action=="admin")"Grant community admin access?" else "Update this member's access?")},text={Text(if(action=="admin")"They can manage the community and its events. Event-only managers should be invited from the event team screen." else if(action=="ban")"They will be removed and cannot rejoin until unblocked." else "This changes their access to this community.")},confirmButton={TextButton(enabled=!busy,onClick={act(member,action)}){Text("Confirm")}},dismissButton={TextButton(enabled=!busy,onClick={confirm=null}){Text("Cancel")}})}
+}
+
+
+/** Twin of iOS EventHostView.orderDetail — the attendee's state in words. */
+private fun orderDetail(o:EventService.HostOrder):String {
+ val parts=mutableListOf<String>()
+ if(o.quantity>1)parts+="${o.quantity} tickets"
+ if(o.checked_in>0)parts+="Checked in"
+ if(o.status=="paid"&&o.refund_error!=null){parts+="Refund failed: ${o.refund_error}";return parts.joinToString(" · ")}
+ if(o.status=="paid"&&o.refund_requested_at!=null){parts+="Refund on the way";o.refund_reason?.let{parts+=it};return parts.joinToString(" · ")}
+ parts+=when(o.status){"paid"->"Confirmed";"pending"->"Holding a seat";"cancelled"->"Cancelled";"refunded"->"Refunded";"failed"->"Payment failed";else->o.status}
+ return parts.joinToString(" · ")
 }
