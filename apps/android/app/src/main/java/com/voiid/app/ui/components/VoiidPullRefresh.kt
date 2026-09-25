@@ -1,5 +1,9 @@
 package com.voiid.app.ui.components
 
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.composed
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
@@ -145,26 +149,58 @@ fun Modifier.voiidPullRefresh(
             return available
         }
     }
-    return this
+    // Screens whose scroll area starts at the very top (under the status bar) would draw the
+    // spinner beneath the clock. iOS puts it just below the bar, so shift it by however much
+    // of the status bar this container sits under.
+    return this.composed {
+        val statusTop = androidx.compose.foundation.layout.WindowInsets.statusBars
+            .getTop(LocalDensity.current).toFloat()
+        var windowTop by remember { mutableFloatStateOf(0f) }
+        Modifier
+        .onGloballyPositioned { windowTop = it.positionInWindow().y }
         .nestedScroll(connection)
         .drawWithContent {
+            val underBar = (statusTop - windowTop).coerceAtLeast(0f)
             // Content rides down with the finger…
             translate(top = state.pullPx * 0.55f) { this@drawWithContent.drawContent() }
             // …and the indicator draws over the vacated strip.
-            if (state.pullPx > 2f || state.refreshing) {
+            // iOS UIRefreshControl, not a Material arc: an 8-spoke activity indicator ~20dp
+            // across in system grey, centred in the gap the content leaves. Spokes appear one by
+            // one as the pull arms it, then the wheel ticks round while refreshing.
+            //
+            // (The old arc passed no `size`, so drawArc filled the WHOLE canvas — a screen-wide
+            // ring instead of a spinner.)
+            // Only a PULL shows the wheel. A background reload (a tab opening, a sync) also sets
+            // `refreshing`, and drawing for it put the spinner over the title with no gap
+            // under it — iOS's refresh control likewise appears only for a user pull.
+            if (state.pullPx > 2f) {
                 val fraction = (state.pullPx / (thresholdDp.dp.value * 2.2f)).coerceIn(0f, 1f)
-                val radius = 10.dp.toPx()
-                val cy = (state.pullPx * 0.55f).coerceAtMost(radius * 2.4f)
-                val alpha = if (state.refreshing) 1f else 0.25f + 0.75f * fraction
-                val sweep = if (state.refreshing || fraction >= 1f) 360f else 300f * fraction
-                drawArc(
-                    color = indicatorColor.copy(alpha = alpha),
-                    startAngle = -90f + state.spinDegrees,
-                    sweepAngle = sweep,
-                    useCenter = false,
-                    topLeft = Offset(size.width / 2 - radius, cy / 2 - radius),
-                    style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
-                )
+                val gap = state.pullPx * 0.55f
+                val outer = 9.5.dp.toPx()
+                val inner = 4.8.dp.toPx()
+                val cx = size.width / 2
+                val cy = underBar + (gap / 2).coerceIn(outer + 2.dp.toPx(), 30.dp.toPx())
+                val spokes = 8
+                val shown = if (state.refreshing) spokes else (fraction * spokes).toInt().coerceIn(1, spokes)
+                // Stepped rotation, like the iOS wheel: the lead spoke jumps 45° at a time.
+                val lead = if (state.refreshing) ((state.spinDegrees / 45f).toInt() % spokes) else 0
+                val grey = Color(0xFF8E8E93)
+                for (k in 0 until shown) {
+                    val angle = Math.toRadians((-90.0 + k * 45.0)).toFloat()
+                    val alpha = if (state.refreshing) {
+                        val age = ((lead - k) % spokes + spokes) % spokes
+                        1f - age * (0.75f / spokes)
+                    } else 0.35f + 0.55f * fraction
+                    val c = kotlin.math.cos(angle); val sn = kotlin.math.sin(angle)
+                    drawLine(
+                        color = grey.copy(alpha = alpha.coerceIn(0f, 1f)),
+                        start = Offset(cx + c * inner, cy + sn * inner),
+                        end = Offset(cx + c * outer, cy + sn * outer),
+                        strokeWidth = 2.3.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                }
             }
         }
+    }
 }

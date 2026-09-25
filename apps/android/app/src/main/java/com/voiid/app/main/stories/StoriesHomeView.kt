@@ -89,9 +89,9 @@ fun StoriesHomeView(
     val pull = rememberVoiidPullRefresh(refreshing = stories.refreshing) { stories.refresh() }
     LaunchedEffect(Unit) { stories.refresh() }
 
-    Box(Modifier.fillMaxSize().background(VoiidColor.background).voiidPullRefresh(pull, VoiidColor.primary)) {
+    Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
         LazyColumn(
-            Modifier.fillMaxSize().padding(horizontal = 16.dp),
+            Modifier.fillMaxSize().voiidPullRefresh(pull, VoiidColor.primary).padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
             contentPadding = PaddingValues(bottom = 104.dp),
         ) {

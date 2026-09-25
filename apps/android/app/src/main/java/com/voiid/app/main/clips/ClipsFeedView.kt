@@ -119,7 +119,7 @@ fun ClipsFeedView(
             .collect { clips.loadMoreIfNeeded(it) }
     }
 
-    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().voiidPullRefresh(pull, VoiidColor.primary)) {
+    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
         // iOS ClipsFeedView `topBar`: NO title. One row — the Explore/Following switch in a
         // single recessed track, then the floating cluster: My clips, New clip (38 circles
         // with a hairline) and your creator avatar once a profile exists.
@@ -167,7 +167,9 @@ fun ClipsFeedView(
         // Every branch takes the same weighted slot: this Column's other child is the
         // header, so a child without weight would size to its intrinsic height and the
         // skeleton's fillMaxSize would resolve against an unbounded constraint.
-        val slot = Modifier.fillMaxWidth().weight(1f)
+        // The pull moves the grid only; the top bar stays fixed, as it sits outside the
+        // ScrollView on iOS.
+        val slot = Modifier.fillMaxWidth().weight(1f).voiidPullRefresh(pull, VoiidColor.primary)
         if (followingScope) {
             FollowingFeed(
                 creators = creators,
