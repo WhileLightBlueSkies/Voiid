@@ -184,9 +184,9 @@ fun GameSetupSheet(
                 BotDifficulty.HARD -> if (slug == "snake") "Hardcore Arena" else "Hard Mode (vs Bots)"
             }
             val detail = when (selectedDifficulty) {
-                BotDifficulty.EASY -> if (slug == "snake") "Calm arena with fewer bots, relaxed growth" else "Relaxed bots, gentle moves, easy practice"
-                BotDifficulty.MODERATE -> if (slug == "snake") "Competitive 8 bots, balanced speed" else "Standard balanced match against 3 bots"
-                BotDifficulty.HARD -> if (slug == "snake") "Fast paced, aggressive hunting bots" else "Aggressive bots that cut and race"
+                BotDifficulty.EASY -> if (slug == "carrom") "You play white, the bot plays black" else if (slug == "snake") "Calm arena with fewer bots, relaxed growth" else "Relaxed bots, gentle moves, easy practice"
+                BotDifficulty.MODERATE -> if (slug == "carrom") "You play white, the bot plays black" else if (slug == "snake") "Competitive 8 bots, balanced speed" else "Standard balanced match against 3 bots"
+                BotDifficulty.HARD -> if (slug == "carrom") "You play white, the bot plays black" else if (slug == "snake") "Fast paced, aggressive hunting bots" else "Aggressive bots that cut and race"
             }
 
             Column(

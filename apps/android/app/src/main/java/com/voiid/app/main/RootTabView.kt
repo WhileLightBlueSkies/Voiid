@@ -816,7 +816,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                 // without a friend already online. Every slug in this list MUST have a branch in
                 // the practice router below.
                 onPlayBot = if (game.slug !in
-                    listOf("tictactoe", "rps", "cricket", "snake", "seabattle", "ludo")
+                    listOf("tictactoe", "rps", "cricket", "snake", "seabattle", "ludo", "carrom")
                 ) null
                 else { level, skill ->
                     setupGame = null
@@ -895,6 +895,16 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                             com.voiid.app.main.games.BotDifficulty.EASY -> "easy"
                             com.voiid.app.main.games.BotDifficulty.MODERATE -> "moderate"
                             com.voiid.app.main.games.BotDifficulty.HARD -> "hard"
+                        },
+                        onClose = { botGame = null },
+                    )
+                    // Local physics vs an on-device bot, like iOS CarromGameView. Difficulty is
+                    // the bot's aim jitter (iOS CarromEngine levels 1…3).
+                    "carrom" -> com.voiid.app.main.games.carrom.CarromScreen(
+                        botDifficulty = when (level) {
+                            com.voiid.app.main.games.BotDifficulty.EASY -> 1
+                            com.voiid.app.main.games.BotDifficulty.MODERATE -> 2
+                            com.voiid.app.main.games.BotDifficulty.HARD -> 3
                         },
                         onClose = { botGame = null },
                     )

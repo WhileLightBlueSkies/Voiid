@@ -527,6 +527,13 @@ private val SHELF = listOf(
         listOf(Color(0xFF13828C), Color(0xFF68B8BD)), "Board",
         GamesService.CatalogGame("ludo", "ludo", "Ludo", "Board", 1, 4),
     ),
+    // iOS GamesModels: Carrom sits between Ludo and Snake Arena on the Play shelf.
+    ShelfDef(
+        "carrom", "Carrom", "You play white. Clear your colour to win.",
+        "You + bot", "5–15 min", com.voiid.app.R.drawable.game_carrom_home, Icons.Outlined.SportsEsports,
+        listOf(Color(0xFF13828C), Color(0xFFE8A72E)), "Board",
+        GamesService.CatalogGame("carrom", "carrom", "Carrom", "Board", 1, 2),
+    ),
     ShelfDef(
         "snake", "Snake Arena", "Eat, grow, and cut off anyone bigger than you.",
         "You + 11 bots", "3–8 min", com.voiid.app.R.drawable.game_snake_home, Icons.Default.Gesture,
@@ -540,7 +547,6 @@ private class SoonDef(val slug: String, val title: String, val pitch: String, va
 
 private val SOON = listOf(
     SoonDef("word", "Word Duel", "Two players, one board, seven letters.", Icons.Outlined.TextFields, Color(0xFF3B7DD8)),
-    SoonDef("carrom", "Carrom", "Flick, pocket, repeat.", Icons.Outlined.SportsEsports, Color(0xFFE8A72E)),
     SoonDef("quiz", "Quiz Night", "Ten questions, everyone at once.", Icons.Outlined.QuestionMark, Color(0xFF8B5CF6)),
 )
 
