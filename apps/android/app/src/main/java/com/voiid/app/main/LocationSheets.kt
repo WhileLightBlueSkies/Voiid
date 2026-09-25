@@ -221,7 +221,7 @@ fun LocationComposeSheet(conv: VConversation, onDismiss: () -> Unit) {
                         style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
                     Text("SHARE FOR", style = VoiidFont.rounded(12, FontWeight.SemiBold), color = VoiidColor.textSecondary)
                     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(VoiidColor.surfaceCard)) {
-                        listOf(900 to "15 min", 3600 to "1 hour", 28800 to "8 hours").forEach { (seconds, title) ->
+                        listOf(900 to "15 minutes", 3600 to "1 hour", 28800 to "8 hours").forEach { (seconds, title) ->
                             Row(Modifier.fillMaxWidth().clickable(enabled = !sending) { duration = seconds }.padding(16.dp),
                                 verticalAlignment = Alignment.CenterVertically) {
                                 Text(title, style = VoiidFont.rounded(16, FontWeight.Medium), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))

@@ -467,7 +467,7 @@ fun MyQrCodeScreen(session: AppSession, onBack: () -> Unit) {
                         modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp),
                     )
                 } else {
-                    Text("Couldn't build the QR code.", style = VoiidFont.rounded(13), color = VoiidColor.error)
+                    Text("Couldn’t draw the code.", style = VoiidFont.rounded(13), color = VoiidColor.error)
                 }
             }
 
@@ -477,7 +477,7 @@ fun MyQrCodeScreen(session: AppSession, onBack: () -> Unit) {
                 color = VoiidColor.textPrimary,
             )
             Text(
-                "Have someone scan this to start a chat with you.",
+                "Scan to find me on Voiid",
                 style = VoiidFont.rounded(13),
                 color = VoiidColor.textSecondary,
                 textAlign = TextAlign.Center,
@@ -674,7 +674,7 @@ private fun LinkActions(
         }
         ActionButton(
             icon = Icons.Default.Share,
-            label = "Share",
+            label = "Share link",
             modifier = Modifier.weight(1f),
         ) {
             haptics.tap()

@@ -335,7 +335,7 @@ private fun IncomingCallUi(state: CallManager.CallState) {
         ) {
             Spacer(Modifier.height(64.dp))
             Text(
-                if (isVideo) "Incoming video call" else "Incoming voice call",
+                if (isVideo) "Incoming video call" else "Incoming call",
                 style = VoiidFont.rounded(15), color = Color.White.copy(alpha = 0.85f),
             )
             Spacer(Modifier.height(24.dp))
@@ -433,15 +433,17 @@ private fun InCallUi(state: CallManager.CallState) {
     // implying everything is fine.
     val statusText = when {
         state.phase == CallManager.Phase.ENDED -> when (state.endReason) {
-            "declined", "declined-elsewhere" -> "Call declined"
-            "busy" -> "Busy"
+            // iOS endedText: says whether it was them or the network.
+            "declined", "declined-elsewhere" -> "Declined"
+            "busy" -> "${state.peerName} is on another call"
             "no-answer" -> "No answer"
-            "unavailable" -> "Unavailable"
+            "unavailable" -> "${state.peerName} is unavailable"
             "answered-elsewhere" -> "Answered on another device"
-            "ice-failed", "ice-closed", "setup-failed", "ring-failed" -> "Call failed"
+            "ice-failed", "ice-closed" -> "Connection lost"
+            "setup-failed", "ring-failed" -> "Couldn't connect"
             else -> "Call ended"
         }
-        conference?.stage == ConferenceManager.Stage.ESCALATING -> "Adding participant…"
+        conference?.stage == ConferenceManager.Stage.ESCALATING -> "Adding to call…"
         conference != null && !conference.sfuConnected -> "Joining conference…"
         conference != null -> "Conference · %02d:%02d".format(seconds / 60, seconds % 60)
         state.reconnecting -> "Reconnecting…"

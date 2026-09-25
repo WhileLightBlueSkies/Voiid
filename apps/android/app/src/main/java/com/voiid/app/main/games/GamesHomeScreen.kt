@@ -104,6 +104,12 @@ fun GamesHomeScreen(
     onAcceptInvite: (GamesService.PendingInvite) -> Unit = {},
 ) {
     val context = LocalContext.current
+    // Every game opened from this tab is recorded, so "Continue" names a real last game.
+    val lastPlayed = remember { com.voiid.app.net.LastPlayedStore.get(context) }
+    val pick: (GamesService.CatalogGame) -> Unit = { g ->
+        com.voiid.app.net.LastPlayedStore.record(context, g.slug, g.name)
+        onPickGame(g)
+    }
     /** The coming-soon game whose sheet is open. iOS `selectedUpcoming`. */
     var upcoming by remember { mutableStateOf<SoonItem?>(null) }
     val service = remember { GamesService(ApiClient(TokenStore.get(context))) }
@@ -185,16 +191,18 @@ fun GamesHomeScreen(
                 )
             }
 
-            // Continue last played — only while Ludo is actually on the shelf.
-            if (shelf.any { it.def.slug == "ludo" && !it.needsUpdate }) Row(
+            // Continue last played — only once something HAS been played, and while it is
+            // still on the shelf.
+            val last = lastPlayed?.takeIf { lp -> shelf.any { it.def.slug == lp.slug && !it.needsUpdate } }
+            if (last != null) Row(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(VoiidRadius.md))
                     .background(VoiidColor.surfaceCard)
                     .clickable {
-                        val target = games.firstOrNull { it.slug == "ludo" }
-                            ?: GamesService.CatalogGame("ludo", "ludo", "Ludo", "Board", 1, 4)
-                        onPickGame(target)
+                        val target = games.firstOrNull { it.slug == last.slug }
+                            ?: GamesService.CatalogGame(last.slug, last.slug, last.title, "Board", 1, 4)
+                        pick(target)
                     }
                     .padding(VoiidSpacing.sm + 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -217,12 +225,12 @@ fun GamesHomeScreen(
 
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "Continue Ludo",
+                        "Continue ${last.title}",
                         style = VoiidFont.rounded(14, FontWeight.SemiBold),
                         color = VoiidColor.textPrimary,
                     )
                     Text(
-                        "Yesterday",
+                        last.whenText(),
                         style = VoiidFont.rounded(11, FontWeight.Normal),
                         color = VoiidColor.textSecondary,
                     )
@@ -290,7 +298,7 @@ fun GamesHomeScreen(
                     needsUpdate = item.needsUpdate,
                     onClick = {
                         if (item.needsUpdate) toastUpdate()
-                        else onPickGame(games.firstOrNull { it.slug == d.slug } ?: d.fallback)
+                        else pick(games.firstOrNull { it.slug == d.slug } ?: d.fallback)
                     },
                 )
             }
