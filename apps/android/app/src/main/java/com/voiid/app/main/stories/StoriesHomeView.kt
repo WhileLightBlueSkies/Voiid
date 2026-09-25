@@ -1,5 +1,9 @@
 package com.voiid.app.main.stories
 
+import androidx.compose.ui.draw.shadow
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -91,17 +95,21 @@ fun StoriesHomeView(
         ) {
             item {
                 Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // iOS: inline nav bar — "Moments" centred (screenTitle 26 bold), archive + gear
+                // trailing in the toolbar tint.
+                Box(Modifier.fillMaxWidth().height(52.dp)) {
                 Text(
-                    "Moments", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary,
-                    modifier = Modifier.weight(1f).padding(vertical = 12.dp),
+                    "Moments", style = VoiidFont.rounded(26, FontWeight.Bold), color = VoiidColor.textPrimary,
+                    modifier = Modifier.align(Alignment.Center),
                 )
+                Row(Modifier.align(Alignment.CenterEnd)) {
                 androidx.compose.material3.IconButton(onClick = { showArchive = true }) {
-                    Icon(Icons.Default.Archive, "Archive", tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Outlined.Archive, "Archive", tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
                 }
                 // Moments settings: who sees your moments, and what's kept.
                 androidx.compose.material3.IconButton(onClick = { showSettings = true }) {
-                    Icon(Icons.Default.Settings, "Moments settings", tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Outlined.Settings, "Moments settings", tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
+                }
                 }
                 }
             }
@@ -166,7 +174,9 @@ fun StoriesHomeView(
 
         // Compose FAB
         Box(
-            Modifier.align(Alignment.BottomEnd).padding(24.dp).size(60.dp).clip(CircleShape)
+            Modifier.align(Alignment.BottomEnd).padding(24.dp).size(60.dp)
+                .shadow(12.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.28f), spotColor = Color.Black.copy(alpha = 0.28f))
+                .clip(CircleShape)
                 .background(VoiidColor.primary).softClickable(scale = 0.9f, onClick = onCompose),
             contentAlignment = Alignment.Center,
         ) { Icon(Icons.Default.Add, "Post a moment", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(28.dp)) }
@@ -220,15 +230,18 @@ private fun StoryRow(
 
 @Composable
 private fun EmptyState() {
+    // iOS emptyState: dashed circle 44, headline, centred subheadline; top 48, sides 32.
     Column(
-        Modifier.fillMaxWidth().padding(top = 80.dp),
+        Modifier.fillMaxWidth().padding(top = 48.dp).padding(horizontal = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("No moments yet", style = VoiidFont.rounded(18, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        Icon(Icons.Outlined.Circle, null, tint = VoiidColor.textSecondary.copy(alpha = 0.5f), modifier = Modifier.size(44.dp))
+        Text("No moments yet", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
         Text(
             "Share a photo or video with your contacts. It disappears after 24 hours.",
-            style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
+            style = VoiidFont.rounded(15), color = VoiidColor.textSecondary,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
     }
 }

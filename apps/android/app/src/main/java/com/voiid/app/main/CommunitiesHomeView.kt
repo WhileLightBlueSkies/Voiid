@@ -1,5 +1,9 @@
 package com.voiid.app.main
 
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Groups
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.graphics.asImageBitmap
@@ -139,61 +143,69 @@ fun CommunitiesHomeView(
 
     val homeContent: @Composable () -> Unit = {
     Column(Modifier.fillMaxSize().background(VoiidColor.background).voiidPullRefresh(pull, VoiidColor.primary)) {
-        Row(
-            Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        // iOS: inline nav bar — title centred (screenTitle 26 bold), "+" and the Social
+        // Profile button as trailing toolbar items; then `.searchable` "Find a community".
+        Box(Modifier.fillMaxWidth().then(if (discovering) Modifier else Modifier.statusBarsPadding()).height(52.dp).padding(horizontal = 8.dp)) {
             if (discovering) {
-                androidx.compose.material3.TextButton(onClick = { discovering = false; query = "" }) { Text("Back") }
+                androidx.compose.material3.TextButton(onClick = { discovering = false; query = "" },
+                    modifier = Modifier.align(Alignment.CenterStart)) { Text("Done", color = VoiidColor.primary) }
             }
-            Text(if (discovering) "Discover" else "Communities", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
-            Spacer(Modifier.weight(1f))
-            Box(
-                Modifier.size(40.dp).clip(CircleShape).background(VoiidColor.fieldFill)
-                    .softClickable { haptics.tap(); showCreate = true },
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.Add, "Create a community", tint = VoiidColor.primary) }
-
-            // The same identity, in the same corner, as Clips and Games.
-            com.voiid.app.main.clips.SocialProfileButton(
-                creators = androidx.lifecycle.viewmodel.compose.viewModel(),
-                onOpen = onOpenProfile,
-            )
-        }
-
-        if (!discovering) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp)
-                .clip(RoundedCornerShape(16.dp)).background(VoiidColor.surfaceCard)
-                .softClickable { haptics.tap(); query = ""; discovering = true }
-                .semantics { contentDescription = "Discover communities. Find people building what you build" }
-                .padding(16.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Outlined.Explore, null, tint = VoiidColor.primary, modifier = Modifier.size(28.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Discover communities", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-                    Text("Find people building what you build", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+            Text(if (discovering) "Discover" else "Communities", style = VoiidFont.rounded(26, FontWeight.Bold),
+                color = VoiidColor.textPrimary, modifier = Modifier.align(Alignment.Center))
+            if (!discovering) Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.IconButton(onClick = { haptics.tap(); showCreate = true }) {
+                    Icon(Icons.Default.Add, "Create a community", tint = VoiidColor.primary, modifier = Modifier.size(24.dp))
                 }
-                Text("›", color = VoiidColor.textSecondary, style = VoiidFont.rounded(24))
+                // The same identity, in the same corner, as Clips and Games.
+                com.voiid.app.main.clips.SocialProfileButton(
+                    creators = androidx.lifecycle.viewmodel.compose.viewModel(),
+                    onOpen = onOpenProfile,
+                )
             }
         }
+
         androidx.activity.compose.BackHandler(enabled = discovering) { discovering = false; query = "" }
 
-        if (discovering) BasicTextField(
+        BasicTextField(
             value = query, onValueChange = { query = it },
             singleLine = true,
             textStyle = TextStyle(color = VoiidColor.textPrimary),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
                 .spotlightTarget("comm_search_bar", shape = SpotlightShapeType.ROUNDED_RECT, cornerRadius = VoiidRadius.md, padding = 4.dp)
-                .clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.fieldFill)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .clip(RoundedCornerShape(10.dp)).background(VoiidColor.fieldFill)
+                .padding(horizontal = 10.dp, vertical = 9.dp),
             decorationBox = { inner ->
-                if (query.isEmpty()) {
-                    Text("Find a community", style = VoiidFont.rounded(15), color = VoiidColor.placeholder)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(Icons.Default.Search, null, tint = VoiidColor.placeholder, modifier = Modifier.size(18.dp))
+                    Box {
+                        if (query.isEmpty()) Text("Find a community", style = VoiidFont.rounded(17), color = VoiidColor.placeholder)
+                        inner()
+                    }
                 }
-                inner()
             },
         )
-        Spacer(Modifier.height(12.dp))
+
+        // iOS discoveryRow, pinned under the search bar: 38 accent tile, 14.5/12.5 text,
+        // 12 padding, lg radius with a divider hairline.
+        if (!discovering) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                .clip(RoundedCornerShape(VoiidRadius.lg)).background(VoiidColor.surfaceCard)
+                .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+                .softClickable { haptics.tap(); query = ""; discovering = true }
+                .semantics { contentDescription = "Discover communities. Find people building what you build" }
+                .padding(12.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(38.dp).clip(RoundedCornerShape(11.dp)).background(VoiidColor.accent),
+                    contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Explore, null, tint = VoiidColor.textOnAccent, modifier = Modifier.size(20.dp))
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text("Discover communities", style = VoiidFont.rounded(14.5f, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                    Text("Find people building what you build", style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary)
+                }
+                Icon(Icons.Default.ChevronRight, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(16.dp))
+            }
+        } else Spacer(Modifier.height(12.dp))
 
         val recommended = !discovering && !searching && mine.isEmpty() && !loading && error == null
         val browsing = discovering || searching || recommended
@@ -212,7 +224,7 @@ fun CommunitiesHomeView(
                     } else scope.launch { loadMine() }
                 }
             listLoading && shown.isEmpty() -> Message("Finding communities…")
-            shown.isEmpty() && browsing -> Message(if (searching) "No communities match that." else "Nothing to discover yet.")
+            shown.isEmpty() && browsing && !recommended -> Message(if (searching) "No communities match that." else "Nothing to discover yet.")
             shown.isEmpty() -> Column(
                 Modifier.fillMaxSize().padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
