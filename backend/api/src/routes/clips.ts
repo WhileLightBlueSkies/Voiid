@@ -528,6 +528,9 @@ router.post('/:id/view', requireAuth, rateLimit({ max: 240, windowSeconds: 60, b
   const inserted = await query<{ clip_id: string }>(
     `insert into clip_views (clip_id, user_id)
        select $1, $2 from clips where id = $1 and deleted_at is null and removed_at is null
+         -- The creator watching their own clip is not a view. Falls through to the plain
+         -- read below, so the client still gets the current count.
+         and author_id is distinct from $2::uuid
        on conflict do nothing
        returning clip_id`,
     [clipId, user_id]
