@@ -189,9 +189,8 @@ struct CommunityInboxView: View {
 
         // Same lookup ChatsHome uses for a notification deep-link: the conversation may not be
         // in memory yet, so load the list before giving up on it.
-        let present = chat.directConversations.contains { $0.id == convId }
-        if !present { await chat.loadConversations() }
-        if let conv = chat.directConversations.first(where: { $0.id == convId }) {
+        if chat.conversation(id: convId) == nil { await chat.loadConversations() }
+        if let conv = chat.conversation(id: convId) {
             openConversation = conv
         } else {
             loadError = "That conversation isn’t available on this device yet."

@@ -407,6 +407,14 @@ final class ChatStore: ObservableObject {
         set { UserDefaults.standard.set(Array(newValue), forKey: standaloneGroupKey + ".hostThreads") }
     }
     private var communityConversations: [VConversation] = []
+
+    /// Any conversation this account is in, whatever list it lives in — chats, groups, or
+    /// community-owned (channels and host threads, which are groups underneath and appear in
+    /// no list). Opening a community thread has to find it here: searching the chats list
+    /// alone never did, so the inbox and the Message button said it "isn't available".
+    func conversation(id: String) -> VConversation? {
+        (directConversations + groupConversations + communityConversations).first { $0.id == id }
+    }
     private var encryptedGroupConversations: [VConversation] { groupConversations + communityConversations }
     private var standaloneGroupKey: String {
         "voiid.standalone-groups.v1.\(TokenStore.shared.userId ?? "signed-out")"

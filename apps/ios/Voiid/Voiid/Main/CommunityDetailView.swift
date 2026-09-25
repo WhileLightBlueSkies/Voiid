@@ -51,10 +51,10 @@ struct CommunityDetailView: View {
     /// uses for a notification deep-link: it may not be in memory yet, so load before failing.
     private func openHostConversation(_ convId: String) {
         Task { @MainActor in
-            if !chat.directConversations.contains(where: { $0.id == convId }) {
+            if chat.conversation(id: convId) == nil {
                 await chat.loadConversations()
             }
-            if let conv = chat.directConversations.first(where: { $0.id == convId }) {
+            if let conv = chat.conversation(id: convId) {
                 openConversation = conv
             } else {
                 error = "That conversation isn’t available on this device yet."
