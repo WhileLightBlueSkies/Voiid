@@ -1254,7 +1254,9 @@ private fun GridCard(conv: VConversation, modifier: Modifier, holdProgress: Floa
     }
 
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
+        // The WHOLE tile is clipped, not just the photo: the name gradient below is a sibling
+        // of the photo box, and unclipped it painted square corners over the rounded bottom.
+        Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(VoiidRadius.lg))) {
             Box(
                 Modifier
                     .fillMaxSize()

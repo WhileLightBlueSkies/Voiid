@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import com.voiid.app.ui.components.blockTouchesBelow
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.outlined.SmartDisplay
 import androidx.compose.material.icons.filled.Forum
@@ -557,6 +558,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // Chat detail — slides in over everything (covers the tab bar), like the iOS push.
         AnimatedVisibility(
             visible = openConversation != null,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInHorizontally { it } + fadeIn(),
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
@@ -594,6 +596,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         val clipZoom = com.voiid.app.main.clips.ClipZoomOrigin.value
         AnimatedVisibility(
             visible = openClip != null,
+            modifier = Modifier.blockTouchesBelow(),
             enter = scaleIn(tween(240), initialScale = 0.4f, transformOrigin = clipZoom) +
                 fadeIn(tween(140)),
             exit = scaleOut(tween(200), targetScale = 0.4f, transformOrigin = clipZoom) +
@@ -773,6 +776,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // Today's daily challenge — full-screen, same treatment as the leaderboard.
         AnimatedVisibility(
             visible = showDaily,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
@@ -790,6 +794,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // Leaderboard — full-screen cover, same treatment as the boards.
         AnimatedVisibility(
             visible = showLeaderboard,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
@@ -853,6 +858,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
 
         AnimatedVisibility(
             visible = showSkinPicker,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
@@ -870,6 +876,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // renderer runs is chosen by slug, the same key the server's rules modules use.
         AnimatedVisibility(
             visible = botGame != null,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
@@ -917,6 +924,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // board the moment the opponent's join produces an opening frame.
         AnimatedVisibility(
             visible = lobby != null,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
@@ -940,6 +948,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // Game board — full-screen cover (must sit over the tab bar), matching openClip.
         AnimatedVisibility(
             visible = openGameMatch != null,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
@@ -1002,6 +1011,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // Story viewer — full-screen cover (must sit over the tab bar), matching openClip.
         AnimatedVisibility(
             visible = openStoryContext != null,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
@@ -1067,6 +1077,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // Call surface — real WebRTC call, full-screen cover on top of everything.
         AnimatedVisibility(
             visible = callState != null,
+            modifier = Modifier.blockTouchesBelow(),
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
@@ -1077,6 +1088,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // (GroupCallManager/CallManager refuse to start while the other holds a call).
         AnimatedVisibility(
             visible = groupCallState != null,
+            modifier = Modifier.blockTouchesBelow(),
             enter = fadeIn(),
             exit = fadeOut(),
         ) {

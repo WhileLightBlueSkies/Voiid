@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import com.voiid.app.ui.components.blockTouchesBelow
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -662,6 +663,7 @@ fun ChatDetailView(
         // Chat details / profile overlay
         AnimatedVisibility(
             visible = showDetails,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInHorizontally { it } + fadeIn(),
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
@@ -688,6 +690,7 @@ fun ChatDetailView(
         // Safety number (verify encryption) — mirrors iOS `SafetyNumberView`.
         AnimatedVisibility(
             visible = showSafetyNumber,
+            modifier = Modifier.blockTouchesBelow(),
             enter = slideInHorizontally { it } + fadeIn(),
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
