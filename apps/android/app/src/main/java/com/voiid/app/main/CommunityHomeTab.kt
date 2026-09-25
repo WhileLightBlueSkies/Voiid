@@ -266,9 +266,15 @@ fun CommunityHomeTab(
             deleteBusy = deleteBusy,
             canDelete = ::canDelete,
             onViewed = { id ->
-                if (viewed.add(id)) scope.launch {
+                // ONE VIEW PER PERSON PER POST: `viewed` lasts only as long as this screen, so
+                // the device also remembers which posts this account has counted. The server
+                // keeps only the number (and never counts the author) — mirrors iOS.
+                if (viewed.add(id) && !CountedPostViews.contains(context, id)) scope.launch {
                     runCatching { svc.viewPost(communityId, id) }
-                        .onSuccess { count -> posts = posts.map { if (it.id == id) it.copy(view_count = count) else it } }
+                        .onSuccess { count ->
+                            CountedPostViews.insert(context, id)
+                            posts = posts.map { if (it.id == id) it.copy(view_count = count) else it }
+                        }
                         .onFailure { viewed.remove(id) }
                 }
             },
@@ -1021,3 +1027,23 @@ private suspend fun prepareCommunityPostImage(context: android.content.Context, 
             } finally { bitmap.recycle() }
         } finally { file.delete() }
     }
+
+/** Community posts this account has already counted a view for, on this device (bounded). */
+internal object CountedPostViews {
+    private const val LIMIT = 5000
+    private fun prefs(context: android.content.Context) =
+        context.getSharedPreferences("voiid_counted_post_views", android.content.Context.MODE_PRIVATE)
+    private fun key(context: android.content.Context) =
+        "ids_" + (com.voiid.app.net.TokenStore.get(context).userId ?: "signed-out")
+
+    fun contains(context: android.content.Context, id: String): Boolean =
+        prefs(context).getString(key(context), "")!!.split(',').contains(id)
+
+    fun insert(context: android.content.Context, id: String) {
+        val ids = prefs(context).getString(key(context), "")!!.split(',').filter { it.isNotEmpty() }.toMutableList()
+        if (id in ids) return
+        ids.add(id)
+        while (ids.size > LIMIT) ids.removeAt(0)
+        prefs(context).edit().putString(key(context), ids.joinToString(",")).apply()
+    }
+}

@@ -2501,6 +2501,12 @@ router.post(
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // Count impressions only; no viewer identities or per-person view rows are retained.
+//
+// THE AUTHOR IS NEVER COUNTED. Reading your own post again is not someone seeing it, and it
+// was the whole reason a post nobody else had opened kept climbing. The update's WHERE skips
+// the author and the route then answers with the current number, so the client sees an
+// ordinary success. Repeat views by other people are de-duplicated on their device (it
+// remembers which posts it has counted), which keeps this table free of per-person rows.
 router.post('/:id/posts/:postId/view', requireAuth,
   rateLimit({max:120,windowSeconds:60,bucket:'community-post-view'}),
   asyncHandler(async (req,res) => {
@@ -2513,8 +2519,16 @@ router.post('/:id/posts/:postId/view', requireAuth,
       where id=$1 and community_id=$2 and removed_at is null
         and (scheduled_at is null or scheduled_at<=now())
         and (channel_id is null or $3::boolean)
-      returning view_count`,[postId,gate.community.id,gate.isMember]);
-    if (!rows.length) return res.status(404).json({error:'no such post'});
+        and author_id is distinct from $4::uuid
+      returning view_count`,[postId,gate.community.id,gate.isMember,user_id]);
+    if (!rows.length) {
+      // Either no such post, or the viewer is its author — answer the latter with the count.
+      const own = await query<{view_count:number}>(`select view_count from community_posts
+        where id=$1 and community_id=$2 and removed_at is null and author_id=$3::uuid`,
+        [postId,gate.community.id,user_id]);
+      if (own.length) return res.json({view_count:own[0].view_count});
+      return res.status(404).json({error:'no such post'});
+    }
     res.json({view_count:rows[0].view_count});
   }));
 

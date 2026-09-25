@@ -571,9 +571,14 @@ struct CommunityHomeTab: View {
         let visible = frame.intersection(UIScreen.main.bounds)
         guard frame.height > 0, visible.height >= min(frame.height / 2, 200), !viewed.contains(id) else { return }
         viewed.insert(id)
+        // ONE VIEW PER PERSON PER POST. `viewed` only lasts as long as this screen, so every
+        // return to Home counted the same posts again. The device now remembers which posts
+        // this account has already counted — the server keeps only the number, never who.
+        guard !CountedPostViews.contains(id) else { return }
         Task {
             do {
                 let count = try await CommunityService.shared.viewPost(communityId: communityId, postId: id)
+                CountedPostViews.insert(id)
                 if let index = posts.firstIndex(where: { $0.id == id }) { posts[index].view_count = count }
             } catch { viewed.remove(id) }
         }
@@ -1236,5 +1241,25 @@ private struct CommunityPostCard: View {
             .foregroundColor(tint ?? VoiidColor.textSecondary)
         }
         .buttonStyle(PressableButtonStyle())
+    }
+}
+
+/// The community posts this account has already counted a view for, on this device. Kept per
+/// account and bounded, so it cannot grow forever; an old id falling off the end can at worst
+/// count once more, months later.
+enum CountedPostViews {
+    private static var key: String { "voiid.community.countedViews.\(TokenStore.shared.userId ?? "signed-out")" }
+    private static let limit = 5000
+
+    static func contains(_ id: String) -> Bool {
+        (UserDefaults.standard.stringArray(forKey: key) ?? []).contains(id)
+    }
+
+    static func insert(_ id: String) {
+        var ids = UserDefaults.standard.stringArray(forKey: key) ?? []
+        guard !ids.contains(id) else { return }
+        ids.append(id)
+        if ids.count > limit { ids.removeFirst(ids.count - limit) }
+        UserDefaults.standard.set(ids, forKey: key)
     }
 }
