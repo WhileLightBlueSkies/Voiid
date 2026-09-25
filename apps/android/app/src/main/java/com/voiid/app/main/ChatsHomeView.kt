@@ -1,5 +1,10 @@
 package com.voiid.app.main
 
+import com.voiid.app.ui.theme.VoiidSpacing
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.material.icons.automirrored.filled.List
@@ -226,6 +231,7 @@ fun ChatsHomeView(
             haptics,
             photoUrl = session.profile.photoURL,
             myName = session.profile.fullName,
+            title = tab.label,
             search = search,
             onSearchChange = { search = it },
             onNewChat = { forceGroup = false; showNewChat = true },
@@ -1014,16 +1020,17 @@ private fun SearchContactRow(c: VContact, onClick: () -> Unit) {
 }
 
 /**
- * Two rows, not one: your own avatar sits alone at the TOP-LEFT and the "Chats" title sits
- * BELOW it. The avatar is the way into Settings — everything that used to hide behind the
- * overflow menu (backup, log out) plus the things that had no home at all (profile photo,
- * display name), so the menu is gone.
+ * iOS ChatsHomeView `referenceHeader` + `titleRow` + `searchField`, measurement for measurement:
+ *   row 1 — avatar (38, green presence dot) · centred wordmark (26) · search · ⋯   (36 circles)
+ *   row 2 — "Chats"/"Groups" (26 bold rounded) · "+ New chat" accent pill (38 tall) · layout toggle
+ *   search field (40, capsule) only while searching.
  */
 @Composable
 private fun Header(
     haptics: com.voiid.app.ui.components.VoiidHaptics,
     photoUrl: String?,
     myName: String?,
+    title: String,
     search: String,
     onSearchChange: (String) -> Unit,
     onNewChat: () -> Unit,
@@ -1034,140 +1041,130 @@ private fun Header(
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
+    var searching by remember { mutableStateOf(search.isNotEmpty()) }
     Column {
+        // ── Row 1: identity · wordmark · controls ──
+        Box(Modifier.fillMaxWidth().padding(horizontal = VoiidSpacing.md, vertical = VoiidSpacing.sm)) {
+            Box(
+                Modifier.align(Alignment.CenterStart)
+                    .spotlightTarget(id = "nav_header_profile", shape = SpotlightShapeType.CIRCLE, padding = 6.dp)
+                    .softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() }
+                    .semantics { contentDescription = "Your profile" },
+            ) {
+                ProfileAvatar(photoUrl = photoUrl, name = myName, size = 38.dp)
+                Box(
+                    Modifier.align(Alignment.BottomEnd).size(12.dp).clip(CircleShape)
+                        .background(VoiidColor.background).padding(2.dp).clip(CircleShape)
+                        .background(VoiidColor.success),
+                )
+            }
+            com.voiid.app.onboarding.BrandWordmark(
+                size = 26, color = VoiidColor.textPrimary, dotColor = VoiidColor.primary,
+                modifier = Modifier.align(Alignment.Center),
+            )
+            Row(Modifier.align(Alignment.CenterEnd), horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
+                HeaderControl(Icons.Default.Search, if (searching) "Close search" else "Search") {
+                    haptics.tap(); searching = !searching; if (!searching) onSearchChange("")
+                }
+                Box {
+                    var menuOpen by remember { mutableStateOf(false) }
+                    HeaderControl(Icons.Default.MoreHoriz, "More") { haptics.tap(); menuOpen = true }
+                    VoiidMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        VoiidMenuItem("Find by username", Icons.Default.AlternateEmail) {
+                            menuOpen = false; haptics.tap(); onFindByUsername()
+                        }
+                        VoiidMenuItem("Scan code", Icons.Default.QrCode2) {
+                            menuOpen = false; haptics.tap(); onScanCode()
+                        }
+                        VoiidMenuItem("New group", Icons.Default.Groups) {
+                            menuOpen = false; haptics.tap(); onNewGroup()
+                        }
+                        VoiidMenuDivider()
+                        VoiidMenuItem("Calls", Icons.Default.Call) {
+                            menuOpen = false; haptics.tap(); onOpenCallLog()
+                        }
+                        VoiidMenuItem("Settings", Icons.Default.Settings) {
+                            menuOpen = false; haptics.tap(); onOpenSettings()
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Row 2: title · New chat pill · layout toggle ──
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = VoiidSpacing.md).padding(bottom = VoiidSpacing.sm),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
         ) {
-            VoiidWordmark(fontSize = 25, color = VoiidColor.textPrimary, alpha = 1f)
+            Text(title, style = VoiidFont.rounded(26, FontWeight.Bold), color = VoiidColor.textPrimary)
             Spacer(Modifier.weight(1f))
             Row(
-                Modifier.clip(CircleShape).background(VoiidColor.bubbleSent)
-                    .clickable { haptics.tap(); onNewChat() }.padding(horizontal = 14.dp, vertical = 12.dp),
+                Modifier.height(38.dp).clip(CircleShape).background(VoiidColor.accent)
+                    .softClickable { haptics.tap(); onNewChat() }.padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Icon(Icons.Default.Create, null, Modifier.size(16.dp), tint = VoiidColor.textOnBubble)
-                Text("New chat", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textOnBubble)
+                Icon(Icons.Default.Add, null, Modifier.size(17.dp), tint = VoiidColor.textOnAccent)
+                Text("New chat", style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textOnAccent)
             }
-            // iOS: a 36dp circle after New chat, labelled by what it DOES, not what is shown.
             val isGrid = ChatLayoutPreference.layout == ChatLayout.GRID
-            Box(
-                Modifier.size(36.dp).clip(CircleShape).background(VoiidColor.surfaceCard)
-                    .border(1.dp, VoiidColor.divider, CircleShape)
-                    .clickable { haptics.selection(); ChatLayoutPreference.set(context, if (isGrid) ChatLayout.LIST else ChatLayout.GRID) }
-                    .semantics { contentDescription = if (isGrid) "Switch to list view" else "Switch to grid view" },
-                contentAlignment = Alignment.Center,
+            HeaderControl(
+                if (isGrid) Icons.Default.GridView else Icons.AutoMirrored.Filled.List,
+                if (isGrid) "Switch to list view" else "Switch to grid view",
+            ) { haptics.selection(); ChatLayoutPreference.set(context, if (isGrid) ChatLayout.LIST else ChatLayout.GRID) }
+        }
+
+        // ── Search field, only while searching ──
+        androidx.compose.animation.AnimatedVisibility(visible = searching) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = VoiidSpacing.md).padding(bottom = VoiidSpacing.sm)
+                    .height(40.dp).clip(RoundedCornerShape(VoiidRadius.pill)).background(VoiidColor.fieldFill)
+                    .padding(horizontal = VoiidSpacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
             ) {
-                Icon(if (isGrid) Icons.Default.GridView else Icons.AutoMirrored.Filled.List, null,
-                    tint = VoiidColor.textPrimary, modifier = Modifier.size(16.dp))
-            }
-        }
-    // Avatar - search - actions, on ONE row.
-    //
-    // The screen used to spend three stacked bands before the first chat: an avatar row, a
-    // 28sp "Chats" title, then a 52dp search field. Roughly a third of the display was chrome
-    // telling you that you were in the app you had just opened.
-    //
-    // The title goes first — it named the tab already selected in the bar at the bottom of
-    // the screen, in the app whose icon you just tapped. Then the search field slots between
-    // the controls that were already on that row, putting the most-used control on a chat
-    // list at thumb height rather than under a title. Mirrors iOS `compactHeader`.
-    val shape = RoundedCornerShape(VoiidRadius.pill)
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        ProfileAvatar(
-            photoUrl = photoUrl,
-            name = myName,
-            // 40, matching the glyph buttons opposite it.
-            size = 40.dp,
-            modifier = Modifier
-                .spotlightTarget(
-                    id = "nav_header_profile",
-                    shape = SpotlightShapeType.CIRCLE,
-                    padding = 6.dp,
-                )
-                .softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() },
-        )
-
-        Row(
-            Modifier
-                .weight(1f)
-                // 40dp, down from 52 — it no longer has a whole band to itself, so it can
-                // match the height of the controls beside it instead of towering over them.
-                .height(40.dp)
-                .clip(shape)
-                .background(VoiidColor.fieldFill)
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(Icons.Default.Search, null, tint = VoiidColor.placeholder, modifier = Modifier.size(18.dp))
-            BasicTextField(
-                value = search,
-                onValueChange = onSearchChange,
-                singleLine = true,
-                textStyle = VoiidFont.rounded(15).merge(TextStyle(color = VoiidColor.textPrimary)),
-                cursorBrush = SolidColor(VoiidColor.primary),
-                modifier = Modifier.weight(1f),
-                decorationBox = { inner ->
-                    Box(contentAlignment = Alignment.CenterStart) {
-                        if (search.isEmpty()) {
-                            Text("Search", style = VoiidFont.rounded(15), color = VoiidColor.placeholder)
+                Icon(Icons.Default.Search, null, tint = VoiidColor.placeholder, modifier = Modifier.size(16.dp))
+                val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+                LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+                BasicTextField(
+                    value = search, onValueChange = onSearchChange, singleLine = true,
+                    textStyle = VoiidFont.rounded(15).merge(TextStyle(color = VoiidColor.textPrimary)),
+                    cursorBrush = SolidColor(VoiidColor.primary),
+                    modifier = Modifier.weight(1f).focusRequester(focus),
+                    decorationBox = { inner ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (search.isEmpty()) Text("Search", style = VoiidFont.rounded(15), color = VoiidColor.placeholder)
+                            inner()
                         }
-                        inner()
-                    }
-                },
-            )
-            if (search.isNotEmpty()) {
-                Icon(
-                    Icons.Default.Close, "Clear search", tint = VoiidColor.placeholder,
-                    modifier = Modifier.size(16.dp).clip(CircleShape)
-                        .clickable { haptics.tap(); onSearchChange("") },
+                    },
                 )
-            }
-        }
-
-        // ONE menu, not two glyphs. Every way to start a conversation lives in one list, and
-        // an ellipsis promises exactly what it delivers: more options. Mirrors iOS.
-        Box {
-            var menuOpen by remember { mutableStateOf(false) }
-            HeaderGlyph(Icons.Default.MoreVert, "More") { haptics.tap(); menuOpen = true }
-            VoiidMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                // "New chat" is NOT here, matching iOS: it is the accent pill in the title
-                // row, one tap instead of two. Duplicating it in the overflow teaches two
-                // paths to the same action and makes neither feel canonical.
-                VoiidMenuItem("Find by username", Icons.Default.AlternateEmail) {
-                    menuOpen = false; haptics.tap(); onFindByUsername()
-                }
-                // Directly beneath Find by username, because it IS find-by-username with the
-                // typing removed: a scan supplies the handle and then hands over to the same
-                // screen, PIN step and request included.
-                VoiidMenuItem("Scan code", Icons.Default.QrCode2) {
-                    menuOpen = false; haptics.tap(); onScanCode()
-                }
-                VoiidMenuItem("New group", Icons.Default.Groups) {
-                    menuOpen = false; haptics.tap(); onNewGroup()
-                }
-                // The divider separates "start something" from "go somewhere" — the two
-                // groups this menu actually contains.
-                VoiidMenuDivider()
-                VoiidMenuItem("Calls", Icons.Default.Call) {
-                    menuOpen = false; haptics.tap(); onOpenCallLog()
-                }
-                // SETTINGS IS HERE TOO, not only behind the avatar. Tapping your own face to
-                // reach app settings is a convention people learn, not one they guess — this
-                // is the discoverable path, and the avatar stays as the shortcut.
-                VoiidMenuItem("Settings", Icons.Default.Settings) {
-                    menuOpen = false; haptics.tap(); onOpenSettings()
-                }
+                if (search.isNotEmpty()) Icon(
+                    Icons.Default.Cancel, "Clear search", tint = VoiidColor.placeholder,
+                    modifier = Modifier.size(16.dp).clip(CircleShape).clickable { haptics.tap(); onSearchChange("") },
+                )
             }
         }
     }
+}
+
+/** iOS `headerControl`: 36 circle, surfaceCard + hairline, 15 glyph in ink, 44 target. */
+@Composable
+private fun HeaderControl(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.size(36.dp).clip(CircleShape).background(VoiidColor.surfaceCard)
+                .border(1.dp, VoiidColor.divider, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(17.dp)) }
     }
 }
 
