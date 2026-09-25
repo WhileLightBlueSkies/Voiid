@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PanTool
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
@@ -153,7 +154,9 @@ fun SettingsScreen(
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(56.dp), verticalAlignment = Alignment.CenterVertically) {
             Spacer(Modifier.width(56.dp))
             Text("Settings", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-            androidx.compose.material3.TextButton(onClick = onClose) { Text("Done", color = VoiidColor.accentInk) }
+            com.voiid.app.ui.components.ToolbarCapsule {
+                androidx.compose.material3.TextButton(onClick = onClose) { Text("Done", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.accentInk) }
+            }
         }
 
         Column(
@@ -265,8 +268,10 @@ fun SettingsScreen(
                 // notification settings pane, mirroring iOS's
                 // UIApplication.openNotificationSettingsURLString deep link. It is not a
                 // route on either platform, which is why it carries no chevron.
+                // Leaves the app, so the trailing glyph is "open externally", not a chevron (iOS).
                 SettingsRow(Icons.Outlined.Notifications, "Notifications",
-                    "Message, group & call tones") {
+                    "Message, group & call tones",
+                    trailing = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, null, tint = VoiidColor.textSecondary.copy(alpha = 0.7f), modifier = Modifier.size(17.dp)) }) {
                     val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                         .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
                     runCatching { context.startActivity(intent) }
