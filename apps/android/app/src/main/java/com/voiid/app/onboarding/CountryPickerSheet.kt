@@ -59,7 +59,7 @@ fun CountryPickerSheet(
     onSelect: (Country) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    androidx.compose.runtime.CompositionLocalProvider(com.voiid.app.ui.theme.LocalVoiidDark provides true) {
+    androidx.compose.runtime.CompositionLocalProvider(com.voiid.app.ui.theme.LocalVoiidDark provides com.voiid.app.ui.theme.LocalVoiidDark.current) {
         DarkCountryPickerSheet(selected, onSelect, onDismiss)
     }
 }

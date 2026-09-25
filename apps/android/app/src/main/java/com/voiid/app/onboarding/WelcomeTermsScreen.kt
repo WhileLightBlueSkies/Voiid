@@ -218,7 +218,7 @@ fun WelcomeTermsScreen(
 /** Forces the committed-dark token resolution inside the sheet. */
 @Composable
 private fun CompositionLocalDarkOnboarding(content: @Composable () -> Unit) =
-    androidx.compose.runtime.CompositionLocalProvider(LocalVoiidDark provides true) { content() }
+    androidx.compose.runtime.CompositionLocalProvider(LocalVoiidDark provides LocalVoiidDark.current) { content() }
 
 // MARK: - Documents
 

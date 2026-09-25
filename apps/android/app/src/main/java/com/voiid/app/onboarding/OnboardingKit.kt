@@ -1,5 +1,8 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.ui.draw.shadow
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.Composable
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -99,40 +102,25 @@ import com.voiid.app.ui.theme.VoiidSpacing
  * not the hue. The values are Tide (peacock teal); the reference calls the same slots
  * `cyan*`. Renaming them would churn 60-odd call sites for no visual change.
  */
+/**
+ * Twin of iOS `VoiidBrand` (OnboardingKit.swift), which now maps every surface to the ADAPTIVE
+ * app tokens so onboarding follows the phone's light/dark setting exactly like the app proper.
+ * Only the two gradient stops are fixed, as on iOS.
+ */
 object VoiidBrand {
-    /** Voiid Black — the ground for every committed-dark screen. */
-    val ground = Color(0xFF0B0B0B)
-    /** A card sitting on the ground. */
-    val card = Color(0xFF121212)
-    /** A row inside a card, one step up so it separates from what it sits on. */
-    val row = Color(0xFF181818)
-    /** Hairlines. White at low alpha, so they stay correct if the surfaces are re-tuned. */
-    val hairline = Color.White.copy(alpha = 0.07f)
-
-    /** Tide — the brand teal. */
-    val lime = Color(0xFF13828C)
-    /** The mark's lit top edge, and a pill's upper stop. */
+    val ground: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.background
+    val card: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.surfaceCard
+    val row: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.surfaceRaised
+    val hairline: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.divider
+    val lime: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.primary
     val limeBright = Color(0xFF68B8BD)
-    /** A pill's lower stop. */
     val limeDeep = Color(0xFF0E6E77)
-
-    /** A text field's fill on this ground. */
-    val field = Color(0xFF111719)
-    /** A field's border, and any hairline that must read as a line rather than a glare. */
-    val fieldEdge = Color(0xFF263236)
-    /** Placeholder text inside a field on this ground. */
-    val placeholder = Color(0xFF6D787B)
-
-    /** Primary text on the committed-dark ground. */
-    val text = Color(0xFFF6F8F8)
-    /** Secondary text on the same ground. */
-    val textDim = Color(0xFFA6B0B2)
-
-    /**
-     * Text on a Tide fill. WHITE — and this INVERTS what lime required: lime was a light fill
-     * needing a near-black label; Tide is a mid-tone where white wins.
-     */
-    val onLime = Color(0xFFFFFFFF)
+    val field: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.fieldFill
+    val fieldEdge: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.fieldBorder
+    val placeholder: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.placeholder
+    val text: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.textPrimary
+    val textDim: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.textSecondary
+    val onLime: Color @Composable @ReadOnlyComposable get() = com.voiid.app.ui.theme.VoiidColor.textOnPrimary
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════
@@ -176,7 +164,7 @@ fun OnboardingHeader(
         verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
     ) {
         if (showsWordmark) {
-            BrandWordmark(size = OnboardingWordmarkSize, color = Color.White,
+            BrandWordmark(size = OnboardingWordmarkSize, color = VoiidBrand.text,
                 dotColor = VoiidBrand.lime)
         }
 
@@ -670,14 +658,16 @@ fun OnboardingBackChip(onBack: () -> Unit) {
         Modifier
             .padding(start = VoiidSpacing.md, top = VoiidSpacing.sm)
             .size(44.dp)
+            // iOS: the system glass back button — a raised card-coloured disc with a soft
+            // shadow and no outline.
+            .shadow(10.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.10f), spotColor = Color.Black.copy(alpha = 0.10f))
             .clip(CircleShape)
-            .background(Color.White.copy(alpha = 0.10f))
-            .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+            .background(VoiidBrand.card)
             .clickable { haptics.tap(); onBack() }
             .semantics { contentDescription = "Back" },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, null, tint = VoiidBrand.text, modifier = Modifier.size(26.dp))
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, null, tint = VoiidBrand.text, modifier = Modifier.size(30.dp))
     }
 }
 

@@ -221,10 +221,10 @@ fun SplashScreen() {
             previousNavigation?.let { controller?.isAppearanceLightNavigationBars = it }
         }
     }
-    Box(Modifier.fillMaxSize().background(Color(0xFF0B0B0B)), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().background(VoiidBrand.ground), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.28.dp)) {
             Image(painterResource(R.drawable.voiid_launch_mark), contentDescription = null, modifier = Modifier.size(markSize), contentScale = ContentScale.Fit)
-            BrandWordmark(size = 34, color = Color.White)
+            BrandWordmark(size = 34, color = VoiidBrand.text)
         }
     }
 }

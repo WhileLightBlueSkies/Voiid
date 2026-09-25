@@ -359,11 +359,11 @@ fun OnboardingGlyphTile(icon: ImageVector, size: Dp = 44.dp, modifier: Modifier 
         modifier
             .size(size)
             .clip(RoundedCornerShape(size * 0.29f))
-            .background(Color.White.copy(alpha = 0.04f))
-            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(size * 0.29f)),
+            .background(VoiidBrand.lime.copy(alpha = 0.10f))
+            .border(1.dp, VoiidBrand.lime.copy(alpha = 0.25f), RoundedCornerShape(size * 0.29f)),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = null, tint = OnboardingBrand.lime,
+        Icon(icon, contentDescription = null, tint = VoiidBrand.lime,
              modifier = Modifier.size(size * 0.48f))
     }
 }

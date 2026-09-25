@@ -28,11 +28,14 @@ private fun nunito(weight: FontWeight, wght: Int) =
 private fun urbanist(weight: FontWeight, wght: Int) =
     Font(R.font.urbanist_variable, weight, variationSettings = FontVariation.Settings(FontVariation.weight(wght)))
 
+// Optical match to iOS SF Pro Rounded, which cannot ship on Android. Nunito at the same
+// nominal weight reads visibly lighter than SF Rounded, so each named weight sits a little
+// heavier on Nunito's variable axis — "semibold" here looks like semibold on iPhone.
 val Nunito = FontFamily(
-    nunito(FontWeight.Normal, 400),
-    nunito(FontWeight.Medium, 500),
-    nunito(FontWeight.SemiBold, 600),
-    nunito(FontWeight.Bold, 700),
+    nunito(FontWeight.Normal, 430),
+    nunito(FontWeight.Medium, 560),
+    nunito(FontWeight.SemiBold, 680),
+    nunito(FontWeight.Bold, 780),
 )
 
 val Urbanist = FontFamily(

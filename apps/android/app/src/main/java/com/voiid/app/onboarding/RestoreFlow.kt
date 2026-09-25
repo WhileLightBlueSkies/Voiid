@@ -260,7 +260,7 @@ fun RestoreFlow(    session: AppSession,
 
     // Committed dark, like every onboarding screen and like iOS RestoreMessagesView (drawn on
     // VoiidBrand.ground). Without this a light-mode phone got a light restore flow mid-onboarding.
-    androidx.compose.runtime.CompositionLocalProvider(com.voiid.app.ui.theme.LocalVoiidDark provides true) {
+    androidx.compose.runtime.CompositionLocalProvider(com.voiid.app.ui.theme.LocalVoiidDark provides com.voiid.app.ui.theme.LocalVoiidDark.current) {
     when (step) {
         RestoreStep.UNLOCK -> if (legacyPin == null) {
             Box(Modifier.fillMaxSize().background(VoiidColor.background), contentAlignment = Alignment.Center) {

@@ -1,5 +1,6 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.material.icons.outlined.MicNone
 import androidx.compose.material.icons.outlined.NearMe
 import android.Manifest
 import android.os.Build
@@ -183,7 +184,7 @@ private fun permissionRows(): List<PermissionRow> = listOf(
                   "Keeps you updated on activity and offers."),
     PermissionRow("camera", Icons.Outlined.CameraAlt, "Camera",
                   "Lets you capture and share moments."),
-    PermissionRow("mic", Icons.Outlined.Mic, "Microphone",
+    PermissionRow("mic", Icons.Outlined.MicNone, "Microphone",
                   "Enables voice features and audio notes."),
     PermissionRow("photos", Icons.Outlined.Image, "Photos & Media",
                   "Lets you save, upload and share photos."),

@@ -1,5 +1,7 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.focus.FocusRequester
@@ -199,8 +201,16 @@ fun PhoneScreen(
                 else VoiidBrand.fieldEdge,
                 tween(180), label = "phoneFieldBorder",
             )
+            // When the keyboard rises it squeezes the scroll area; without this the field
+            // was left half-scrolled with its bottom edge cut off by the footer.
+            val bringField = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+            val imeBottom = androidx.compose.foundation.layout.WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current)
+            LaunchedEffect(focused, imeBottom) {
+                if (focused) { kotlinx.coroutines.delay(120); bringField.bringIntoView() }
+            }
             Row(
                 Modifier
+                    .bringIntoViewRequester(bringField)
                     .fillMaxWidth()
                     .height(62.dp)
                     .clip(RoundedCornerShape(16.dp))
