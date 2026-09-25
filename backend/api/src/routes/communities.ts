@@ -46,7 +46,7 @@ import { isCommunityNotificationMode } from '../notificationPolicy';
 // route_handles.sql reserves those words as handles: a community that managed to take the
 // handle @search would be permanently unreachable through its own info-card route.
 import { Router } from 'express';
-import { createHash, randomBytes, randomInt, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { mailConfigured, sendMail, verificationEmail } from '../mailer';
 import { pool, query } from '../db';
 import { purgeCommunityData } from '../communityDeletion';
@@ -54,7 +54,7 @@ import { requireAuth as requireUserAuth } from '../auth';
 import type { Request, Response, NextFunction } from 'express';
 import { rateLimit } from '../security';
 import { asyncHandler } from '../util';
-import { publisher } from '../redis';
+import { publisher, redis } from '../redis';
 import { presignGet, r2Configured } from '../r2';
 import { requireSocialProfile } from '../social/identity';
 // The roster/role authority (communityRoles.ts). Used by the write paths below that need
@@ -2505,8 +2505,13 @@ router.post(
 // THE AUTHOR IS NEVER COUNTED. Reading your own post again is not someone seeing it, and it
 // was the whole reason a post nobody else had opened kept climbing. The update's WHERE skips
 // the author and the route then answers with the current number, so the client sees an
-// ordinary success. Repeat views by other people are de-duplicated on their device (it
-// remembers which posts it has counted), which keeps this table free of per-person rows.
+// ordinary success.
+//
+// ONE VIEW PER PERSON, DECIDED HERE. Apps also remember what they counted, but an older build
+// does not, so the server is the one place that holds for every version. It keeps a SHORT-LIVED
+// Redis mark per (post, viewer) — the viewer as a keyed hash, never their id — that expires on
+// its own after 30 days. The database still stores only the number (079's rule): nothing
+// permanent says who saw what. If Redis is unreachable the view is counted, as before.
 router.post('/:id/posts/:postId/view', requireAuth,
   rateLimit({max:120,windowSeconds:60,bucket:'community-post-view'}),
   asyncHandler(async (req,res) => {
@@ -2515,6 +2520,18 @@ router.post('/:id/posts/:postId/view', requireAuth,
     if (!gate.ok) return res.status(gate.status).json({error:gate.error});
     const postId = String(req.params.postId);
     if (!UUID_RE.test(postId)) return res.status(400).json({error:'invalid post id'});
+    const viewer = createHmac('sha256', process.env.JWT_SECRET ?? 'voiid-post-views')
+      .update(`${postId}:${user_id}`).digest('base64url').slice(0, 22);
+    let firstView = true;
+    try {
+      firstView = (await redis.set(`cpv:${postId}:${viewer}`, '1', 'EX', 30 * 24 * 3600, 'NX')) === 'OK';
+    } catch { /* Redis down: count it, as before this existed. */ }
+    if (!firstView) {
+      const current = await query<{view_count:number}>(`select view_count from community_posts
+        where id=$1 and community_id=$2 and removed_at is null`, [postId, gate.community.id]);
+      if (!current.length) return res.status(404).json({error:'no such post'});
+      return res.json({view_count: current[0].view_count});
+    }
     const rows = await query<{view_count:number}>(`update community_posts set view_count=least(view_count::bigint+1,2147483647)::int
       where id=$1 and community_id=$2 and removed_at is null
         and (scheduled_at is null or scheduled_at<=now())
