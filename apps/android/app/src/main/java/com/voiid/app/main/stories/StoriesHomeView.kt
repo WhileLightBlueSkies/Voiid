@@ -1,5 +1,7 @@
 package com.voiid.app.main.stories
 
+import com.voiid.app.ui.theme.VoiidRadius
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.ui.draw.shadow
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.Settings
@@ -102,21 +104,21 @@ fun StoriesHomeView(
                     "Moments", style = VoiidFont.rounded(26, FontWeight.Bold), color = VoiidColor.textPrimary,
                     modifier = Modifier.align(Alignment.Center),
                 )
-                Row(Modifier.align(Alignment.CenterEnd)) {
-                androidx.compose.material3.IconButton(onClick = { showArchive = true }) {
-                    Icon(Icons.Outlined.Archive, "Archive", tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
-                }
-                // Moments settings: who sees your moments, and what's kept.
-                androidx.compose.material3.IconButton(onClick = { showSettings = true }) {
-                    Icon(Icons.Outlined.Settings, "Moments settings", tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
-                }
+                com.voiid.app.ui.components.ToolbarCapsule(Modifier.align(Alignment.CenterEnd)) {
+                    com.voiid.app.ui.components.ToolbarCapsuleIcon(Icons.Outlined.Inventory2, "Archive") { showArchive = true }
+                    // Moments settings: who sees your moments, and what's kept.
+                    com.voiid.app.ui.components.ToolbarCapsuleIcon(Icons.Outlined.Settings, "Moments settings") { showSettings = true }
                 }
                 }
             }
 
-            // "Your story"
+            // "Your story" — iOS yourMomentCard: a card (surfaceCard, lg radius, hairline).
             item {
                 val mine = stories.myContext
+                Box(Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.lg))
+                    .background(VoiidColor.surfaceCard)
+                    .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.lg))
+                    .padding(horizontal = 16.dp, vertical = 12.dp)) {
                 StoryRow(
                     name = "Your moment",
                     photoUrl = session.profile.photoURL ?: mine?.photoUrl,
@@ -134,6 +136,7 @@ fun StoriesHomeView(
                         else onOpenContext(stories.contexts.indexOf(mine).coerceAtLeast(0))
                     },
                 )
+                }
             }
 
             if (newContexts.isNotEmpty()) {
@@ -236,7 +239,7 @@ private fun EmptyState() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(Icons.Outlined.Circle, null, tint = VoiidColor.textSecondary.copy(alpha = 0.5f), modifier = Modifier.size(44.dp))
+        Icon(com.voiid.app.main.DashedCircleIcon, null, tint = VoiidColor.textSecondary.copy(alpha = 0.5f), modifier = Modifier.size(44.dp))
         Text("No moments yet", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
         Text(
             "Share a photo or video with your contacts. It disappears after 24 hours.",

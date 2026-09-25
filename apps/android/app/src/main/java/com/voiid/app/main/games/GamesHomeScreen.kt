@@ -175,10 +175,8 @@ fun GamesHomeScreen(
                     color = VoiidColor.textPrimary,
                     modifier = Modifier.align(Alignment.Center),
                 )
-                Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Outlined.Settings, "Game settings", tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
-                    }
+                com.voiid.app.ui.components.ToolbarCapsule(Modifier.align(Alignment.CenterEnd)) {
+                    com.voiid.app.ui.components.ToolbarCapsuleIcon(Icons.Outlined.Settings, "Game settings") { showSettings = true }
                     // The same identity, in the same corner, as Clips and Communities.
                     com.voiid.app.main.clips.SocialProfileButton(
                         creators = androidx.lifecycle.viewmodel.compose.viewModel(),

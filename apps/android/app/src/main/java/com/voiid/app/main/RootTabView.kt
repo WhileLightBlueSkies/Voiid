@@ -1,5 +1,9 @@
 package com.voiid.app.main
 
+import androidx.compose.material.icons.filled.SmartDisplay
+import androidx.compose.material.icons.outlined.SmartDisplay
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.Text
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
@@ -119,12 +123,12 @@ private enum class Tab(
     val label: String,
 ) {
     AI(Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome, "AI"),
-    CHAT(Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble, "Chats"),
-    STORIES(Icons.Outlined.Circle, Icons.Filled.Album, "Moments"),   // chat-adjacent: replies land in chats
+    CHAT(Icons.Outlined.Forum, Icons.Filled.Forum, "Chats"),   // iOS bubble.left.and.bubble.right
+    STORIES(DashedCircleIcon, Icons.Filled.Album, "Moments"),   // iOS circle.dashed / circle.circle.fill   // chat-adjacent: replies land in chats
     COMMUNITIES(Icons.Outlined.Groups, Icons.Filled.Groups, "Communities"),
     MAP(Icons.Outlined.Map, Icons.Filled.Map, "Map"),                // Feature (B) — docs/LOCATION.md §7
     GAMES(Icons.Outlined.SportsEsports, Icons.Filled.SportsEsports, "Games"),
-    CLIPS(Icons.Outlined.PlayCircleOutline, Icons.Filled.PlayCircle, "Clips"),
+    CLIPS(Icons.Outlined.SmartDisplay, Icons.Filled.SmartDisplay, "Clips"),   // iOS play.rectangle
     ;
 
     companion object {
@@ -1359,4 +1363,27 @@ private fun TabItem(
             )
         }
     }
+}
+
+
+/** iOS `circle.dashed`, which Material has no equivalent for: 10 arcs on an 18-unit ring. */
+internal val DashedCircleIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
+    androidx.compose.ui.graphics.vector.ImageVector.Builder(
+        name = "DashedCircle", defaultWidth = 24.dp, defaultHeight = 24.dp,
+        viewportWidth = 24f, viewportHeight = 24f,
+    ).apply {
+        val r = 9f; val cx = 12f; val cy = 12f; val n = 10
+        for (i in 0 until n) {
+            val a0 = Math.toRadians(i * 360.0 / n + 9.0); val a1 = Math.toRadians((i + 1) * 360.0 / n - 9.0)
+            addPath(
+                pathData = androidx.compose.ui.graphics.vector.PathData {
+                    moveTo(cx + r * kotlin.math.cos(a0).toFloat(), cy + r * kotlin.math.sin(a0).toFloat())
+                    arcTo(r, r, 0f, false, true, cx + r * kotlin.math.cos(a1).toFloat(), cy + r * kotlin.math.sin(a1).toFloat())
+                },
+                stroke = androidx.compose.ui.graphics.SolidColor(androidx.compose.ui.graphics.Color.Black),
+                strokeLineWidth = 1.8f,
+                strokeLineCap = androidx.compose.ui.graphics.StrokeCap.Round,
+            )
+        }
+    }.build()
 }

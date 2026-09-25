@@ -142,12 +142,14 @@ fun RestoreFlow(    session: AppSession,
     var busy by remember { mutableStateOf(false) }
 
     var confirmSkip by remember { mutableStateOf(false) }
-    if (confirmSkip) androidx.compose.material3.AlertDialog(
+    // iOS: one action, dismissed by tapping outside — no Cancel button.
+    if (confirmSkip) com.voiid.app.ui.components.VoiidDialog(
         onDismissRequest = { confirmSkip = false },
-        title = { Text("Continue without restoring?") },
-        text = { Text("Previous chats will not be restored on this device. Your saved backups will stay in their current locations.") },
-        confirmButton = { androidx.compose.material3.TextButton(onClick = { confirmSkip = false; onSkip() }) { Text("Continue without restoring") } },
-        dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmSkip = false }) { Text("Cancel") } },
+        title = "Continue without restoring?",
+        body = "Previous chats will not be restored on this device. Your saved backups stay in their current locations.",
+        confirmLabel = "Continue without restoring",
+        onConfirm = { confirmSkip = false; onSkip() },
+        cancelLabel = null,
     )
     fun finish() = onDone()
 
@@ -390,7 +392,7 @@ private fun RestorePhrasePage(
     onBack: (() -> Unit)?,
     onSkip: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(VoiidRadius.lg)
+    val shape = RoundedCornerShape(VoiidRadius.md)
     val wordCount = value.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.size
     OnbScaffold(showBack = false, onBack = {}) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -402,31 +404,25 @@ private fun RestorePhrasePage(
                     .semantics { contentDescription = "Continue without restoring" })
         }
         Spacer(Modifier.height(16.dp))
-        Text("Recovery phrase", style = VoiidFont.rounded(22, FontWeight.Bold),
+        Text("Enter recovery phrase", style = VoiidFont.rounded(22, FontWeight.SemiBold),
             color = VoiidColor.textPrimary, modifier = Modifier.padding(horizontal = 24.dp))
-        Text("Enter your 24-word recovery phrase, separated by spaces.",
-            style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-            modifier = Modifier.padding(horizontal = 24.dp).padding(top = 6.dp))
-        Spacer(Modifier.height(20.dp))
+        Text("Type or paste your 24-word recovery phrase, separated by spaces.",
+            style = VoiidFont.rounded(15), color = VoiidColor.textSecondary,
+            modifier = Modifier.padding(horizontal = 24.dp).padding(top = 16.dp))
+        Spacer(Modifier.height(16.dp))
         BasicTextField(
             value = value,
             onValueChange = onChange,
             textStyle = VoiidFont.rounded(16).merge(TextStyle(color = VoiidColor.textPrimary)),
             cursorBrush = SolidColor(VoiidColor.primary),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
-                .heightIn(min = 120.dp).clip(shape)
+                .height(156.dp).clip(shape)
                 .background(VoiidColor.fieldFill).border(1.dp, VoiidColor.fieldBorder, shape)
-                .padding(16.dp),
-            decorationBox = { inner ->
-                if (value.isEmpty()) {
-                    Text("word1 word2 word3 …", style = VoiidFont.rounded(16), color = VoiidColor.placeholder)
-                }
-                inner()
-            },
+                .padding(12.dp),
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(16.dp))
         Text("$wordCount / 24 words", style = VoiidFont.rounded(12),
-            color = if (wordCount == 24) VoiidColor.success else VoiidColor.textSecondary,
+            color = VoiidColor.textSecondary,
             modifier = Modifier.padding(horizontal = 24.dp))
         error?.let {
             Spacer(Modifier.height(8.dp))
@@ -434,10 +430,10 @@ private fun RestorePhrasePage(
                 modifier = Modifier.padding(horizontal = 24.dp))
         }
         Spacer(Modifier.weight(1f))
-        OnbAccentButton(
+        com.voiid.app.ui.components.VoiidPrimaryButton(
             title = "Restore",
             enabled = wordCount == 24,
-            modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
+            modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp),
         ) { onSubmit() }
     }
 }

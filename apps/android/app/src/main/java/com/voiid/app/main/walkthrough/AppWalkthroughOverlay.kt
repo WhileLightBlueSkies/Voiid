@@ -499,7 +499,7 @@ private fun WalkthroughSpeechBubbleCard(
                         WalkthroughButton("Back", primary = false, modifier = Modifier.weight(0.38f), onClick = onBack)
                     }
                     WalkthroughButton(
-                        if (state.isLast) "Done" else if (state.isFirst) "Start tour" else "Next",
+                        if (state.isLast) "Done" else "Next",  // iOS AppWalkthroughView
                         primary = true,
                         modifier = Modifier.weight(1f),
                         onClick = onAdvance,

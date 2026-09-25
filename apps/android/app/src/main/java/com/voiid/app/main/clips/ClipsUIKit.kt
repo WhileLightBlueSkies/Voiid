@@ -1,5 +1,6 @@
 package com.voiid.app.main.clips
 
+import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -232,7 +233,7 @@ fun ClipsEmptyState(
     val icon: ImageVector = when (kind) {
         is ClipsEmptyKind.Failed -> Icons.Default.WarningAmber
         is ClipsEmptyKind.FollowingNobody -> Icons.Outlined.Groups
-        else -> Icons.Outlined.PlayCircleOutline
+        else -> Icons.Outlined.VideoLibrary   // iOS play.rectangle.on.rectangle
     }
 
     // A slow breath on the icon. An empty screen with nothing moving on it reads as a

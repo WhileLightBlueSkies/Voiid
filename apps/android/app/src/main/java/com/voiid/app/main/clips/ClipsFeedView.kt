@@ -1,5 +1,6 @@
 package com.voiid.app.main.clips
 
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.border
@@ -147,7 +148,7 @@ fun ClipsFeedView(
                 }
             }
             Spacer(Modifier.weight(1f))
-            ClipFloatingButton(Icons.Default.GridView, "My clips") { haptics.tap(); onMyClips() }
+            ClipFloatingButton(Icons.Default.Apps, "My clips") { haptics.tap(); onMyClips() }   // iOS square.grid.3x3
             ClipFloatingButton(Icons.Default.Add, "New clip") { haptics.tap(); onNewClip() }
             creators.me?.let { mine ->
                 Box(
@@ -413,7 +414,7 @@ private fun ClipTile(
 private fun ClipFloatingButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
     Box(Modifier.size(44.dp).softClickable(scale = 0.9f, onClick = onClick)
         .semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
-        Box(Modifier.size(38.dp).clip(CircleShape).background(VoiidColor.surfaceCard.copy(alpha = 0.85f))
+        Box(Modifier.size(38.dp).clip(CircleShape).background(VoiidColor.fieldFill)
             .border(0.5.dp, VoiidColor.divider, CircleShape), contentAlignment = Alignment.Center) {
             Icon(icon, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(17.dp))
         }

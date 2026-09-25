@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import androidx.compose.material.icons.filled.Apps
 import com.voiid.app.ui.theme.VoiidSpacing
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material.icons.filled.Cancel
@@ -1110,7 +1111,7 @@ private fun Header(
             }
             val isGrid = ChatLayoutPreference.layout == ChatLayout.GRID
             HeaderControl(
-                if (isGrid) Icons.Default.GridView else Icons.AutoMirrored.Filled.List,
+                if (isGrid) Icons.Default.Apps else Icons.AutoMirrored.Filled.List,   // iOS square.grid.3x3.fill
                 if (isGrid) "Switch to list view" else "Switch to grid view",
             ) { haptics.selection(); ChatLayoutPreference.set(context, if (isGrid) ChatLayout.LIST else ChatLayout.GRID) }
         }

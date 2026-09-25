@@ -150,12 +150,12 @@ fun CommunitiesHomeView(
                 androidx.compose.material3.TextButton(onClick = { discovering = false; query = "" },
                     modifier = Modifier.align(Alignment.CenterStart)) { Text("Done", color = VoiidColor.primary) }
             }
-            Text(if (discovering) "Discover" else "Communities", style = VoiidFont.rounded(26, FontWeight.Bold),
-                color = VoiidColor.textPrimary, modifier = Modifier.align(Alignment.Center))
-            if (!discovering) Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.IconButton(onClick = { haptics.tap(); showCreate = true }) {
-                    Icon(Icons.Default.Add, "Create a community", tint = VoiidColor.primary, modifier = Modifier.size(24.dp))
-                }
+            // As rendered on iPhone: the large title sits LEADING, the actions share one capsule.
+            Text(if (discovering) "Discover" else "Communities", style = VoiidFont.rounded(if (discovering) 26 else 34, FontWeight.Bold),
+                color = VoiidColor.textPrimary,
+                modifier = if (discovering) Modifier.align(Alignment.Center) else Modifier.align(Alignment.CenterStart).padding(start = 8.dp))
+            if (!discovering) com.voiid.app.ui.components.ToolbarCapsule(Modifier.align(Alignment.CenterEnd)) {
+                com.voiid.app.ui.components.ToolbarCapsuleIcon(Icons.Default.Add, "Create a community") { haptics.tap(); showCreate = true }
                 // The same identity, in the same corner, as Clips and Games.
                 com.voiid.app.main.clips.SocialProfileButton(
                     creators = androidx.lifecycle.viewmodel.compose.viewModel(),
@@ -166,7 +166,8 @@ fun CommunitiesHomeView(
 
         androidx.activity.compose.BackHandler(enabled = discovering) { discovering = false; query = "" }
 
-        BasicTextField(
+        // iOS `.searchable` stays tucked away at rest; the field is shown inside Discover.
+        if (discovering) BasicTextField(
             value = query, onValueChange = { query = it },
             singleLine = true,
             textStyle = TextStyle(color = VoiidColor.textPrimary),

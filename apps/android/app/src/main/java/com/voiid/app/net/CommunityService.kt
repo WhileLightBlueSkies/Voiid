@@ -212,7 +212,10 @@ class CommunityService(context: Context) {
      */
     suspend fun search(term: String): List<CommunityCard> {
         val q = term.trim()
-        if (q.length < 2) return emptyList()
+        // Empty is VALID: the server answers it with trending/recommended communities, which
+        // is what Discover and the no-memberships state show (iOS sends it too). Only a lone
+        // character is refused, since the server would silently treat it as empty.
+        if (q.length == 1) return emptyList()
         return api.requestAs<CommunityListEnvelope>(
             "GET", "communities/search?q=" + java.net.URLEncoder.encode(q, "UTF-8")
         ).communities
