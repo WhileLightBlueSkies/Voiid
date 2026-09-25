@@ -1,5 +1,9 @@
 package com.voiid.app.main.clips
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -115,49 +119,47 @@ fun ClipsFeedView(
     }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().voiidPullRefresh(pull, VoiidColor.primary)) {
+        // iOS ClipsFeedView `topBar`: NO title. One row — the Explore/Following switch in a
+        // single recessed track, then the floating cluster: My clips, New clip (38 circles
+        // with a hairline) and your creator avatar once a profile exists.
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 4.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Clips",
-                style = VoiidFont.display,
-                color = VoiidColor.textPrimary,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-            Spacer(Modifier.weight(1f))
-            // A GRID glyph, not a film reel: this opens your clips as the same 3-column grid
-            // the screen behind it is already showing, and the reel icon read as "video
-            // library" — a place to pick footage from.
-            HeaderIcon(Icons.Default.GridView, "My clips") { haptics.tap(); onMyClips() }
-            // Your own avatar is the identity anchor, the way it is on every other feed the
-            // user has ever used; a generic person glyph told them nothing about whose page
-            // it opened. Shown only once a creator profile exists — before that there is no
-            // page to open, and the handle picker belongs to the compose flow.
-            creators.me?.let { mine ->
-                Box(
-                    Modifier
-                        .size(48.dp)
-                        .softClickable(scale = 0.9f) { haptics.tap(); onOpenCreator(mine.handle) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    MyCreatorAvatar(mine)
-                }
-            }
-            HeaderIcon(Icons.Default.AddCircle, "New clip", tint = VoiidColor.primary, size = 28.dp) {
-                haptics.tap(); onNewClip()
-            }
-        }
-
-        // Explore / Following. Two pills rather than a top tab bar: there are exactly two
-        // sources and they share one grid, so a full tab bar would imply more structure than
-        // exists.
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ScopePill("Explore", !followingScope) { haptics.tap(); followingScope = false }
-            ScopePill("Following", followingScope) { haptics.tap(); followingScope = true }
+            Row(
+                Modifier.clip(RoundedCornerShape(VoiidRadius.pill)).background(VoiidColor.fieldFill)
+                    .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.pill))
+                    .padding(horizontal = 3.dp, vertical = 3.dp),
+            ) {
+                listOf(false to "Explore", true to "Following").forEach { (following, label) ->
+                    val selected = followingScope == following
+                    Box(
+                        Modifier.height(38.dp).clip(RoundedCornerShape(VoiidRadius.pill))
+                            .background(if (selected) VoiidColor.primary else androidx.compose.ui.graphics.Color.Transparent)
+                            .softClickable(scale = 0.96f) { haptics.selection(); followingScope = following }
+                            .padding(horizontal = 18.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                            color = if (selected) VoiidColor.textOnPrimary else VoiidColor.textSecondary)
+                    }
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            ClipFloatingButton(Icons.Default.GridView, "My clips") { haptics.tap(); onMyClips() }
+            ClipFloatingButton(Icons.Default.Add, "New clip") { haptics.tap(); onNewClip() }
+            creators.me?.let { mine ->
+                Box(
+                    Modifier.size(44.dp).softClickable(scale = 0.9f) { haptics.tap(); onOpenCreator(mine.handle) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    // iOS: 38 avatar, 2pt accent ring 3pt outside it.
+                    Box(Modifier.size(44.dp).border(2.dp, VoiidColor.accent, CircleShape), contentAlignment = Alignment.Center) {
+                        MyCreatorAvatar(mine, 38.dp)
+                    }
+                }
+            }
         }
 
         val error = clips.loadError
@@ -253,15 +255,15 @@ private fun HeaderIcon(
 
 /** 28dp circle: the real avatar when there is one, the handle's initial when there is not. */
 @Composable
-private fun MyCreatorAvatar(me: SocialService.Profile) {
+private fun MyCreatorAvatar(me: SocialService.Profile, size: androidx.compose.ui.unit.Dp = 28.dp) {
     if (me.avatar_url != null) {
         ClipThumbnail(
             url = me.avatar_url,
-            modifier = Modifier.size(28.dp).clip(CircleShape),
+            modifier = Modifier.size(size).clip(CircleShape),
         )
     } else {
         Box(
-            Modifier.size(28.dp).clip(CircleShape).background(VoiidColor.fieldFill),
+            Modifier.size(size).clip(CircleShape).background(VoiidColor.fieldFill),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -406,6 +408,18 @@ private fun ClipTile(
 }
 
 /** One of the two feed-scope pills. Filled when selected, quiet when not. */
+/** iOS `floatingButton`: 38 circle, material fill + hairline, 15 semibold glyph, 44 target. */
+@Composable
+private fun ClipFloatingButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Box(Modifier.size(44.dp).softClickable(scale = 0.9f, onClick = onClick)
+        .semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
+        Box(Modifier.size(38.dp).clip(CircleShape).background(VoiidColor.surfaceCard.copy(alpha = 0.85f))
+            .border(0.5.dp, VoiidColor.divider, CircleShape), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(17.dp))
+        }
+    }
+}
+
 @Composable
 private fun ScopePill(label: String, selected: Boolean, onClick: () -> Unit) {
     // The PILL is unchanged — this is the treatment iOS is being aligned TO. What is new is

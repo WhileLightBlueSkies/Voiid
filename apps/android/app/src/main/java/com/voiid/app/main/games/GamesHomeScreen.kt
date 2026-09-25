@@ -166,29 +166,25 @@ fun GamesHomeScreen(
                 .padding(top = VoiidSpacing.sm),
             verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
         ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // Sized and weighted to match Communities — the two tabs sit next to each
-                // other in the same bar, so a 32sp title on one and 22sp on the other read
-                // as two different apps.
+            // iOS: inline nav bar — "Games" centred (screenTitle 26 bold), gear + Social
+            // Profile as trailing toolbar items in the toolbar tint.
+            Box(Modifier.fillMaxWidth().height(52.dp)) {
                 Text(
                     "Games",
-                    style = VoiidFont.rounded(22, FontWeight.Bold),
+                    style = VoiidFont.rounded(26, FontWeight.Bold),
                     color = VoiidColor.textPrimary,
+                    modifier = Modifier.align(Alignment.Center),
                 )
-                Spacer(Modifier.weight(1f))
-                // Communities' header treatment: each action is a 40dp filled circle, not a
-                // bare glyph, so the tap target is visible before it is touched.
-                // iOS: gear + profile only. The leaderboard is not a tab-level action there.
-                HeaderAction(Icons.Outlined.Settings, "Game settings") { showSettings = true }
-
-                // The same identity, in the same corner, as Clips and Communities.
-                com.voiid.app.main.clips.SocialProfileButton(
-                    creators = androidx.lifecycle.viewmodel.compose.viewModel(),
-                    onOpen = onOpenProfile,
-                )
+                Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Outlined.Settings, "Game settings", tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
+                    }
+                    // The same identity, in the same corner, as Clips and Communities.
+                    com.voiid.app.main.clips.SocialProfileButton(
+                        creators = androidx.lifecycle.viewmodel.compose.viewModel(),
+                        onOpen = onOpenProfile,
+                    )
+                }
             }
 
             // Continue last played — only once something HAS been played, and while it is
