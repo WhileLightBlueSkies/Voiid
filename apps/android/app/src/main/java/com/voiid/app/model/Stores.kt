@@ -357,6 +357,10 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             for (community in communities.filter { it.isMember || it.owner_id == accountId }) {
                 channelIds.addAll(communityService.channels(community.id).map { it.conversation_id })
             }
+            // Host threads (a member's conversation with a community's hosts) are community-
+            // owned like the channels: decryptable group sessions, never rows under Groups.
+            // The member reaches one from the community page, the hosts from its inbox.
+            channelIds.addAll(chatService.lastHostThreadIds)
             if (com.voiid.app.net.TokenStore.get(appContext).userId != accountId) return
             val confirmed = convs.filter { it.type == ConversationType.GROUP && it.id !in channelIds }.map { it.id }.toSet()
             val newlyCreated = standaloneGroupIds - previousGroupIds

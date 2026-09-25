@@ -20,6 +20,8 @@ private struct ConvDTO: Decodable {
     let last_message_at: String?
     let last_ciphertext: String?
     let unread_count: Int?
+    /// Set when this conversation is a member's thread with a community's hosts.
+    let host_thread_community_id: String?
 }
 
 // /conversations/:id detail (members) — used to resolve the peer of a direct chat
@@ -69,12 +71,17 @@ final class ChatService {
     private let api = APIClient()
     private init() {}
 
+    /// Conversations the last fetch identified as community host threads. They are groups
+    /// underneath but belong in the community's inbox, never in the Groups list.
+    private(set) var lastHostThreadIDs: Set<String> = []
+
     /// Fetch the user's real conversations. Empty for a brand-new account —
     /// that empty state is the signal that the list is reading the live backend.
     /// Direct chats are then enriched (peer user_id + name + photo) concurrently
     /// from /conversations/:id so the list shows the contact, not "Direct chat".
     func fetchConversations() async throws -> [VConversation] {
         let env: ConversationsEnvelope = try await api.request("GET", "conversations")
+        lastHostThreadIDs = Set(env.conversations.filter { $0.host_thread_community_id != nil }.map(\.id))
         let iso = ISO8601DateFormatter()
         var convs = env.conversations.map { c in
             VConversation(

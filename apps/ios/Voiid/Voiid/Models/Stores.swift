@@ -399,6 +399,13 @@ final class ChatStore: ObservableObject {
         get { Set(UserDefaults.standard.stringArray(forKey: standaloneGroupKey + ".channels") ?? []) }
         set { UserDefaults.standard.set(Array(newValue), forKey: standaloneGroupKey + ".channels") }
     }
+    /// Community host threads: a member's conversation with a community's hosts. Kept out of
+    /// the Groups list — the member reaches it from the community page, the hosts from the
+    /// community inbox. Persisted so the cached list is right before the network answers.
+    private var hostThreadIDs: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: standaloneGroupKey + ".hostThreads") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: standaloneGroupKey + ".hostThreads") }
+    }
     private var communityConversations: [VConversation] = []
     private var encryptedGroupConversations: [VConversation] { groupConversations + communityConversations }
     private var standaloneGroupKey: String {
@@ -449,11 +456,13 @@ final class ChatStore: ObservableObject {
                 channelIDs.formUnion(channels.map(\.conversation_id))
             }
             guard TokenStore.shared.userId == accountID else { return }
-            let confirmed = Set(convs.filter { $0.type == .group && !channelIDs.contains($0.id) }.map(\.id))
+            let hostIDs = ChatService.shared.lastHostThreadIDs
+            hostThreadIDs = hostIDs
+            let confirmed = Set(convs.filter { $0.type == .group && !channelIDs.contains($0.id) && !hostIDs.contains($0.id) }.map(\.id))
             // A group created while the fetch was in flight must survive this older snapshot.
             let newlyCreated = standaloneGroupIDs.subtracting(previousGroupIDs)
             LocalStore.saveConversations(convs)
-            standaloneGroupIDs = confirmed.union(newlyCreated.subtracting(channelIDs))
+            standaloneGroupIDs = confirmed.union(newlyCreated.subtracting(channelIDs).subtracting(hostIDs))
             communityChannelIDs = channelIDs
             // Learn the peer names/photos this payload carried, so calls and headers
             // can resolve a name without a further round trip. Bulk, not per-row: the
@@ -502,8 +511,11 @@ final class ChatStore: ObservableObject {
         let selfChats = convs.filter { $0.type == .self }
         directConversations = selfChats + convs.filter { $0.type == .direct }
         let channelIDs = communityChannelIDs
-        communityConversations = convs.filter { $0.type == .group && channelIDs.contains($0.id) }
-        let listedGroupIDs = standaloneGroupIDs
+        // Host threads join the community channels here: still decryptable group sessions,
+        // never rows in the Groups list.
+        let hostIDs = hostThreadIDs
+        communityConversations = convs.filter { $0.type == .group && (channelIDs.contains($0.id) || hostIDs.contains($0.id)) }
+        let listedGroupIDs = standaloneGroupIDs.subtracting(hostIDs)
         groupConversations = convs.filter { $0.type == .group && listedGroupIDs.contains($0.id) }
         backfillPreviewsIfNeeded()
     }

@@ -23,6 +23,8 @@ private data class ConvDTO(
     val last_message_at: String? = null,
     val last_ciphertext: String? = null,
     val unread_count: Int = 0,
+    /** Set when this conversation is a member's thread with a community's hosts. */
+    val host_thread_community_id: String? = null,
 )
 @Serializable
 private data class ConversationsEnvelope(val conversations: List<ConvDTO>)
@@ -78,9 +80,17 @@ class ChatService(context: Context) {
         return api.requestAs<Res>("POST", "conversations/create", jsonBody = body).conversation_id
     }
 
+    /**
+     * Conversations the last fetch identified as community host threads. Groups underneath,
+     * but they belong in the community's inbox, never in the Groups list.
+     */
+    @Volatile var lastHostThreadIds: Set<String> = emptySet()
+        private set
+
     /** Fetch the user's real conversations, then enrich direct chats (peer) concurrently. */
     suspend fun fetchConversations(): List<VConversation> = coroutineScope {
         val env: ConversationsEnvelope = api.requestAs("GET", "conversations")
+        lastHostThreadIds = env.conversations.filter { it.host_thread_community_id != null }.map { it.id }.toSet()
         val convs = env.conversations.map { c ->
             VConversation(
                 id = c.id,

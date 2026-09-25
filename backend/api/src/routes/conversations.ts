@@ -231,7 +231,11 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
             lm.last_message_at,
             translate(encode(lm.ciphertext,'base64'), E'\n', '') as last_ciphertext,
             lm.content_type as last_content_type,
-            coalesce(uc.unread, 0)::int as unread_count
+            coalesce(uc.unread, 0)::int as unread_count,
+            -- A member's thread with a community's hosts. It is a group underneath, but it
+            -- belongs in that community's inbox, not in the Groups list — the apps key on this.
+            (select ht.community_id from community_host_threads ht
+              where ht.conversation_id = c.id limit 1) as host_thread_community_id
        from conversations c
        join conversation_members me on me.conversation_id = c.id and me.user_id = $1 and me.left_at is null
             -- Pending and declined requests are NOT chats. They live in the Requests inbox
