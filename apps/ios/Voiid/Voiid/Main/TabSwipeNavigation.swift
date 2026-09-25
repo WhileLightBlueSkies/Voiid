@@ -44,6 +44,19 @@
 import SwiftUI
 import UIKit
 
+/// When the tab swipe last moved. A SwiftUI button under the finger still fires on release
+/// after a short flick — UIKit's touch cancelling does not reach SwiftUI's own gestures — so a
+/// screen whose tap opens something (a game's setup sheet) checks this and ignores a "tap"
+/// that was really the end of a swipe.
+enum TabSwipeActivity {
+    @MainActor static var lastMoved: Date = .distantPast
+    /// True during a swipe and for a beat after it.
+    @MainActor static var isRecent: Bool { Date().timeIntervalSince(lastMoved) < 0.4 }
+    /// The tab bar's frame in window coordinates. A drag that starts on the bar is the bar's
+    /// own (it scrolls, and rubber-bands) — never a page swipe to the next tab.
+    @MainActor static var tabBarFrame: CGRect = .zero
+}
+
 struct TabSwipeNavigation<T: Hashable>: ViewModifier {
 
     @Binding var selection: T
@@ -252,9 +265,16 @@ private struct PanCatcher: UIViewRepresentable {
                   let host = anchor.owningHostingView ?? anchor.window else { return }
             let pan = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
             pan.delegate = self
-            // Does NOT delay or cancel touches: taps, long presses and vertical scrolls
-            // inside the page must behave exactly as they did before this existed.
-            pan.cancelsTouchesInView = false
+            // Does NOT delay touches: taps, long presses and vertical scrolls inside the page
+            // behave exactly as they did before this existed, because until the pan
+            // RECOGNISES — a clear sideways drag — nothing is cancelled.
+            //
+            // But once it has recognised, the touch is the swipe's. It used to leave the touch
+            // with the view underneath too, so a short flick that began and ended on a Games
+            // card also counted as a tap on it, and the game's setup sheet slid up behind the
+            // page you had just swiped to. Cancelling on recognition is what a UIScrollView
+            // does to its own buttons for the same reason.
+            pan.cancelsTouchesInView = true
             pan.delaysTouchesBegan = false
             host.addGestureRecognizer(pan)
             attached = host
@@ -262,6 +282,7 @@ private struct PanCatcher: UIViewRepresentable {
 
         @objc func handle(_ g: UIPanGestureRecognizer) {
             guard let view = g.view else { return }
+            TabSwipeActivity.lastMoved = Date()
             let t = g.translation(in: view).x
             switch g.state {
             case .changed:
@@ -283,6 +304,10 @@ private struct PanCatcher: UIViewRepresentable {
             // doing that work, so the grid announces the mode instead (ChatPresence), and
             // the pager stands down for as long as it lasts.
             if ChatPresence.isReorderingGrid { return false }
+
+            // A drag on the TAB BAR moves the bar, not the page. Without this, dragging the
+            // row sideways rubber-banded it AND switched tab underneath.
+            if TabSwipeActivity.tabBarFrame.contains(pan.location(in: nil)) { return false }
 
             // A touch that STARTS on a chat tile belongs to that tile, full stop.
             //

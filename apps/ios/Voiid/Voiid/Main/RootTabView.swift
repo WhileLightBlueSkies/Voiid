@@ -50,6 +50,10 @@ struct RootTabView: View {
     @ObservedObject private var walkthrough = AppWalkthroughController.shared
     @State private var spotlightTargets: [String: SpotlightTargetInfo] = [:]
     @State private var tab: Tab = .chat
+    /// The tab the BAR shows as selected. Follows `tab` with its own animation: a swipe
+    /// commits `tab` with animations disabled (the page swap needs that), and the bar used to
+    /// inherit it — the underline jumped instead of sliding as it does in Voiid Ui.
+    @State private var barTab: Tab = .chat
     /// True while a swipe is driving the tab change, so the crossfade stands down and the
     /// swipe's own slide is the only motion on screen.
     @State private var swipingTabs = false
@@ -320,7 +324,11 @@ struct RootTabView: View {
         // A tab change always lands on a root screen, so every outstanding hide request is
         // stale by definition. Clearing the COUNT (rather than assigning a Bool false) is what
         // stops a screen that failed to release from stranding the user with no navigation.
-        .onChange(of: tab) { _, _ in session.resetChrome() }
+        .onChange(of: tab) { old, new in
+            session.resetChrome()
+            moveBarIndicator(from: old, to: new)
+        }
+        .onAppear { barTab = tab }
         .animation(.easeInOut(duration: 0.2), value: session.hideTabBar)
         // Bring the Map engine to life at shell load so inbound encrypted fixes are received
         // and decrypted even when the Map tab is not the active one — otherwise a contact's
@@ -411,7 +419,25 @@ struct RootTabView: View {
                     )
                 }
                 .coordinateSpace(name: "tabScroll")
+                // ALWAYS ELASTIC sideways, even when every tab fits: the bar can be pulled and
+                // springs back, exactly as it does with six or more. The drag belongs to the
+                // bar (see TabSwipeActivity.tabBarFrame), so it never changes tab.
+                .scrollBounceBehavior(.always, axes: .horizontal)
                 .onPreferenceChange(TabScrollOffsetKey.self) { scrollX = $0 }
+                // THE EDGE FADE SAYS "MORE THIS WAY" (Voiid Ui). A soft fade at whichever edge
+                // has tabs beyond it is the standard cue for a scrollable row; a mask changes
+                // appearance, not layout, so every tab stays exactly as tappable.
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black, location: scrollX > 1 ? 0.06 : 0),
+                            .init(color: .black, location: hasTabsAfter(slotW: slotW, viewport: geo.size.width) ? 0.94 : 1),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                )
                 // SCROLL ONLY WHEN THE TAB IS ACTUALLY OFF-SCREEN, and only to the nearer
                 // edge.
                 //
@@ -438,9 +464,23 @@ struct RootTabView: View {
                 // off the edge is centred, which is the gentlest place to put something the
                 // user has not seen yet.
                 .onChange(of: tab) { _, t in
-                    guard tabIsOffScreen(t, slotW: slotW, viewport: geo.size.width) else { return }
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(t, anchor: .center)
+                    if tabIsOffScreen(t, slotW: slotW, viewport: geo.size.width) {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(t, anchor: .center)
+                        }
+                        return
+                    }
+                    // THE AUTO-SLIDE (Voiid Ui). Selecting the last fully visible tab nudges
+                    // the row so the next hidden one peeks in — otherwise a row that ends
+                    // exactly at the edge reads as the complete set and the rest are never
+                    // found.
+                    let order = Tab.visible
+                    guard let i = order.firstIndex(of: t), i < order.count - 1 else { return }
+                    let lastVisible = max(0, Int(((scrollX + geo.size.width) / slotW).rounded(.down)) - 1)
+                    if i == lastVisible {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+                            proxy.scrollTo(order[i + 1], anchor: .trailing)
+                        }
                     }
                 }
                 // First appearance has no scroll history to preserve, and a deep-linked tab
@@ -456,7 +496,17 @@ struct RootTabView: View {
         // `.bar` material rather than a flat fill: content scrolling underneath blurs through
         // it, which is what makes an iOS tab bar feel native instead of pasted on.
         .background(.bar)
-        .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
+        // Publishes where the bar is, so the page swipe can leave drags on it alone.
+        .background(
+            GeometryReader { g in
+                Color.clear
+                    .onAppear { TabSwipeActivity.tabBarFrame = g.frame(in: .global) }
+                    .onChange(of: g.frame(in: .global)) { _, f in TabSwipeActivity.tabBarFrame = f }
+            }
+        )
+        .onDisappear { TabSwipeActivity.tabBarFrame = .zero }
+        // No resting hairline (Voiid Ui): at rest nothing is beneath the bar, so a permanent
+        // divider draws a line under empty space. The material separates it from the page.
         // Nothing delayed outlives the bar (U05). An uncancelled timer firing after the
         // view is gone touches @State that no longer drives anything, and on the way back
         // it can land mid-transition.
@@ -480,13 +530,40 @@ struct RootTabView: View {
         return leading < scrollX + tolerance || trailing > scrollX + viewport - tolerance
     }
 
+    /// Whether tabs remain off to the right — drives the trailing edge fade.
+    private func hasTabsAfter(slotW: CGFloat, viewport: CGFloat) -> Bool {
+        let row = CGFloat(Tab.visible.count) * slotW
+        return scrollX + viewport < row - 1
+    }
+
+    /// Slides the bar's underline to `to`, stretched by the distance travelled — for taps and
+    /// swipes alike (Voiid Ui VoiidTabBar.select).
+    private func moveBarIndicator(from: Tab, to: Tab) {
+        guard barTab != to else { return }
+        guard !reduceMotion else {
+            withAnimation(.easeOut(duration: 0.14)) { barTab = to }
+            return
+        }
+        let order = Tab.visible
+        let distance = abs((order.firstIndex(of: to) ?? 0) - (order.firstIndex(of: from) ?? 0))
+        slideStretch = min(1.25 + CGFloat(distance) * 0.28, 2.2)
+        isSliding = true
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) { barTab = to }
+        slideRelease?.cancel()
+        slideRelease = Task { @MainActor in
+            let ns = UInt64((0.16 + Double(distance) * 0.04) * 1_000_000_000)
+            guard (try? await Task.sleep(nanoseconds: ns)) != nil else { return }
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) { isSliding = false }
+        }
+    }
+
     /// How many tabs are visible at once; the rest scroll.
     private static let visibleTabs = 5
     /// Height of the bar's content, above the home-indicator inset.
     private static let barContentHeight: CGFloat = 64
 
     private func tabItem(_ t: Tab) -> some View {
-        let active = tab == t
+        let active = barTab == t
         return Button {
             Haptics.selection()
             // Critically damped, not bouncy. The old spring (dampingFraction 0.55) overshot
@@ -544,87 +621,59 @@ struct RootTabView: View {
                 isSliding = false
             }
         } label: {
-            VStack(spacing: 5) {
-                ZStack {
-                    // A slim underline, not a filled pill behind the glyph. The pill competed
-                    // with the icon it was meant to highlight; an underline states the
-                    // selection without obscuring anything, and it slides between tabs via the
-                    // same matchedGeometryEffect.
+            // THE VOIID UI TAB ITEM (Chat/RootTabView.swift, TabItem): glyph, label, and the
+            // slim underline BELOW the label — the underline marks the position without sitting
+            // between the icon and its name. Selected is the ink accent, not the brand teal.
+            VStack(spacing: 4) {
+                Image(systemName: active ? t.iconFilled : t.icon)
+                    // A fixed point size with a weight change, not a resizable frame: resizing
+                    // an SF Symbol throws away its optical sizing.
+                    .font(.system(size: 22, weight: active ? .semibold : .regular))
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(height: 26)
+                    // A small overshoot on the active glyph, animated both ways so the tab
+                    // turning OFF is seen as well as the one turning on. None under Reduce Motion.
+                    .scaleEffect(active && !reduceMotion ? 1.10 : 1)
+                    .animation(reduceMotion ? .easeOut(duration: 0.14)
+                                            : .spring(response: 0.3, dampingFraction: 0.86),
+                               value: active)
+                    .overlay(alignment: .topTrailing) {
+                        // The Map badge shows whether or not the tab is active — visibility
+                        // must be legible from every screen.
+                        if t == .map { mapVisibilityBadge.offset(x: 8, y: -2) }
+                        // Moments unread dot: any unexpired unviewed moment exists.
+                        if t == .stories && storyEngine.hasUnviewed {
+                            Circle().fill(VoiidColor.accent)
+                                .frame(width: 8, height: 8)
+                                .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
+                                .offset(x: 8, y: -2)
+                        }
+                    }
+
+                Text(t.label)
+                    // Selection steps up in weight as well as colour, so it survives for a
+                    // colour-blind user and in bright sunlight.
+                    .font(VoiidFont.rounded(10, active ? .semibold : .regular))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Group {
                     if active {
                         Capsule()
-                            .fill(VoiidColor.primary)
-                            .matchedGeometryEffect(id: "tabIndicator", in: indicator)
-                            // ELASTIC, kept from the original bar but tamed. The indicator
-                            // stretches along its travel axis while moving and settles back to
-                            // 1 — the squash-and-stretch that made the old pill feel alive,
-                            // without the wobble that came from under-damping it.
+                            .fill(VoiidColor.accentInk)
                             .frame(width: 22, height: 3)
-                            // No stretch under Reduce Motion — the squash is the effect this
-                            // setting is about.
+                            // Stretches with the distance travelled, then settles.
                             .scaleEffect(x: (isSliding && !reduceMotion) ? slideStretch : 1, y: 1, anchor: .center)
                             .animation(reduceMotion ? .easeOut(duration: 0.14)
-                                                    : .spring(response: 0.3, dampingFraction: 0.75),
+                                                    : .spring(response: 0.28, dampingFraction: 0.9),
                                        value: isSliding)
-                            .offset(y: 17)
+                            .matchedGeometryEffect(id: "tabIndicator", in: indicator)
+                    } else {
+                        Color.clear.frame(width: 22, height: 3)
                     }
-                    Image(systemName: active ? t.iconFilled : t.icon)
-                        // A fixed point size with a symbol weight, NOT a resizable image in a
-                        // frame: SF Symbols are optically sized, and stretching them to a box
-                        // is what made the old icons look inconsistently heavy next to
-                        // each other.
-                        .font(.system(size: 22, weight: active ? .semibold : .regular))
-                        .foregroundStyle(active ? VoiidColor.primary : VoiidColor.textSecondary)
-                        // THE ICON ITSELF NOW MOVES. The indicator slid and the glyph hard-cut
-                        // from outline to filled — so the one thing the thumb was aimed at was
-                        // the only thing that did not respond, and the bar felt inert even
-                        // though something on it was animating.
-                        //
-                        // A SMALL overshoot: 1.10, settling to 1.0, critically damped.
-                        //
-                        // An earlier version of this bar had a 1.12 pop on a 0.55-damped
-                        // spring and it was removed for wobbling on every tap — motion that
-                        // draws attention to the chrome instead of the content. That note is
-                        // still in the comment above and it is right, so this stays under it:
-                        // slightly smaller, and damped at 0.85 so it settles rather than
-                        // oscillates. The reaction is felt, not watched.
-                        // No overshoot under Reduce Motion: an icon that grows past its
-                        // size and comes back is exactly the "spatial effect" the setting
-                        // asks to be removed.
-                        .scaleEffect((active && isSliding && !reduceMotion) ? 1.10 : 1)
-                        .animation(reduceMotion ? .easeOut(duration: 0.14)
-                                                : .spring(response: 0.28, dampingFraction: 0.85),
-                                   value: isSliding)
-                        // The outline→filled swap is a DIFFERENT view, so SwiftUI cross-fades
-                        // it rather than morphing. `.contentTransition` makes SF Symbols
-                        // interpolate between the two variants instead — the fill grows out of
-                        // the outline, which is what Apple's own tab bars do.
-                        .contentTransition(.symbolEffect(.replace))
-                        // The Map badge sits at the icon's top-right, drawn whether or not the
-                        // tab is active — visibility must be legible from every screen.
-                        .overlay(alignment: .topTrailing) {
-                            if t == .map { mapVisibilityBadge.offset(x: 7, y: -3) }
-                            // Stories unread dot: any unexpired unviewed story exists (§8.1).
-                            // Spark, not the brand teal — an unread marker must not be the same
-                            // colour as the "this tab is selected" state.
-                            if t == .stories && storyEngine.hasUnviewed {
-                                Circle().fill(VoiidColor.accent)
-                                    .frame(width: 8, height: 8)
-                                    .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
-                                    .offset(x: 7, y: -3)
-                            }
-                        }
                 }
-                .frame(height: 28)
-                // Labels always show now: a fixed slot is wide enough for them, which is the
-                // point of scrolling rather than squeezing.
-                Text(t.label)
-                    // The active label steps up in weight rather than only in colour, so
-                    // selection survives for a colour-blind user and in bright sunlight.
-                    .font(VoiidFont.rounded(10, active ? .semibold : .medium))
-                    .foregroundStyle(active ? VoiidColor.primary : VoiidColor.textSecondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
             }
+            .foregroundStyle(active ? VoiidColor.accentInk : VoiidColor.textSecondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }

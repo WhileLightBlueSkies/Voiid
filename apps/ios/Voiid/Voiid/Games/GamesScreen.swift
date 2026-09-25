@@ -99,6 +99,8 @@ struct GamesScreen: View {
 
     private func open(_ game: Game) {
         guard game.isPlayable, !game.needsUpdate else { return }
+        // The end of a sideways swipe to another tab is not a tap on the card under it.
+        guard !TabSwipeActivity.isRecent else { return }
         Haptics.tap()
         setup = game
     }
