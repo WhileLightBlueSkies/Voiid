@@ -417,6 +417,29 @@ router.get('/mine', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// GET /clips/:id -> { clip }
+// One clip, for a clip shared into a chat. Signed-in only, like everything that shows a
+// clip: a shared link reaches someone who must open Voiid and sign in to see it, and the
+// video itself is only ever handed out by /playback as a short-lived URL. Same row as the
+// feed, and the same visibility — a deleted, removed or unfinished clip is a 404.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/:id', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const clipId = req.params.id;
+  if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
+  const rows = await query<any>(
+    `select ${CLIP_COLUMNS}
+       from clips c
+       ${CLIP_JOINS}
+      where c.id = $2 and c.deleted_at is null and c.removed_at is null and c.status = 'ready'`,
+    [user_id, clipId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'clip not found' });
+  await attachThumbUrls(rows);
+  return res.json({ clip: withNumericByteSize(rows)[0] });
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // GET /clips/:id/playback?quality=sd|hd|fhd -> { playback_url, quality, byte_size }
 //
 // Minted on demand, short-lived. See attachThumbUrls for why this is not in /feed.
