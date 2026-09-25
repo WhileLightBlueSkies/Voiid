@@ -84,6 +84,9 @@ struct CommunityHomeTab: View {
     /// The post being reported. Non-nil IS the sheet's presented state, so it can never fire
     /// against a post the feed has since reloaded away.
     @State private var reporting: CommunityService.Post?
+    /// The post whose comments are open. On the parent, like Report, so a row scrolling out
+    /// of the lazy stack cannot tear the sheet down.
+    @State private var commentsFor: CommunityService.Post?
     /// The author handle whose Social Profile is open. Non-nil IS the presented state.
     @State private var openHandle: String?
 
@@ -191,6 +194,13 @@ struct CommunityHomeTab: View {
         }
         .sheet(item: $reporting) { post in
             ReportSheet(target: .communityPost(postId: post.id)) { reporting = nil }
+        }
+        .sheet(item: $commentsFor) { post in
+            CommunityCommentsSheet(communityId: communityId, post: post) { count in
+                if let i = posts.firstIndex(where: { $0.id == post.id }) {
+                    posts[i].comment_count = count
+                }
+            }
         }
         .alert("Delete this post?", isPresented: Binding(
             get: { pendingDelete != nil },
@@ -538,6 +548,7 @@ struct CommunityHomeTab: View {
                     onDelete: canDelete(post) ? { pendingDelete = post } : nil,
                     onLike: { Task { await toggleLike(post) } },
                     onReport: { reporting = post },
+                    onComments: { commentsFor = post },
                     onOpenAuthor: { openHandle = $0 }
                 )
                 // The row is mid-delete: dimmed and inert, so a second tap cannot start a
@@ -1046,6 +1057,8 @@ private struct CommunityPostCard: View {
     /// confirmation: a sheet presented from inside a row in a lazy stack is a sheet that can be
     /// torn down mid-interaction when the row scrolls out.
     let onReport: () -> Void
+    /// Opens the post's comments — the conversation under it.
+    let onComments: () -> Void
     /// Opening the author's Social Profile. Optional because a deleted author has no handle
     /// to open — see the `author_name` note on CommunityService.Post.
     var onOpenAuthor: ((String) -> Void)?
@@ -1158,12 +1171,17 @@ private struct CommunityPostCard: View {
                             startPoint: .topLeading, endPoint: .bottomTrailing
                         )
                     )
+                    .frame(maxWidth: .infinity)
                     .frame(height: 172)
+                    // PINNED TO THE BLOCK. A fill image with no frame reports its own, larger
+                    // size, so it spilled out of these 172pt and covered the author row and the
+                    // caption — the card read as one giant image. Bounding it, then clipping the
+                    // BLOCK (not the image's own overflowed bounds), keeps it inside.
                     .overlay {
                         ResolvedThumbnail(source: media)
-                            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md,
-                                                        style: .continuous))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
             }
 
             HStack(spacing: VoiidSpacing.lg) {
@@ -1173,12 +1191,23 @@ private struct CommunityPostCard: View {
                 postAction(post.isLiked ? "heart.fill" : "heart", "\(post.likes)",
                            tint: post.isLiked ? VoiidColor.accent : nil,
                            action: onLike)
-                // Comments have a COUNT but no thread: community_posts carries comment_count
-                // and 047 defines no comments table, so there is nowhere for a tap to go. The
-                // number is real; the button stays inert rather than opening an empty screen.
-                postAction("eye", "\(post.view_count ?? 0)")
-                ShareLink(item: post.text) { Label("Share", systemImage: "square.and.arrow.up").font(VoiidFont.rounded(12)).foregroundStyle(VoiidColor.textSecondary) }
+                // The conversation under the post (095), as in Voiid Ui.
+                postAction("bubble.left", "\(post.comments)", action: onComments)
+                ShareLink(item: post.text) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.arrow.up").font(.system(size: 13.5, weight: .medium))
+                        Text("Share").font(VoiidFont.rounded(12.5))
+                    }
+                    .foregroundColor(VoiidColor.textSecondary)
+                }
                 Spacer(minLength: 0)
+                // Views stay, quieter and at the end: a number to glance at, not an action.
+                HStack(spacing: 4) {
+                    Image(systemName: "eye").font(.system(size: 12))
+                    Text("\(post.view_count ?? 0)").font(VoiidFont.rounded(12)).monospacedDigit()
+                }
+                .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
+                .accessibilityLabel("\(post.view_count ?? 0) views")
             }
             .padding(.top, 2)
         }

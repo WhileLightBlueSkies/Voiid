@@ -2518,6 +2518,165 @@ router.post('/:id/posts/:postId/view', requireAuth,
     res.json({view_count:rows[0].view_count});
   }));
 
+// ─────────────────────────────────────────────────────────────────────────────────
+// Comments on a Home post (095).
+//
+//   GET    /communities/:id/posts/:postId/comments               oldest first
+//   POST   /communities/:id/posts/:postId/comments   { body }    members, with a social profile
+//   DELETE /communities/:id/posts/:postId/comments/:commentId    the author, or a manager
+//
+// Same shape as likes: the post must belong to THIS community, and comment_count moves in the
+// same transaction as the row, so the number on the card and the thread cannot disagree.
+// ─────────────────────────────────────────────────────────────────────────────────
+const COMMENT_SELECT = `
+  select c.id, c.post_id, c.author_id, c.body, c.created_at,
+         u.full_name as author_name, u.username as author_username,
+         (c.author_id = $2) as mine
+    from community_post_comments c
+    left join users u on u.id = c.author_id`;
+
+router.get(
+  '/:id/posts/:postId/comments',
+  requireAuth,
+  rateLimit({ max: 240, windowSeconds: 60, bucket: 'communities' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    const postId = String(req.params.postId ?? '');
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+    if (!UUID_RE.test(postId)) return res.status(400).json({ error: 'post id must be a uuid' });
+    const access = await communityAccess(communityId, user_id, false);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const post = await query<{ id: string }>(
+      `select id from community_posts where id = $1 and community_id = $2 and removed_at is null`,
+      [postId, communityId]
+    );
+    if (!post[0]) return res.status(404).json({ error: 'no such post' });
+
+    const rows = await query<any>(
+      `${COMMENT_SELECT}
+        where c.post_id = $1 and c.removed_at is null
+        order by c.created_at asc
+        limit 500`,
+      [postId, user_id]
+    );
+    res.json({ comments: rows });
+  })
+);
+
+router.post(
+  '/:id/posts/:postId/comments',
+  requireAuth,
+  requireSocialProfile(),
+  rateLimit({ max: 60, windowSeconds: 60, bucket: 'communities' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    const postId = String(req.params.postId ?? '');
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+    if (!UUID_RE.test(postId)) return res.status(400).json({ error: 'post id must be a uuid' });
+    const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    if (!body) return res.status(400).json({ error: 'write something first' });
+    if (body.length > 1000) return res.status(400).json({ error: 'comments are up to 1000 characters' });
+
+    const access = await communityAccess(communityId, user_id, false);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      const post = (
+        await client.query<{ id: string }>(
+          `select id from community_posts
+            where id = $1 and community_id = $2 and removed_at is null
+            for update`,
+          [postId, communityId]
+        )
+      ).rows[0];
+      if (!post) {
+        await client.query('rollback');
+        return res.status(404).json({ error: 'no such post' });
+      }
+      const inserted = (
+        await client.query<{ id: string }>(
+          `insert into community_post_comments (post_id, author_id, body)
+           values ($1, $2, $3) returning id`,
+          [postId, user_id, body]
+        )
+      ).rows[0];
+      const counted = (
+        await client.query<{ comment_count: number }>(
+          `update community_posts set comment_count = comment_count + 1
+            where id = $1 returning comment_count`,
+          [postId]
+        )
+      ).rows[0];
+      await client.query('commit');
+      const comment = (await query<any>(`${COMMENT_SELECT} where c.id = $1`, [inserted.id, user_id]))[0];
+      res.status(201).json({ comment, comment_count: counted?.comment_count ?? 0 });
+    } catch (e) {
+      await client.query('rollback');
+      throw e;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+router.delete(
+  '/:id/posts/:postId/comments/:commentId',
+  requireAuth,
+  rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    const postId = String(req.params.postId ?? '');
+    const commentId = String(req.params.commentId ?? '');
+    if (![communityId, postId, commentId].every((v) => UUID_RE.test(v))) {
+      return res.status(400).json({ error: 'ids must be uuids' });
+    }
+    // A manager may remove anyone's comment; everyone else only their own.
+    const isManager = (await requireManager(communityId, user_id)).ok;
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      const removed = (
+        await client.query<{ id: string }>(
+          `update community_post_comments c
+              set removed_at = now(), removed_by = $3
+             from community_posts p
+            where c.id = $1 and c.post_id = $2 and p.id = c.post_id
+              and p.community_id = $4 and c.removed_at is null
+              ${isManager ? '' : 'and c.author_id = $3'}
+           returning c.id`,
+          [commentId, postId, user_id, communityId]
+        )
+      ).rows[0];
+      if (!removed) {
+        await client.query('rollback');
+        // One answer for missing, already removed and not yours — see DELETE post.
+        return res.status(404).json({ error: 'no such comment' });
+      }
+      const counted = (
+        await client.query<{ comment_count: number }>(
+          `update community_posts set comment_count = greatest(comment_count - 1, 0)
+            where id = $1 returning comment_count`,
+          [postId]
+        )
+      ).rows[0];
+      await client.query('commit');
+      res.json({ removed: true, comment_count: counted?.comment_count ?? 0 });
+    } catch (e) {
+      await client.query('rollback');
+      throw e;
+    } finally {
+      client.release();
+    }
+  })
+);
+
 // DELETE /communities/:id/posts/:postId — the author, or a manager.
 //
 // A TIMESTAMP, NOT A DELETE. 047: "A removed post stays in the table so a moderator can see

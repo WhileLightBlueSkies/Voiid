@@ -818,6 +818,48 @@ final class CommunityService {
         try await api.request("DELETE", "communities/\(communityId)/posts/\(postId)/like")
     }
 
+    // MARK: Post comments (095)
+
+    struct PostComment: Decodable, Identifiable, Hashable {
+        let id: String
+        var author_id: String?
+        var body: String?
+        var created_at: String?
+        var author_name: String?
+        var author_username: String?
+        var mine: Bool?
+
+        var text: String { body ?? "" }
+        var displayName: String {
+            if let n = author_name, !n.isEmpty { return n }
+            if let u = author_username, !u.isEmpty { return "@\(u)" }
+            return "Deleted account"
+        }
+    }
+
+    func postComments(communityId: String, postId: String) async throws -> [PostComment] {
+        struct Resp: Decodable { let comments: [PostComment] }
+        let r: Resp = try await api.request("GET", "communities/\(communityId)/posts/\(postId)/comments")
+        return r.comments
+    }
+
+    /// Returns the new comment and the post's updated count.
+    func addPostComment(communityId: String, postId: String, body: String) async throws -> (PostComment, Int) {
+        struct Body: Encodable { let body: String }
+        struct Resp: Decodable { let comment: PostComment; let comment_count: Int }
+        let r: Resp = try await api.request("POST", "communities/\(communityId)/posts/\(postId)/comments",
+                                            body: Body(body: body))
+        return (r.comment, r.comment_count)
+    }
+
+    /// Returns the post's updated count.
+    func deletePostComment(communityId: String, postId: String, commentId: String) async throws -> Int {
+        struct Resp: Decodable { let comment_count: Int }
+        let r: Resp = try await api.request("DELETE",
+                                            "communities/\(communityId)/posts/\(postId)/comments/\(commentId)")
+        return r.comment_count
+    }
+
     /// The pinned announcement.
     ///
     /// 047 makes this a TABLE rather than a flag on a post or a column on the community, so an
