@@ -131,6 +131,14 @@ class BackupManager(context: Context) {
     /** Whether an old PIN-protected copy of the key is still on the server (pre-S04). */
     suspend fun hasLegacyPin(): Boolean = runCatching { recovery.hasPinWrap() }.getOrDefault(false)
 
+    /** Same question, but null when the server could not be asked — the restore screen treats
+     *  that as "maybe" and keeps the PIN option rather than hiding it. */
+    suspend fun hasLegacyPinOrNull(): Boolean? = try {
+        recovery.hasPinWrap()
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+        android.util.Log.w("Restore", "recovery/status failed", e); null
+    }
+
     /** Delete that copy, after the person has saved their phrase. */
     suspend fun retireLegacyPin() = recovery.deleteKey()
 

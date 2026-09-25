@@ -31,6 +31,8 @@ data class VClip(
     val authorId: String,
     val authorName: String,
     val authorPhotoUrl: String? = null,
+    val authorHandle: String? = null,
+    val authorVerified: Boolean = false,
     val thumbUrl: String? = null,
     val caption: String? = null,
     val durationMs: Int? = null,
@@ -52,6 +54,8 @@ data class VClip(
             authorId = row.author_id,
             authorName = row.author_name ?: "Unknown",
             authorPhotoUrl = row.author_photo_url,
+            authorHandle = row.author_handle,
+            authorVerified = row.author_verified ?: false,
             thumbUrl = row.thumb_url,
             caption = row.caption,
             durationMs = row.duration_ms,
@@ -248,7 +252,7 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                     nextCursor = resp.next_cursor
                     reachedEnd = resp.next_cursor == null
                 }
-                .onFailure { loadError = message(it) }
+                .onFailure { android.util.Log.w("ClipsStore", "feed failed", it); loadError = message(it) }
             hasLoadedOnce = true
             loading = false
         }

@@ -658,6 +658,11 @@ private fun DraggableChatGrid(
     val haptics = LocalVoiidHaptics.current
     val density = LocalDensity.current
     val centers = remember { mutableStateMapOfCenters() }
+    // Each tile's real bounds. A touch picks a tile only when it lands ON that tile — the
+    // nearest-centre search used to grab one from anywhere on the grid, gaps included.
+    val tileRects = remember { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
+    fun tileAt(p: Offset): VConversation? =
+        items.firstOrNull { tileRects[it.id]?.contains(p) == true }   // only tiles still on screen
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
     var containerWidthPx by remember { mutableStateOf(0f) }
 
@@ -731,10 +736,7 @@ private fun DraggableChatGrid(
                 awaitPointerEventScope {
                     while (true) {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        val picked = centers.entries.minByOrNull {
-                            hypot((it.value.x - down.position.x).toDouble(),
-                                  (it.value.y - down.position.y).toDouble())
-                        }?.key?.let { id -> items.firstOrNull { it.id == id } }
+                        val picked = tileAt(down.position)
                         if (picked != null) {
                             holdingId = picked.id
                             holdProgress = 0f
@@ -754,9 +756,7 @@ private fun DraggableChatGrid(
                 // feel sluggish on Android for no reason the user can see.
                 detectDragGestures(
                     onDragStart = { offset ->
-                        val picked = centers.entries.minByOrNull {
-                            hypot((it.value.x - offset.x).toDouble(), (it.value.y - offset.y).toDouble())
-                        }?.key?.let { id -> items.firstOrNull { it.id == id } }
+                        val picked = tileAt(offset)
                         if (picked != null) {
                             haptics.rigid()
                             armedId = picked.id
@@ -766,8 +766,9 @@ private fun DraggableChatGrid(
                         }
                     },
                     onDrag = { change, amount ->
-                        change.consume()
+                        // No tile under the finger: leave the gesture to the scroll.
                         val conv = dragItem ?: return@detectDragGestures
+                        change.consume()
                         dragTranslation += amount
                         // Moved too far to be a hold: this is a drag.
                         if (hypot(dragTranslation.x.toDouble(), dragTranslation.y.toDouble()) > holdSlopPx) {
@@ -854,6 +855,11 @@ private fun DraggableChatGrid(
                                     centers[conv.id] = Offset(
                                         p.x - rootOrigin.x + coords.size.width / 2f,
                                         p.y - rootOrigin.y + coords.size.height / 2f,
+                                    )
+                                    tileRects[conv.id] = androidx.compose.ui.geometry.Rect(
+                                        p.x - rootOrigin.x, p.y - rootOrigin.y,
+                                        p.x - rootOrigin.x + coords.size.width,
+                                        p.y - rootOrigin.y + coords.size.height,
                                     )
                                 }
                                 .scale(if (armedId == conv.id) 1.08f else 1f)

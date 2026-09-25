@@ -90,6 +90,8 @@ class ClipService(private val tokens: TokenStore) {
         val created_at: String,
         val author_name: String? = null,
         val author_photo_url: String? = null,
+        val author_handle: String? = null,
+        val author_verified: Boolean? = null,
         val liked_by_me: Boolean = false,
         /** Which renditions exist. Defaulted so a pre-021 backend still decodes. */
         val has_sd: Boolean = false,

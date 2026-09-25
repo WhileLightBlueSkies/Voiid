@@ -127,9 +127,17 @@ fun RestoreFlow(    session: AppSession,
      *  newer backup restores with the recovery phrase alone. Null until the server answers. */
     var legacyPin by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(Unit) {
-        val legacy = manager.hasLegacyPin()
-        legacyPin = legacy
-        if (!legacy && step == RestoreStep.UNLOCK) step = RestoreStep.PHRASE
+        // A FAILED check is not a "no". It used to default to false, so a flaky network sent
+        // PIN accounts straight to the phrase page with the PIN screen gone. Retry, and if the
+        // server still has not answered, keep the PIN screen: it offers the phrase too.
+        var legacy: Boolean? = null
+        for (attempt in 0 until 3) {
+            legacy = manager.hasLegacyPinOrNull()
+            if (legacy != null) break
+            kotlinx.coroutines.delay(800L * (attempt + 1))
+        }
+        legacyPin = legacy ?: true
+        if (legacy == false && step == RestoreStep.UNLOCK) step = RestoreStep.PHRASE
     }
     var pin by remember { mutableStateOf("") }
     var phrase by remember { mutableStateOf("") }
@@ -332,46 +340,79 @@ private fun RestoreUnlockPage(
     onRecoveryPhrase: () -> Unit,
     onSkip: () -> Unit,
 ) {
+    // iOS RestoreMessagesView.UnlockPage: centred stacked header (no wordmark), a backup
+    // summary with its cloud glyph, the PIN field, the "Only you know your PIN" card, the
+    // "Forgot your PIN? Use recovery phrase" row, and a footer with the brand button and
+    // "Continue without restoring".
     val complete = pin.length == RESTORE_PIN_MAX
     OnbScaffold(showBack = false, onBack = {}) {
-        Spacer(Modifier.weight(0.6f))
-        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
-            Text("Welcome back to ", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary)
-            Text("Voiid", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.primary)
-            Spacer(Modifier.height(8.dp))
-            Text("Enter your Voiid PIN to restore this account.",
-                style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
-            Spacer(Modifier.height(14.dp))
-            Text(
-                if (meta.size_bytes > 0) "Backup from ${formatUpdatedAt(meta.updated_at)} · ${formatSize(meta.size_bytes)}" else "Choose a backup location after entering your PIN.",
-                style = VoiidFont.rounded(13), color = VoiidColor.primary,
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp).padding(top = 24.dp, bottom = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            OnboardingHeader(
+                title = OnboardingTitleSpec.Stacked("Welcome back to", "Voiid"),
+                blurb = "Enter your Voiid PIN to restore this account.",
+                showsWordmark = false,
             )
+            Row(Modifier.padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Outlined.CloudDownload, null, tint = VoiidBrand.lime, modifier = Modifier.size(18.dp))
+                Text(
+                    if (meta.size_bytes > 0) "Backup from ${formatUpdatedAt(meta.updated_at)} · ${formatSize(meta.size_bytes)}"
+                    else "Choose a backup location after entering your PIN.",
+                    style = VoiidFont.rounded(14), color = VoiidBrand.textDim,
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+            RestorePinField(value = pin, onChange = onPinChange)
+            error?.let {
+                Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.padding(top = 8.dp))
+            }
+            Spacer(Modifier.height(24.dp))
+            RestoreNoteCard(Icons.Outlined.Shield, "Only you know your PIN",
+                "It never leaves this device. Your backup is decrypted here, so Voiid cannot read it.")
+            Row(
+                Modifier.padding(top = 24.dp).fillMaxWidth().noRippleClickable { onRecoveryPhrase() },
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Key, null, tint = VoiidBrand.lime, modifier = Modifier.size(17.dp))
+                Text("Forgot your PIN?", style = VoiidFont.rounded(15), color = VoiidBrand.textDim)
+                Text("Use recovery phrase", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidBrand.lime)
+            }
         }
-        Spacer(Modifier.height(28.dp))
-        RestorePinField(
-            value = pin,
-            onChange = onPinChange,
-            modifier = Modifier.padding(horizontal = 24.dp),
-        )
-        error?.let {
-            Spacer(Modifier.height(12.dp))
-            Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error,
-                modifier = Modifier.padding(horizontal = 24.dp))
+        OnboardingFooter {
+            OnboardingKitButton(title = "Continue", enabled = complete, usesBrandGradient = true) { onSubmit() }
+            Text("Continue without restoring",
+                style = VoiidFont.rounded(15), color = VoiidBrand.textDim,
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(vertical = 8.dp)
+                    .noRippleClickable { onSkip() })
         }
-        Spacer(Modifier.weight(1f))
-        OnbAccentButton(
-            title = "Continue",
-            enabled = complete,
-            modifier = Modifier.padding(horizontal = 24.dp),
-        ) { onSubmit() }
-        Spacer(Modifier.height(12.dp))
-        Text("Use recovery phrase instead",
-            style = VoiidFont.rounded(15, FontWeight.Medium), color = VoiidColor.primary,
-            modifier = Modifier.padding(bottom = 4.dp)
-                .noRippleClickable { onRecoveryPhrase() })
-        Text("Continue without restoring",
-            style = VoiidFont.rounded(15), color = VoiidColor.textSecondary,
-            modifier = Modifier.padding(bottom = 32.dp).noRippleClickable { onSkip() })
+    }
+}
+
+/** iOS RestoreNoteCard: 46 tinted circle + glyph, 15 semibold title, 12.5 detail, card + hairline. */
+@Composable
+private fun RestoreNoteCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, detail: String) {
+    val shape = RoundedCornerShape(VoiidRadius.lg)
+    Row(
+        Modifier.fillMaxWidth().clip(shape).background(VoiidBrand.card).border(1.dp, VoiidBrand.hairline, shape)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Box(Modifier.size(46.dp).clip(CircleShape).background(VoiidBrand.lime.copy(alpha = 0.10f)),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = VoiidBrand.lime, modifier = Modifier.size(20.dp))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidBrand.text)
+            Text(detail, style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim)
+        }
     }
 }
 

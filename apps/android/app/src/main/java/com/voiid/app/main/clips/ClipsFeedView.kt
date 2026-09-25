@@ -1,5 +1,7 @@
 package com.voiid.app.main.clips
 
+import androidx.compose.foundation.layout.PaddingValues
+
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -204,8 +206,9 @@ fun ClipsFeedView(
                 columns = GridCells.Fixed(3),
                 state = gridState,
                 modifier = Modifier.fillMaxWidth().weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 itemsIndexed(clips.clips, key = { _, c -> c.id }) { index, clip ->
                     ClipTile(
@@ -285,30 +288,23 @@ private fun ClipTile(
     onTap: () -> Unit,
     onRetry: (() -> Unit)? = null,
     onDiscard: (() -> Unit)? = null,
+    onCreator: (() -> Unit)? = null,
 ) {
-    Box(
-        modifier
-            .fillMaxWidth()
-            .aspectRatio(9f / 16f)
-            .clipZoomSource(scale = 0.98f) { onTap() },
+    ClipCard(
+        clipId = clip.id,
+        thumbUrl = clip.thumbUrl,
+        localThumbPath = clip.localThumbPath,
+        viewCount = clip.viewCount,
+        durationMs = clip.durationMs,
+        handle = clip.authorHandle,
+        authorName = clip.authorName,
+        authorPhotoUrl = clip.authorPhotoUrl,
+        verified = clip.authorVerified,
+        modifier = modifier,
+        showMeta = clip.uploadState == ClipUploadState.None,
+        onOpen = onTap,
+        onCreator = onCreator,
     ) {
-        ClipThumbnail(
-            url = clip.thumbUrl,
-            localPath = clip.localThumbPath,
-            modifier = Modifier.fillMaxSize(),
-        )
-
-        // Scrim: the view count sits on arbitrary user video, so it needs its own
-        // contrast floor rather than relying on the frame being dark.
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
-                    0.5f to Color.Transparent,
-                    1f to Color.Black.copy(alpha = 0.55f),
-                )
-            )
-        )
-
         when (val state = clip.uploadState) {
             is ClipUploadState.Uploading -> Box(
                 Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)),
@@ -391,21 +387,7 @@ private fun ClipTile(
                 }
             }
 
-            ClipUploadState.None -> Row(
-                Modifier.align(Alignment.BottomStart).padding(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                Icon(
-                    Icons.Default.RemoveRedEye, null,
-                    tint = Color.White, modifier = Modifier.size(11.dp),
-                )
-                Text(
-                    ClipCount.compact(clip.viewCount),
-                    style = VoiidFont.rounded(11, FontWeight.SemiBold),
-                    color = Color.White,
-                )
-            }
+            ClipUploadState.None -> Unit
         }
     }
 }
@@ -488,57 +470,25 @@ private fun FollowingFeed(
             columns = GridCells.Fixed(3),
             state = gridState,
             modifier = modifier,
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             itemsIndexed(rows, key = { _, c -> c.id }) { index, clip ->
-                Box(
-                    Modifier
-                        .aspectRatio(9f / 16f)
-                        .clipTileEntrance(index, entrance)
-                        .clipZoomSource(scale = 0.97f) {
-                            haptics.tap()
-                            // Opens the CLIP now, not its creator. The pager takes an
-                            // injected list, so this feed's own rows can drive it — the
-                            // old creator-page detour existed only because the pager could
-                            // index nothing but ClipsStore's page.
-                            onOpenClip(index)
-                        }
-                ) {
-                    ClipThumbnail(url = clip.thumb_url, modifier = Modifier.fillMaxSize())
-                    Box(
-                        Modifier.fillMaxSize().background(
-                            Brush.verticalGradient(
-                                0.5f to Color.Transparent,
-                                1f to Color.Black.copy(alpha = 0.6f),
-                            )
-                        )
-                    )
-                    Column(Modifier.align(Alignment.BottomStart).padding(6.dp)) {
-                        clip.author_handle?.let {
-                            Text(
-                                "@$it",
-                                style = VoiidFont.rounded(10, FontWeight.SemiBold),
-                                color = Color.White,
-                                maxLines = 1,
-                            )
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
-                            Icon(
-                                Icons.Default.RemoveRedEye, null,
-                                tint = Color.White, modifier = Modifier.size(10.dp),
-                            )
-                            Text(
-                                ClipCount.compact(clip.view_count),
-                                style = VoiidFont.rounded(10, FontWeight.SemiBold),
-                                color = Color.White,
-                            )
-                        }
-                    }
-                }
+                // The same iOS ClipTile card as Explore. Opens the CLIP (the pager takes this
+                // feed's own rows); the handle row opens the creator.
+                ClipCard(
+                    clipId = clip.id,
+                    thumbUrl = clip.thumb_url,
+                    viewCount = clip.view_count,
+                    durationMs = clip.duration_ms,
+                    handle = clip.author_handle,
+                    authorName = clip.author_display_name ?: clip.author_handle ?: "",
+                    authorPhotoUrl = null,
+                    verified = clip.author_verified,
+                    modifier = Modifier.clipTileEntrance(index, entrance),
+                    onOpen = { haptics.tap(); onOpenClip(index) },
+                )
             }
             item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(3) }) {
                 Spacer(Modifier.height(100.dp))
