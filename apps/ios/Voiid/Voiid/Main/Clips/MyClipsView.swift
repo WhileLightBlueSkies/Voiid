@@ -105,8 +105,15 @@ struct MyClipsView: View {
 
     private func tile(_ clip: Clip) -> some View {
         ZStack(alignment: .bottomLeading) {
-            ClipThumbnail(url: clip.thumbURL, localPath: clip.localThumbPath)
-                .aspectRatio(9.0 / 16.0, contentMode: .fill)
+            // THE TILE HOLDS THE SHAPE, the image rides inside it. Sizing the image itself
+            // (`aspectRatio(.fill)` on the thumbnail) let a cover of a different shape — a
+            // square or landscape photo picked with Change cover — report its own size and
+            // burst the tile and the grid. A frame from the video matched 9:16 by luck, which
+            // is why it only broke after the cover was changed. Same build as the Explore and
+            // profile grids.
+            Color.clear
+                .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                .overlay { ClipThumbnail(url: clip.thumbURL, localPath: clip.localThumbPath) }
                 .clipped()
 
             LinearGradient(colors: [.clear, .black.opacity(0.7)],
