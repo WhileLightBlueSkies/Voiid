@@ -56,6 +56,7 @@ class BackupRulesTest {
         "voiid_recovery" to "the account backup master secret",
         "voiid.games.lastplayed" to "this phone's last-opened game for the Continue row",
         "voiid.muted.conversations" to "per-device chat mutes (iOS keeps MuteStore device-local too); conversation ids",
+        "voiid_counted_post_views" to "which community posts this device already counted a view for; post ids, device-local like iOS",
         "voiid_location" to "live location share keys",
         "voiid_map" to "map presence keys",
         "voiid_map_inbound_keys" to "inbound map share keys",
