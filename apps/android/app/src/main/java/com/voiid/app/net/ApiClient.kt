@@ -149,6 +149,7 @@ class ApiClient(
         versioned: Boolean = true,
         bearer: String? = null,
     ): String = withContext(Dispatchers.IO) {
+        var usedToken: String? = null
         // Versioned calls go under /v1; pass versioned=false for /config etc.
         val prefix = if (versioned) ApiConfig.apiVersion + "/" else ""
         val builder = Request.Builder()
@@ -159,6 +160,7 @@ class ApiClient(
 
         if (auth) {
             val token = bearer ?: tokens.jwt ?: throw ApiError.NotAuthenticated
+            usedToken = token
             builder.header("Authorization", "Bearer $token")
         }
         val reqBody = jsonBody?.toRequestBody(JSON_MEDIA)
@@ -190,7 +192,20 @@ class ApiClient(
                 // device session yet, and POST /devices/register still accepts it. Clearing
                 // here would destroy the only credential able to finish registration and
                 // force the user through phone verification again.
-                if (it.code == 401 && parsed?.code != "device_session_required") tokens.clear()
+                if (it.code == 401) android.util.Log.w("VoiidAuth", "401 on $path code=${parsed?.code} error=${parsed?.error}")
+                // THE SESSION ROTATES: every launch re-registers the device and the server ends
+                // the previous session. A request still in flight on the OLD token comes back
+                // 401 — and clearing then wiped the NEW token already stored, signing the user
+                // out ("Please sign in again", nothing sends). So: if the token changed under
+                // this request, retry once with the current one; only a 401 on the CURRENT
+                // token clears it.
+                if (it.code == 401 && bearer == null && usedToken != null) {
+                    val current = tokens.jwt
+                    if (current != null && current != usedToken) {
+                        return@withContext request(method, path, jsonBody, auth, versioned, null)
+                    }
+                }
+                if (it.code == 401 && parsed?.code != "device_session_required" && tokens.jwt == usedToken) tokens.clear()
                 // Log the WHOLE body on a server error. Only the `error` field survives into the
                 // exception, so any diagnostic the server adds alongside it (a pg code, a hint)
                 // was being thrown away at exactly the moment it was needed. 5xx only: a 401 body
@@ -232,8 +247,10 @@ class ApiClient(
             .header("X-Voiid-Platform", "android")
             .header("X-Voiid-App-Version", ApiConfig.appVersion)
             .header("X-Voiid-Api-Version", ApiConfig.apiVersion)
+        var usedToken: String? = null
         if (auth) {
             val token = tokens.jwt ?: throw ApiError.NotAuthenticated
+            usedToken = token
             builder.header("Authorization", "Bearer $token")
         }
         val mediaType = contentType.toMediaType()
@@ -248,7 +265,14 @@ class ApiClient(
         } catch (e: Exception) {
             throw ApiError.Transport(e)
         }
-        if (response.code == 401) tokens.clear()
+        if (response.code == 401) {
+            val current = tokens.jwt
+            // Rotated mid-flight: retry once on the current session instead of signing out.
+            if (usedToken != null && current != null && current != usedToken) {
+                return@withContext requestRaw(method, path, body, contentType, auth, versioned)
+            }
+            if (current == usedToken) tokens.clear()
+        }
         response
     }
 

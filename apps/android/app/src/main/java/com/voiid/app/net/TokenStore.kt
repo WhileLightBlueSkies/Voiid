@@ -21,7 +21,19 @@ class TokenStore private constructor(private val prefs: SharedPreferences) {
 
     var jwt: String?
         get() = prefs.getString("jwt", null)
-        set(v) { prefs.edit().apply { if (v == null) remove("jwt") else putString("jwt", v) }.apply() }
+        set(v) {
+            prefs.edit().apply { if (v == null) remove("jwt") else putString("jwt", v) }.apply()
+            // Diagnostics: which KIND of credential is held (a 1h bootstrap vs a 30-day device
+            // session) and when it expires. Claims only — the token itself is never logged.
+            v?.let { android.util.Log.i("VoiidAuth", "token stored: ${describe(it)}") }
+        }
+
+    private fun describe(jwt: String): String = runCatching {
+        val payload = String(android.util.Base64.decode(jwt.split(".")[1],
+            android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP))
+        val o = org.json.JSONObject(payload)
+        "scope=${o.optString("scope", "legacy")} exp=${java.util.Date(o.optLong("exp") * 1000)}"
+    }.getOrDefault("unparseable")
 
     var userId: String?
         get() = prefs.getString("user_id", null)
@@ -30,6 +42,7 @@ class TokenStore private constructor(private val prefs: SharedPreferences) {
     val isAuthenticated: Boolean get() = jwt != null
 
     fun clear() {
+        android.util.Log.w("VoiidAuth", "token cleared", Throwable("who cleared it"))
         prefs.edit().remove("jwt").remove("user_id").apply()
     }
 }
