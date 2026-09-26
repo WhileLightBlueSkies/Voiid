@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import androidx.compose.runtime.mutableStateListOf
 import com.voiid.app.ui.components.blockTouchesBelow
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.outlined.SmartDisplay
@@ -287,6 +288,48 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
     var showLeaderboard by remember { mutableStateOf(false) }
     /** Today's seeded Snake arena. Full-screen, same treatment as the leaderboard. */
     var showDaily by remember { mutableStateOf(false) }
+
+    // ── SYSTEM BACK ──────────────────────────────────────────────────────────────
+    // There was no handler here, so Back (the edge swipe) left the app from anywhere — a
+    // clip, a game, the Games tab. Now it walks back one step at a time: the topmost cover
+    // closes first, then the tab you came from, then Chats, and only from Chats does Back
+    // leave the app. Screens with their own Back (a game's quit prompt, Settings' stack, an
+    // open chat's sub-pages) are composed later, so their handlers still win.
+    val tabHistory = remember { mutableStateListOf<Tab>() }
+    var lastTab by remember { mutableStateOf(tab) }
+    var backNavigating by remember { mutableStateOf(false) }
+    LaunchedEffect(tab) {
+        if (tab != lastTab) {
+            if (!backNavigating) {
+                tabHistory.remove(tab)
+                tabHistory.add(lastTab)
+            }
+            backNavigating = false
+            lastTab = tab
+        }
+    }
+    val coverOpen = openStoryContext != null || openGameMatch != null || lobby != null || botGame != null ||
+        showSkinPicker || showDaily || showLeaderboard || openClip != null || showMyClips ||
+        openCreator != null || openConversation != null
+    BackHandler(enabled = coverOpen || tab != Tab.CHAT) {
+        when {
+            openStoryContext != null -> openStoryContext = null
+            openGameMatch != null -> openGameMatch = null
+            lobby != null -> lobby = null
+            botGame != null -> botGame = null
+            showSkinPicker -> showSkinPicker = false
+            showDaily -> showDaily = false
+            showLeaderboard -> showLeaderboard = false
+            openClip != null -> openClip = null
+            showMyClips -> showMyClips = false
+            openCreator != null -> openCreator = null
+            openConversation != null -> openConversation = null
+            else -> {
+                backNavigating = true
+                tab = tabHistory.removeLastOrNull()?.takeIf { it != tab } ?: Tab.CHAT
+            }
+        }
+    }
     // Creating a match is a suspend call made from a click, so it needs a scope.
     val gamesScope = androidx.compose.runtime.rememberCoroutineScope()
     val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext

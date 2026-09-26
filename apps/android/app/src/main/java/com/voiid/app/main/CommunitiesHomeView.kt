@@ -116,6 +116,8 @@ fun CommunitiesHomeView(
         finally { searchingNow = false }
     }
 
+    // Back closes the open community first, rather than leaving the tab (or the app).
+    androidx.activity.compose.BackHandler(enabled = open != null) { open = null; scope.launch { loadMine() } }
     open?.let { card ->
         CommunityDetailView(
             card = card,

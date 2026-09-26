@@ -154,6 +154,10 @@ fun ChatDetailView(
     // The safety-number screen (anti-MITM verification). A full-screen overlay like the profile,
     // not a bottom sheet: the number is read aloud digit by digit, so it needs the whole width.
     var showSafetyNumber by remember { mutableStateOf(false) }
+    // Back closes the chat's own sub-pages before the chat itself.
+    androidx.activity.compose.BackHandler(enabled = showSafetyNumber || showDetails) {
+        if (showSafetyNumber) showSafetyNumber = false else showDetails = false
+    }
     var showAttach by remember { mutableStateOf(false) }
 
     // sheets / dialogs

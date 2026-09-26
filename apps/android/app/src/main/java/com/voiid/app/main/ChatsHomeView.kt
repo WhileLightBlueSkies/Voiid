@@ -1,5 +1,9 @@
 package com.voiid.app.main
 
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.material.icons.filled.Apps
 import com.voiid.app.ui.theme.VoiidSpacing
 import androidx.compose.ui.focus.focusRequester
@@ -732,30 +736,12 @@ private fun DraggableChatGrid(
             //
             // awaitFirstDown sees the touch itself, so the clock starts the instant a finger
             // lands. The drag below cancels it on real movement; releasing cancels it too.
+            // ONE gesture per touch, claimed ONLY when it starts on a tile — iOS attaches the
+            // drag to each tile, so a swipe anywhere else reaches the tab pager. The old
+            // container detector took every drag on the grid, gaps included, so swiping
+            // between tabs from the Chats screen did nothing.
             .pointerInput(items.size) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val picked = tileAt(down.position)
-                        if (picked != null) {
-                            holdingId = picked.id
-                            holdProgress = 0f
-                        }
-                        // Wait for the finger to leave, then stop counting.
-                        do {
-                            val event = awaitPointerEvent()
-                        } while (event.changes.any { it.pressed })
-                        holdingId = null
-                        holdProgress = 0f
-                    }
-                }
-            }
-            .pointerInput(items.size) {
-                // IMMEDIATE, not detectDragGesturesAfterLongPress. iOS picks a tile up as
-                // soon as the finger moves; requiring a long press first made the same grid
-                // feel sluggish on Android for no reason the user can see.
-                detectDragGestures(
-                    onDragStart = { offset ->
+                fun startDrag(offset: Offset) {
                         val picked = tileAt(offset)
                         if (picked != null) {
                             haptics.rigid()
@@ -764,10 +750,10 @@ private fun DraggableChatGrid(
                             dragStart = centers[picked.id] ?: offset
                             dragTranslation = Offset.Zero
                         }
-                    },
-                    onDrag = { change, amount ->
+                }
+                fun moveDrag(change: androidx.compose.ui.input.pointer.PointerInputChange, amount: Offset) {
                         // No tile under the finger: leave the gesture to the scroll.
-                        val conv = dragItem ?: return@detectDragGestures
+                        val conv = dragItem ?: return
                         change.consume()
                         dragTranslation += amount
                         // Moved too far to be a hold: this is a drag.
@@ -814,8 +800,8 @@ private fun DraggableChatGrid(
                                 }
                             }
                         }
-                    },
-                    onDragEnd = {
+                }
+                fun endDrag() {
                         val d = dragItem
                         val zone = hoverZone
                         dragItem = null; dragTranslation = Offset.Zero; hoverZone = null; armedId = null; holdingId = null; holdProgress = 0f
@@ -828,11 +814,25 @@ private fun DraggableChatGrid(
                             // sort_index existed. One write per arrangement, not per swap.
                             null -> onReorder(items.map { it.id })
                         }
-                    },
-                    onDragCancel = {
+                }
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val picked = tileAt(down.position) ?: return@awaitEachGesture   // not on a tile: leave it to the pager/scroll
+                    // TOUCH-DOWN starts the hold clock; releasing or moving stops it.
+                    holdingId = picked.id
+                    holdProgress = 0f
+                    val slop = awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                    if (slop == null) {   // a tap (the tile's clickable opens it) or a cancel
+                        holdingId = null; holdProgress = 0f
+                        return@awaitEachGesture
+                    }
+                    startDrag(down.position)
+                    moveDrag(slop, slop.position - down.position)
+                    val completed = drag(slop.id) { change -> moveDrag(change, change.positionChange()) }
+                    if (completed) endDrag() else {
                         dragItem = null; dragTranslation = Offset.Zero; hoverZone = null; armedId = null; holdingId = null; holdProgress = 0f
-                    },
-                )
+                    }
+                }
             },
     ) {
         // Grid (3 columns) inside a scroll container; scroll locks while dragging.
