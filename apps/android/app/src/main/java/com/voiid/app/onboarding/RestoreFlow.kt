@@ -137,8 +137,12 @@ fun RestoreFlow(    session: AppSession,
             kotlinx.coroutines.delay(800L * (attempt + 1))
         }
         legacyPin = legacy ?: true
-        if (legacy == false && step == RestoreStep.UNLOCK) step = RestoreStep.PHRASE
+        // Product decision (2026-09-26): the V PIN page is ALWAYS the first page after OTP,
+        // even for backups sealed with the phrase alone. The check above only decides what a
+        // submitted PIN does — see `noPinBackup` below.
     }
+    val noPinBackupMessage = "This backup is protected by your 24-word recovery phrase, not a V PIN. Enter your phrase to restore."
+
     var pin by remember { mutableStateOf("") }
     var phrase by remember { mutableStateOf("") }
     var credential by remember { mutableStateOf<Credential?>(null) }
@@ -237,9 +241,9 @@ fun RestoreFlow(    session: AppSession,
                         step = RestoreStep.UNLOCK
                     }
                     is BackupManager.RestoreOutcome.NoRecoveryKey -> {
-                        error = "No recovery key found for this account."
+                        error = noPinBackupMessage
                         haptics.error()
-                        step = RestoreStep.UNLOCK
+                        step = RestoreStep.PHRASE
                     }
                     is BackupManager.RestoreOutcome.Locked -> {
                         val secs = outcome.retryAfterSeconds
@@ -263,6 +267,14 @@ fun RestoreFlow(    session: AppSession,
     // Hold the credential and move on. When more than one backup exists the user chooses;
     // with zero or one there is no decision to make, so the page is skipped.
     fun unlock(c: Credential) {
+        // No PIN copy on the server: a PIN cannot open this backup, so say so and hand over to
+        // the phrase instead of running a restore that is certain to fail.
+        if (c is Credential.Pin && legacyPin == false) {
+            error = noPinBackupMessage
+            haptics.error()
+            step = RestoreStep.PHRASE
+            return
+        }
         credential = c
         error = null
         step = RestoreStep.CHOOSE
@@ -272,11 +284,7 @@ fun RestoreFlow(    session: AppSession,
     // VoiidBrand.ground). Without this a light-mode phone got a light restore flow mid-onboarding.
     androidx.compose.runtime.CompositionLocalProvider(com.voiid.app.ui.theme.LocalVoiidDark provides com.voiid.app.ui.theme.LocalVoiidDark.current) {
     when (step) {
-        RestoreStep.UNLOCK -> if (legacyPin == null) {
-            Box(Modifier.fillMaxSize().background(VoiidColor.background), contentAlignment = Alignment.Center) {
-                androidx.compose.material3.CircularProgressIndicator(color = VoiidColor.primary)
-            }
-        } else RestoreUnlockPage(
+        RestoreStep.UNLOCK -> RestoreUnlockPage(
             meta = meta,
             pin = pin,
             onPinChange = { pin = it.filter { c -> c in '0'..'9' }.take(RESTORE_PIN_MAX); error = null },
@@ -291,7 +299,8 @@ fun RestoreFlow(    session: AppSession,
             error = error,
             onSubmit = { unlock(Credential.Phrase(phrase)) },
             // iOS PhrasePage: "‹ PIN" only when a legacy PIN backup exists; "Skip" always.
-            onBack = if (legacyPin == true) ({ error = null; step = RestoreStep.UNLOCK }) else null,
+            // The V PIN page is always first, so the phrase page can always go back to it.
+            onBack = { error = null; step = RestoreStep.UNLOCK },
             onSkip = { haptics.tap(); confirmSkip = true },
         )
         RestoreStep.CHOOSE -> RestoreChoosePage(
