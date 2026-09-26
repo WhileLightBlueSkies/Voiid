@@ -6,6 +6,7 @@ import com.voiid.app.ui.components.rememberZoomOrigin
 import com.voiid.app.ui.components.recordTapOrigin
 import androidx.compose.runtime.mutableStateListOf
 import com.voiid.app.ui.components.blockTouchesBelow
+import com.voiid.app.ui.components.dismissKeyboardOnScrollOrTap
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.outlined.SmartDisplay
 import androidx.compose.material.icons.filled.Forum
@@ -467,8 +468,10 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         // Every touch-down is noted so a page can grow out of the tile that opened it.
         Box(Modifier.fillMaxSize().background(VoiidColor.background).recordTapOrigin()) {
 
-        Column(Modifier.fillMaxSize().imePadding()) {
-            Box(Modifier.fillMaxWidth().weight(1f)) {
+        // NO imePadding here: it lifted the tab bar onto the keyboard (Chats search). Like iOS,
+        // the bar stays behind the keyboard; screens that type at the bottom pad themselves.
+        Column(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxWidth().weight(1f).dismissKeyboardOnScrollOrTap()) {
                 // TAB SWIPE NAVIGATION — port of iOS `TabSwipeNavigation.swift`.
                 //
                 // The original crossfade was correct about taps: tapping a distant tab jumps
