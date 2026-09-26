@@ -59,9 +59,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var pip: CallPipController
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // The starting window is always dark; content keeps the saved appearance.
+        // The starting window is iOS's launch screen (the V mark on LaunchBackground, following
+        // the system appearance); content keeps the saved appearance.
         setTheme(R.style.Theme_Voiid)
         super.onCreate(savedInstanceState)
+        // iOS crossfades its launch screen into the first frame; the Android default is a cut.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            splashScreen.setOnExitAnimationListener { view ->
+                view.animate().alpha(0f).setDuration(260)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator())
+                    .withEndAction { view.remove() }
+                    .start()
+            }
+        }
         enableEdgeToEdge()
         pip = CallPipController(this).also {
             it.onRestoreInstanceState(savedInstanceState)

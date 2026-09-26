@@ -64,7 +64,7 @@ internal fun CommunityPostingMembersDialog(communityId: String, channelId: Strin
         text = {
             Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
                 Text("Changes save immediately. Managers can already post when Selected members is active.")
-                OutlinedTextField(search, { search = it }, label = { Text("Search loaded members") })
+                com.voiid.app.ui.components.VoiidOutlinedField(search, { search = it }, label = { Text("Search loaded members") })
                 if (loading) CircularProgressIndicator()
                 error?.let { Text(it); TextButton(onClick = { scope.launch { load(true) } }) { Text("Try again") } }
                 members.filter { search.isBlank() || (it.full_name ?: it.username ?: "Member").contains(search, true) }.forEach { member ->
@@ -106,7 +106,7 @@ internal fun CommunitySpaceSettingsDialog(communityId: String, channel: Communit
     if (choosing) CommunityPostingMembersDialog(communityId, channel.conversation_id) { choosing = false }
     AlertDialog(onDismissRequest = { if (!saving) onClose() }, title = { Text("Space settings") }, text = {
         Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
-            OutlinedTextField(purpose, { purpose = it.take(200) }, label = { Text("Description") }, enabled = !saving)
+            com.voiid.app.ui.components.VoiidOutlinedField(purpose, { purpose = it.take(200) }, label = { Text("Description") }, enabled = !saving)
             Row { Checkbox(pinned, { pinned = it }, enabled = !saving); Text("Pin to top") }
             CommunityPostingPolicyPicker(posting, !saving) { posting = it }
             if (posting == "selected") TextButton(onClick = { choosing = true }, enabled = !saving) { Text("Choose members") }

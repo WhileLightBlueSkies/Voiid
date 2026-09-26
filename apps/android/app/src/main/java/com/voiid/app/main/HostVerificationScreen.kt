@@ -226,13 +226,13 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
                     }
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            OutlinedTextField(legalName, { legalName = it.take(100) }, label = { Text("Full name as on your PAN") },
+                            com.voiid.app.ui.components.VoiidOutlinedField(legalName, { legalName = it.take(100) }, label = { Text("Full name as on your PAN") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
-                            OutlinedTextField(email, { email = it.trim().take(200) }, label = { Text("Email for payout updates") },
+                            com.voiid.app.ui.components.VoiidOutlinedField(email, { email = it.trim().take(200) }, label = { Text("Email for payout updates") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
-                            OutlinedTextField(pan, { pan = it.uppercase().filter(Char::isLetterOrDigit).take(10) }, label = { Text("PAN") },
+                            com.voiid.app.ui.components.VoiidOutlinedField(pan, { pan = it.uppercase().filter(Char::isLetterOrDigit).take(10) }, label = { Text("PAN") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -243,19 +243,19 @@ fun HostVerificationScreen(onDismiss: () -> Unit) {
                                 pick(false, "Bank account"); pick(true, "UPI ID")
                             }
                             if (payoutUpi) {
-                                OutlinedTextField(upi, { upi = it.lowercase().filterNot(Char::isWhitespace).take(100) }, label = { Text("UPI ID for payouts") },
+                                com.voiid.app.ui.components.VoiidOutlinedField(upi, { upi = it.lowercase().filterNot(Char::isWhitespace).take(100) }, label = { Text("UPI ID for payouts") },
                                     placeholder = { Text("name@okhdfcbank") }, singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, autoCorrectEnabled = false))
                             } else {
                             Text("Bank account for payouts", style = MaterialTheme.typography.titleMedium)
-                            OutlinedTextField(account, { account = it.filter(Char::isLetterOrDigit).take(40) }, label = { Text("Account number") },
+                            com.voiid.app.ui.components.VoiidOutlinedField(account, { account = it.filter(Char::isLetterOrDigit).take(40) }, label = { Text("Account number") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                 visualTransformation = PasswordVisualTransformation(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword))
-                            OutlinedTextField(accountAgain, { accountAgain = it.filter(Char::isLetterOrDigit).take(40) }, label = { Text("Re-enter account number") },
+                            com.voiid.app.ui.components.VoiidOutlinedField(accountAgain, { accountAgain = it.filter(Char::isLetterOrDigit).take(40) }, label = { Text("Re-enter account number") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                            OutlinedTextField(ifsc, { ifsc = it.uppercase().filter(Char::isLetterOrDigit).take(11) }, label = { Text("IFSC") },
+                            com.voiid.app.ui.components.VoiidOutlinedField(ifsc, { ifsc = it.uppercase().filter(Char::isLetterOrDigit).take(11) }, label = { Text("IFSC") },
                                 singleLine = true, enabled = !submitting, modifier = Modifier.fillMaxWidth(),
                                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false))
                             }

@@ -1,5 +1,7 @@
 package com.voiid.app.main.clips
 
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -93,6 +95,12 @@ fun SocialSetupSheet(
     var birthDay by remember { mutableStateOf("") }
     var interests by remember { mutableStateOf(setOf<String>()) }
     var acceptedGuidelines by remember { mutableStateOf(false) }
+    var showGuidelines by remember { mutableStateOf(false) }
+    if (showGuidelines) ClipsGuidelinesSheet(
+        accepted = acceptedGuidelines,
+        onAgree = { haptics.success(); acceptedGuidelines = true; showGuidelines = false },
+        onClose = { showGuidelines = false },
+    )
 
     val birthDate: String? = remember(birthYear, birthMonth, birthDay) {
         val y = birthYear.toIntOrNull(); val m = birthMonth.toIntOrNull(); val d = birthDay.toIntOrNull()
@@ -363,31 +371,49 @@ fun SocialSetupSheet(
 
                 // The agreement to POST. The signup Terms cover the account; this covers
                 // publishing to strangers, which Apple 1.2 requires people actually accept.
+                // iOS guidelinesConsent: a square check, the title, a one-line summary and a
+                // link to the full guidelines sheet.
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(VoiidRadius.md))
-                        .background(VoiidColor.fieldFill.copy(alpha = 0.6f))
+                        .background(VoiidColor.surfaceCard)
+                        .border(
+                            if (acceptedGuidelines) 1.5.dp else 1.dp,
+                            if (acceptedGuidelines) VoiidColor.primary else VoiidColor.fieldBorder,
+                            RoundedCornerShape(VoiidRadius.md),
+                        )
                         .clickable {
-                            haptics.tap()
+                            haptics.selection()
                             acceptedGuidelines = !acceptedGuidelines
                         }
-                        .padding(VoiidSpacing.sm),
-                    horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                        .padding(VoiidSpacing.md),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Icon(
-                        if (acceptedGuidelines) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
-                        null,
-                        tint = if (acceptedGuidelines) VoiidColor.primary else VoiidColor.textSecondary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Text(
-                        "I agree to the Community Guidelines. No harassment, hate, sexual " +
-                            "content involving minors, or violent or illegal material. " +
-                            "Accounts that post it are removed.",
-                        style = VoiidFont.rounded(12),
-                        color = VoiidColor.textSecondary,
-                    )
+                    Box(
+                        Modifier.size(24.dp).clip(RoundedCornerShape(6.dp))
+                            .background(if (acceptedGuidelines) VoiidColor.primary else androidx.compose.ui.graphics.Color.Transparent)
+                            .border(2.dp, if (acceptedGuidelines) VoiidColor.primary else VoiidColor.fieldBorder, RoundedCornerShape(6.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (acceptedGuidelines) Icon(Icons.Filled.Check, null, tint = androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(15.dp))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("I agree to the Community Guidelines", style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                        Text(
+                            "No harassment, hate, sexual content involving minors, or violent or illegal material. Accounts that post it are removed.",
+                            style = VoiidFont.rounded(12),
+                            color = VoiidColor.textSecondary,
+                        )
+                        Row(
+                            Modifier.padding(top = 2.dp).clickable { haptics.tap(); showGuidelines = true },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text("Read the full guidelines", style = VoiidFont.rounded(12, FontWeight.SemiBold), color = VoiidColor.primary)
+                            Icon(Icons.Filled.ChevronRight, null, tint = VoiidColor.primary, modifier = Modifier.size(14.dp))
+                        }
+                    }
                 }
             }
 

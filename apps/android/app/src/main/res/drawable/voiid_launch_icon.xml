@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- iOS LaunchMark at its natural 120x108pt, centred on Android 12's 288dp splash canvas
+     drawn at 68x61 because the system scales the canvas ~1.77x; on screen it lands at iOS size, clear of the circular mask. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:width="288dp" android:height="288dp">
-        <bitmap android:src="@drawable/voiid_launch_mark" android:gravity="center" />
+        <shape android:shape="rectangle"><solid android:color="@android:color/transparent" /></shape>
     </item>
+    <item android:width="68dp" android:height="61dp" android:gravity="center"
+        android:drawable="@drawable/voiid_launch_mark" />
 </layer-list>

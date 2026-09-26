@@ -1,5 +1,12 @@
 package com.voiid.app.main
 
+import com.voiid.app.ui.components.softClickable
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.outlined.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Autorenew
+import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
@@ -369,46 +376,22 @@ fun CommunityHomeTab(
             },
         )
     }
-    if (composing || pinning) com.voiid.app.ui.components.VoiidDialogCustom(
-        onDismissRequest = { if (!authoringBusy) { composing = false; pinning = false } },
-        backDismissable = !authoringBusy,
-        scrimDismissable = !authoringBusy,
-    ) {
-        Text(if (pinning) "Pin announcement" else "New post")
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (pinning) androidx.compose.material3.OutlinedTextField(value = draftTitle, onValueChange = { draftTitle = it.take(140) }, label = { Text("Title") })
-            androidx.compose.material3.OutlinedTextField(value = draft, onValueChange = { draft = it.take(if (pinning) 2000 else 5000) }, label = { Text("Write something") }, minLines = 3, enabled = !authoringBusy)
-            if (!pinning) {
-                Text("Post to", style = VoiidFont.rounded(13, FontWeight.SemiBold))
-                availableDestinations.forEach { destination ->
-                    val key = destination.first ?: "home"
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        androidx.compose.material3.Checkbox(
-                            checked = selectedDestinations.contains(key),
-                            enabled = !authoringBusy,
-                            onCheckedChange = { checked ->
-                                selectedDestinations = if (checked) selectedDestinations + key
-                                else selectedDestinations - key
-                            },
-                        )
-                        Text(destination.second)
-                    }
-                }
-                attachment?.let { bytes ->
-                    val image = remember(bytes) { android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size) }
-                    if (image != null) androidx.compose.foundation.Image(
-                        bitmap = image.asImageBitmap(), contentDescription = "Attached photo",
-                        modifier = Modifier.fillMaxWidth().height(120.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                    androidx.compose.material3.TextButton(enabled = !authoringBusy, onClick = { attachment = null; attachmentKey = null }) { Text("Remove photo") }
-                }
-                androidx.compose.material3.TextButton(enabled = !authoringBusy && !preparingPhoto,
-                    onClick = { photoPicker.launch("image/*") }) { Text(if (preparingPhoto) "Preparing photo…" else "Add photo") }
-            }
-            Text("Community posts are visible to the server and the community’s audience.", style = VoiidFont.rounded(12))
-            authoringError?.let { Text(it, color = VoiidColor.error) }
-        }
-        com.voiid.app.ui.components.VoiidDialogAction(if (authoringBusy) "Publishing…" else "Publish",
-            enabled = !authoringBusy && !preparingPhoto && draft.isNotBlank() && (pinning || selectedDestinations.isNotEmpty()) && (!pinning || draftTitle.isNotBlank())) { scope.launch {
+    // iOS CommunityPostComposer / CommunityAnnouncementComposer: a full-screen composer with
+    // Cancel / Post in the bar, a large title, rounded fields and a round-check "Post to" list.
+    if (composing || pinning) {
+        val bodyFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+        LaunchedEffect(Unit) { kotlinx.coroutines.delay(250); runCatching { bodyFocus.requestFocus() } }
+        com.voiid.app.ui.components.VoiidComposerScaffold(
+            title = if (pinning) "Pin an announcement" else "New post",
+            subtitle = if (pinning) "It sits at the top of Home until you unpin it or pin another."
+                else "Everyone in this community can see this, and so can anyone browsing it.",
+            confirm = if (pinning) "Pin" else "Post",
+            canConfirm = !preparingPhoto && draft.isNotBlank() &&
+                (pinning || selectedDestinations.isNotEmpty()) && (!pinning || draftTitle.isNotBlank()),
+            busy = authoringBusy,
+            failure = authoringError,
+            onCancel = { composing = false; pinning = false },
+            onConfirm = { scope.launch {
             authoringBusy = true; authoringError = null
             try {
                 if (pinning) pinned = svc.pinAnnouncement(communityId, draftTitle.trim(), draft.trim())
@@ -429,8 +412,101 @@ fun CommunityHomeTab(
                 composing = false; pinning = false; draft = ""; draftTitle = ""; haptics.success()
             } catch (e: Exception) { authoringError = e.message ?: "Couldn’t publish. Your draft is still here." }
             finally { authoringBusy = false }
-        } }
-        com.voiid.app.ui.components.VoiidDialogAction("Cancel", enabled = !authoringBusy, onClick = { composing = false; pinning = false })
+            } },
+        ) {
+            if (pinning) {
+                com.voiid.app.ui.components.VoiidComposerField("Title", draftTitle, { draftTitle = it },
+                    placeholder = "Weekly meetup moved to Thursday", limit = 140, singleLine = true,
+                    enabled = !authoringBusy, focusRequester = bodyFocus)
+                com.voiid.app.ui.components.VoiidComposerField("Announcement", draft, { draft = it },
+                    placeholder = "The details people need…", limit = 2000, minLines = 5, maxLines = 12,
+                    enabled = !authoringBusy)
+            } else {
+                com.voiid.app.ui.components.VoiidComposerField("What's happening?", draft, { draft = it },
+                    placeholder = "Share something with the community…", limit = 5000, minLines = 6, maxLines = 14,
+                    enabled = !authoringBusy, focusRequester = bodyFocus)
+
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.fieldFill)
+                        .padding(VoiidSpacing.md),
+                    verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                ) {
+                    Text("Post to", style = VoiidFont.rounded(12.5f, FontWeight.SemiBold), color = VoiidColor.textSecondary)
+                    if (availableDestinations.isEmpty() && authoringError == null) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            androidx.compose.material3.CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = VoiidColor.textSecondary)
+                            Text("Loading places you can post…", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                        }
+                    }
+                    availableDestinations.forEach { destination ->
+                        val key = destination.first ?: "home"
+                        val on = selectedDestinations.contains(key)
+                        Row(
+                            Modifier.fillMaxWidth().softClickable(enabled = !authoringBusy) {
+                                haptics.selection()
+                                selectedDestinations = if (on) selectedDestinations - key else selectedDestinations + key
+                            }.padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            androidx.compose.material3.Icon(
+                                if (on) androidx.compose.material.icons.Icons.Filled.CheckCircle
+                                else androidx.compose.material.icons.Icons.Outlined.Circle,
+                                null, tint = if (on) VoiidColor.accent else VoiidColor.textSecondary,
+                                modifier = Modifier.size(22.dp))
+                            Text(destination.second, style = VoiidFont.rounded(15), color = VoiidColor.textPrimary)
+                        }
+                    }
+                }
+
+                attachment?.let { bytes ->
+                    val image = remember(bytes) { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+                    if (image != null) Box {
+                        androidx.compose.foundation.Image(
+                            bitmap = image.asImageBitmap(), contentDescription = "Attached photo",
+                            modifier = Modifier.fillMaxWidth().height(172.dp).clip(RoundedCornerShape(VoiidRadius.md)),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                        Box(
+                            Modifier.align(Alignment.TopEnd).padding(8.dp).size(28.dp).clip(CircleShape)
+                                .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f))
+                                .softClickable(enabled = !authoringBusy) { haptics.tap(); attachment = null; attachmentKey = null },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Default.Close, "Remove photo",
+                                tint = androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.fieldFill)
+                        .border(1.dp, VoiidColor.fieldBorder, RoundedCornerShape(VoiidRadius.md))
+                        .softClickable(enabled = !authoringBusy && !preparingPhoto) { photoPicker.launch("image/*") }
+                        .padding(VoiidSpacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                ) {
+                    if (preparingPhoto) androidx.compose.material3.CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = VoiidColor.accentInk)
+                    else androidx.compose.material3.Icon(
+                        if (attachment == null) androidx.compose.material.icons.Icons.Outlined.AddPhotoAlternate
+                        else androidx.compose.material.icons.Icons.Default.Autorenew,
+                        null, tint = VoiidColor.accentInk, modifier = Modifier.size(16.dp))
+                    Text(if (attachment == null) "Add a photo" else "Replace photo",
+                        style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.accentInk)
+                }
+
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.accentTint)
+                        .padding(VoiidSpacing.md),
+                    horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                ) {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Outlined.Campaign, null,
+                        tint = VoiidColor.accentInk, modifier = Modifier.size(15.dp))
+                    Text("Posts are not end-to-end encrypted. They are a broadcast to the whole community. " +
+                        "Existing chats and community messages stay encrypted.",
+                        style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                }
+            }
+        }
     }
 
 }

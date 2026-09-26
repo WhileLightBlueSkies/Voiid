@@ -446,6 +446,8 @@ fun ChatsHomeView(
     // ONE window for the whole settings cluster: pushes preserve hierarchy (Storage can
     // open Backup ON TOP of itself and Back returns to Storage), and Back from the root
     // route is what closes back to Chats.
+    // Same activity-scoped instance RootTabView hoists for the Clips gate.
+    val creators: com.voiid.app.model.SocialStore = androidx.lifecycle.viewmodel.compose.viewModel()
     com.voiid.app.ui.components.VoiidModalHost(navigator = settingsNav) { route ->
         when (route) {
             "settings" -> SettingsScreen(
@@ -471,22 +473,14 @@ fun ChatsHomeView(
                 onAccountCentre = { settingsNav.push("accountCentre") },
                 onSocialProfile = { settingsNav.closeAll(); onOpenSocialProfile() },
             )
-            "accountCentre" -> BackupScaffold(title = "Account centre", onBack = settingsNav::pop) {
-                Text("Your profiles", style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
-                Spacer(Modifier.height(12.dp))
-                listOf("Chat profile" to "Your name, photo and username for messaging.",
-                    "Social profile" to "View and edit your public profile for Clips and Communities.").forEachIndexed { index, item ->
-                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)
-                        .clip(com.voiid.app.ui.theme.SquircleShape(18.dp)).background(VoiidColor.surfaceCard)
-                        .clickable {
-                            if (index == 0) settingsNav.push("editProfile")
-                            else { settingsNav.closeAll(); onOpenSocialProfile() }
-                        }.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(item.first, style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-                        Text(item.second, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
-                    }
-                }
-            }
+            "accountCentre" -> AccountCenterScreen(
+                creators = creators,
+                onBack = settingsNav::pop,
+                onChatProfile = { settingsNav.push("editProfile") },
+                onViewSocialProfile = { settingsNav.closeAll(); onOpenSocialProfile() },
+                onProfileSettings = { settingsNav.push("socialPrivacy") },
+            )
+            "socialPrivacy" -> com.voiid.app.main.clips.SocialPrivacyScreen(creators = creators, onBack = settingsNav::pop)
             "chatSettings" -> ChatSettingsScreen(onBack = settingsNav::pop)
             "editProfile" -> EditProfileScreen(session = session, onBack = settingsNav::pop)
             "shareProfile" -> ShareProfileScreen(session = session, onBack = settingsNav::pop)

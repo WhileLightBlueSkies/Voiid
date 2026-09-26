@@ -129,6 +129,18 @@ class SocialStore(app: Application) : AndroidViewModel(app) {
         return p
     }
 
+    suspend fun updatePrivacy(
+        gridVisibility: String? = null,
+        showCounts: Boolean? = null,
+        discoverable: Boolean? = null,
+        allowFollows: Boolean? = null,
+        allowComments: Boolean? = null,
+    ) {
+        val p = svc.updatePrivacy(gridVisibility, showCounts, discoverable, allowFollows, allowComments)
+        me = p
+        cache[p.handle.lowercase()] = p
+    }
+
     suspend fun uploadAvatar(jpeg: ByteArray): SocialService.Profile {
         val p = svc.uploadAvatar(jpeg)
         me = p

@@ -213,7 +213,7 @@ fun CommunitySpacesTab(
     if (editor != null) androidx.compose.material3.AlertDialog(
         onDismissRequest = { if (!saving) editor = null },
         title = { Text(if (editing == null) "Create a Space" else "Rename Space") },
-        text = { Column { androidx.compose.material3.OutlinedTextField(value = editor ?: "", onValueChange = { editor = it.take(60) }, label = { Text("Space name") }); error?.let { Text(it, color = VoiidColor.error) } } },
+        text = { Column { com.voiid.app.ui.components.VoiidOutlinedField(value = editor ?: "", onValueChange = { editor = it.take(60) }, label = { Text("Space name") }); error?.let { Text(it, color = VoiidColor.error) } } },
         confirmButton = { androidx.compose.material3.TextButton(enabled = !saving && !editor.isNullOrBlank(), onClick = { scope.launch {
             saving = true; error = null
             try {
@@ -813,8 +813,8 @@ fun CommunityAboutTab(
         onDismissRequest = { if (!saving) authoring = null },
         title = { Text(if (authoring == "link") "Add link" else if (selectedRule == null) "Add rule" else "Edit rule") },
         text = { Column {
-            androidx.compose.material3.OutlinedTextField(value = entryTitle, onValueChange = { if (it.length <= 80) entryTitle = it }, label = { Text("Title") })
-            androidx.compose.material3.OutlinedTextField(value = entryBody, onValueChange = { if (it.length <= (if (authoring == "link") 2048 else 400)) entryBody = it }, label = { Text(if (authoring == "link") "https://…" else "Details") })
+            com.voiid.app.ui.components.VoiidOutlinedField(value = entryTitle, onValueChange = { if (it.length <= 80) entryTitle = it }, label = { Text("Title") })
+            com.voiid.app.ui.components.VoiidOutlinedField(value = entryBody, onValueChange = { if (it.length <= (if (authoring == "link") 2048 else 400)) entryBody = it }, label = { Text(if (authoring == "link") "https://…" else "Details") })
             writeError?.let { Text(it, color = VoiidColor.error) }
         } },
         confirmButton = { androidx.compose.material3.TextButton(enabled = !saving && entryTitle.isNotBlank(), onClick = { scope.launch {

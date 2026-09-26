@@ -69,11 +69,11 @@ fun CollegeEmailDialog(card: CommunityService.CommunityCard, onDismiss: () -> Un
                  else "${card.name} is only for people with a $domainText email. We'll send you a code to confirm it's yours.",
                 color = VoiidColor.textSecondary)
             if (codeSent) {
-                OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, singleLine = true, enabled = !busy,
+                com.voiid.app.ui.components.VoiidOutlinedField(code, { code = it.filter(Char::isDigit).take(6) }, singleLine = true, enabled = !busy,
                     label = { Text("6-digit code") }, modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword))
             } else {
-                OutlinedTextField(email, { email = it.trim() }, singleLine = true, enabled = !busy,
+                com.voiid.app.ui.components.VoiidOutlinedField(email, { email = it.trim() }, singleLine = true, enabled = !busy,
                     label = { Text(domains.firstOrNull()?.let { "you@$it" } ?: "College email") }, modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     supportingText = { if (email.contains("@") && !matches) Text("Use your $domainText address.") })

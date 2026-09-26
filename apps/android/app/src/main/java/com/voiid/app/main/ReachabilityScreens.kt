@@ -189,7 +189,7 @@ fun FindByUsernameScreen(
                         p.requires_pin -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text("Contact PIN", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
                             Text("Ask them for their 6-digit PIN to send a request.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-                            androidx.compose.material3.OutlinedTextField(
+                            com.voiid.app.ui.components.VoiidOutlinedField(
                                 value = pin, onValueChange = { pin = it.filter { digit -> digit in '0'..'9' }.take(6) },
                                 singleLine = true, label = { Text("6-digit PIN") },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),

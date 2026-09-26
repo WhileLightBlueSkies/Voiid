@@ -1,5 +1,13 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ime
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.draw.shadow
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.Composable
@@ -621,6 +629,7 @@ fun OnboardingScaffold(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val focus = LocalFocusManager.current
+    var footerPx by remember { mutableIntStateOf(0) }
     Column(
         modifier
             .fillMaxSize()
@@ -638,13 +647,29 @@ fun OnboardingScaffold(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                // Only the content lifts above the keyboard, and only by how far the keyboard
+                // reaches PAST the pinned footer (iOS keeps the footer under the keyboard).
+                .imeAboveFooter(footerPx)
                 .verticalScroll(scrollState)
                 .then(if (onBack == null) Modifier.statusBarsPadding() else Modifier)
                 .padding(horizontal = VoiidSpacing.lg),
             content = content,
         )
-        footer?.let { OnboardingFooter(content = it) }
+        footer?.let {
+            Box(Modifier.onSizeChanged { size -> footerPx = size.height }) { OnboardingFooter(content = it) }
+        }
     }
+}
+
+/**
+ * Bottom padding equal to the part of the keyboard that rises ABOVE a pinned footer of
+ * [footerPx]. Plain imePadding double-counts the footer and shrinks the scroll area to a sliver.
+ */
+@Composable
+fun Modifier.imeAboveFooter(footerPx: Int): Modifier {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val ime = androidx.compose.foundation.layout.WindowInsets.ime.getBottom(density)
+    return this.padding(bottom = with(density) { (ime - footerPx).coerceAtLeast(0).toDp() })
 }
 
 /**

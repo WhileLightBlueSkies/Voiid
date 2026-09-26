@@ -80,6 +80,12 @@ class SocialService(private val tokens: TokenStore) {
         val birth_date: String? = null,
         val interests: List<String> = emptyList(),
         val following: Boolean = false,
+        // Owner-only privacy controls (iOS SocialPrivacyView). Null = the server's default.
+        val grid_visibility: String? = null,
+        val show_counts: Boolean? = null,
+        val discoverable: Boolean? = null,
+        val allow_follows: Boolean? = null,
+        val allow_comments: Boolean? = null,
     )
 
     /**
@@ -146,6 +152,11 @@ class SocialService(private val tokens: TokenStore) {
         val display_name: String? = null,
         val bio: String? = null,
         val link_url: String? = null,
+        val grid_visibility: String? = null,
+        val show_counts: Boolean? = null,
+        val discoverable: Boolean? = null,
+        val allow_follows: Boolean? = null,
+        val allow_comments: Boolean? = null,
     )
     @Serializable private data class AvatarPresignBody(val content_type: String)
     @Serializable data class AvatarPresignResp(val avatar_r2_key: String, val upload_url: String)
@@ -197,6 +208,24 @@ class SocialService(private val tokens: TokenStore) {
     ): Profile = json.decodeFromString<ProfileResp>(
         api.request("PATCH", "creators/me",
             ApiClient.json.encodeToString(UpdateBody(handle, displayName, bio, linkUrl)))
+    ).profile
+
+    /**
+     * One privacy field per call, like iOS: nulls are omitted (explicitNulls = false), so a
+     * switch never rewrites the others and never re-sends the handle.
+     */
+    suspend fun updatePrivacy(
+        gridVisibility: String? = null,
+        showCounts: Boolean? = null,
+        discoverable: Boolean? = null,
+        allowFollows: Boolean? = null,
+        allowComments: Boolean? = null,
+    ): Profile = json.decodeFromString<ProfileResp>(
+        api.request("PATCH", "creators/me",
+            ApiClient.json.encodeToString(UpdateBody(
+                grid_visibility = gridVisibility, show_counts = showCounts,
+                discoverable = discoverable, allow_follows = allowFollows,
+                allow_comments = allowComments)))
     ).profile
 
     // ── Avatar ────────────────────────────────────────────────────────────────────

@@ -353,7 +353,7 @@ private fun ClipEditSheet(
             }
 
             Text("Caption", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-            OutlinedTextField(
+            com.voiid.app.ui.components.VoiidOutlinedField(
                 value = caption,
                 onValueChange = { caption = it },
                 placeholder = { Text("Add a caption", color = VoiidColor.textSecondary) },

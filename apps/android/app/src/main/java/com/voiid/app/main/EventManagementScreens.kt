@@ -180,7 +180,7 @@ fun EventManagerDialog(event:EventService.Event,canManage:Boolean,canAssign:Bool
     if(event.status!="cancelled")item{TextButton(enabled=!busy,onClick={cancel=true}){Text("Cancel event",color=MaterialTheme.colorScheme.error)}}
    }
    if(canManage&&tab=="Guests") {
-    item{OutlinedTextField(search,{search=it},label={Text("Search guest or username")},modifier=Modifier.fillMaxWidth());Text("Showing up to 500 bookings. Phone numbers are not shared.",style=MaterialTheme.typography.bodySmall)}
+    item{com.voiid.app.ui.components.VoiidOutlinedField(search,{search=it},label={Text("Search guest or username")},modifier=Modifier.fillMaxWidth());Text("Showing up to 500 bookings. Phone numbers are not shared.",style=MaterialTheme.typography.bodySmall)}
     if(orders==null&&error==null)item{CircularProgressIndicator()}
     if(orders?.isEmpty()==true)item{Text("No registrations yet.")}
     orders?.filter{search.isBlank()||it.full_name.orEmpty().contains(search,true)||it.username.orEmpty().contains(search,true)}?.forEach{o->item{
@@ -195,7 +195,7 @@ fun EventManagerDialog(event:EventService.Event,canManage:Boolean,canAssign:Bool
     Text("One scan admits the whole booking",style=MaterialTheme.typography.titleLarge)
     Text("Ask the whole group to arrive together. Used bookings cannot be admitted again.")
     Spacer(Modifier.height(20.dp))
-    OutlinedTextField(value=code,onValueChange={code=it;result=null},label={Text("Enter ticket code manually")},enabled=!busy,modifier=Modifier.fillMaxWidth())
+    com.voiid.app.ui.components.VoiidOutlinedField(value=code,onValueChange={code=it;result=null},label={Text("Enter ticket code manually")},enabled=!busy,modifier=Modifier.fillMaxWidth())
     TextButton(enabled=!busy&&code.isNotBlank(),onClick={scope.launch{busy=true;result=null;try{val r=service.checkIn(event.id,code.trim());result=if(r.ok)"${r.people} ${if(r.people==1)"person" else "people"} admitted" else "Not admitted";code="";retry++}catch(e:CancellationException){throw e}catch(e:Exception){result=admissionError(e)}finally{busy=false}}}){Text(if(busy)"Checking…" else "Check in")}
     result?.let{Text(it)}
    }
@@ -253,7 +253,7 @@ private fun EventTeamDialog(id:String,onDismiss:()->Unit){
  fun action(block:suspend()->Unit){scope.launch{busy=true;try{block();retry++}catch(e:CancellationException){throw e}catch(_:Exception){error="Unable to update team."}finally{busy=false}}}
  AlertDialog(onDismissRequest={if(!busy)onDismiss()},title={Text("Event team")},text={LazyColumn(verticalArrangement=Arrangement.spacedBy(12.dp)){
   item{
-   OutlinedTextField(value=username,onValueChange={username=it},label={Text("Member username")},enabled=!busy)
+   com.voiid.app.ui.components.VoiidOutlinedField(value=username,onValueChange={username=it},label={Text("Member username")},enabled=!busy)
    Row {TextButton(enabled=!busy,onClick={role="volunteer"}){Text(if(role=="volunteer")"✓ Volunteer" else "Volunteer")};TextButton(enabled=!busy,onClick={role="manager"}){Text(if(role=="manager")"✓ Manager" else "Manager")}}
    Text(if(role=="volunteer")"Can check in guests for this event only." else "Can edit this event and view registrations. No bank access.")
    TextButton(enabled=!busy&&username.isNotBlank(),onClick={action{service.invite(id,username.trim(),role);username=""}}){Text("Send invitation")}
@@ -619,7 +619,7 @@ fun EventEditorDialog(communityId:String,event:EventService.Event?=null,isOwner:
      color=VoiidColor.textSecondary,modifier=Modifier.padding(top=6.dp))
    }
    when(step) {
-    0->item{OutlinedTextField(title,{title=it.take(120)},singleLine=true,supportingText={Text("${title.length}/120")},label={Text("Event name")},modifier=Modifier.fillMaxWidth(),enabled=!busy);Spacer(Modifier.height(16.dp));OutlinedTextField(about,{about=it.take(5000)},label={Text("About this event")},modifier=Modifier.fillMaxWidth(),minLines=3,enabled=!busy)}
+    0->item{com.voiid.app.ui.components.VoiidOutlinedField(title,{title=it.take(120)},singleLine=true,supportingText={Text("${title.length}/120")},label={Text("Event name")},modifier=Modifier.fillMaxWidth(),enabled=!busy);Spacer(Modifier.height(16.dp));com.voiid.app.ui.components.VoiidOutlinedField(about,{about=it.take(5000)},label={Text("About this event")},modifier=Modifier.fillMaxWidth(),minLines=3,enabled=!busy)}
     1->item{
      ControlEntry("Date",date.format(java.time.format.DateTimeFormatter.ofPattern("EEE, d MMM yyyy"))){android.app.DatePickerDialog(ctx,{_,y,m,d->changeStart(java.time.LocalDate.of(y,m+1,d),time)},date.year,date.monthValue-1,date.dayOfMonth).show()}
      Spacer(Modifier.height(16.dp))
@@ -634,15 +634,15 @@ fun EventEditorDialog(communityId:String,event:EventService.Event?=null,isOwner:
      Text("Time zone: ${java.time.ZoneId.systemDefault().id}",style=MaterialTheme.typography.bodySmall)
     }
     2->item{
-     OutlinedTextField(venue,{venue=it.take(300)},label={Text("Venue")},modifier=Modifier.fillMaxWidth(),enabled=!busy)
+     com.voiid.app.ui.components.VoiidOutlinedField(venue,{venue=it.take(300)},label={Text("Venue")},modifier=Modifier.fillMaxWidth(),enabled=!busy)
      Spacer(Modifier.height(16.dp))
-     OutlinedTextField(capacity,{capacity=it.filter(Char::isDigit).take(6)},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),supportingText={Text(if(capacityValid)"Leave empty for unlimited places" else "Enter between 1 and 100,000")},label={Text("Guest capacity")},isError=!capacityValid,modifier=Modifier.fillMaxWidth(),enabled=!busy)
+     com.voiid.app.ui.components.VoiidOutlinedField(capacity,{capacity=it.filter(Char::isDigit).take(6)},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),supportingText={Text(if(capacityValid)"Leave empty for unlimited places" else "Enter between 1 and 100,000")},label={Text("Guest capacity")},isError=!capacityValid,modifier=Modifier.fillMaxWidth(),enabled=!busy)
      Spacer(Modifier.height(20.dp))
      if(event==null){
       Row(verticalAlignment=Alignment.CenterVertically){Text("Charge for tickets",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium);Switch(paid,{paid=it},enabled=!busy)}
       if(paid){
        when{
-        canCharge->OutlinedTextField(priceText,{priceText=it.filter{c->c.isDigit()||c=='.'}.take(9)},singleLine=true,prefix={Text("₹")},
+        canCharge->com.voiid.app.ui.components.VoiidOutlinedField(priceText,{priceText=it.filter{c->c.isDigit()||c=='.'}.take(9)},singleLine=true,prefix={Text("₹")},
          keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal),label={Text("Price per place")},
          isError=priceText.isNotEmpty()&&priceMinor==null,supportingText={Text(if(priceText.isNotEmpty()&&priceMinor==null)"Enter a price from ₹1 to ₹1,00,000." else "Paid through Cashfree. Voiid's fee comes off each sale and your share goes to your verified bank account.")},
          modifier=Modifier.fillMaxWidth(),enabled=!busy)

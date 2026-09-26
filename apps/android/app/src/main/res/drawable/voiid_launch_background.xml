@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/voiid_launch_background" />
-    <item><bitmap android:src="@drawable/voiid_launch_mark" android:gravity="center" /></item>
+    <item android:width="120dp" android:height="108dp" android:gravity="center"
+        android:drawable="@drawable/voiid_launch_mark" />
 </layer-list>

@@ -1,5 +1,6 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.animation.animateColorAsState
@@ -21,6 +22,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -187,9 +190,13 @@ fun PhoneScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize().background(VoiidBrand.ground).statusBarsPadding().imePadding()) {
+    // Like iOS: the footer stays pinned to the bottom (the keyboard covers it) and only the
+    // scrolling content lifts above the keyboard. Tapping the background dismisses it.
+    var footerPx by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    Column(Modifier.fillMaxSize().background(VoiidBrand.ground).statusBarsPadding()
+        .pointerInput(Unit) { detectTapGestures(onTap = { focus.clearFocus() }) }) {
         OnboardingBackChip { focus.clearFocus(); onBack() }
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
+        Column(Modifier.weight(1f).fillMaxWidth().imeAboveFooter(footerPx).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
             OnboardingHeader(
                 title = OnboardingTitleSpec.Stacked("Enter your", "phone number"),
@@ -205,8 +212,10 @@ fun PhoneScreen(
             // was left half-scrolled with its bottom edge cut off by the footer.
             val bringField = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
             val imeBottom = androidx.compose.foundation.layout.WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current)
+            // Only nudge when the field is actually covered — the footer no longer rides on the
+            // keyboard, so on a normal phone the field is already in view and must not scroll.
             LaunchedEffect(focused, imeBottom) {
-                if (focused) { kotlinx.coroutines.delay(120); bringField.bringIntoView() }
+                if (focused && imeBottom > 0) { kotlinx.coroutines.delay(300); bringField.bringIntoView() }
             }
             Row(
                 Modifier
@@ -286,7 +295,7 @@ fun PhoneScreen(
             PhonePromiseCard(Icons.Outlined.PersonOutline, "Used only for you", "To verify your identity and keep your account secure.")
             Spacer(Modifier.height(24.dp))
         }
-        OnboardingFooter {
+        Box(Modifier.onSizeChanged { footerPx = it.height }) { OnboardingFooter {
             OnboardingKitButton(title = "Continue", enabled = valid && !sending, busy = sending, usesBrandGradient = true) {
                 focus.clearFocus()
                 sendOtp()
@@ -297,7 +306,7 @@ fun PhoneScreen(
                 Text("We'll send a verification code by SMS.\nMessage and data rates may apply.",
                     style = VoiidFont.rounded(12.5f), color = VoiidBrand.textDim, textAlign = TextAlign.Center)
             }
-        }
+        } }
     }
 
     if (showPicker) {

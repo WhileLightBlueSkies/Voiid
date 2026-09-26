@@ -141,8 +141,67 @@ suspend fun loadMediaBitmap(
     }?.also { ib -> MediaCache.putImage(ref.mediaUrl, ib) }
 }
 
+/** One animated-image loader for the app (iOS AnimatedGifView plays GIFs inline). */
+private object GifLoader {
+    @Volatile private var loader: coil.ImageLoader? = null
+    fun get(ctx: Context): coil.ImageLoader = loader ?: synchronized(this) {
+        loader ?: coil.ImageLoader.Builder(ctx.applicationContext).components {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) add(coil.decode.ImageDecoderDecoder.Factory())
+            else add(coil.decode.GifDecoder.Factory())
+        }.build().also { loader = it }
+    }
+}
+
+/**
+ * A GIF bubble that PLAYS, like iOS `AnimatedGifView`. The bitmap path decodes one frame, so
+ * a sent GIF used to arrive as a still picture. The decrypted bytes are already cached on
+ * disk by [MediaCache]; this feeds that file to an animated decoder instead.
+ */
+@Composable
+private fun AsyncGifMedia(ref: ChatEngine.MediaRef, onTap: (() -> Unit)?) {
+    val context = LocalContext.current
+    var ready by remember(ref.mediaUrl) { mutableStateOf(MediaCache.playbackFile(context, ref.mediaUrl).exists()) }
+    var failed by remember(ref.mediaUrl) { mutableStateOf(false) }
+    var retryCount by remember(ref) { mutableIntStateOf(0) }
+    LaunchedEffect(ref, retryCount) {
+        if (ready) return@LaunchedEffect
+        failed = false
+        ready = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                if (MediaCache.data(context, ref.mediaUrl) == null) {
+                    MediaCache.putData(context, ref.mediaUrl, ChatEngine.get(context).fetchMedia(ref))
+                }
+                true
+            }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; false }
+        }
+        failed = !ready
+    }
+    Box(
+        Modifier.size(width = 260.dp, height = 220.dp).clip(RoundedCornerShape(18.dp)).background(VoiidColor.fieldFill)
+            .clickable(enabled = failed || (ready && onTap != null)) { if (failed) retryCount++ else onTap?.invoke() },
+        Alignment.Center,
+    ) {
+        when {
+            ready -> coil.compose.AsyncImage(
+                model = MediaCache.playbackFile(context, ref.mediaUrl),
+                contentDescription = "GIF",
+                imageLoader = GifLoader.get(context),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+            failed -> Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Image, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(32.dp))
+                Text("Couldn't load media", color = VoiidColor.textSecondary)
+                Text("Tap to retry", color = VoiidColor.textSecondary)
+            }
+            else -> CircularProgressIndicator(color = VoiidColor.primary)
+        }
+    }
+}
+
 @Composable
 fun AsyncMediaImage(ref: ChatEngine.MediaRef, onTap: (() -> Unit)? = null) {
+    if (ref.mime.equals("image/gif", ignoreCase = true)) { AsyncGifMedia(ref, onTap); return }
     val context = LocalContext.current
     var bitmap by remember(ref.mediaUrl) { mutableStateOf(MediaCache.image(ref.mediaUrl)) }
     var failed by remember(ref.mediaUrl) { mutableStateOf(false) }
