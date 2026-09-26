@@ -876,33 +876,12 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                 ) null
                 else { level, skill ->
                     setupGame = null
-                    if (game.slug == "snake") {
-                        // Snake's bots live on the SERVER, so "play a bot" mints a real
-                        // one-seat match rather than opening a local simulation. Every other
-                        // game here is turn-based and simulates its opponent on-device.
-                        gamesScope.launch {
-                            // Difficulty maps to how many bots share the arena. Bots use
-                            // identical physics to the player — no speed or turning advantage
-                            // — so a busier arena IS the difficulty: less open space, more
-                            // bodies to cut across.
-                            val bots = when (level) {
-                                com.voiid.app.main.games.BotDifficulty.EASY -> 4
-                                com.voiid.app.main.games.BotDifficulty.MODERATE -> 8
-                                com.voiid.app.main.games.BotDifficulty.HARD -> 14
-                            }
-                            val engine = com.voiid.app.net.GamesEngine.get(context)
-                            val matchId = engine.createSolo(game.slug, mapOf("bots" to bots))
-                            matchId
-                                ?.let { openGameMatch = it to game.slug }
-                        }
-                    } else {
-                        botGame = Triple(game.slug, level, skill)
-                    }
+                    // Snake runs on this device against local bots, exactly like iOS
+                    // SnakeGameView — no server match. Every game here routes through botGame.
+                    botGame = Triple(game.slug, level, skill)
                 },
-                onCustomise =
-                    if (game.slug == "snake") {
-                        { setupGame = null; showSkinPicker = true }
-                    } else null,
+                // iOS's setup sheet has no skin row: the offline arena colours snakes itself.
+                onCustomise = null,
                 onDismiss = { setupGame = null },
             )
         }
@@ -966,6 +945,15 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                             com.voiid.app.main.games.BotDifficulty.EASY -> 1
                             com.voiid.app.main.games.BotDifficulty.MODERATE -> 2
                             com.voiid.app.main.games.BotDifficulty.HARD -> 3
+                        },
+                        onClose = { botGame = null },
+                    )
+                    // iOS GamesScreen → SnakeGameView(mode:): the offline arena, bots by mode.
+                    "snake" -> com.voiid.app.main.games.snake.SnakeGameScreen(
+                        mode = when (level) {
+                            com.voiid.app.main.games.BotDifficulty.EASY -> "easy"
+                            com.voiid.app.main.games.BotDifficulty.MODERATE -> "moderate"
+                            com.voiid.app.main.games.BotDifficulty.HARD -> "hard"
                         },
                         onClose = { botGame = null },
                     )
