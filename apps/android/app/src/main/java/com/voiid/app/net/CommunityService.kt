@@ -486,6 +486,37 @@ class CommunityService(context: Context) {
     suspend fun unlikePost(communityId: String, postId: String): LikeResult =
         api.requestAs("DELETE", "communities/$communityId/posts/$postId/like")
 
+    // ── COMMENTS on Home posts (095). Twin of iOS CommunityService.postComments & co. ──
+
+    @Serializable
+    data class PostComment(
+        val id: String,
+        val author_id: String? = null,
+        val body: String? = null,
+        val created_at: String? = null,
+        val author_name: String? = null,
+        val author_username: String? = null,
+        val mine: Boolean? = null,
+    ) {
+        val text: String get() = body ?: ""
+        val displayName: String get() = author_name?.takeIf { it.isNotEmpty() }
+            ?: author_username?.takeIf { it.isNotEmpty() }?.let { "@$it" } ?: "Deleted account"
+    }
+    @Serializable private data class CommentsResp(val comments: List<PostComment> = emptyList())
+    @Serializable private data class CommentBody(val body: String)
+    @Serializable data class AddCommentResp(val comment: PostComment, val comment_count: Int)
+    @Serializable private data class CountResp(val comment_count: Int)
+
+    suspend fun postComments(communityId: String, postId: String): List<PostComment> =
+        api.requestAs<CommentsResp>("GET", "communities/$communityId/posts/$postId/comments").comments
+
+    suspend fun addPostComment(communityId: String, postId: String, body: String): AddCommentResp =
+        api.requestAs("POST", "communities/$communityId/posts/$postId/comments",
+            ApiClient.json.encodeToString(CommentBody.serializer(), CommentBody(body)))
+
+    suspend fun deletePostComment(communityId: String, postId: String, commentId: String): Int =
+        api.requestAs<CountResp>("DELETE", "communities/$communityId/posts/$postId/comments/$commentId").comment_count
+
     @Serializable
     data class Announcement(
         val id: String,

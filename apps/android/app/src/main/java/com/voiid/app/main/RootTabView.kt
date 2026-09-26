@@ -1,5 +1,9 @@
 package com.voiid.app.main
 
+import com.voiid.app.ui.components.zoomExit
+import com.voiid.app.ui.components.zoomEnter
+import com.voiid.app.ui.components.rememberZoomOrigin
+import com.voiid.app.ui.components.recordTapOrigin
 import androidx.compose.runtime.mutableStateListOf
 import com.voiid.app.ui.components.blockTouchesBelow
 import androidx.compose.material.icons.filled.SmartDisplay
@@ -460,7 +464,8 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         LocalSpotlightRegistry provides spotlightRegistry,
         com.voiid.app.main.walkthrough.LocalWalkthroughState provides walkthrough,
     ) {
-        Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
+        // Every touch-down is noted so a page can grow out of the tile that opened it.
+        Box(Modifier.fillMaxSize().background(VoiidColor.background).recordTapOrigin()) {
 
         Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -599,13 +604,14 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         }
 
         // Chat detail — slides in over everything (covers the tab bar), like the iOS push.
+        val zoomChat = rememberZoomOrigin(openConversation != null)
         AnimatedVisibility(
             visible = openConversation != null,
             modifier = Modifier.blockTouchesBelow(),
-            enter = slideInHorizontally { it } + fadeIn(),
-            exit = slideOutHorizontally { it } + fadeOut(),
+            enter = zoomEnter(zoomChat),
+            exit = zoomExit(zoomChat),
         ) {
-            openConversation?.let { conv ->
+            rememberLastNonNull(openConversation)?.let { conv ->
                 ChatDetailView(
                     conversation = conv, chat = chat,
                     onBack = { openConversation = null },
@@ -817,11 +823,12 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         }
 
         // Today's daily challenge — full-screen, same treatment as the leaderboard.
+        val zoomDaily = rememberZoomOrigin(showDaily)
         AnimatedVisibility(
             visible = showDaily,
             modifier = Modifier.blockTouchesBelow(),
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = zoomEnter(zoomDaily),
+            exit = zoomExit(zoomDaily),
         ) {
             com.voiid.app.main.games.DailyChallengeScreen(
                 onPlay = { id ->
@@ -835,11 +842,12 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         }
 
         // Leaderboard — full-screen cover, same treatment as the boards.
+        val zoomBoard = rememberZoomOrigin(showLeaderboard)
         AnimatedVisibility(
             visible = showLeaderboard,
             modifier = Modifier.blockTouchesBelow(),
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = zoomEnter(zoomBoard),
+            exit = zoomExit(zoomBoard),
         ) {
             com.voiid.app.main.games.LeaderboardScreen(onClose = { showLeaderboard = false })
         }
@@ -899,11 +907,13 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
             )
         }
 
+        val zoomSkin = rememberZoomOrigin(showSkinPicker)
+
         AnimatedVisibility(
             visible = showSkinPicker,
             modifier = Modifier.blockTouchesBelow(),
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = zoomEnter(zoomSkin),
+            exit = zoomExit(zoomSkin),
         ) {
             Box(
                 Modifier
@@ -917,13 +927,14 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
 
         // Practice board — full-screen cover, same treatment as the online board. Which
         // renderer runs is chosen by slug, the same key the server's rules modules use.
+        val zoomBot = rememberZoomOrigin(botGame != null)
         AnimatedVisibility(
             visible = botGame != null,
             modifier = Modifier.blockTouchesBelow(),
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = zoomEnter(zoomBot),
+            exit = zoomExit(zoomBot),
         ) {
-            botGame?.let { (slug, level, skill) ->
+            rememberLastNonNull(botGame)?.let { (slug, level, skill) ->
                 // EVERY SLUG IS NAMED, and the fallback is Tic Tac Toe ONLY for the slug that
                 // actually is Tic Tac Toe. This used to be a bare `else ->` catch-all, which
                 // meant the day a slug was added to the allow-list above without a branch here,
@@ -965,13 +976,14 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
 
         // Lobby — full-screen cover. Sits between "invite sent" and the board: it hands off to the
         // board the moment the opponent's join produces an opening frame.
+        val zoomLobby = rememberZoomOrigin(lobby != null)
         AnimatedVisibility(
             visible = lobby != null,
             modifier = Modifier.blockTouchesBelow(),
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = zoomEnter(zoomLobby),
+            exit = zoomExit(zoomLobby),
         ) {
-            lobby?.let { args ->
+            rememberLastNonNull(lobby)?.let { args ->
                 com.voiid.app.main.games.GameLobbyScreen(
                     matchId = args.matchId,
                     slug = args.slug,
@@ -989,13 +1001,14 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         }
 
         // Game board — full-screen cover (must sit over the tab bar), matching openClip.
+        val zoomMatch = rememberZoomOrigin(openGameMatch != null)
         AnimatedVisibility(
             visible = openGameMatch != null,
             modifier = Modifier.blockTouchesBelow(),
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = zoomEnter(zoomMatch),
+            exit = zoomExit(zoomMatch),
         ) {
-            openGameMatch?.let { (matchId, slug) ->
+            rememberLastNonNull(openGameMatch)?.let { (matchId, slug) ->
                 // Renderer per game, keyed by the same slug the server's rules modules use.
                 when (slug) {
                     // ONE HANDLER SHAPE FOR EVERY REMATCH. The server has already minted the
@@ -1052,13 +1065,14 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
         }
 
         // Story viewer — full-screen cover (must sit over the tab bar), matching openClip.
+        val zoomStory = rememberZoomOrigin(openStoryContext != null)
         AnimatedVisibility(
             visible = openStoryContext != null,
             modifier = Modifier.blockTouchesBelow(),
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = zoomEnter(zoomStory),
+            exit = zoomExit(zoomStory),
         ) {
-            openStoryContext?.let { start ->
+            rememberLastNonNull(openStoryContext)?.let { start ->
                 com.voiid.app.main.stories.StoryViewerView(
                     contexts = stories.contexts.toList(),
                     startContextIndex = start,
@@ -1208,7 +1222,7 @@ private fun TabBar(
             )
             .navigationBarsPadding(),
     ) {
-        Box(Modifier.fillMaxWidth().height(0.5.dp).background(VoiidColor.divider.copy(alpha = 0.6f)))
+        // No resting hairline (iOS 9973f311): the bar's glass is its own edge.
 
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             // Exactly five slots visible; everything past that is reachable by scrolling.
@@ -1257,7 +1271,7 @@ private fun TabBar(
                             .offset(x = leftX, y = 56.dp)
                             .size(width = (rightX - leftX).coerceAtLeast(barW), height = 3.dp)
                             .clip(RoundedCornerShape(999.dp))
-                            .background(VoiidColor.primary),
+                            .background(VoiidColor.accentInk),
                     )
 
                     Row {
@@ -1388,7 +1402,7 @@ private fun TabItem(
                     modifier = Modifier
                         .size(22.dp)
                         .graphicsLayer { scaleX = scale.value; scaleY = scale.value },
-                    tint = if (isActive) VoiidColor.primary else VoiidColor.textSecondary,
+                    tint = if (isActive) VoiidColor.accentInk else VoiidColor.textSecondary,
                 )
             }
             // Persistent badge: filled dot when VISIBLE on the Map (or an unviewed story),
@@ -1423,7 +1437,7 @@ private fun TabItem(
                 t.label,
                 // Weight steps up when active, so selection survives for a colour-blind user.
                 style = VoiidFont.rounded(10, if (active) FontWeight.SemiBold else FontWeight.Medium),
-                color = if (active) VoiidColor.primary else VoiidColor.textSecondary,
+                color = if (active) VoiidColor.accentInk else VoiidColor.textSecondary,
                 maxLines = 1,
             )
         }
@@ -1451,4 +1465,17 @@ internal val DashedCircleIcon: androidx.compose.ui.graphics.vector.ImageVector b
             )
         }
     }.build()
+}
+
+/**
+ * The last non-null value, held while [value] is null. A closing page is still ANIMATING
+ * OUT after its state clears; without this its content went blank the instant Back was
+ * pressed, so the shrink-back-into-the-tile had nothing to draw and the page just vanished.
+ */
+@Composable
+internal fun <T> rememberLastNonNull(value: T?): T? {
+    val holder = remember { arrayOfNulls<Any?>(1) }
+    if (value != null) holder[0] = value
+    @Suppress("UNCHECKED_CAST")
+    return (value ?: holder[0]) as T?
 }

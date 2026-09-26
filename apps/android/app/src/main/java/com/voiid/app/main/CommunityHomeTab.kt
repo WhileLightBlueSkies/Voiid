@@ -1,5 +1,9 @@
 package com.voiid.app.main
 
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -105,6 +109,7 @@ fun CommunityHomeTab(
     val viewed = remember { mutableSetOf<String>() }
     LaunchedEffect(canPost) { serverCanPost = canPost }
     var posts by remember { mutableStateOf<List<CommunityService.Post>>(emptyList()) }
+    var commentsFor by remember { mutableStateOf<CommunityService.Post?>(null) }
     var pinned by remember { mutableStateOf<CommunityService.Announcement?>(null) }
     var loading by remember { mutableStateOf(true) }
     var postsError by remember { mutableStateOf<String?>(null) }
@@ -261,6 +266,13 @@ fun CommunityHomeTab(
             WriteErrorBanner(message = message, onDismiss = { writeError = null })
         }
 
+        commentsFor?.let { post ->
+            CommunityCommentsSheet(
+                service = svc, communityId = communityId, post = post,
+                onCountChange = { count -> posts = posts.map { if (it.id == post.id) it.copy(comment_count = count) else it } },
+                onDismiss = { commentsFor = null },
+            )
+        }
         Feed(
             posts = posts, loading = loading, postsError = postsError, isAdmin = isAdmin,
             deleteBusy = deleteBusy,
@@ -279,6 +291,7 @@ fun CommunityHomeTab(
                 }
             },
             onDelete = { pendingDelete = it },
+            onComments = { commentsFor = it },
             onLike = { post ->
                 if (likeBusy.contains(post.id)) return@Feed
                 scope.launch {
@@ -840,6 +853,7 @@ private fun Feed(
     onDelete: (CommunityService.Post) -> Unit,
     onLike: (CommunityService.Post) -> Unit,
     onViewed: (String) -> Unit,
+    onComments: (CommunityService.Post) -> Unit = {},
 ) {
     val height = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val viewThreshold = with(LocalDensity.current) { 200.dp.toPx() }
@@ -866,6 +880,7 @@ private fun Feed(
                     // member never sees a Delete they cannot use.
                     onDelete = if (canDelete(post)) ({ onDelete(post) }) else null,
                     onLike = { onLike(post) },
+                    onComments = { onComments(post) },
                 )
                 }
             } }
@@ -879,6 +894,7 @@ private fun CommunityPostCard(
     busy: Boolean,
     onDelete: (() -> Unit)?,
     onLike: () -> Unit,
+    onComments: () -> Unit = {},
 ) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
@@ -976,8 +992,9 @@ private fun CommunityPostCard(
         }
 
         Row(
-            Modifier.padding(top = 2.dp),
+            Modifier.fillMaxWidth().padding(top = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.lg),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             PostAction(
                 icon = if (post.isLiked) CommunityIcon.HEART_FILL else CommunityIcon.HEART,
@@ -986,9 +1003,16 @@ private fun CommunityPostCard(
                 enabled = !busy,
                 onClick = onLike,
             )
-            Text("${post.view_count} views", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+            // iOS order: like · comments · Share, then views as a quiet count at the end.
+            PostAction(CommunityIcon.COMMENT, post.comments.toString(), VoiidColor.textSecondary, !busy) { onComments() }
             PostAction(CommunityIcon.SHARE, "Share",
                 VoiidColor.textSecondary, !busy) { share() }
+            Spacer(Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = "${post.view_count} views" }) {
+                Icon(Icons.Outlined.Visibility, null, tint = VoiidColor.textSecondary.copy(alpha = 0.8f), modifier = Modifier.size(13.dp))
+                Text("${post.view_count}", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary.copy(alpha = 0.8f))
+            }
         }
     }
 }

@@ -1,5 +1,8 @@
 package com.voiid.app.main
 
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Box
+import com.voiid.app.ui.components.blockTouchesBelow
 import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ChevronRight
@@ -117,16 +120,13 @@ fun CommunitiesHomeView(
     }
 
     // Back closes the open community first, rather than leaving the tab (or the app).
-    androidx.activity.compose.BackHandler(enabled = open != null) { open = null; scope.launch { loadMine() } }
-    open?.let { card ->
-        CommunityDetailView(
-            card = card,
-            service = svc,
-            onBack = { open = null; scope.launch { loadMine() } },
-            onOpenConversation = onOpenConversation,
-        )
-        return
-    }
+    androidx.activity.compose.BackHandler(enabled = open != null) { open = null; discovering = false; scope.launch { loadMine() } }
+    // The community page is drawn OVER the list (not instead of it) so it can grow out of
+    // the card that was tapped and shrink back into it on close. The last card is held
+    // through the exit so the page has something to render while it animates away.
+    var shownCard by remember { mutableStateOf<CommunityService.CommunityCard?>(null) }
+    if (open != null) shownCard = open
+    val openOrigin = com.voiid.app.ui.components.rememberZoomOrigin(open != null)
 
     // WIRED. This used to fire a tap haptic and nothing else. Now it opens the two-step
     // create flow; the SERVER's card comes back (id + handle are the server's to confirm).
@@ -254,11 +254,29 @@ fun CommunitiesHomeView(
         }
     }
     }
-    if (discovering) {
+    Box(Modifier.fillMaxSize()) {
+    // Opening a community from Discover closes the sheet, as on iOS.
+    if (discovering && open == null) {
         com.voiid.app.ui.components.VoiidSheet(visible = true,
             onDismiss = { discovering = false; query = "" },
             detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large), showHandle = true) { homeContent() }
     } else homeContent()
+    androidx.compose.animation.AnimatedVisibility(
+        visible = open != null,
+        modifier = Modifier.blockTouchesBelow(),
+        enter = com.voiid.app.ui.components.zoomEnter(openOrigin),
+        exit = com.voiid.app.ui.components.zoomExit(openOrigin),
+    ) {
+        shownCard?.let { card ->
+            CommunityDetailView(
+                card = card,
+                service = svc,
+                onBack = { open = null; discovering = false; scope.launch { loadMine() } },
+                onOpenConversation = onOpenConversation,
+            )
+        }
+    }
+    }
 
 }
 
