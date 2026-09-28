@@ -163,6 +163,14 @@ final class ClipService {
         return try await api.request("GET", path)
     }
 
+    private struct OneClipResp: Decodable { let clip: ClipRow }
+
+    /// One clip by id — for a clip shared into a chat. Signed-in only, like all clip reads.
+    func clip(id: String) async throws -> ClipRow {
+        let resp: OneClipResp = try await api.request("GET", "clips/\(id.lowercased())")
+        return resp.clip
+    }
+
     /// The signed-in user's own grid.
     func mine(cursor: String? = nil, limit: Int = 30) async throws -> FeedResp {
         var path = "clips/mine?limit=\(limit)"

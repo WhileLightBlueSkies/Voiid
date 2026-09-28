@@ -553,9 +553,11 @@ final class ClipsEngine: ObservableObject {
     /// Encoding used to happen before the tile existed, so a two-minute clip left the grid
     /// unchanged for most of a minute, and an encode that failed vanished without a word.
     /// Now every failure lands on the tile, with Retry, whichever stage it happened in.
+    /// Returns the new clip's id, so the post screen can follow its progress.
+    @discardableResult
     func post(source: URL, edit: ClipEdit, coverJPEG: Data?, caption: String?,
               commentsEnabled: Bool, saveToPhotos: Bool, cleanup: [URL],
-              authorId: String, authorName: String) {
+              authorId: String, authorName: String) -> String {
         let clipId = UUID().uuidString.lowercased()
 
         var placeholder = Clip(pendingId: clipId, authorId: authorId, authorName: authorName,
@@ -575,6 +577,7 @@ final class ClipsEngine: ObservableObject {
                                                commentsEnabled: commentsEnabled,
                                                saveToPhotos: saveToPhotos, cleanup: cleanup)
         runExport(clipId: clipId)
+        return clipId
     }
 
     /// Encode the edit into the rendition ladder, then hand over to the upload.

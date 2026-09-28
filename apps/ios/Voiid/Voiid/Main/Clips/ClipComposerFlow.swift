@@ -68,7 +68,8 @@ struct ClipComposerFlow: View {
                                      onPost: { caption, comments, save, cover in
                                          post(source: url, caption: caption, commentsEnabled: comments,
                                               saveToPhotos: save, coverJPEG: cover)
-                                     })
+                                     },
+                                     onDone: { dismiss() })
                             .navigationBarBackButtonHidden()
                     }
                 }
@@ -166,21 +167,22 @@ struct ClipComposerFlow: View {
 
     // MARK: - Post
 
+    /// Hands the clip to the engine and returns its id. The post screen stays up to show the
+    /// real progress and closes itself (or on "Keep using Voiid").
     private func post(source: URL, caption: String, commentsEnabled: Bool, saveToPhotos: Bool,
-                      coverJPEG: Data?) {
+                      coverJPEG: Data?) -> String {
         let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
         // The engine owns the files from here, and deletes them once the encode has copied
         // what it needs.
         let cleanup = Array(Set(cam.takes.map(\.url)).union(madeFiles))
         cam.forgetTakes()
         madeFiles = []
-        engine.post(source: source, edit: edit, coverJPEG: coverJPEG,
-                    caption: trimmed.isEmpty ? nil : trimmed,
-                    commentsEnabled: commentsEnabled, saveToPhotos: saveToPhotos,
-                    cleanup: cleanup,
-                    authorId: session.userId ?? "",
-                    authorName: session.profile.fullName)
-        dismiss()
+        return engine.post(source: source, edit: edit, coverJPEG: coverJPEG,
+                           caption: trimmed.isEmpty ? nil : trimmed,
+                           commentsEnabled: commentsEnabled, saveToPhotos: saveToPhotos,
+                           cleanup: cleanup,
+                           authorId: session.userId ?? "",
+                           authorName: session.profile.fullName)
     }
 
     private func close() {
@@ -216,8 +218,15 @@ private struct ClipPostView: View {
     let edit: ClipEdit
     var onBack: () -> Void
     var onEditCover: () -> Void
-    /// Caption, comments on, save to Photos, the cover as JPEG.
-    var onPost: (String, Bool, Bool, Data?) -> Void
+    /// Caption, comments on, save to Photos, the cover as JPEG. Returns the new clip's id.
+    var onPost: (String, Bool, Bool, Data?) -> String
+    /// Close the flow. The upload carries on either way.
+    var onDone: () -> Void
+
+    @EnvironmentObject private var engine: ClipsEngine
+    /// The clip being posted, once handed to the engine — its progress drives the ring.
+    @State private var postedId: String?
+    @State private var closing = false
 
     @State private var caption = ""
     @State private var allowComments = true
@@ -460,6 +469,28 @@ private struct ClipPostView: View {
 
     /// A beat on the cover with a tick, then the flow closes. The encode and upload carry on
     /// in the grid, on the clip's tile — nothing here waits on them.
+    /// Where the posted clip is: preparing, uploading, done or failed — straight from the engine.
+    private var postState: ClipUploadState? {
+        guard let postedId else { return nil }
+        return engine.clips.first(where: { $0.id == postedId })?.uploadState ?? ClipUploadState.none
+    }
+
+    /// Preparing fills the first half of the ring, uploading the second.
+    private var postProgress: Double {
+        switch postState {
+        case .processing(let p): return min(1, max(0, p)) * 0.5
+        case .uploading(let p):  return 0.5 + min(1, max(0, p)) * 0.5
+        case ClipUploadState.none?: return 1
+        default:                 return 0
+        }
+    }
+
+    private var isPosted: Bool { if case ClipUploadState.none? = postState { return true }; return false }
+    private var failure: String? { if case .failed(let m)? = postState { return m }; return nil }
+
+    /// The Voiid Ui posting screen, on real progress: the cover with a ring that fills as the
+    /// clip is prepared and uploaded, then a tick and "Posted". "Keep using Voiid" leaves at any
+    /// point — the upload carries on, and the tile in Clips shows where it is.
     private var postingOverlay: some View {
         ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
@@ -474,25 +505,81 @@ private struct ClipPostView: View {
                     }
                     .frame(width: 120, height: 212)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.black.opacity(0.35)))
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 30, weight: .bold))
-                        .foregroundColor(.white)
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(.black.opacity(isPosted ? 0.35 : 0.2)))
+
+                    if isPosted {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 30, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 64, height: 64)
+                            .background(Circle().fill(VoiidColor.success))
+                            .transition(.scale.combined(with: .opacity))
+                    } else if failure != nil {
+                        Image(systemName: "exclamationmark")
+                            .font(.system(size: 28, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 64, height: 64)
+                            .background(Circle().fill(VoiidColor.error))
+                            .transition(.scale.combined(with: .opacity))
+                    } else {
+                        ZStack {
+                            Circle().stroke(.white.opacity(0.3), lineWidth: 5)
+                            Circle().trim(from: 0, to: postProgress)
+                                .stroke(.white, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                                .animation(.linear(duration: 0.25), value: postProgress)
+                            Text("\(Int(postProgress * 100))%")
+                                .font(VoiidFont.rounded(14, .bold))
+                                .monospacedDigit()
+                                .foregroundColor(.white)
+                                .contentTransition(.numericText())
+                        }
                         .frame(width: 64, height: 64)
-                        .background(Circle().fill(VoiidColor.success))
-                        .transition(.scale.combined(with: .opacity))
+                    }
                 }
-                Text("Posting your clip")
+                Text(isPosted ? "Posted" : (failure != nil ? "Couldn't post it yet" : "Posting your clip…"))
                     .font(VoiidFont.rounded(16, .semibold))
                     .foregroundColor(.white)
-                Text("It's uploading in Clips — you can keep using Voiid.")
-                    .font(VoiidFont.rounded(13))
-                    .foregroundColor(.white.opacity(0.7))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
+                if !isPosted {
+                    Text(failure.map { "\($0) You can retry it from Clips." }
+                         ?? "You can keep using Voiid — it carries on in the background.")
+                        .font(VoiidFont.rounded(13))
+                        .foregroundColor(.white.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
+                    Button {
+                        Haptics.tap()
+                        close()
+                    } label: {
+                        Text(failure != nil ? "Close" : "Keep using Voiid")
+                            .font(VoiidFont.rounded(15, .semibold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 22)
+                            .frame(height: 42)
+                            .background(Capsule().fill(.white))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .padding(.top, 4)
+                }
             }
+            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: isPosted)
         }
         .transition(.opacity)
+        .onChange(of: isPosted) { _, done in
+            guard done else { return }
+            Haptics.success()
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(0.9))
+                close()
+            }
+        }
+    }
+
+    private func close() {
+        guard !closing else { return }
+        closing = true
+        onDone()
     }
 
     private func post() {
@@ -503,8 +590,7 @@ private struct ClipPostView: View {
                 cover = try? await ClipExporter.frame(from: sourceURL, at: edit.coverSeconds, filter: edit.filter)
             }
             let jpeg = edit.customCoverJPEG ?? cover?.jpegData(compressionQuality: 0.8)
-            try? await Task.sleep(for: .milliseconds(700))
-            onPost(caption, allowComments, saveToPhotos, jpeg)
+            postedId = onPost(caption, allowComments, saveToPhotos, jpeg)
         }
     }
 }

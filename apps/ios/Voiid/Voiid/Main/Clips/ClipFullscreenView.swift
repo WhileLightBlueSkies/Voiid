@@ -64,6 +64,11 @@ struct ClipFullscreenView: View {
     @State private var moreFor: Clip?
     @State private var blocking: Clip?
     @State private var toast: String?
+    /// The clip being shared. On the pager, like More, so a swipe does not tear the sheet down.
+    @State private var sharing: Clip?
+    /// Whether the tab bar was already hidden when the player opened. Opened from a chat it
+    /// was — the chat hides it — and forcing it back on at close put the bar over the chat.
+    @State private var tabBarWasHidden = false
 
     init(startIndex: Int) {
         self.startIndex = startIndex
@@ -107,6 +112,9 @@ struct ClipFullscreenView: View {
                 if feed != nil { mutateInjected(clip.id) { $0.commentCount = max(0, $0.commentCount + delta) } }
             }
         }
+        .sheet(item: $sharing) { clip in
+            ClipShareSheet(clip: clip)
+        }
         .confirmationDialog(
             moreFor.map { "@\($0.authorHandle ?? $0.authorName)" } ?? "",
             isPresented: .init(get: { moreFor != nil }, set: { if !$0 { moreFor = nil } }),
@@ -146,6 +154,7 @@ struct ClipFullscreenView: View {
         }
         .ignoresSafeArea(.keyboard)
         .onAppear {
+            tabBarWasHidden = session.hideTabBar
             session.hideTabBar = true
             syncInjected()
         }
@@ -153,7 +162,8 @@ struct ClipFullscreenView: View {
         // and comparing it is far cheaper than diffing the whole snapshot every render.
         .onChange(of: feed?.clips.count) { _, _ in syncInjected() }
         .onDisappear {
-            session.hideTabBar = false
+            // Put it back as it was, not always on.
+            session.hideTabBar = tabBarWasHidden
             players.releaseAll()
         }
         .task(id: index) { await onPageChanged() }
@@ -210,6 +220,7 @@ struct ClipFullscreenView: View {
                         onOpenComments: { Haptics.tap(); commentsFor = clip },
                         onFollow: { follow(clip) },
                         onMore: { moreFor = clip },
+                        onShare: { sharing = clip },
                         onBack: { dismiss() }
                     )
                     .frame(width: size.width, height: size.height)
@@ -384,9 +395,23 @@ private struct ClipPlayerPage: View {
     /// "More" — Report and Block. A callback rather than a dialog raised from here: the pager
     /// owns presentation, and one raised inside a paging page dies with it on a swipe.
     let onMore: () -> Void
+    /// Share: Send in Voiid, or the link outside. Raised on the pager, like More.
+    let onShare: () -> Void
     let onBack: () -> Void
 
     @State private var muted = true
+    /// Double-tap to like: the second tap inside this window is a like, not a mute.
+    @State private var lastTapAt: Date = .distantPast
+    @State private var pendingMute: Task<Void, Never>?
+    /// A press on either side becomes a speed hold only once it has been held a moment.
+    @State private var holdTask: Task<Void, Never>?
+    /// The heart that bursts where you double-tapped.
+    @State private var burst: HeartBurst?
+
+    private struct HeartBurst: Identifiable, Equatable {
+        let id = UUID()
+        let point: CGPoint
+    }
     @State private var ready = false
     /// Non-nil while the user is holding one side of the screen (Instagram-style scrub speed).
     @State private var heldSpeed: Float?
@@ -398,16 +423,22 @@ private struct ClipPlayerPage: View {
             ZStack {
                 Color.black
 
-                if let player, ready {
+                // The cover stays underneath until the video is ready, then the video FADES
+                // in over it — no hard swap from a loading screen. Both are pinned to the page
+                // so the rail and caption never move when one replaces the other.
+                ClipVideoLoader(thumbURL: clip.thumbURL, localThumbPath: clip.localThumbPath)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .opacity(ready ? 0 : 1)
+
+                if let player {
                     // AVPlayerLayer, NOT SwiftUI's VideoPlayer: VideoPlayer always letterboxes
                     // (no way to set videoGravity) and ships player controls we then have to
                     // disable. `.resizeAspect` keeps the true aspect ratio — a portrait clip is
                     // never stretched and a landscape one is never cropped.
                     ClipPlayerLayerView(player: player)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .opacity(ready ? 1 : 0)
                         .allowsHitTesting(false)
-                } else {
-                    // Branded loader over the blurred cover frame — never a black screen.
-                    ClipVideoLoader(thumbURL: clip.thumbURL, localThumbPath: clip.localThumbPath)
                 }
 
                 scrim(pageHeight: geo.size.height)
@@ -416,37 +447,78 @@ private struct ClipPlayerPage: View {
                 if let heldSpeed {
                     speedPill(heldSpeed)
                 }
+
+                if let burst {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 96))
+                        .foregroundStyle(Color(hex: 0xF87171))
+                        .shadow(color: .black.opacity(0.35), radius: 12)
+                        .position(burst.point)
+                        .transition(.asymmetric(insertion: .scale(scale: 0.4).combined(with: .opacity),
+                                                removal: .scale(scale: 1.3).combined(with: .opacity)))
+                        .id(burst.id)
+                        .allowsHitTesting(false)
+                }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .animation(.easeOut(duration: 0.25), value: ready)
             .contentShape(Rectangle())
             // Press-and-hold the LEFT third for 0.5x, the RIGHT third for 2x; release restores
             // 1x. minimumDistance 0 makes this fire on touch-down, and the distance check in
             // onEnded is what keeps a plain tap working as the mute toggle.
+            // ONE GESTURE, THREE MEANINGS:
+            //  • hold a side third ~0.3s → 0.5x (left) or 2x (right) until release;
+            //  • double-tap anywhere → like, with a heart where you tapped (like only — a
+            //    second double-tap never takes it back, the same as everywhere people do this);
+            //  • single tap → mute toggle, after a beat, so a double-tap is not also a mute.
+            // The speed hold used to start on touch-DOWN, which made every tap on the sides
+            // a speed change and left them unable to mute or like.
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        guard heldSpeed == nil, !compact else { return }
+                        guard holdTask == nil, heldSpeed == nil, !compact else { return }
                         let third = geo.size.width / 3
                         let speed: Float?
                         if value.startLocation.x < third { speed = 0.5 }
                         else if value.startLocation.x > geo.size.width - third { speed = 2.0 }
                         else { speed = nil }
                         guard let speed else { return }
-                        heldSpeed = speed
-                        player?.rate = speed
-                        Haptics.tap()
+                        holdTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            guard !Task.isCancelled else { return }
+                            heldSpeed = speed
+                            player?.rate = speed
+                            Haptics.tap()
+                        }
                     }
                     .onEnded { value in
+                        holdTask?.cancel()
+                        holdTask = nil
                         if heldSpeed != nil {
                             heldSpeed = nil
                             // Setting rate resumes playback; only restore it if this page is
                             // still the visible one.
                             player?.rate = isActive ? 1.0 : 0.0
-                        } else if abs(value.translation.height) < 10,
-                                  abs(value.translation.width) < 10 {
-                            // A genuine tap (not a swipe that became a page change).
-                            muted.toggle()
-                            player?.isMuted = muted
-                            Haptics.tap()
+                            return
+                        }
+                        // A genuine tap (not a swipe that became a page change).
+                        guard abs(value.translation.height) < 10,
+                              abs(value.translation.width) < 10, !compact else { return }
+                        let now = Date()
+                        if now.timeIntervalSince(lastTapAt) < 0.3 {
+                            pendingMute?.cancel()
+                            pendingMute = nil
+                            lastTapAt = .distantPast
+                            doubleTapLike(at: value.location)
+                        } else {
+                            lastTapAt = now
+                            pendingMute = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                guard !Task.isCancelled else { return }
+                                muted.toggle()
+                                player?.isMuted = muted
+                                Haptics.tap()
+                            }
                         }
                     }
             )
@@ -575,10 +647,10 @@ private struct ClipPlayerPage: View {
             railButton(icon: "bubble.right", count: clip.commentCount, label: "Comments") {
                 onOpenComments()
             }
-            ShareLink(item: shareText) {
-                railIcon("paperplane", count: nil)
+            railButton(icon: "paperplane", count: nil, label: "Share") {
+                Haptics.tap()
+                onShare()
             }
-            .accessibilityLabel("Share")
             railButton(icon: "ellipsis", count: nil, label: "More") {
                 Haptics.tap()
                 onMore()
@@ -587,13 +659,6 @@ private struct ClipPlayerPage: View {
         .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
     }
 
-    /// Deliberately NOT a per-clip deep link: nothing in the app resolves one yet, and a
-    /// shared link that opens nothing is worse than no link. Same text SocialProfileView
-    /// shares, so the two cannot drift.
-    private var shareText: String {
-        let who = clip.authorHandle.map { "@\($0)" } ?? clip.authorName
-        return "Watch \(who)'s clip on VOIID — https://voiid.app"
-    }
 
     private var followChip: some View {
         Button {
@@ -611,6 +676,25 @@ private struct ClipPlayerPage: View {
         }
         .buttonStyle(SoftPressStyle())
         .transition(.opacity.combined(with: .scale))
+    }
+
+    private func doubleTapLike(at point: CGPoint) {
+        Haptics.success()
+        if !clip.likedByMe {
+            likePop = true
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.45)) { likePop = false }
+            onToggleLike()
+        }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+            burst = HeartBurst(point: point)
+        }
+        let shown = burst?.id
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            if burst?.id == shown {
+                withAnimation(.easeOut(duration: 0.25)) { burst = nil }
+            }
+        }
     }
 
     /// The heart pops on the way in. Without it a like is a silent colour swap, which on a

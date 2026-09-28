@@ -1784,6 +1784,10 @@ struct MessageBubble: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: 236, alignment: .leading).padding(8)
                     }
+                } else if message.kind == .text, let clipId = ClipLink.clipId(in: message.text) {
+                    // A clip shared from Clips: its card, not a bare link.
+                    ClipLinkCard(clipId: clipId)
+                    metaRow.padding(.top, 2)
                 } else if message.kind == .text {
                     textWithMeta
                 } else {
@@ -1794,8 +1798,8 @@ struct MessageBubble: View {
             }
             // 14/10, the reference's numbers. At 12/8 the text sat tight against the fill
             // and the bubbles read smaller-set than the design.
-            .padding(.horizontal, message.kind == .image && !message.deletedForEveryone ? 4 : 14)
-            .padding(.vertical, message.kind == .image && !message.deletedForEveryone ? 4 : 10)
+            .padding(.horizontal, isMediaLike && !message.deletedForEveryone ? 4 : 14)
+            .padding(.vertical, isMediaLike && !message.deletedForEveryone ? 4 : 10)
             // YOUR bubble is filled peacock teal; theirs is the quiet card surface. This was
             // backwards — `isMine` drew `bubbleReceived` (white) and theirs drew `surfaceCard`
             // (also white), so the two sides were nearly indistinguishable and the eye could
@@ -1813,6 +1817,11 @@ struct MessageBubble: View {
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityElement(children: message.kind == .text ? .combine : .contain)
             .accessibilityIdentifier("message.\(message.id).bubble")
+    }
+
+    /// Photos and shared clips sit close to the bubble's edge; text gets the reading margin.
+    private var isMediaLike: Bool {
+        message.kind == .image || (message.kind == .text && ClipLink.clipId(in: message.text) != nil)
     }
 
     // Measure and place with the same layout so transcript cells include the footer

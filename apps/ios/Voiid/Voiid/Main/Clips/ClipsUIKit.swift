@@ -96,6 +96,8 @@ struct ClipThumbnail: View {
     let url: String?
     /// Local file fallback for an optimistic tile whose upload has not finished.
     var localPath: String?
+    /// Fit instead of fill — the player's poster, shown at the video's own aspect.
+    var fit: Bool = false
 
     @State private var image: UIImage?
     @State private var failed = false
@@ -105,7 +107,7 @@ struct ClipThumbnail: View {
             if let image {
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: fit ? .fit : .fill)
                     .transition(.opacity)
             } else if failed {
                 // Resolved-but-broken is visually distinct from still-loading: a static
@@ -236,46 +238,65 @@ struct ClipVideoLoader: View {
     var thumbURL: String?
     var localThumbPath: String?
 
+    @State private var showSpinner = false
     @State private var spin = false
     @State private var slow = false
 
+    // ── THE COVER, NOT A LOADING SCREEN ────────────────────────────────────────────
+    // What the player shows until the first frame: the clip's cover, SHARP and at the video's
+    // own aspect (the player uses .resizeAspect), over a blurred fill of itself. The video
+    // then fades in on top of almost the same picture, so a load reads as the clip starting
+    // rather than a screen being replaced — the Voiid Ui player's "real playback replaces
+    // this and nothing else on the screen changes".
+    //
+    // EVERY LAYER IS PINNED TO THE OFFERED SIZE. A fill image with no frame reports its own,
+    // larger size, which grew the page's stack past the screen while loading — the rail was
+    // laid out against that and jumped when the video took over.
     var body: some View {
         ZStack {
             Color.black
             if thumbURL != nil || localThumbPath != nil {
                 ClipThumbnail(url: thumbURL, localPath: localThumbPath)
-                    .blur(radius: 24)
-                    .opacity(0.55)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
+                    .blur(radius: 28)
+                    .opacity(0.5)
+                ClipThumbnail(url: thumbURL, localPath: localThumbPath, fit: true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            VStack(spacing: VoiidSpacing.md) {
-                Circle()
-                    .trim(from: 0, to: 0.22)
-                    .stroke(
-                        LinearGradient(colors: [VoiidColor.primary, VoiidColor.accent],
-                                       startPoint: .top, endPoint: .bottom),
-                        style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .frame(width: 42, height: 42)
-                    .rotationEffect(.degrees(spin ? 360 : 0))
-                    .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spin)
+            // Only for a load that is actually slow: a spinner flashing up for a fast load
+            // makes it feel slower than it was.
+            if showSpinner {
+                VStack(spacing: VoiidSpacing.md) {
+                    Circle()
+                        .trim(from: 0, to: 0.22)
+                        .stroke(
+                            LinearGradient(colors: [VoiidColor.primary, VoiidColor.accent],
+                                           startPoint: .top, endPoint: .bottom),
+                            style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .frame(width: 42, height: 42)
+                        .rotationEffect(.degrees(spin ? 360 : 0))
+                        .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spin)
 
-                if slow {
-                    Text("Still loading…")
-                        .font(VoiidFont.caption)
-                        .foregroundColor(.white.opacity(0.75))
-                        .transition(.opacity)
+                    if slow {
+                        Text("Still loading…")
+                            .font(VoiidFont.caption)
+                            .foregroundColor(.white.opacity(0.75))
+                            .transition(.opacity)
+                    }
                 }
+                .transition(.opacity)
             }
         }
-        .onAppear {
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            withAnimation(.easeOut(duration: 0.2)) { showSpinner = true }
             spin = true
-            // Only admit to slowness after 3s — showing it immediately makes a fast
-            // load feel slow.
-            Task {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                withAnimation { slow = true }
-            }
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            withAnimation { slow = true }
         }
     }
 }
