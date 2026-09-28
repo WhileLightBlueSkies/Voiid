@@ -17,22 +17,24 @@ plugins {
 // anything else. A release APK would have been built against the development backend, signed and
 // shipped, and the only thing preventing that was somebody remembering to edit a constant.
 //
-// The endpoints are build configuration now. Debug keeps a working default so local development
-// is unchanged; RELEASE HAS NO DEFAULT AT ALL and fails the build if it is not supplied. The
-// production hostname is deliberately not written down here — this audit does not know it, and
-// guessing one would replace a visible misconfiguration with an invisible one.
+// The endpoints are build configuration. Debug keeps the development host so local work is
+// unchanged. RELEASE DEFAULTS TO PRODUCTION — api.voiid.app, the production server — so a
+// release built from Android Studio ("Generate Signed Bundle") needs no flags and cannot end up
+// on the dev box by omission. It used to have no default at all, because the production host
+// did not exist yet and guessing one would have hidden a misconfiguration; now it does exist.
 //
-// Supply it per build:  ./gradlew assembleRelease -PVOIID_API_BASE_URL=https://… -PVOIID_WS_URL=wss://…
-// or via the VOIID_API_BASE_URL / VOIID_WS_URL environment variables.
+// A different backend (e.g. staging) can still be supplied per build:
+//   ./gradlew bundleRelease -PVOIID_API_BASE_URL=https://… -PVOIID_WS_URL=wss://…
+// or via the VOIID_API_BASE_URL / VOIID_WS_URL environment variables. Whatever is supplied, the
+// checks below still refuse a development host.
+val productionEndpoints = mapOf(
+    "VOIID_API_BASE_URL" to "https://api.voiid.app",
+    "VOIID_WS_URL" to "wss://api.voiid.app/ws",
+)
+
 fun requireReleaseEndpoint(name: String, wsScheme: Boolean): String {
-    val value = (project.findProperty(name) as String?) ?: System.getenv(name)
-    if (value.isNullOrBlank()) {
-        throw GradleException(
-            "$name is not set. A release build must be told which backend it talks to; there is " +
-            "no default, because the only safe default would be the development host. Pass " +
-            "-P$name=… or set it in the environment."
-        )
-    }
+    val supplied = (project.findProperty(name) as String?) ?: System.getenv(name)
+    val value = if (supplied.isNullOrBlank()) productionEndpoints.getValue(name) else supplied
     // A release pointing at the dev box or a laptop is the exact failure this exists to stop,
     // and it is worth catching at build time rather than in a store review.
     val forbidden = listOf("api-dev.voiid.app", "localhost", "127.0.0.1", "10.0.2.2")

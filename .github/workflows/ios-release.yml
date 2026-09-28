@@ -1,30 +1,26 @@
-name: iOS Release (endpoint by branch)
+name: iOS Release (verify the backend a store build talks to)
 
-# Build a RELEASE iOS archive pointed at the backend that matches the branch.
-#
-# ── THE PROBLEM THIS SOLVES ─────────────────────────────────────────────────────
-# The endpoint used to be hardcoded in project.pbxproj, identically for Debug and
-# Release, at the dev host. That meant an App Store build would have shipped talking
-# to the development backend — and nobody would have noticed, because the app works
-# fine that way.
+# Archives a RELEASE build and proves, from the built app itself, which backend it talks to.
 #
 # ── THE RULE ────────────────────────────────────────────────────────────────────
-#   main                            → https://api.voiid.app      (production)
-#   everything else (0.0.2, dev, …) → https://api-dev.voiid.app  (development)
+# Release builds — TestFlight and the App Store — talk to PRODUCTION, https://api.voiid.app.
+# That is now the Release default in the project, so an archive made by hand in Xcode is right
+# without any settings. Debug builds (Xcode ▶ on a phone) stay on the dev box.
 #
-# Release.xcconfig ships BLANK on purpose, so a release built without this workflow
-# refuses to launch rather than silently defaulting to dev. See that file.
+# A Release build aimed at the dev box refuses to launch (APIClient `developmentHosts`), and
+# this workflow fails if one is ever produced. A staging server can be tested by running the
+# workflow by hand with its URL as the override.
 #
-# Android needs no equivalent: its release block already fails the build when the
-# endpoint is unset (see apps/android/app/build.gradle.kts, requireReleaseEndpoint).
+# Android enforces the same rule at build time: see requireReleaseEndpoint in
+# apps/android/app/build.gradle.kts.
 
 on:
   push:
-    branches: [main, "0.0.2", dev]
+    branches: [main, staging]
   workflow_dispatch:
     inputs:
       endpoint:
-        description: "Override the endpoint (leave blank to pick from the branch)"
+        description: "Override the backend (e.g. a staging URL). Blank = production."
         required: false
         default: ""
 
@@ -47,10 +43,8 @@ jobs:
           set -euo pipefail
           if [ -n "${{ github.event.inputs.endpoint }}" ]; then
             API="${{ github.event.inputs.endpoint }}"
-          elif [ "${{ github.ref_name }}" = "main" ]; then
-            API="https://api.voiid.app"
           else
-            API="https://api-dev.voiid.app"
+            API="https://api.voiid.app"
           fi
           WS="wss://${API#https://}/ws"
           echo "api=$API" >> "$GITHUB_OUTPUT"
@@ -83,8 +77,9 @@ jobs:
             echo "::error::Expected ${{ steps.endpoint.outputs.api }}, got $BUILT"
             exit 1
           fi
-          if [ "${{ github.ref_name }}" = "main" ] && \
-             echo "$BUILT" | grep -q "api-dev"; then
-            echo "::error::A main build is pointing at the DEV backend."
+          # Any branch: a Release build must never carry the dev host. It would refuse to
+          # launch on a phone anyway; failing here says so before anyone uploads it.
+          if echo "$BUILT" | grep -q "api-dev"; then
+            echo "::error::A Release build is pointing at the DEV backend."
             exit 1
           fi

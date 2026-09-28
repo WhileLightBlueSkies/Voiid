@@ -27,21 +27,13 @@ import Foundation
 enum APIConfig {
     /// Hosts a release must never talk to, however it was configured.
     ///
-    /// ⚠️ TEMPORARY — `api-dev.voiid.app` IS DELIBERATELY ABSENT FROM THIS LIST.
-    ///
-    /// There is one backend today, and TestFlight builds are RELEASE builds, so the guard
-    /// below would refuse to launch against the only server that exists. It is relaxed so
-    /// TestFlight can ship before the production host is stood up.
-    ///
-    /// WHAT THIS COSTS, STATED PLAINLY: TestFlight and the App Store use the SAME Release
-    /// configuration. Nothing now prevents an App Store build from talking to the
-    /// development backend, which is the exact failure this list was written to make
-    /// impossible — and the one that goes unnoticed, because the app works fine.
-    ///
-    /// RESTORE BEFORE APP STORE SUBMISSION: put "api-dev.voiid.app" back in this array and
-    /// set VOIID_API_BASE_URL / VOIID_WS_URL to the production host. Both are one-line
-    /// changes; the whole of the rest of this file already supports it.
-    private static let developmentHosts = ["localhost", "127.0.0.1"]
+    /// `api-dev.voiid.app` is back on this list. It was taken off while the development box was
+    /// the only backend, so that TestFlight — which ships Release builds — could launch at all.
+    /// The production server (`api.voiid.app`) now exists and Release points at it by default,
+    /// so a Release build aimed at the dev box is once again a misconfiguration: TestFlight and
+    /// the App Store use the same Release configuration, and a store build talking to the
+    /// development backend is the failure that goes unnoticed, because the app works fine.
+    private static let developmentHosts = ["localhost", "127.0.0.1", "api-dev.voiid.app"]
 
     /// Read an endpoint from Info.plist, or fall back in DEBUG only.
     ///
