@@ -29,6 +29,11 @@ struct BackupRecoveryView: View {
     /// An old PIN-protected copy of the key still on the server (from before S04).
     @State private var legacyPin = false
     @State private var showRetirePin = false
+    /// The V PIN as the server sees it; nil when none is set (or not yet asked).
+    @State private var vpin: VPinStatus?
+    @State private var vpinSheet: VPinSheet.Mode?
+    @State private var confirmRemoveVPin = false
+    @State private var removingVPin = false
     @State private var schedulePicker: BackupSchedulePicker.Page?
 
     // iCloud destination for the SAME encrypted blob.
@@ -81,6 +86,7 @@ struct BackupRecoveryView: View {
                         VoiidCardSection {
                             actionRow(title: "View recovery phrase", system: "key") { showPhrase = true }
                         }
+                        vpinCard
                         if legacyPin {
                             VoiidCardSection("Make your backup safer",
                                              footer: "Your backup can still be opened with an old PIN. A short PIN can be guessed; your 24-word recovery phrase can’t. Save your phrase, then remove the PIN.") {
@@ -101,7 +107,7 @@ struct BackupRecoveryView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    Text("Your messages are encrypted on this device before backup. Only your 24-word recovery phrase can restore them — VOIID can’t read your backup or recover it for you. Keep it somewhere safe.")
+                    Text("Your messages are encrypted on this device before backup. Your 24-word recovery phrase — or your V PIN, if you set one — can restore them. Voiid can’t read your backup or recover it for you, so keep your phrase somewhere safe.")
                         .font(.footnote)
                         .foregroundColor(VoiidColor.textSecondary)
                         .padding(.horizontal, 4)
@@ -125,10 +131,22 @@ struct BackupRecoveryView: View {
             }
         }
         .sheet(isPresented: $showPhrase) { RecoveryPhraseSheet() }
-        .sheet(isPresented: $showRetirePin, onDismiss: { Task { legacyPin = await manager.hasLegacyPin() } }) {
+        .sheet(isPresented: $showRetirePin, onDismiss: { Task { await refreshPin() } }) {
             RetirePinFlow { flash("Old PIN removed") }
         }
-        .task { legacyPin = await manager.hasLegacyPin() }
+        .task { await refreshPin() }
+        .sheet(item: $vpinSheet) { mode in
+            VPinSheet(mode: mode) {
+                flash(mode == .set ? "V PIN is set" : "V PIN changed")
+                Task { await refreshPin() }
+            }
+        }
+        .confirmationDialog("Remove your V PIN?", isPresented: $confirmRemoveVPin, titleVisibility: .visible) {
+            Button("Remove V PIN", role: .destructive) { removeVPin() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You’ll need your 24-word recovery phrase to restore your chats on a new phone.")
+        }
         .sheet(item: $schedulePicker) { page in
             BackupSchedulePicker(page: page, manager: manager)
         }
@@ -329,6 +347,58 @@ struct BackupRecoveryView: View {
     /// The haptic is fired HERE rather than by `VoiidSettingsRow`: the shared row plays none,
     /// so that a caller whose action has its own heavier haptic does not get a stutter of two.
     /// Every row on this screen opens a sheet, so a plain `tap` is the right one for all four.
+    // MARK: V PIN
+
+    /// Set, change or remove the V PIN — and, when it matters, its state.
+    @ViewBuilder
+    private var vpinCard: some View {
+        if let vpin {
+            VoiidCardSection("V PIN", footer: vpinFooter(vpin)) {
+                actionRow(title: "Change V PIN", system: "lock.rotation", enabled: !removingVPin) { vpinSheet = .change }
+                VoiidRowDivider()
+                actionRow(title: removingVPin ? "Removing…" : "Remove V PIN", system: "lock.slash",
+                          enabled: !removingVPin) { confirmRemoveVPin = true }
+            }
+        } else {
+            VoiidCardSection("V PIN",
+                             footer: "An 8-digit PIN to restore your chats on a new phone. After 5 wrong tries it locks for 24 hours; your recovery phrase always works.") {
+                actionRow(title: legacyPin ? "Replace old PIN with a V PIN" : "Set up V PIN",
+                          system: "lock.shield") { vpinSheet = .set }
+            }
+        }
+    }
+
+    private func vpinFooter(_ v: VPinStatus) -> String {
+        if v.isLocked, let until = v.locked_until {
+            let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
+            return "Locked after 5 wrong tries, until \(f.string(from: until)). Your recovery phrase still works. Changing the V PIN unlocks it."
+        }
+        if v.attempts_left < v.max_attempts {
+            return "On. \(v.attempts_left) of \(v.max_attempts) tries left before it locks for 24 hours — someone may have tried to guess it. Change it if you’re unsure."
+        }
+        return "On. After 5 wrong tries it locks for 24 hours. Your recovery phrase always works too."
+    }
+
+    private func refreshPin() async {
+        guard let s = await manager.pinStatus() else { return }
+        legacyPin = s.legacy
+        vpin = s.vpin
+    }
+
+    private func removeVPin() {
+        removingVPin = true
+        Task {
+            defer { removingVPin = false }
+            do {
+                try await manager.removeVPin()
+                vpin = nil
+                flash("V PIN removed")
+            } catch {
+                actionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
     private func actionRow(title: String, system: String,
                            enabled: Bool = true, action: @escaping () -> Void) -> some View {
         VoiidSettingsRow(icon: system, title: title,

@@ -123,20 +123,20 @@ fun RestoreFlow(    session: AppSession,
     val scope = rememberCoroutineScope()
 
     var step by remember { mutableStateOf(RestoreStep.UNLOCK) }
-    /** An old PIN-protected copy of the key (pre-S04). Only then is a PIN offered; every
-     *  newer backup restores with the recovery phrase alone. Null until the server answers. */
-    var legacyPin by remember { mutableStateOf<Boolean?>(null) }
+    /** Whether a PIN can open this backup — a V PIN, or an old pre-S04 one. Without either,
+     *  only the recovery phrase can. Null until the server answers. */
+    var hasPin by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(Unit) {
         // A FAILED check is not a "no". It used to default to false, so a flaky network sent
         // PIN accounts straight to the phrase page with the PIN screen gone. Retry, and if the
         // server still has not answered, keep the PIN screen: it offers the phrase too.
         var legacy: Boolean? = null
         for (attempt in 0 until 3) {
-            legacy = manager.hasLegacyPinOrNull()
+            legacy = manager.hasAnyPinOrNull()
             if (legacy != null) break
             kotlinx.coroutines.delay(800L * (attempt + 1))
         }
-        legacyPin = legacy ?: true
+        hasPin = legacy ?: true
         // Product decision (2026-09-26): the V PIN page is ALWAYS the first page after OTP,
         // even for backups sealed with the phrase alone. The check above only decides what a
         // submitted PIN does — see `noPinBackup` below.
@@ -252,6 +252,29 @@ fun RestoreFlow(    session: AppSession,
                         haptics.error()
                         step = RestoreStep.UNLOCK
                     }
+                    // V PIN — same wording as iOS RecoveryError.
+                    is BackupManager.RestoreOutcome.WrongVPin -> {
+                        // Said plainly, with the count: the person should know how close the lock is.
+                        error = if (outcome.attemptsLeft == 1) "Wrong V PIN. 1 try left before it locks for 24 hours."
+                        else "Wrong V PIN. ${outcome.attemptsLeft} tries left."
+                        haptics.error()
+                        step = RestoreStep.UNLOCK
+                    }
+                    is BackupManager.RestoreOutcome.VPinLocked -> {
+                        error = "V PIN locked after 5 wrong tries. Try again ${lockedUntilText(outcome.until)}, or use your recovery phrase now."
+                        haptics.error()
+                        step = RestoreStep.UNLOCK
+                    }
+                    is BackupManager.RestoreOutcome.VPinUnreadable -> {
+                        error = "This V PIN can no longer be used. Restore with your recovery phrase, then set a new V PIN."
+                        haptics.error()
+                        step = RestoreStep.PHRASE
+                    }
+                    is BackupManager.RestoreOutcome.VPinUnavailable -> {
+                        error = "V PIN isn't available right now. Use your recovery phrase to restore."
+                        haptics.error()
+                        step = RestoreStep.PHRASE
+                    }
                 }
             } catch (e: Exception) {
                 // Download/decrypt/import failure: reported on THIS page with stage-level
@@ -269,7 +292,7 @@ fun RestoreFlow(    session: AppSession,
     fun unlock(c: Credential) {
         // No PIN copy on the server: a PIN cannot open this backup, so say so and hand over to
         // the phrase instead of running a restore that is certain to fail.
-        if (c is Credential.Pin && legacyPin == false) {
+        if (c is Credential.Pin && hasPin == false) {
             error = noPinBackupMessage
             haptics.error()
             step = RestoreStep.PHRASE
@@ -735,6 +758,15 @@ private fun formatSize(bytes: Long): String = when {
 private fun formatUpdatedAt(raw: String?): String {
     if (raw.isNullOrBlank()) return "—"
     return raw.replace('T', ' ').substringBefore('.').substringBefore('+').trim().ifBlank { raw }
+}
+
+/** "at 9:40 pm" today, "tomorrow at 9:40 pm" otherwise; "in 24 hours" if the time is unknown. */
+private fun lockedUntilText(iso: String?): String {
+    val until = iso?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() } ?: return "in 24 hours"
+    val zone = java.time.ZoneId.systemDefault()
+    val at = until.atZone(zone)
+    val time = at.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"))
+    return if (at.toLocalDate() == java.time.LocalDate.now(zone)) "at $time" else "tomorrow at $time"
 }
 
 private fun formatRetry(seconds: Long): String = when {

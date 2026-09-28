@@ -7,6 +7,7 @@ import uniffi.voiid.generateMasterSecret
 import uniffi.voiid.masterSecretToPhrase
 import uniffi.voiid.phraseToMasterSecret
 import uniffi.voiid.unwrapMasterSecretWithPin
+import uniffi.voiid.wrapMasterSecretWithPin
 
 /**
  * High-level backup / recovery orchestration — ties the FFI crypto to the network
@@ -142,6 +143,69 @@ class BackupManager(context: Context) {
     /** Delete that copy, after the person has saved their phrase. */
     suspend fun retireLegacyPin() = recovery.deleteKey()
 
+    // MARK: - V PIN
+
+    /** Both PIN schemes as the server sees them, or null when it could not be asked. */
+    suspend fun pinStatus(): RecoveryService.PinStatus? = try {
+        recovery.status()
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+        android.util.Log.w("VPin", "recovery/status failed", e); null
+    }
+
+    /** Whether ANY PIN — a V PIN or an old one — can unlock this backup. Null = couldn't ask. */
+    suspend fun hasAnyPinOrNull(): Boolean? = pinStatus()?.let { it.legacy || it.vpin != null }
+
+    /**
+     * Set, or change, the V PIN. Port of iOS `BackupManager.setVPin`.
+     *
+     * Needs the backup key on THIS phone: the PIN locks it here with Argon2id before anything
+     * is sent. The server gets the locked key and a one-way proof ([VPinProof]) — never the
+     * PIN — and from then on counts every wrong guess itself. Changing is the same call: the
+     * new PIN replaces the old and clears any lock.
+     */
+    suspend fun setVPin(pin: String) {
+        val secret = store.loadMasterSecret()
+            ?: throw ApiError.Http(400, "Set up backup on this phone first.")
+        VPinRules.rejectionReason(pin)?.let { throw ApiError.Http(400, it) }
+        val authSalt = VPinProof.newAuthSalt()
+        // Both deliberately slow (Argon2id, PBKDF2 600k) — never on the main thread.
+        val (wrapped, proof) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            wrapMasterSecretWithPin(secret, pin) to VPinProof.proof(pin, authSalt)
+        }
+        recovery.setVPin(wrapped, authSalt, proof)
+    }
+
+    /** Remove the V PIN (or an old PIN). The recovery phrase remains the way back in. */
+    suspend fun removeVPin() = recovery.deleteKey()
+
+    /**
+     * Unlock with a V PIN: the SERVER checks the proof first, counting it (5 wrong → locked
+     * 24h), and only returns the locked key when it is right; then it is opened here.
+     */
+    private suspend fun unlockVPin(pin: String, vpin: RecoveryService.VPinStatus): Pair<ByteArray?, RestoreOutcome?> {
+        if (vpin.isLocked) return null to RestoreOutcome.VPinLocked(vpin.locked_until)
+        val authSalt = runCatching { android.util.Base64.decode(vpin.auth_salt, android.util.Base64.DEFAULT) }
+            .getOrNull() ?: return null to RestoreOutcome.VPinUnreadable
+        val proof = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { VPinProof.proof(pin, authSalt) }
+        return when (val r = recovery.unlockVPin(proof)) {
+            is RecoveryService.UnlockResult.Released -> {
+                val secret = try {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { unwrapMasterSecretWithPin(r.wrapped, pin) }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                    // The server accepted the proof, so the PIN is right — yet the key won't open.
+                    // The stored copy doesn't match; only the phrase can restore now.
+                    return null to RestoreOutcome.VPinUnreadable
+                }
+                secret to null
+            }
+            is RecoveryService.UnlockResult.Wrong -> null to RestoreOutcome.WrongVPin(r.attemptsLeft)
+            is RecoveryService.UnlockResult.Locked -> null to RestoreOutcome.VPinLocked(r.until)
+            RecoveryService.UnlockResult.NotSet -> null to RestoreOutcome.NoRecoveryKey
+            RecoveryService.UnlockResult.Unreadable -> null to RestoreOutcome.VPinUnreadable
+            RecoveryService.UnlockResult.Unavailable -> null to RestoreOutcome.VPinUnavailable
+        }
+    }
+
     // MARK: - Restore (returning user on a new device)
 
     /** GET /recovery/key state, so the restore UI can show locked/never-set up front. */
@@ -154,6 +218,13 @@ class BackupManager(context: Context) {
      */
     suspend fun restoreWithPin(pin: String, source: RestoreSource = RestoreSource.SERVER, onProgress: (Int) -> Unit = {}): RestoreOutcome {
         onProgress(0)
+        // A V PIN goes through the server check; an old-style PIN keeps its old path below.
+        recovery.status().vpin?.let { vpin ->
+            val (secret, failure) = unlockVPin(pin, vpin)
+            if (failure != null) return failure
+            applyRestore(secret!!, source, onProgress)
+            return RestoreOutcome.Success
+        }
         when (val res = recovery.getKey()) {
             is RecoveryService.KeyResult.NotSet -> return RestoreOutcome.NoRecoveryKey
             is RecoveryService.KeyResult.Locked -> return RestoreOutcome.Locked(res.retryAfterSeconds)
@@ -202,5 +273,13 @@ class BackupManager(context: Context) {
         object WrongPin : RestoreOutcome()
         object NoRecoveryKey : RestoreOutcome()
         data class Locked(val retryAfterSeconds: Long?) : RestoreOutcome()
+        /** V PIN: the server checked it and it was wrong; tries left before the 24h lock. */
+        data class WrongVPin(val attemptsLeft: Int) : RestoreOutcome()
+        /** V PIN: locked by the server after 5 wrong tries, until [until] (ISO-8601). */
+        data class VPinLocked(val until: String?) : RestoreOutcome()
+        /** V PIN: right PIN, but what the server stored can't be opened — phrase only. */
+        object VPinUnreadable : RestoreOutcome()
+        /** V PIN: the server can't protect a PIN right now. */
+        object VPinUnavailable : RestoreOutcome()
     }
 }

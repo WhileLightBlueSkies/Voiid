@@ -312,6 +312,47 @@ final class BackupManager: ObservableObject {
         (try? await recovery.hasPinWrap()) ?? false
     }
 
+    // MARK: - V PIN
+
+    /// The server's view of both PIN schemes, or nil when it could not be asked.
+    func pinStatus() async -> (legacy: Bool, vpin: VPinStatus?)? {
+        try? await recovery.status()
+    }
+
+    /// Whether ANY PIN can unlock this account's backup — a V PIN or an old one. The restore
+    /// screen asks this to decide whether to offer the PIN page at all.
+    func hasAnyPin() async -> Bool {
+        guard let s = await pinStatus() else { return false }
+        return s.legacy || s.vpin != nil
+    }
+
+    /// Set, or change, the V PIN.
+    ///
+    /// Needs the backup key on THIS phone: the PIN locks that key here, with Argon2id, before
+    /// anything is sent. The server receives the locked key and a one-way proof of the PIN
+    /// (`VPinProof`) — never the PIN — and from then on counts every wrong guess itself.
+    /// Changing it is the same call: the new PIN replaces the old one and clears any lock.
+    func setVPin(_ pin: String) async throws {
+        guard let secret = E2EManager.shared.masterSecret() else {
+            throw APIError.http(status: 400, message: "Set up backup on this phone first.")
+        }
+        guard PinRules.validNew(pin) else {
+            throw APIError.http(status: 400, message: PinRules.rejectionReason(pin) ?? "Choose a different V PIN.")
+        }
+        let authSalt = VPinProof.newAuthSalt()
+        // Both are deliberately slow (Argon2id, PBKDF2 600k), so neither runs on the main actor.
+        let (wrapped, proof) = try await Task.detached(priority: .userInitiated) {
+            (try wrapMasterSecretWithPin(secret: secret, pin: pin),
+             VPinProof.proof(pin: pin, authSalt: authSalt))
+        }.value
+        try await recovery.setVPin(wrapped: wrapped, authSalt: authSalt, proof: proof)
+    }
+
+    /// Remove the V PIN (or an old PIN). The recovery phrase remains the way back in.
+    func removeVPin() async throws {
+        try await recovery.deleteKey()
+    }
+
     /// Delete the old PIN-protected copy, after the person has saved their phrase. From then
     /// on only the 24-word phrase can restore their backup.
     func retireLegacyPin() async throws {
@@ -345,7 +386,29 @@ final class BackupManager: ObservableObject {
     }
 
     /// Authenticate before presenting backup selection; keep the key in memory only.
+    ///
+    /// A V PIN is checked BY THE SERVER first: the phone sends a proof, the server counts it
+    /// (5 wrong → locked 24h) and only hands back the locked key when it is right. Only then
+    /// is the key unlocked here with the PIN. An old-style PIN keeps its old path below.
     func unlockBackupPin(_ pin: String) async throws -> Data {
+        if let vpin = try await recovery.status().vpin {
+            if vpin.isLocked { throw RecoveryError.vpinLocked(until: vpin.locked_until) }
+            guard let authSalt = Data(base64Encoded: vpin.auth_salt) else { throw RecoveryError.vpinUnreadable }
+            let proof = await Task.detached(priority: .userInitiated) {
+                VPinProof.proof(pin: pin, authSalt: authSalt)
+            }.value
+            let wrapped = try await recovery.unlockVPin(proof: proof)
+            do {
+                return try await Task.detached(priority: .userInitiated) {
+                    try unwrapMasterSecretWithPin(wrapped: wrapped, pin: pin)
+                }.value
+            } catch {
+                // The server accepted the proof, so the PIN is right — yet the key will not
+                // open. The stored copy does not match; only the phrase can restore now.
+                throw RecoveryError.vpinUnreadable
+            }
+        }
+
         // `getKey` can throw before we ever attempt an unwrap (locked / not-set /
         // transport) — those are NOT failed PIN attempts, so don't report them.
         let wrapped = try await recovery.getKey()

@@ -56,7 +56,8 @@ struct RestoreMessagesView: View {
     @State private var step: Step = .unlock
     /// Whether this account still has an old PIN-protected copy of its key (pre-S04). Only
     /// then is a PIN offered; every newer backup restores with the recovery phrase alone.
-    @State private var legacyPin: Bool?
+    /// Whether a PIN — a V PIN or an old one — can unlock this backup. Nil while asking.
+    @State private var hasPin: Bool?
     @State private var errorText: String?
     @State private var busy = false
 
@@ -83,7 +84,7 @@ struct RestoreMessagesView: View {
             VoiidBrand.ground.ignoresSafeArea()
 
             switch step {
-            case .unlock where legacyPin == nil:
+            case .unlock where hasPin == nil:
                 ProgressView().tint(VoiidBrand.lime)
             case .unlock:    UnlockPage(meta: meta,
                                         errorText: errorText,
@@ -94,7 +95,7 @@ struct RestoreMessagesView: View {
             case .phrase:    PhrasePage(errorText: errorText,
                                         busy: busy,
                                         onSubmit: { unlock(.phrase($0)) },
-                                        onBack: legacyPin == true
+                                        onBack: hasPin == true
                                             ? { guard !busy else { return }; errorText = nil; step = .unlock }
                                             : nil,
                                         onSkip: { guard !busy else { return }; confirmSkip = true })
@@ -118,9 +119,9 @@ struct RestoreMessagesView: View {
         .interactiveDismissDisabled(true)
         .task { await loadCandidates() }
         .task {
-            let legacy = await BackupManager.shared.hasLegacyPin()
-            legacyPin = legacy
-            if !legacy, step == .unlock { step = .phrase }
+            let pin = await BackupManager.shared.hasAnyPin()
+            hasPin = pin
+            if !pin, step == .unlock { step = .phrase }
         }
     }
 
@@ -309,7 +310,8 @@ private struct UnlockPage: View {
         RestoreNoteCard(
             icon: "lock.shield",
             title: "Only you know your PIN",
-            detail: "It never leaves this device. Your backup is decrypted here, so Voiid cannot read it."
+            // Said before the first try, not after the fourth: 5 is a limit people plan around.
+            detail: "It never leaves this device, and your backup is decrypted here, so Voiid cannot read it. After 5 wrong tries it locks for 24 hours."
         )
     }
 

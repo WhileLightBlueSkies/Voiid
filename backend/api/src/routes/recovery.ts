@@ -67,10 +67,39 @@
 // e2e-core recovery.rs) — standard primitives, unchanged, and still marked pending
 // external cryptographic review there. This change removes the weak path; it does
 // not certify the strong one.
+//
+// ── THE V PIN (version 2): A PIN WHOSE GUESSES THE SERVER COUNTS ──────────────────
+//
+// The PIN is back, rebuilt so the limit is real. PUT /pin stores it; POST /pin/unlock
+// checks a proof of it and releases the envelope ONLY when the proof matches, counting
+// every wrong one server-side: 5 wrong → locked 24h. Design, crypto and threat model are
+// in ../vpin.ts. Everything above this note describes version-1 (legacy) rows.
+//
+// The two schemes share a row (096) but never each other's routes:
+//   * GET /key and POST /attempt-result touch version-1 rows ONLY. GET /key must never
+//     hand out a V PIN envelope unchecked, and attempt-result must never let a client
+//     "report success" to clear a lock the server set.
+//   * PUT /key (legacy, behind the rollout switch) writes a clean version-1 row.
 import { Router } from 'express';
-import { query } from '../db';
+import { query, withTransaction } from '../db';
 import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
+import { rateLimit } from '../security';
+import { secretboxAvailable } from '../secretbox';
+import {
+  AUTH_SALT_BYTES,
+  PROOF_BYTES,
+  VPIN_MAX_ATTEMPTS,
+  VPIN_VERSION,
+  afterWrongProof,
+  attemptsLeft,
+  decodeExact,
+  lockSecondsLeft,
+  openEnvelope,
+  proofMatches,
+  sealEnvelope,
+  verifierFor,
+} from '../vpin';
 import {
   isValidWrappedKey,
   pickWrappedKey,
@@ -117,10 +146,14 @@ router.put('/key', requireAuth, asyncHandler(async (req, res) => {
   // Persist ONLY the four known fields — never store client-supplied extras.
   const value = pickWrappedKey(wrapped);
   await query(
-    `insert into recovery_keys (user_id, wrapped_key, failed_attempts, locked_until)
-       values ($1, $2, 0, null)
+    `insert into recovery_keys (user_id, wrapped_key, failed_attempts, locked_until, pin_version)
+       values ($1, $2, 0, null, 1)
        on conflict (user_id) do update set
          wrapped_key     = excluded.wrapped_key,
+         pin_version     = 1,
+         pin_auth_salt   = null,
+         pin_verifier    = null,
+         sealed_envelope = null,
          failed_attempts = 0,
          locked_until    = null,
          fetch_count     = 0,
@@ -132,10 +165,37 @@ router.put('/key', requireAuth, asyncHandler(async (req, res) => {
 
 // GET /recovery/status — does a legacy PIN wrap exist? Answers WITHOUT returning
 // it, so it is not a fetch: the app uses it to decide whether to offer a PIN at all.
+//
+// `has_pin_wrap` keeps its original meaning — a LEGACY wrap — so an older app that reads
+// it never offers its old PIN flow for a V PIN it cannot unlock. `vpin` is the new state:
+// the salt the phone needs to compute its proof, attempts left, and any active lock.
 router.get('/status', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
-  const rows = await query(`select 1 from recovery_keys where user_id = $1`, [user_id]);
-  res.json({ has_pin_wrap: rows.length > 0 });
+  const rows = await query<{
+    pin_version: number;
+    pin_auth_salt: string | null;
+    failed_attempts: number;
+    locked_until: Date | null;
+  }>(
+    `select pin_version, pin_auth_salt, failed_attempts, locked_until
+       from recovery_keys where user_id = $1`,
+    [user_id]
+  );
+  const row = rows[0];
+  if (!row || row.pin_version !== VPIN_VERSION) {
+    return res.json({ has_pin_wrap: !!row, vpin: null });
+  }
+  const retryAfter = lockSecondsLeft(row.locked_until);
+  res.json({
+    has_pin_wrap: false,
+    vpin: {
+      auth_salt: row.pin_auth_salt,
+      max_attempts: VPIN_MAX_ATTEMPTS,
+      attempts_left: retryAfter === null ? attemptsLeft({ failedAttempts: row.failed_attempts, lockedUntil: null }) : 0,
+      locked_until: retryAfter === null ? null : row.locked_until,
+      retry_after: retryAfter,
+    },
+  });
 }));
 
 // DELETE /recovery/key — remove the caller's legacy PIN wrap. Called once the person
@@ -170,12 +230,12 @@ router.get('/key', requireAuth, asyncHandler(async (req, res) => {
             last_fetched_at = case
               when last_fetched_at is null or last_fetched_at <= now() - ($3 * interval '1 second') or fetch_count < $2
               then now() else last_fetched_at end
-      where user_id = $1
+      where user_id = $1 and pin_version = 1
       returning wrapped_key, locked_until, fetch_count, last_fetched_at`,
     [user_id, FETCH_LIMIT, FETCH_COOLDOWN_SECONDS]
   );
   const row = rows[0];
-  if (!row) return res.status(404).json({ error: 'no recovery key found' });
+  if (!row) return notLegacy(user_id, res);
 
   const retryAfter = lockRetryAfter(row.locked_until);
   if (retryAfter !== null) {
@@ -219,10 +279,10 @@ router.post('/attempt-result', requireAuth, asyncHandler(async (req, res) => {
     const state = applySuccess();
     const rows = await query<{ user_id: string }>(
       `update recovery_keys set failed_attempts = 0, locked_until = null
-        where user_id = $1 returning user_id`,
+        where user_id = $1 and pin_version = 1 returning user_id`,
       [user_id]
     );
-    if (!rows[0]) return res.status(404).json({ error: 'no recovery key found' });
+    if (!rows[0]) return notLegacy(user_id, res);
     return res.json({ failed_attempts: state.failed_attempts, locked_until: state.locked_until });
   }
 
@@ -236,16 +296,17 @@ router.post('/attempt-result', requireAuth, asyncHandler(async (req, res) => {
   // lock, and the lock schedule is computed from the value the database produced.
   const rows = await query<{ failed_attempts: number }>(
     `update recovery_keys set failed_attempts = failed_attempts + 1
-      where user_id = $1 returning failed_attempts`,
+      where user_id = $1 and pin_version = 1 returning failed_attempts`,
     [user_id]
   );
-  if (!rows[0]) return res.status(404).json({ error: 'no recovery key found' });
+  if (!rows[0]) return notLegacy(user_id, res);
 
   // applyFailure takes the PREVIOUS count and adds one, so hand it the value before
   // this increment; the database has already applied the +1.
   const state = applyFailure(rows[0].failed_attempts - 1);
   await query(
-    `update recovery_keys set locked_until = greatest(locked_until, $2::timestamptz) where user_id = $1`,
+    `update recovery_keys set locked_until = greatest(locked_until, $2::timestamptz)
+      where user_id = $1 and pin_version = 1`,
     [user_id, state.locked_until]
   );
   if (state.retry_after != null) res.setHeader('Retry-After', String(state.retry_after));
@@ -255,5 +316,152 @@ router.post('/attempt-result', requireAuth, asyncHandler(async (req, res) => {
     retry_after: state.retry_after,
   });
 }));
+
+/**
+ * A legacy route reached for a row that is not legacy. A V PIN answers 409 with a code the
+ * apps recognise, so an outdated app says "update to use your V PIN" instead of "not set";
+ * no row at all stays 404 as before.
+ */
+async function notLegacy(userId: string, res: any) {
+  const rows = await query(`select 1 from recovery_keys where user_id = $1 and pin_version = $2`,
+    [userId, VPIN_VERSION]);
+  if (rows.length) {
+    return res.status(409).json({ error: 'This account uses a V PIN. Update Voiid to use it.', code: 'vpin_required' });
+  }
+  return res.status(404).json({ error: 'no recovery key found' });
+}
+
+// ── V PIN ─────────────────────────────────────────────────────────────────────────
+
+// PUT /recovery/pin { wrapped_key: {version,salt,nonce,ciphertext}, auth_salt, proof }
+//
+// Store (or replace) the caller's V PIN. The envelope is the backup key already locked on
+// the phone with the PIN (e2e-core wrap_with_pin); `proof` is the phone's PBKDF2 of the
+// PIN over `auth_salt`. The server keeps HMAC(proof) and the envelope sealed again — never
+// the proof itself. Replacing a PIN clears any lock: the new envelope is a new secret, and
+// a stolen token that "resets" the lock this way destroys the very envelope it wanted.
+router.put('/pin', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  if (!secretboxAvailable()) {
+    // Without the server key there is no verifier key and no sealing. Refuse loudly
+    // rather than store a PIN that a database copy alone could attack.
+    return res.status(503).json({ error: 'V PIN is not available on this server.', code: 'vpin_unavailable' });
+  }
+  const wrapped = req.body?.wrapped_key;
+  const salt = decodeExact(req.body?.auth_salt, AUTH_SALT_BYTES);
+  const proof = decodeExact(req.body?.proof, PROOF_BYTES);
+  if (!isValidWrappedKey(wrapped) || !salt || !proof) {
+    return res.status(400).json({
+      error: `expected { wrapped_key: {version,salt,nonce,ciphertext}, auth_salt: ${AUTH_SALT_BYTES} bytes base64, proof: ${PROOF_BYTES} bytes base64 }`,
+    });
+  }
+  await query(
+    `insert into recovery_keys
+       (user_id, wrapped_key, pin_version, pin_auth_salt, pin_verifier, sealed_envelope,
+        failed_attempts, locked_until)
+     values ($1, null, $2, $3, $4, $5, 0, null)
+     on conflict (user_id) do update set
+       wrapped_key     = null,
+       pin_version     = excluded.pin_version,
+       pin_auth_salt   = excluded.pin_auth_salt,
+       pin_verifier    = excluded.pin_verifier,
+       sealed_envelope = excluded.sealed_envelope,
+       failed_attempts = 0,
+       locked_until    = null,
+       fetch_count     = 0,
+       last_fetched_at = null`,
+    [user_id, VPIN_VERSION, salt.toString('base64'), verifierFor(proof),
+     sealEnvelope(user_id, pickWrappedKey(wrapped))]
+  );
+  res.json({ stored: true, max_attempts: VPIN_MAX_ATTEMPTS });
+}));
+
+// POST /recovery/pin/unlock { proof } → { wrapped_key } | 401 wrong | 429 locked
+//
+// THE LIMIT. One transaction holding the row lock, so two parallel guesses cannot both
+// read "4 wrong" and both get a free fifth. Order matters:
+//   1. locked?  → refuse, even if this proof is right. Checking the proof first would make
+//                 the lock a delay rather than a limit.
+//   2. wrong?   → count it; the 5th wrong locks for 24h.
+//   3. right    → reset the counter and release the envelope.
+// A malformed proof is refused without counting — it is a broken client, not a guess.
+// Its own tight rate limit on top of the router's, keyed by user.
+router.post('/pin/unlock', requireAuth,
+  rateLimit({ max: 10, windowSeconds: 60, bucket: 'vpin-unlock' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const proof = decodeExact(req.body?.proof, PROOF_BYTES);
+    if (!proof) return res.status(400).json({ error: `proof must be ${PROOF_BYTES} bytes base64` });
+    if (!secretboxAvailable()) {
+      return res.status(503).json({ error: 'V PIN is not available on this server.', code: 'vpin_unavailable' });
+    }
+
+    const outcome = await withTransaction(async (execute) => {
+      const rows = await execute<{
+        pin_version: number;
+        pin_verifier: string | null;
+        sealed_envelope: string | null;
+        failed_attempts: number;
+        locked_until: Date | null;
+      }>(
+        `select pin_version, pin_verifier, sealed_envelope, failed_attempts, locked_until
+           from recovery_keys where user_id = $1 for update`,
+        [user_id]
+      );
+      const row = rows[0];
+      if (!row) return { kind: 'none' as const };
+      if (row.pin_version !== VPIN_VERSION || !row.pin_verifier) return { kind: 'legacy' as const };
+
+      const locked = lockSecondsLeft(row.locked_until);
+      if (locked !== null) return { kind: 'locked' as const, lockedUntil: row.locked_until!, retryAfter: locked };
+
+      if (!proofMatches(proof, row.pin_verifier)) {
+        const next = afterWrongProof({ failedAttempts: row.failed_attempts, lockedUntil: null });
+        await execute(
+          `update recovery_keys set failed_attempts = $2, locked_until = $3 where user_id = $1`,
+          [user_id, next.failedAttempts, next.lockedUntil]
+        );
+        if (next.lockedUntil) {
+          return { kind: 'locked' as const, lockedUntil: next.lockedUntil,
+                   retryAfter: lockSecondsLeft(next.lockedUntil) ?? 0, justLocked: true };
+        }
+        return { kind: 'wrong' as const, attemptsLeft: attemptsLeft(next) };
+      }
+
+      await execute(
+        `update recovery_keys set failed_attempts = 0, locked_until = null where user_id = $1`,
+        [user_id]
+      );
+      return { kind: 'ok' as const, envelope: openEnvelope(user_id, row.sealed_envelope) };
+    });
+
+    switch (outcome.kind) {
+      case 'none':
+        return res.status(404).json({ error: 'No V PIN is set for this account.', code: 'vpin_not_set' });
+      case 'legacy':
+        return res.status(409).json({ error: 'This account uses the older PIN.', code: 'vpin_legacy' });
+      case 'locked':
+        res.setHeader('Retry-After', String(outcome.retryAfter));
+        return res.status(429).json({
+          error: 'Too many wrong V PINs. Try again later, or use your recovery phrase.',
+          code: 'vpin_locked',
+          locked_until: outcome.lockedUntil,
+          retry_after: outcome.retryAfter,
+          just_locked: 'justLocked' in outcome ? outcome.justLocked : false,
+        });
+      case 'wrong':
+        return res.status(401).json({ error: 'Wrong V PIN.', code: 'vpin_wrong', attempts_left: outcome.attemptsLeft });
+      case 'ok':
+        // The right PIN, but the sealed envelope will not open: the server key changed
+        // since it was stored. The PIN cannot be used; the phrase still can.
+        if (!outcome.envelope) {
+          return res.status(409).json({
+            error: 'Your V PIN can no longer be used. Restore with your recovery phrase, then set a new V PIN.',
+            code: 'vpin_unreadable',
+          });
+        }
+        return res.json({ wrapped_key: outcome.envelope });
+    }
+  }));
 
 export default router;

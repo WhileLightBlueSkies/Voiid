@@ -66,7 +66,7 @@ import kotlinx.coroutines.launch
  * state gates the home / setup / view-phrase / change-PIN sub-screens, mirroring how
  * MainScreen/ChatsHomeView gate children with a remembered flag + conditional composable.
  */
-private enum class Screen { HOME, SETUP, VIEW_PHRASE, RETIRE_PIN }
+private enum class Screen { HOME, SETUP, VIEW_PHRASE, RETIRE_PIN, SET_VPIN, CHANGE_VPIN }
 
 @Composable
 fun BackupRecoveryScreen(onBack: () -> Unit) {
@@ -125,7 +125,35 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) { reloadMeta() }
     // An old PIN-protected copy of the key on the server (pre-S04): offer to remove it.
     var legacyPin by remember { mutableStateOf(false) }
-    LaunchedEffect(screen) { if (screen == Screen.HOME) legacyPin = manager.hasLegacyPin() }
+    // The V PIN as the server sees it; null when none is set.
+    var vpin by remember { mutableStateOf<com.voiid.app.net.RecoveryService.VPinStatus?>(null) }
+    var confirmRemoveVPin by remember { mutableStateOf(false) }
+    var removingVPin by remember { mutableStateOf(false) }
+    LaunchedEffect(screen) {
+        if (screen == Screen.HOME) manager.pinStatus()?.let { legacyPin = it.legacy; vpin = it.vpin }
+    }
+    if (confirmRemoveVPin) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmRemoveVPin = false },
+            title = { Text("Remove your V PIN?") },
+            text = { Text("You'll need your 24-word recovery phrase to restore your chats on a new phone.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    confirmRemoveVPin = false
+                    removingVPin = true
+                    scope.launch {
+                        runCatching { manager.removeVPin() }
+                            .onSuccess { vpin = null; flash("V PIN removed") }
+                            .onFailure { actionError = it.message ?: "Couldn't remove the V PIN. Try again." }
+                        removingVPin = false
+                    }
+                }) { Text("Remove V PIN", color = VoiidColor.error) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmRemoveVPin = false }) { Text("Cancel") }
+            },
+        )
+    }
 
     // Re-consent flow (GoogleAuthUtil may need a second grant), then finish enabling.
     val recoveryLauncher = rememberLauncherForActivityResult(
@@ -205,6 +233,11 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
             onViewPhrase = { screen = Screen.VIEW_PHRASE },
             legacyPin = legacyPin,
             onRetirePin = { screen = Screen.RETIRE_PIN },
+            vpin = vpin,
+            removingVPin = removingVPin,
+            onSetVPin = { screen = Screen.SET_VPIN },
+            onChangeVPin = { screen = Screen.CHANGE_VPIN },
+            onRemoveVPin = { confirmRemoveVPin = true },
         )
         Screen.SETUP -> BackupSetupFlow(
             manager = manager,
@@ -214,6 +247,12 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
         Screen.VIEW_PHRASE -> ViewPhraseScreen(
             manager = manager,
             onBack = { screen = Screen.HOME },
+        )
+        Screen.SET_VPIN, Screen.CHANGE_VPIN -> VPinSetupScreen(
+            manager = manager,
+            changing = screen == Screen.CHANGE_VPIN,
+            onBack = { screen = Screen.HOME },
+            onDone = { changed -> screen = Screen.HOME; flash(if (changed) "V PIN changed" else "V PIN is set") },
         )
         Screen.RETIRE_PIN -> RetirePinScreen(
             manager = manager,
@@ -249,6 +288,11 @@ private fun BackupHome(
     onViewPhrase: () -> Unit,
     legacyPin: Boolean,
     onRetirePin: () -> Unit,
+    vpin: com.voiid.app.net.RecoveryService.VPinStatus?,
+    removingVPin: Boolean,
+    onSetVPin: () -> Unit,
+    onChangeVPin: () -> Unit,
+    onRemoveVPin: () -> Unit,
 ) {
     val latestBackup = listOfNotNull(meta, driveMeta?.let {
         BackupService.BackupMeta(size_bytes = it.sizeBytes, updated_at = it.modifiedTime)
@@ -335,6 +379,7 @@ private fun BackupHome(
             }
             Spacer(Modifier.height(12.dp))
             BackupSecondaryButton("View recovery phrase", onClick = onViewPhrase)
+            VPinSection(vpin, legacyPin, removingVPin, onSetVPin, onChangeVPin, onRemoveVPin)
             if (legacyPin) {
                 Spacer(Modifier.height(16.dp))
                 Text(
@@ -348,6 +393,132 @@ private fun BackupHome(
 
 
         }
+    }
+}
+
+// MARK: - V PIN
+
+/** Set, change or remove the V PIN — and, when it matters, its state. Port of iOS `vpinCard`. */
+@Composable
+private fun VPinSection(
+    vpin: com.voiid.app.net.RecoveryService.VPinStatus?,
+    legacyPin: Boolean,
+    removing: Boolean,
+    onSet: () -> Unit,
+    onChange: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Spacer(Modifier.height(20.dp))
+    Text("V PIN", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+    Spacer(Modifier.height(6.dp))
+    Text(
+        when {
+            vpin == null -> "An 8-digit PIN to restore your chats on a new phone. After 5 wrong tries it locks for 24 hours; your recovery phrase always works."
+            vpin.isLocked -> "Locked after 5 wrong tries${vpin.locked_until?.let { " until ${lockTime(it)}" } ?: ""}. Your recovery phrase still works. Changing the V PIN unlocks it."
+            vpin.attempts_left < vpin.max_attempts -> "On. ${vpin.attempts_left} of ${vpin.max_attempts} tries left before it locks for 24 hours — someone may have tried to guess it. Change it if you're unsure."
+            else -> "On. After 5 wrong tries it locks for 24 hours. Your recovery phrase always works too."
+        },
+        style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+    )
+    Spacer(Modifier.height(10.dp))
+    if (vpin == null) {
+        BackupSecondaryButton(if (legacyPin) "Replace old PIN with a V PIN" else "Set up V PIN", onClick = onSet)
+    } else {
+        BackupSecondaryButton("Change V PIN", onClick = onChange)
+        Spacer(Modifier.height(10.dp))
+        BackupSecondaryButton(if (removing) "Removing…" else "Remove V PIN", onClick = { if (!removing) onRemove() })
+    }
+}
+
+private fun lockTime(iso: String): String = runCatching {
+    java.time.Instant.parse(iso).atZone(java.time.ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("d MMM, h:mm a"))
+}.getOrDefault("24 hours from the last try")
+
+/**
+ * Choose a V PIN, type it again, save. Port of iOS `VPinSheet`: the three facts come first —
+ * it never leaves the phone, 5 wrong tries lock it for 24 hours, the phrase always works —
+ * because the limit is a rule people plan around when choosing.
+ */
+@Composable
+private fun VPinSetupScreen(manager: BackupManager, changing: Boolean, onBack: () -> Unit, onDone: (changed: Boolean) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
+    var confirming by remember { mutableStateOf(false) }
+    var first by remember { mutableStateOf("") }
+    var second by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    if (!confirming) {
+        PinEntryScreen(
+            title = if (changing) "Choose a new V PIN" else "Choose a V PIN",
+            subtitle = "8 digits to restore your chats on a new phone — quicker than your recovery phrase.",
+            value = first,
+            onValueChange = { first = it; error = null },
+            error = error,
+            busy = false,
+            cta = "Continue",
+            ctaEnabled = first.length == VOIID_PIN_LENGTH,
+            onBack = onBack,
+            onSubmit = {
+                // Refused before typing it twice: a common PIN is among the first an attacker
+                // would spend their 5 guesses on.
+                val reason = com.voiid.app.net.VPinRules.rejectionReason(first)
+                if (reason != null) { error = reason; haptics.error() } else { confirming = true }
+            },
+            footer = { VPinFacts() },
+        )
+    } else {
+        PinEntryScreen(
+            title = "Type it again",
+            subtitle = "So a typo doesn't lock you out of your own backup.",
+            value = second,
+            onValueChange = { second = it; error = null },
+            error = error,
+            busy = busy,
+            cta = if (busy) "Securing…" else "Save V PIN",
+            ctaEnabled = second.length == VOIID_PIN_LENGTH && !busy,
+            onBack = { if (!busy) { confirming = false; second = ""; error = null } },
+            onSubmit = {
+                if (second != first) {
+                    error = "Those didn't match. Try again."; second = ""; haptics.error()
+                    return@PinEntryScreen
+                }
+                busy = true
+                scope.launch {
+                    try {
+                        manager.setVPin(first)
+                        haptics.success()
+                        onDone(changing)
+                    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                        error = e.message ?: "Couldn't save your V PIN. Try again."
+                        haptics.error()
+                    }
+                    busy = false
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun VPinFacts() {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(VoiidColor.surfaceCard).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        VPinFact("It never leaves this phone", "Voiid gets a one-way proof of it, never the PIN itself.")
+        VPinFact("5 wrong tries lock it for 24 hours", "Voiid's server counts every try, so nobody can keep guessing.")
+        VPinFact("Your recovery phrase always works", "Even while the V PIN is locked.")
+    }
+}
+
+@Composable
+private fun VPinFact(title: String, detail: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, style = VoiidFont.rounded(14.5f, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        Text(detail, style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary)
     }
 }
 
