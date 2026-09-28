@@ -1,0 +1,223 @@
+/* =============================================================================
+ * The room the phone sits in.
+ *
+ * Deliberately quiet: a guide column on the left, the device in the middle, and
+ * nothing that competes with the interface the visitor came to try. All of the
+ * navigation is inside the phone — this file must never grow a menu.
+ * ========================================================================== */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(2, 10, 8, 0.72);
+  backdrop-filter: blur(20px);
+  animation: overlayIn var(--dur-base) var(--ease-out) both;
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 78rem);
+  height: min(100%, 54rem);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: clamp(1.25rem, 2.4vw, 2rem);
+  background: var(--color-background);
+  color: var(--color-text);
+  box-shadow: 0 40px 100px rgba(0, 0, 0, 0.5);
+  animation: dialogIn var(--dur-base) var(--ease-spring) both;
+}
+
+@keyframes overlayIn { from { opacity: 0; } }
+@keyframes dialogIn { from { opacity: 0; transform: translateY(1.5%) scale(0.98); } }
+
+/* ---- Top bar -------------------------------------------------------------- */
+.topbar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 1rem;
+  flex: none;
+  height: 4rem;
+  padding-inline: 0.85rem;
+  border-block-end: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.close,
+.reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 44px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+.close { width: 44px; }
+.reset { justify-self: end; padding-inline: 1rem; }
+
+.brand { display: grid; justify-items: center; line-height: 1.1; }
+.wordmark { font-weight: var(--weight-black); letter-spacing: -0.05em; }
+.brand span:last-child { color: var(--color-text-dim); font-size: var(--text-micro); }
+
+/* ---- Workspace ------------------------------------------------------------ */
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(16rem, 21rem) 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+.guide {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  overflow-y: auto;
+  padding: 1.6rem 1.4rem;
+  border-inline-end: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.guideEyebrow {
+  color: var(--color-text-mute);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.guideTitle { font-size: var(--text-h3); letter-spacing: var(--tracking-h3); }
+.guideBody { color: var(--color-text-dim); font-size: var(--text-small); line-height: var(--leading-body); }
+
+.guideLabel {
+  margin-block-start: 0.6rem;
+  color: var(--color-text-mute);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.guideTries { display: grid; gap: 0.5rem; }
+.guideTries button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 44px;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  text-align: start;
+  cursor: pointer;
+}
+.guideTries svg { flex: none; color: var(--color-primary-ink); }
+
+.guideFoot {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-block-start: auto;
+  padding-block-start: 1.25rem;
+  color: var(--color-text-mute);
+  font-size: var(--text-micro);
+  line-height: 1.5;
+}
+.guideFoot svg { flex: none; margin-block-start: 0.1rem; color: var(--color-primary-ink); }
+
+/* ---- Stage ---------------------------------------------------------------- *
+ * The device is sized from the AVAILABLE HEIGHT, not from the viewport width: a
+ * tour on a laptop is height-constrained, and a phone that overflows its stage is
+ * the fastest way to make the whole thing feel broken. 0.483 is the body aspect
+ * ratio from PhoneFrame, so this reads as "as wide as the tallest phone that
+ * fits". */
+.stage {
+ /* NOTE: every term must be a real LENGTH. A percentage here would leak into
+  * PhoneFrame's `calc(var(--phone-w) * 0.042)` bezel and radii, where a
+  * percentage resolves against a different box and silently deforms the phone. */
+  --tour-phone-w: min(23rem, 100cqw - 3rem, (100cqh - 4.5rem) * 0.483);
+
+  container-type: size;
+  position: relative;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 1.25rem;
+  min-height: 0;
+  padding: 1.5rem;
+  background:
+    radial-gradient(60% 45% at 50% 0%, var(--color-accent-quiet), transparent 70%),
+    var(--color-surface-2);
+}
+
+.device { flex: none; }
+
+/* The guide panel already names the screen in type; repeating it under the phone
+ * was noise. It stays in the DOM as a live region so a screen-reader user is told
+ * when navigation moves, which is the one audience that cannot see the move. */
+.stageHint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .close:hover, .reset:hover { background: var(--color-surface-3); }
+  .guideTries button:hover { border-color: var(--color-primary); background: var(--color-accent-quiet); }
+}
+
+/* ---- Narrow ---------------------------------------------------------------
+ * On a phone the guide becomes a strip UNDER the device rather than a column
+ * beside it, and the device gets the whole stage. The "try this" buttons stay:
+ * they are the only discoverability aid, and they cost one row. */
+@media (max-width: 860px) {
+  .overlay { padding: 0; }
+  .dialog { width: 100%; height: 100%; border: 0; border-radius: 0; }
+  .workspace { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  .guide {
+    grid-row: 2;
+    gap: 0.5rem;
+    padding: 0.9rem 1rem 1.1rem;
+    border-inline-end: 0;
+    border-block-start: 1px solid var(--color-divider);
+  }
+  .guideEyebrow, .guideLabel, .guideFoot { display: none; }
+  .guideTitle { font-size: var(--text-body); }
+  .guideBody {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    font-size: var(--text-caption);
+  }
+  .guideTries { grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; }
+  .guideTries button { white-space: nowrap; }
+  .stage { padding: 0.75rem; --tour-phone-w: min(21rem, 100cqw - 1.5rem, (100cqh - 2rem) * 0.483); }
+  .stageHint { display: none; }
+  .reset span { display: none; }
+  .reset { width: 44px; padding: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay, .dialog { animation-name: overlayIn; transform: none; }
+}

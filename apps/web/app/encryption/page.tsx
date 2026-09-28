@@ -10,13 +10,14 @@ import { Button, ButtonRow } from '../../components/Button';
 import { Glyph, type GlyphName } from '../../components/Glyph';
 import { LockMotif } from '../../components/LockMotif';
 import styles from './page.module.css';
+import { buildPageMetadata } from '../../lib/metadata';
 
-export const metadata: Metadata = {
+export const metadata: Metadata = buildPageMetadata({
   title: 'Encryption — what we use and what we built',
   description:
-    'Every cryptographic primitive Voiid relies on, named: the vetted libraries we did ' +
-    'not invent, and the parts we wrote ourselves. Written so it can be checked.',
-};
+    'Explore the standards and vetted cryptographic libraries behind Voiid messages, groups, calls, media and account recovery, with honest implementation limits.',
+  path: '/encryption/',
+});
 
 /*
  * EVERY ROW IS CHECKED AGAINST packages/e2e-core (Cargo.toml deps + SECURITY.md).
