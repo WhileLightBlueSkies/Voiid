@@ -72,6 +72,26 @@ struct CallMetrics: Encodable {
     let avg_packet_loss_pct: Double?
     let jitter_ms: Double?
     let platform: String
+    /// The first ~30s after media connected, point by point — see `CallTimelinePoint`.
+    let early_timeline: [CallTimelinePoint]?
+}
+
+/// One point from the first seconds of a call. Timings and loss only, never identity.
+///
+/// Answers the question the averages could not: when a call is laggy for its first 20
+/// seconds, is the delay in the NETWORK (`rtt`) or in this phone's own PLAYOUT BUFFER
+/// (`buf`)? The server keeps exactly these five numbers (backend callMetrics.ts).
+struct CallTimelinePoint: Encodable {
+    /// Seconds since media connected.
+    let t: Int
+    /// Network round trip, ms.
+    let rtt: Double?
+    /// How long received audio waited in this phone's playout buffer, ms.
+    let buf: Double?
+    /// % of the other side's media this phone lost.
+    let loss: Double?
+    /// % of this phone's media the other side lost.
+    let up: Double?
 }
 
 /// One parsed getStats sample.
@@ -87,6 +107,14 @@ struct CallStatsSample {
     /// "host" / "srflx" / "prflx" / "relay" — the local end of the selected pair.
     var candidatePairType: String?
     var relayed: Bool { candidatePairType == "relay" }
+    /// How much of the media THIS phone sent the other side never received, as the other
+    /// side reports it back over RTCP (remote-inbound-rtp `fractionLost`). The one reading
+    /// that points at this phone's own uplink rather than the other person's — which is
+    /// what decides whether "Your network is weak" is true for the person seeing it.
+    var uplinkLossPct: Double?
+    /// How long received audio waited in the playout buffer over the last interval, ms.
+    /// High here with a low `rttMs` means the delay is inside this phone, not the network.
+    var playoutBufferMs: Double?
 }
 
 @MainActor
@@ -141,6 +169,8 @@ final class CallStatsCollector {
         lastBytesSent = nil
         lastPacketsLost = nil
         lastPacketsReceived = nil
+        lastJbDelaySec = nil
+        lastJbEmitted = nil
         lastSampleAt = nil
     }
 
@@ -221,6 +251,10 @@ final class CallStatsCollector {
                 raw.packetsReceived += received
             }
             if kind == "audio" {
+                // Cumulative: total seconds samples spent in the jitter buffer, and how many
+                // samples left it. Their deltas give the buffer delay for the interval.
+                if let d = (s.values["jitterBufferDelay"] as? NSNumber)?.doubleValue { raw.jbDelaySec += d }
+                if let n = (s.values["jitterBufferEmittedCount"] as? NSNumber)?.doubleValue { raw.jbEmitted += n }
                 if let jitter = (s.values["jitter"] as? NSNumber)?.doubleValue {
                     // Reported in seconds by the spec.
                     raw.jitterMs = (raw.jitterMs ?? 0) + jitter * 1000.0
@@ -246,15 +280,22 @@ final class CallStatsCollector {
             }
         }
 
-        // 4. Fall back to the remote-inbound report for RTT if the pair had none.
-        if raw.rttMs == nil {
-            for (_, s) in stats where s.type == "remote-inbound-rtp" {
-                if let rtt = (s.values["roundTripTime"] as? NSNumber)?.doubleValue {
-                    raw.rttMs = rtt * 1000.0
-                    break
-                }
+        // 4. The remote-inbound report: the OTHER side's view of what we sent. Its RTT is the
+        //    fallback when the pair had none; its fractionLost is our uplink loss. Audio's is
+        //    preferred — it is the stream the call cannot do without, and video loss runs
+        //    higher by design (it backs off), so it would cry wolf.
+        var audioUplink: Double?, anyUplink: Double?
+        for (_, s) in stats where s.type == "remote-inbound-rtp" {
+            if raw.rttMs == nil, let rtt = (s.values["roundTripTime"] as? NSNumber)?.doubleValue {
+                raw.rttMs = rtt * 1000.0
+            }
+            if let lost = (s.values["fractionLost"] as? NSNumber)?.doubleValue {
+                let pct = max(0, min(1, lost)) * 100.0
+                if (s.values["kind"] as? String) == "audio" { audioUplink = max(audioUplink ?? 0, pct) }
+                anyUplink = max(anyUplink ?? 0, pct)
             }
         }
+        raw.uplinkLossPct = audioUplink ?? anyUplink
 
         return raw
     }
@@ -262,6 +303,9 @@ final class CallStatsCollector {
     /// Cumulative counters straight off a stats report.
     struct RawStats {
         var rttMs: Double?
+        var uplinkLossPct: Double?
+        var jbDelaySec: Double = 0
+        var jbEmitted: Double = 0
         var jitterMs: Double?
         var jitterSamples = 0
         var audioLevel: Double?
@@ -284,6 +328,7 @@ final class CallStatsCollector {
         sample.jitterMs = raw.jitterSamples > 0 ? (raw.jitterMs ?? 0) / Double(raw.jitterSamples) : nil
         sample.audioLevel = raw.audioLevel
         sample.candidatePairType = raw.candidatePairType
+        sample.uplinkLossPct = raw.uplinkLossPct
         sample.framesDecoded = raw.framesDecoded
         sample.freezeCount = raw.freezeCount
 
@@ -296,6 +341,12 @@ final class CallStatsCollector {
                 }
                 if let prev = lastBytesSent, raw.bytesSent >= prev {
                     sample.outboundBitrateKbps = Double(raw.bytesSent - prev) * 8.0 / elapsed / 1000.0
+                }
+            }
+            if let prevDelay = lastJbDelaySec, let prevEmitted = lastJbEmitted {
+                let dEmitted = raw.jbEmitted - prevEmitted
+                if dEmitted > 0 {
+                    sample.playoutBufferMs = max(0, raw.jbDelaySec - prevDelay) / dEmitted * 1000.0
                 }
             }
             // Interval loss %, not lifetime — a bad patch shouldn't be diluted
@@ -312,7 +363,10 @@ final class CallStatsCollector {
         lastBytesSent = raw.bytesSent
         lastPacketsLost = raw.packetsLost
         lastPacketsReceived = raw.packetsReceived
+        lastJbDelaySec = raw.jbDelaySec
+        lastJbEmitted = raw.jbEmitted
         lastSampleAt = now
+        recordTimelinePoint(sample, at: now)
 
         // Accumulate for the end-of-call aggregate.
         if let rtt = sample.rttMs { rttSum += rtt; rttCount += 1 }
@@ -322,7 +376,46 @@ final class CallStatsCollector {
 
         latest = sample
         quality = Self.quality(for: sample)
+        updateOwnNetwork(sample)
         onUpdate?(quality, sample)
+    }
+
+    // MARK: - The first seconds
+
+    private var lastJbDelaySec: Double?
+    private var lastJbEmitted: Double?
+    /// When media first connected; the timeline counts from here. Nil until then.
+    private var mediaConnectedAt: Date?
+    private(set) var timeline: [CallTimelinePoint] = []
+    /// Up to ~30s, at most 12 points — the server's cap.
+    private static let timelineSeconds = 31.0
+    private static let timelineMaxPoints = 12
+
+    /// Called once, when media first flows. Later calls (a reconnect) do not move the start.
+    func markMediaConnected(at date: Date = Date()) {
+        if mediaConnectedAt == nil { mediaConnectedAt = date }
+    }
+
+    private func recordTimelinePoint(_ s: CallStatsSample, at now: Date) {
+        guard let start = mediaConnectedAt, timeline.count < Self.timelineMaxPoints else { return }
+        let elapsed = now.timeIntervalSince(start)
+        guard elapsed >= 0, elapsed <= Self.timelineSeconds else { return }
+        timeline.append(CallTimelinePoint(
+            t: Int(elapsed.rounded()),
+            rtt: Self.round2(s.rttMs), buf: Self.round2(s.playoutBufferMs),
+            loss: Self.round2(s.packetLossPct), up: Self.round2(s.uplinkLossPct)))
+    }
+
+    // MARK: - "Your network is weak"
+
+    /// Whether THIS phone's connection is the weak one — shown only to its own user. The rule
+    /// and the no-flicker hold live in CallNetworkVerdict.swift, where they are tested.
+    private var weakTracker = WeakNetworkTracker()
+    var ownNetworkWeak: Bool { weakTracker.isWeak }
+
+    private func updateOwnNetwork(_ sample: CallStatsSample) {
+        weakTracker.record(CallNetworkVerdict.ownSideLooksWeak(
+            uplinkLossPct: sample.uplinkLossPct, downlinkLossPct: sample.packetLossPct, rttMs: sample.rttMs))
     }
 
     /// Loss dominates perceived quality on voice; RTT matters for interactivity.
@@ -366,7 +459,8 @@ final class CallStatsCollector {
             avg_rtt_ms: Self.round2(avgRttMs),
             avg_packet_loss_pct: Self.round2(avgPacketLossPct),
             jitter_ms: Self.round2(avgJitterMs),
-            platform: "ios"
+            platform: "ios",
+            early_timeline: timeline.isEmpty ? nil : timeline
         )
     }
 
@@ -375,6 +469,9 @@ final class CallStatsCollector {
         stop()
         latest = nil
         quality = .unknown
+        weakTracker.reset()
+        mediaConnectedAt = nil
+        timeline = []
         rttSum = 0; rttCount = 0
         lossSum = 0; lossCount = 0
         jitterSum = 0; jitterCount = 0

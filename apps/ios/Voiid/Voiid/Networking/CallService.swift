@@ -99,6 +99,9 @@ final class CallService: NSObject, ObservableObject {
     /// Live connection quality derived from packet loss + RTT. The call UI can
     /// show a weak-connection indicator off this without knowing about stats.
     @Published private(set) var quality: CallQuality = .unknown
+    /// THIS phone's connection is the weak one — shown only to this person, as "Your network
+    /// is weak". Held against flicker; see CallNetworkVerdict.swift.
+    @Published private(set) var isOwnNetworkWeak = false
     /// True while we're re-gathering ICE after a network change. The UI can show
     /// "Reconnecting…" — the call is NOT over and media may still be flowing.
     @Published private(set) var isReconnecting = false
@@ -556,6 +559,7 @@ final class CallService: NSObject, ObservableObject {
             guard let self else { return }
             self.quality = quality
             self.latestStats = sample
+            if self.isOwnNetworkWeak != self.stats.ownNetworkWeak { self.isOwnNetworkWeak = self.stats.ownNetworkWeak }
             if self.isReconnecting || self.restartInFlight { self.reconcileRecoveredConnection() }
             #if DEBUG
             let rtc = LKRTCAudioSession.sharedInstance()
@@ -936,6 +940,7 @@ final class CallService: NSObject, ObservableObject {
     private func beginCallTelemetry(startedAt: Date = Date()) {
         stats.reset()
         quality = .unknown
+        isOwnNetworkWeak = false
         latestStats = nil
         callStartedAt = startedAt
         callConnectedAt = nil
@@ -2360,6 +2365,18 @@ final class CallService: NSObject, ObservableObject {
         config.continualGatheringPolicy = .gatherContinually
         config.bundlePolicy = .maxBundle
         config.rtcpMuxPolicy = .require
+        // ── THE FIRST-20-SECONDS DELAY ──────────────────────────────────────────────
+        // Audio starts arriving the moment the call connects, but CallKit activates the
+        // audio session a beat later (didActivate, CallManager), and WebRTC's audio stays
+        // off until then (useManualAudio). Nothing plays in that gap, so received audio
+        // queues in the jitter buffer — by default up to 200 packets, about 4 seconds.
+        // Playback then starts seconds behind, and the default drain speeds playout up by
+        // only a few percent, so the lag took ~15–20s to fade: "connects, laggy, then fine".
+        //   * Cap the buffer at 50 packets (~1s) so the backlog can never grow large.
+        //   * Fast accelerate, so what does build up is drained in a second or two.
+        // Android sets the same two values (CallService.kt rtcConfig).
+        config.audioJitterBufferMaxPackets = 50
+        config.audioJitterBufferFastAccelerate = true
 
         let constraints = LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         pc = Self.factory.peerConnection(with: config, constraints: constraints, delegate: self)
@@ -2456,6 +2473,7 @@ final class CallService: NSObject, ObservableObject {
         // artefact this whole path exists to avoid.
         CallToneService.shared.stopRingback()
         if callConnectedAt == nil { callConnectedAt = Date() }
+        stats.markMediaConnected()
         everConnected = true
         LocalStore.recordCall(id: call.id, conversationId: call.conversationId,
                               peerUserId: call.peerUserId, kind: call.isVideo ? "video" : "voice",

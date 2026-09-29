@@ -590,8 +590,9 @@ router.post('/metrics', requireAuth, asyncHandler(async (req, res) => {
   await query(
     `insert into call_metrics (
        dedupe_hash, bucket_hour, platform, connected, relayed, end_reason,
-       setup_ms, duration_ms, ice_restarts, avg_rtt_ms, avg_packet_loss_pct, jitter_ms)
-     values ($1, date_trunc('hour', now()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       setup_ms, duration_ms, ice_restarts, avg_rtt_ms, avg_packet_loss_pct, jitter_ms,
+       early_timeline)
+     values ($1, date_trunc('hour', now()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
      on conflict (dedupe_hash) do nothing`,
     [
       dedupeHash(result.call_id),
@@ -605,6 +606,7 @@ router.post('/metrics', requireAuth, asyncHandler(async (req, res) => {
       m.avg_rtt_ms ?? null,
       m.avg_packet_loss_pct ?? null,
       m.jitter_ms ?? null,
+      m.early_timeline ? JSON.stringify(m.early_timeline) : null,
     ]
   );
 

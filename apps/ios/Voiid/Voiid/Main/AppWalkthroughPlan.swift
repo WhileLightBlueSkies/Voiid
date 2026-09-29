@@ -26,8 +26,13 @@ struct AppWalkthroughStep: Identifiable, Equatable {
 
 enum AppWalkthroughPlan {
     static let version = 3
-    /// Preview mode for 0.0.3. Change this back after the walkthrough is approved.
-    static let presentationMode: WalkthroughPresentationMode = .everyAppLaunch
+    /// Once per account per install: the first time the app is opened after installing it,
+    /// and the first time a different person signs in. Finishing or skipping it is remembered
+    /// (per account, per `version`), so killing and reopening the app never brings it back.
+    /// Replay stays available from Settings. Bump `version` to show a revised tour again.
+    ///
+    /// `.everyAppLaunch` was a preview mode for 0.0.3 review and must not ship.
+    static let presentationMode: WalkthroughPresentationMode = .firstIncompleteVersion
 
     static func shouldPresent(completedVersion: Int) -> Bool {
         presentationMode == .everyAppLaunch || completedVersion < version

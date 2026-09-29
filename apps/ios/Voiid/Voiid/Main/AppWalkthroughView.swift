@@ -16,7 +16,10 @@ final class AppWalkthroughController: ObservableObject {
 
     private let defaults: UserDefaults
     private var accountID = "local"
-    private var evaluatedInitialPresentation = false
+    /// The account the "should the tour show?" question was last answered for. Per ACCOUNT,
+    /// not once per launch: a Bool here meant that when someone signed out and a different
+    /// person signed in without killing the app, the new person never got their first tour.
+    private var evaluatedAccountID: String?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -29,9 +32,11 @@ final class AppWalkthroughController: ObservableObject {
     var isLastStep: Bool { currentIndex == stepCount - 1 }
 
     func presentIfNeeded(accountID: String?) {
-        guard !evaluatedInitialPresentation else { return }
-        evaluatedInitialPresentation = true
-        self.accountID = accountID?.isEmpty == false ? accountID! : "local"
+        let account = accountID?.isEmpty == false ? accountID! : "local"
+        guard evaluatedAccountID != account else { return }
+        evaluatedAccountID = account
+        isPresented = false
+        self.accountID = account
         guard AppWalkthroughPlan.shouldPresent(completedVersion: defaults.integer(forKey: completionKey)) else { return }
         if AppWalkthroughPlan.presentationMode == .firstIncompleteVersion {
             currentIndex = min(max(defaults.integer(forKey: progressKey), 0), stepCount - 1)

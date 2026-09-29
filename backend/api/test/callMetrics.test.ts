@@ -268,3 +268,35 @@ test('summary window clamps to [1,720] with a 24h default', () => {
   assert.equal(clampWindowHours(-5), 1);
   assert.equal(clampWindowHours(100000), 720);
 });
+
+// ── early_timeline ────────────────────────────────────────────────────────────────
+import { normalizeTimeline, TIMELINE_MAX_POINTS } from '../src/callMetrics';
+
+test('early_timeline keeps only the five known numbers per point', () => {
+  const out = normalizeTimeline([
+    { t: 3, rtt: 120.456, buf: 3900, loss: 2, up: 0.5, ip: '10.0.0.1', name: 'Nehal' },
+  ])!;
+  assert.deepEqual(out, [{ t: 3, rtt: 120.46, buf: 3900, loss: 2, up: 0.5 }]);
+  assert.ok(!JSON.stringify(out).includes('10.0.0.1'), 'an address must never be stored');
+});
+
+test('early_timeline is capped, clamped, and drops malformed points', () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({ t: i * 3, rtt: 50 }));
+  assert.equal(normalizeTimeline(many)!.length, TIMELINE_MAX_POINTS);
+  assert.deepEqual(normalizeTimeline([{ t: 3, rtt: 99_999, loss: 500, up: -4 }]),
+    [{ t: 3, rtt: 10_000, loss: 100, up: 0 }]);
+  assert.equal(normalizeTimeline([{ rtt: 50 }, 'x', null, [1]]), undefined, 'no t, not an object');
+  assert.equal(normalizeTimeline('not-an-array'), undefined);
+});
+
+test('early_timeline passes through normalizeCallMetrics', () => {
+  const r = normalizeCallMetrics({
+    call_id: '00000000-0000-4000-8000-000000000001', connected: true, relayed: false,
+    platform: 'ios', end_reason: 'hangup', early_timeline: [{ t: 3, buf: 2500 }],
+  });
+  assert.ok(r.ok);
+  if (r.ok) {
+    assert.deepEqual(r.value.early_timeline, [{ t: 3, buf: 2500 }]);
+    assert.ok(!r.dropped.includes('early_timeline'));
+  }
+});
