@@ -26,6 +26,7 @@ export const METRIC_KEYS = [
   'avg_packet_loss_pct',
   'jitter_ms',
   'platform',
+  'early_timeline',
 ] as const;
 
 /**
@@ -66,6 +67,41 @@ export const LIMITS = {
   jitter_ms: { min: 0, max: 10_000 },
 } as const;
 
+/**
+ * THE FIRST SECONDS OF A CALL, point by point.
+ *
+ * The averages above cannot tell "the first 20 seconds were bad, then fine" from "mediocre
+ * throughout", and they cannot tell WHERE the delay was: in the network (round trip) or in
+ * the phone's own playout buffer. This can — a handful of samples from the first ~30s after
+ * media connects, each carrying only timings and loss:
+ *   t     seconds since media connected
+ *   rtt   network round trip, ms
+ *   buf   how long received audio waited in this phone's playout buffer, ms
+ *   loss  % of the other side's media this phone lost
+ *   up    % of this phone's media the other side lost
+ * Numbers only, built key-by-key like the rest of the row: nothing identifying can ride in.
+ */
+export const TIMELINE_MAX_POINTS = 12;
+export interface TimelinePoint { t: number; rtt?: number; buf?: number; loss?: number; up?: number }
+
+export function normalizeTimeline(v: unknown): TimelinePoint[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: TimelinePoint[] = [];
+  for (const raw of v.slice(0, TIMELINE_MAX_POINTS)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const r = raw as Record<string, unknown>;
+    const t = clampInt(r.t, 0, 120);
+    if (t === undefined) continue;
+    const point: TimelinePoint = { t };
+    const rtt = clampNum(r.rtt, 0, 10_000); if (rtt !== undefined) point.rtt = rtt;
+    const buf = clampNum(r.buf, 0, 10_000); if (buf !== undefined) point.buf = buf;
+    const loss = clampNum(r.loss, 0, 100); if (loss !== undefined) point.loss = loss;
+    const up = clampNum(r.up, 0, 100); if (up !== undefined) point.up = up;
+    out.push(point);
+  }
+  return out.length ? out : undefined;
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Clamp to an integer inside [min,max]; undefined for absent/non-finite input. */
@@ -96,6 +132,7 @@ export interface CallMetrics {
   avg_rtt_ms?: number;
   avg_packet_loss_pct?: number;
   jitter_ms?: number;
+  early_timeline?: TimelinePoint[];
 }
 
 export type NormalizeResult =
@@ -157,6 +194,8 @@ export function normalizeCallMetrics(body: unknown): NormalizeResult {
   if (loss !== undefined) value.avg_packet_loss_pct = loss;
   const jitter_ms = clampNum(b.jitter_ms, LIMITS.jitter_ms.min, LIMITS.jitter_ms.max);
   if (jitter_ms !== undefined) value.jitter_ms = jitter_ms;
+  const early_timeline = normalizeTimeline(b.early_timeline);
+  if (early_timeline) value.early_timeline = early_timeline;
 
   return { ok: true, value, dropped, call_id: b.call_id };
 }

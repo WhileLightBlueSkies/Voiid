@@ -38,6 +38,12 @@ data class CallStatsSnapshot(
     /** "host" / "srflx" / "prflx" / "relay" — the local end of the selected candidate pair. */
     val candidatePairType: String? = null,
     val relayed: Boolean = false,
+    /** % of the media THIS phone sent that the other side lost (their RTCP report). */
+    val uplinkLossPct: Double? = null,
+    /** How long received audio waited in the playout buffer over the last interval, ms. */
+    val playoutBufferMs: Double? = null,
+    /** THIS phone's network is the weak one — "Your network is weak", shown only here. */
+    val ownNetworkWeak: Boolean = false,
 )
 
 /**
@@ -97,6 +103,30 @@ class CallMetricsCollector(
         if (connectedAtMs == null) connectedAtMs = System.currentTimeMillis()
     }
 
+    // ---- "Your network is weak" and the first seconds ----------------------------
+    // Same rule and hold as iOS (CallNetworkVerdict / WeakNetworkTracker), same timeline.
+
+    private val weakTracker = WeakNetworkTracker()
+    private var lastJbDelaySec: Double? = null
+    private var lastJbEmitted: Double? = null
+    /** Up to 12 points from the first ~30s after media connected — see iOS CallTimelinePoint. */
+    private val timeline = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+    private fun recordTimelinePoint(rtt: Double?, bufMs: Double?, lossPct: Double, uplink: Double?) {
+        val start = connectedAtMs ?: return
+        if (timeline.size >= 12) return
+        val elapsed = (System.currentTimeMillis() - start) / 1000.0
+        if (elapsed < 0 || elapsed > 31.0) return
+        val parts = mutableListOf("\"t\":${Math.round(elapsed)}")
+        rtt?.let { parts += "\"rtt\":${round2(it)}" }
+        bufMs?.let { parts += "\"buf\":${round2(it)}" }
+        parts += "\"loss\":${round2(lossPct)}"
+        uplink?.let { parts += "\"up\":${round2(it)}" }
+        timeline += parts.joinToString(",", "{", "}")
+    }
+
+    private fun round2(v: Double): Double = if (v.isFinite()) Math.round(v * 100.0) / 100.0 else 0.0
+
     /** Begin sampling. Safe to call more than once. */
     fun start(pcProvider: () -> PeerConnection?) {
         if (task != null) return
@@ -140,10 +170,20 @@ class CallMetricsCollector(
         var freezeCount = 0L
         var audioLevel = 0.0
         var rtt: Double? = null
+        var jbDelaySec = 0.0
+        var jbEmitted = 0.0
+        var audioUplink: Double? = null
+        var anyUplink: Double? = null
 
         for (s in stats) {
             when (s.type) {
                 "inbound-rtp" -> {
+                    if (str(s, "kind") == "audio") {
+                        // Cumulative seconds in the jitter buffer / samples that left it; the
+                        // deltas below give the interval's playout-buffer delay.
+                        num(s, "jitterBufferDelay")?.let { jbDelaySec += it }
+                        num(s, "jitterBufferEmittedCount")?.let { jbEmitted += it }
+                    }
                     packetsLost += num(s, "packetsLost")?.toLong() ?: 0L
                     packetsReceived += num(s, "packetsReceived")?.toLong() ?: 0L
                     bytesIn += num(s, "bytesReceived")?.toLong() ?: 0L
@@ -154,8 +194,14 @@ class CallMetricsCollector(
                 }
                 "outbound-rtp" -> bytesOut += num(s, "bytesSent")?.toLong() ?: 0L
                 "remote-inbound-rtp" -> {
-                    // The peer's view of our stream: the most trustworthy RTT we get.
+                    // The peer's view of our stream: the most trustworthy RTT we get, and our
+                    // UPLINK loss. Audio's is preferred — video loss runs higher by design.
                     num(s, "roundTripTime")?.let { rtt = it * 1000.0 }
+                    num(s, "fractionLost")?.let { f ->
+                        val pct = f.coerceIn(0.0, 1.0) * 100.0
+                        if (str(s, "kind") == "audio") audioUplink = maxOf(audioUplink ?: 0.0, pct)
+                        anyUplink = maxOf(anyUplink ?: 0.0, pct)
+                    }
                 }
                 "media-source" -> num(s, "audioLevel")?.let { if (it > audioLevel) audioLevel = it }
             }
@@ -195,6 +241,20 @@ class CallMetricsCollector(
 
         val jitterMs = if (jitterCount > 0) (jitter / jitterCount) * 1000.0 else 0.0
 
+        val uplinkLoss = audioUplink ?: anyUplink
+        val bufMs = run {
+            val pd = lastJbDelaySec; val pe = lastJbEmitted
+            val dEmitted = if (pe != null) jbEmitted - pe else 0.0
+            lastJbDelaySec = jbDelaySec; lastJbEmitted = jbEmitted
+            if (pd != null && dEmitted > 0) (jbDelaySec - pd).coerceAtLeast(0.0) / dEmitted * 1000.0 else null
+        }
+        weakTracker.record(CallNetworkVerdict.ownSideLooksWeak(
+            uplinkLossPct = uplinkLoss,
+            downlinkLossPct = if (dLost + dRecv > 0) lossPct else null,
+            rttMs = rtt,
+        ))
+        recordTimelinePoint(rtt, bufMs, lossPct, uplinkLoss)
+
         rtt?.let { rttSum += it; rttSamples++ }
         if (jitterCount > 0) { jitterSum += jitterMs; jitterSamples++ }
         if (dLost + dRecv > 0) { lossPctSum += lossPct; lossSamples++ }
@@ -211,6 +271,9 @@ class CallMetricsCollector(
             audioLevel = audioLevel,
             candidatePairType = pairType,
             relayed = everRelayed,
+            uplinkLossPct = uplinkLoss,
+            playoutBufferMs = bufMs,
+            ownNetworkWeak = weakTracker.isWeak,
         )
     }
 
@@ -266,6 +329,8 @@ class CallMetricsCollector(
             append(",\"avg_packet_loss_pct\":").append(round1(avgLoss))
             append(",\"jitter_ms\":").append(round1(avgJitter))
             append(",\"platform\":\"android\"")
+            val points = synchronized(timeline) { timeline.toList() }
+            if (points.isNotEmpty()) append(",\"early_timeline\":").append(points.joinToString(",", "[", "]"))
             append("}")
         }
     }

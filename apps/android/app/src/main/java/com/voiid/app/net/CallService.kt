@@ -1755,6 +1755,13 @@ object CallManager {
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+            // THE FIRST-20-SECONDS DELAY. Audio arrives the moment the call connects, before
+            // playout is running, and queues in the jitter buffer — by default up to 200
+            // packets (~4s). Playback then starts seconds behind and the default drain only
+            // speeds up by a few percent, so the lag took ~15–20s to fade. Cap the buffer at
+            // ~1s and drain what builds up fast. Same values as iOS CallService.swift.
+            audioJitterBufferMaxPackets = 50
+            audioJitterBufferFastAccelerate = true
         }
 
     private fun createPeerConnection(iceServers: List<PeerConnection.IceServer>, callId: String): PeerConnection? {

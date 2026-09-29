@@ -1,5 +1,8 @@
 package com.voiid.app.main
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -415,6 +418,13 @@ private fun InCallUi(state: CallManager.CallState) {
     // participant — see ConferenceViews.kt for why it is deliberately spare.
     val conferenceState by ConferenceManager.state.collectAsState()
     val conference = conferenceState?.takeIf { it.callId == state.callId && it.stage != ConferenceManager.Stage.ENDED }
+    // "Your network is weak" — only ever about THIS phone's connection (see CallNetworkVerdict),
+    // so the other person is not told about something they cannot fix. Mirrors iOS.
+    val quality by CallManager.quality.collectAsState()
+    val showsWeakNetwork = conference == null &&
+        state.phase == CallManager.Phase.CONNECTED &&
+        !state.reconnecting &&
+        quality.ownNetworkWeak
 
     val reduceMotion = reduceMotionEnabled()
     // Live timer derived from the real connection time.
@@ -543,6 +553,15 @@ private fun InCallUi(state: CallManager.CallState) {
                         fontFeatureSettings = "tnum",
                     ),
                     color = statusColor,
+                )
+            }
+
+            AnimatedVisibility(visible = showsWeakNetwork, enter = fadeIn(), exit = fadeOut()) {
+                Text(
+                    "Your network is weak",
+                    style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                    color = VoiidColor.warning,
+                    modifier = Modifier.padding(top = 6.dp),
                 )
             }
 

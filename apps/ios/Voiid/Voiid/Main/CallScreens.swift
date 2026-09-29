@@ -322,10 +322,14 @@ struct CallScreen: View {
                         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
                                    value: statusText)
                     if isReconnecting { reconnectingBadge }
+                    // Only on THIS person's screen, about THEIR network — "Reconnecting…"
+                    // already says more when the call has actually dropped.
+                    else if showsWeakNetwork { weakNetworkBadge }
                     else if isRealOneToOne, call.isOnHold || call.peerOnHold { holdBadge }
                     if isRealOneToOne, liveState == .connecting || isConnected { keyingBadge }
                 }
                 .animation(.easeInOut(duration: 0.2), value: isReconnecting)
+                .animation(.easeInOut(duration: 0.25), value: showsWeakNetwork)
 
                 Spacer()
                 // Center content: avatar (voice) or video grid/self
@@ -405,6 +409,28 @@ struct CallScreen: View {
         .background(request.kind == .video ? Color.white.opacity(0.18) : VoiidColor.surfaceCard)
         .clipShape(Capsule())
         .accessibilityLabel("Reconnecting")
+        .transition(.opacity)
+    }
+
+    /// "Your network is weak" — this phone's connection, judged by CallNetworkVerdict and held
+    /// against flicker (shown after ~6s weak, cleared after ~9s good). Connected calls only.
+    private var showsWeakNetwork: Bool {
+        isRealOneToOne && liveState == .connected && call.isOwnNetworkWeak
+    }
+
+    private var weakNetworkBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 11, weight: .semibold))
+            Text("Your network is weak")
+                .font(VoiidFont.rounded(11, .medium))
+        }
+        .foregroundColor(request.kind == .video ? .white : VoiidColor.warning)
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.vertical, 4)
+        .background(request.kind == .video ? Color.black.opacity(0.35) : VoiidColor.warning.opacity(0.14))
+        .clipShape(Capsule())
+        .accessibilityLabel("Your network is weak")
         .transition(.opacity)
     }
 
