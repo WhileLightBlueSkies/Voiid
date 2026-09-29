@@ -62,7 +62,7 @@ android {
         applicationId = "in.voiid.app"
         minSdk = 24          // Android 7.0+ — broad device coverage (older-OS fallbacks below)
         targetSdk = 36
-        versionCode = 2
+        versionCode = 3
         versionName = "0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

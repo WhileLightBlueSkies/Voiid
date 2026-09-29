@@ -19,8 +19,16 @@ data class AppWalkthroughStep(
 
 object AppWalkthroughPlan {
     const val VERSION = 3
-    /** Preview mode for 0.0.3. Change this back after the walkthrough is approved. */
-    val presentationMode = WalkthroughPresentationMode.EVERY_APP_LAUNCH
+    /**
+     * Once per account per install: the first time the app is opened after installing it,
+     * and the first time a different person signs in (the state is keyed by account — see
+     * rememberAppWalkthroughState). Finishing or skipping is remembered, so killing and
+     * reopening the app never brings it back. Replay stays in Settings; bump [VERSION] to
+     * show a revised tour again. Port of iOS AppWalkthroughPlan.
+     *
+     * EVERY_APP_LAUNCH was a preview mode for 0.0.3 review and must not ship.
+     */
+    val presentationMode = WalkthroughPresentationMode.FIRST_INCOMPLETE_VERSION
 
     fun shouldPresent(completedVersion: Int): Boolean =
         presentationMode == WalkthroughPresentationMode.EVERY_APP_LAUNCH || completedVersion < VERSION
