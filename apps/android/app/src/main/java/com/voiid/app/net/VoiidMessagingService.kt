@@ -227,6 +227,13 @@ class VoiidMessagingService : FirebaseMessagingService() {
                     Notifier.postMessage(ctx, conversationId, messageId, title = null, body = null)
                 }
             }
+            // SEND "DELIVERED" BEFORE RETURNING. Decrypting queued the receipt; once this
+            // returns, Android may freeze the process with the POST still in flight and the
+            // sender sits on one tick until the app is opened. After the notification, so a
+            // slow network never delays the banner; bounded, and anything unsent stays queued.
+            withTimeoutOrNull(8_000L) {
+                runCatching { ChatEngine.get(ctx).flushPendingDelivered() }
+            }
         }
     }
 
