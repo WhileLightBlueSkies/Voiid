@@ -881,8 +881,16 @@ router.patch('/:id', requireAuth, rateLimit({ max: 240, windowSeconds: 60, bucke
 // ─────────────────────────────────────────────────────────────────────────────────
 // DELETE /clips/:id -> 204
 //
-// Soft delete (the row survives so counters and open comment lists do not
-// cascade-vanish from other users' feeds mid-scroll), then best-effort R2 cleanup.
+// A FULL DELETE. The clip row goes, and with it (ON DELETE CASCADE, 022/048) every like, view,
+// comment and highlight-shelf entry; then the video in every rendition and the thumbnail go
+// from R2. It used to be a soft delete that stamped `deleted_at` and kept the row — caption,
+// length, dimensions, size, storage keys, author, engagement — for a clip the author had asked
+// to be gone. Deleting something should delete it.
+//
+// THE ONE EXCEPTION: a clip OUR MODERATORS already took down (`removed_at`). India's IT Rules
+// (3(1)(g)) require content removed on actual knowledge to be preserved for 180 days for
+// investigation, and an author deleting it would otherwise destroy exactly that. It stays
+// hidden (it already is) and is not purged; the author sees it gone either way.
 //
 // NOT A SECURITY OPERATION, and the confirm dialog must say so: anyone who already
 // watched or downloaded the video keeps it. Clips were never encrypted (see header).
@@ -895,8 +903,9 @@ router.delete('/:id', requireAuth, rateLimit({ max: 240, windowSeconds: 60, buck
   const rows = await query<{
     author_id: string; r2_key: string; thumb_r2_key: string;
     r2_key_sd: string | null; r2_key_hd: string | null; r2_key_fhd: string | null;
+    removed_at: string | null;
   }>(
-    `select author_id, r2_key, thumb_r2_key, r2_key_sd, r2_key_hd, r2_key_fhd
+    `select author_id, r2_key, thumb_r2_key, r2_key_sd, r2_key_hd, r2_key_fhd, removed_at
        from clips where id = $1 and deleted_at is null`,
     [clipId]
   );
@@ -905,12 +914,18 @@ router.delete('/:id', requireAuth, rateLimit({ max: 240, windowSeconds: 60, buck
     return res.status(403).json({ error: 'not the author of this clip' });
   }
 
-  await query(`update clips set deleted_at = now() where id = $1`, [clipId]);
+  if (rows[0].removed_at) {
+    // Moderation hold: hidden from the author too, kept (row AND media) for the retention window.
+    await query(`update clips set deleted_at = now() where id = $1`, [clipId]);
+    return res.status(204).end();
+  }
+
+  await query(`delete from clips where id = $1`, [clipId]);
 
   // Best-effort, and EVERY rendition — deleting only the baseline would leave up to
-  // three orphaned videos per clip paying storage forever. If R2 is unreachable we
-  // still soft-delete: the user asked for the clip to be gone, and the bucket
-  // lifecycle rule on `media/clips/` is the net.
+  // three orphaned videos per clip paying storage forever. If R2 is unreachable the row is
+  // still gone: the user asked for the clip to be gone, and the bucket lifecycle rule on
+  // `media/clips/` is the net for the files.
   if (r2Configured()) {
     const keys = [
       rows[0].r2_key, rows[0].thumb_r2_key,
