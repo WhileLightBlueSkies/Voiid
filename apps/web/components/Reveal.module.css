@@ -21,3 +21,7 @@
     transition: none;
   }
 }
+
+/* In a grid row the wrapper stretches to the tallest card; let the card fill it so
+ * every card in the row ends at the same line. */
+.reveal > :only-child { height: 100%; }
