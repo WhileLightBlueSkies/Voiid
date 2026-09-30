@@ -26,6 +26,12 @@ export function TabIcon({ tab, filled }: { tab: TabId; filled: boolean }) {
           <path fill={fill} d="M18.5 2.5l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6zM18 16.5l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z" />
         </svg>
       );
+    case 'calls':
+      return (
+        <svg {...common}>
+          <path fill={fill} d="M6.6 3.5h-2A1.6 1.6 0 003 5.2C3.4 13.4 10.6 20.6 18.8 21a1.6 1.6 0 001.7-1.6v-2a1.2 1.2 0 00-.9-1.2l-3.3-.9a1.2 1.2 0 00-1.2.3l-1.4 1.4a13.2 13.2 0 01-5.7-5.7l1.4-1.4a1.2 1.2 0 00.3-1.2l-.9-3.3a1.2 1.2 0 00-1.2-.9z" />
+        </svg>
+      );
     case 'chats':
       return (
         <svg {...common}>

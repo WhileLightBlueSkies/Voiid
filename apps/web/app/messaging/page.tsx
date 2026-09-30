@@ -110,7 +110,7 @@ export default function MessagingPage() {
       <Section hue="chat" eyebrow="Groups" title="Groups that stay encrypted as they grow">
         <Split
           aside={
-            <PagePhone path={['chats', 'group_convo']} label="A Voiid group chat, interactive" size="md" tilt="right" />
+            <PagePhone path={['groups', 'group_convo']} label="A Voiid group chat, interactive" size="md" tilt="right" />
           }
         >
           <div className={styles.proseFlow}>

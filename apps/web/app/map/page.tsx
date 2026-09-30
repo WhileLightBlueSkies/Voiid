@@ -6,6 +6,7 @@ import { Section, Grid } from '../../components/Section';
 import { FeatureCard } from '../../components/FeatureCard';
 import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
+import heroStyles from '../../components/Hero.module.css';
 import { CTA } from '../../components/CTA';
 import { PhoneMockup } from '../../components/PhoneMockup';
 
@@ -41,7 +42,12 @@ export default function MapPage() {
             feature is born in.
           </>
         }
-        badges={<E2EEBadge state="e2ee" detail="Positions and live shares" />}
+        badges={
+          <>
+            <span className={heroStyles.soon}>Coming soon</span>
+            <E2EEBadge state="e2ee" detail="Positions and live shares" />
+          </>
+        }
         aside={
           <PagePhone path={['map']} label="The Voiid friends map, interactive" caption="Live preview · tap a friend" />
         }

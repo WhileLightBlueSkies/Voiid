@@ -3,6 +3,11 @@
   padding-block: var(--section-gap);
 }
 
+/* Two plain bands in a row share one gap, not two stacked paddings. */
+.section:not(.raised):not(.inset) + .section:not(.raised):not(.inset) {
+  padding-block-start: 0;
+}
+
 .flush-top { padding-block-start: 0; }
 .flush-bottom { padding-block-end: 0; }
 .flush-both { padding-block: 0; }
@@ -51,7 +56,7 @@
   max-width: 62ch;
   /* The single most-felt spacing value on the page: how much air a section
    * header gets before its content. The old --space-xl (48px) crowded them. */
-  margin-block-end: clamp(var(--space-xl), 4vw, var(--space-2xl));
+  margin-block-end: clamp(var(--space-lg), 3vw, var(--space-xl));
 }
 
 
@@ -124,7 +129,7 @@
 @media (min-width: 900px) {
   .split {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: var(--space-3xl);
+    gap: var(--space-2xl);
   }
   /* Visual order only — the DOM order (copy first) is what a screen reader and a
    * keyboard follow, and that stays correct. */

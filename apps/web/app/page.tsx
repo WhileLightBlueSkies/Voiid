@@ -64,10 +64,6 @@ export default function HomePage() {
 
         <div className={styles.heroInner}>
           <div className={styles.heroCopy}>
-            <p className={styles.eyebrow}>
-              <span className={styles.eyebrowDot} aria-hidden="true" />
-              Built in India · for the world
-            </p>
             <h1 id="hero-title" className={styles.heroTitle}>
               <span className={styles.line}>Everything you share.</span>
               <span className={`${styles.line} ${styles.shine}`}>Nothing we can read.</span>

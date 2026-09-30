@@ -13,11 +13,15 @@
  * rendered size.
  */
 
-export type TabId = 'ai' | 'chats' | 'moments' | 'communities' | 'map' | 'games' | 'clips';
+export type TabId = 'ai' | 'calls' | 'chats' | 'moments' | 'communities' | 'map' | 'games' | 'clips';
 
 export type ScreenId =
   | 'chats'
+  | 'groups'
+  | 'calls'
   | 'convo'
+  | 'call'
+  | 'video_call'
   | 'group_convo'
   | 'group_call'
   | 'group_video'
@@ -29,7 +33,10 @@ export type ScreenId =
   | 'map'
   | 'ai'
   | 'ai_chat'
+  | 'games'
+  | 'carrom_setup'
   | 'carrom'
+  | 'ludo_setup'
   | 'ludo'
   | 'clips'
   | 'clip_player';
@@ -88,6 +95,7 @@ const back: Action = { kind: 'back' };
 
 export const TABS: { id: TabId; label: string }[] = [
   { id: 'ai', label: 'AI' },
+  { id: 'calls', label: 'Calls' },
   { id: 'chats', label: 'Chats' },
   { id: 'moments', label: 'Moments' },
   { id: 'communities', label: 'Communities' },
@@ -102,26 +110,36 @@ export const SCREENS: Record<ScreenId, Screen> = {
     title: 'Chats',
     tab: 'chats',
     hotspots: [
-      { rect: rect(136, 150, 232, 245), label: 'Open chat with Ananya Sharma', action: go('convo', 'push') },
-      { rect: rect(249, 150, 345, 245), label: 'Open Weekend Warriors group', action: go('group_convo', 'push') },
-      { rect: rect(22, 375, 118, 470), label: 'Open Voiid AI', action: go('ai_chat', 'push') },
+      { rect: rect(135, 211, 232, 308), label: 'Open chat with Ananya Sharma', action: go('convo', 'push') },
+      { rect: rect(135, 325, 232, 422), label: 'Open Voiid AI', action: go('ai_chat', 'push') },
+      { rect: rect(184, 150, 368, 192), label: 'Show groups', action: go('groups', 'fade', true) },
+    ],
+  },
+  groups: {
+    id: 'groups',
+    title: 'Groups',
+    tab: 'chats',
+    hotspots: [
+      { rect: rect(22, 211, 119, 308), label: 'Open Weekend Warriors group', action: go('group_convo', 'push') },
+      { rect: rect(0, 150, 184, 192), label: 'Show chats', action: go('chats', 'fade', true) },
+    ],
+  },
+  calls: {
+    id: 'calls',
+    title: 'Calls',
+    tab: 'calls',
+    hotspots: [
+      { rect: rect(15, 200, 313, 250), label: 'Call Ananya Sharma back', action: go('call', 'zoom') },
+      { rect: rect(15, 652, 313, 702), label: 'Rejoin Weekend Warriors call', action: go('group_call', 'zoom') },
     ],
   },
   convo: {
     id: 'convo',
     title: 'Chat with Ananya',
     hotspots: [
-      { rect: rect(20, 65, 78, 122), label: 'Back to chats', action: back },
-      {
-        rect: rect(280, 77, 313, 110),
-        label: 'Voice call',
-        action: { kind: 'toast', text: 'Try a group call — open Weekend Warriors' },
-      },
-      {
-        rect: rect(320, 77, 353, 110),
-        label: 'Video call',
-        action: { kind: 'toast', text: 'Try a group call — open Weekend Warriors' },
-      },
+      { rect: rect(14, 57, 56, 98), label: 'Back to chats', action: back },
+      { rect: rect(266, 60, 306, 96), label: 'Voice call', action: go('call', 'zoom') },
+      { rect: rect(313, 60, 353, 96), label: 'Video call', action: go('video_call', 'zoom') },
     ],
     chat: {
       top: 132,
@@ -134,9 +152,9 @@ export const SCREENS: Record<ScreenId, Screen> = {
     id: 'group_convo',
     title: 'Weekend Warriors',
     hotspots: [
-      { rect: rect(20, 65, 78, 122), label: 'Back to chats', action: back },
-      { rect: rect(280, 77, 313, 110), label: 'Start a group voice call', action: go('group_call', 'zoom') },
-      { rect: rect(320, 77, 353, 110), label: 'Start a group video call', action: go('group_video', 'zoom') },
+      { rect: rect(14, 57, 56, 98), label: 'Back to groups', action: back },
+      { rect: rect(266, 60, 306, 96), label: 'Start a group voice call', action: go('group_call', 'zoom') },
+      { rect: rect(313, 60, 353, 96), label: 'Start a group video call', action: go('group_video', 'zoom') },
       { rect: rect(98, 232, 270, 260), label: 'Encryption details', action: { kind: 'toast', text: 'Sealed on your phone. Opened only on theirs.' } },
     ],
     chat: {
@@ -145,6 +163,24 @@ export const SCREENS: Record<ScreenId, Screen> = {
       from: 'Riya',
       replies: ['Love it 🙌 bringing the frisbee', 'Booked the court for 5 🏸', "Arjun's driving, obviously 🚗"],
     },
+  },
+  call: {
+    id: 'call',
+    title: 'Voice call with Ananya',
+    dark: true,
+    hotspots: [
+      { rect: rect(14, 62, 52, 100), label: 'Back to the chat', action: back },
+      { rect: rect(154, 692, 214, 752), label: 'End call', action: back },
+    ],
+  },
+  video_call: {
+    id: 'video_call',
+    title: 'Video call with Ananya',
+    dark: true,
+    hotspots: [
+      { rect: rect(14, 62, 52, 100), label: 'Back to the chat', action: back },
+      { rect: rect(116, 697, 252, 754), label: 'End call', action: back },
+    ],
   },
   group_call: {
     id: 'group_call',
@@ -160,7 +196,7 @@ export const SCREENS: Record<ScreenId, Screen> = {
     dark: true,
     hotspots: [
       { rect: rect(15, 44, 53, 82), label: 'Back to the chat', action: back },
-      { rect: rect(153, 720, 213, 780), label: 'End call', action: back },
+      { rect: rect(155, 720, 213, 779), label: 'End call', action: back },
     ],
   },
   moments: {
@@ -180,7 +216,7 @@ export const SCREENS: Record<ScreenId, Screen> = {
     title: 'Communities',
     tab: 'communities',
     hotspots: [
-      { rect: rect(16, 268, 352, 405), label: 'Open Voiid Designers', action: go('community_detail', 'push') },
+      { rect: rect(15, 267, 353, 405), label: 'Open Voiid Designers', action: go('community_detail', 'push') },
     ],
   },
   community_detail: {
@@ -194,17 +230,17 @@ export const SCREENS: Record<ScreenId, Screen> = {
     title: 'Find friends on the map',
     tab: 'map',
     hotspots: [
-      { rect: rect(15, 645, 353, 695), label: 'Continue', action: go('map_privacy', 'push') },
-      { rect: rect(312, 58, 360, 88), label: 'Skip', action: { kind: 'unlockMap', to: 'map' } },
+      { rect: rect(15, 647, 354, 695), label: 'Continue', action: go('map_privacy', 'push') },
+      { rect: rect(312, 55, 360, 90), label: 'Skip', action: { kind: 'unlockMap', to: 'map' } },
     ],
   },
   map_privacy: {
     id: 'map_privacy',
     title: 'Your location, your choice',
     hotspots: [
-      { rect: rect(8, 63, 42, 97), label: 'Back', action: back },
-      { rect: rect(15, 645, 353, 695), label: 'Allow location access', action: { kind: 'unlockMap', to: 'map' } },
-      { rect: rect(140, 698, 228, 722), label: 'Not now', action: { kind: 'unlockMap', to: 'map' } },
+      { rect: rect(4, 60, 44, 98), label: 'Back', action: back },
+      { rect: rect(15, 646, 354, 694), label: 'Allow location access', action: { kind: 'unlockMap', to: 'map' } },
+      { rect: rect(140, 696, 228, 724), label: 'Not now', action: { kind: 'unlockMap', to: 'map' } },
     ],
   },
   map: {
@@ -212,9 +248,9 @@ export const SCREENS: Record<ScreenId, Screen> = {
     title: 'Map',
     tab: 'map',
     hotspots: [
-      { rect: rect(40, 255, 100, 315), label: 'Ava Johnson', action: { kind: 'toast', text: 'Ava is sharing for 1 more hour' } },
-      { rect: rect(296, 285, 346, 345), label: 'Noah Patel', action: { kind: 'toast', text: 'Noah is sharing until he turns it off' } },
-      { rect: rect(160, 380, 206, 440), label: 'You', action: { kind: 'toast', text: 'Visible to All Friends · 1 hour' } },
+      { rect: rect(36, 250, 88, 310), label: 'Ava Johnson', action: { kind: 'toast', text: 'Ava is sharing for 1 more hour' } },
+      { rect: rect(294, 280, 346, 340), label: 'Noah Patel', action: { kind: 'toast', text: 'Noah is sharing until he turns it off' } },
+      { rect: rect(162, 378, 206, 440), label: 'You', action: { kind: 'toast', text: 'Visible to All Friends · 1 hour' } },
     ],
   },
   ai: {
@@ -222,32 +258,61 @@ export const SCREENS: Record<ScreenId, Screen> = {
     title: 'Voiid AI',
     tab: 'ai',
     hotspots: [
-      { rect: rect(15, 178, 353, 244), label: 'Catch me up', action: go('ai_chat', 'push') },
-      { rect: rect(15, 254, 353, 321), label: 'Draft a reply', action: go('ai_chat', 'push') },
+      { rect: rect(15, 176, 354, 244), label: 'Catch me up', action: go('ai_chat', 'push') },
+      { rect: rect(15, 253, 354, 321), label: 'Draft a reply', action: go('ai_chat', 'push') },
     ],
   },
   ai_chat: {
     id: 'ai_chat',
     title: 'Voiid AI chat',
-    hotspots: [{ rect: rect(6, 63, 40, 97), label: 'Back', action: back }],
+    hotspots: [{ rect: rect(4, 62, 40, 100), label: 'Back', action: back }],
   },
-  // The Games tab opens straight into a match: Carrom and Ludo are the two games shown.
+  // Games → pick a game → "How do you want to play?" sheet → the match, as in the app.
+  games: {
+    id: 'games',
+    title: 'Games',
+    tab: 'games',
+    hotspots: [
+      { rect: rect(15, 114, 353, 161), label: 'Continue Carrom', action: go('carrom_setup', 'sheet') },
+      { rect: rect(15, 325, 353, 506), label: 'Play Carrom', action: go('carrom_setup', 'sheet') },
+      { rect: rect(15, 518, 353, 700), label: 'Play Ludo', action: go('ludo_setup', 'sheet') },
+    ],
+  },
+  carrom_setup: {
+    id: 'carrom_setup',
+    title: 'Play Carrom',
+    sheetTop: 272,
+    hotspots: [
+      { rect: rect(0, 0, 368, 268), label: 'Close', action: back },
+      { rect: rect(21, 674, 346, 720), label: 'Start game', action: go('carrom', 'zoom', true) },
+      { rect: rect(140, 722, 228, 746), label: 'Not now', action: back },
+    ],
+  },
   carrom: {
     id: 'carrom',
     title: 'Carrom',
     hotspots: [
-      { rect: rect(8, 60, 52, 104), label: 'Leave the match', action: { kind: 'root', tab: 'chats' } },
-      { rect: rect(254, 710, 354, 756), label: 'Strike', action: { kind: 'toast', text: 'Pocketed!' } },
-      { rect: rect(20, 108, 166, 154), label: 'Switch to Ludo', action: go('ludo', 'fade', true) },
+      { rect: rect(9, 62, 42, 95), label: 'Leave the match', action: back },
+      { rect: rect(256, 715, 353, 759), label: 'Strike', action: { kind: 'toast', text: 'Pocketed!' } },
+    ],
+  },
+  ludo_setup: {
+    id: 'ludo_setup',
+    title: 'Play Ludo',
+    sheetTop: 272,
+    hotspots: [
+      { rect: rect(0, 0, 368, 268), label: 'Close', action: back },
+      { rect: rect(21, 674, 346, 720), label: 'Start game', action: go('ludo', 'zoom', true) },
+      { rect: rect(140, 722, 228, 746), label: 'Not now', action: back },
     ],
   },
   ludo: {
     id: 'ludo',
     title: 'Ludo',
+    dark: true,
     hotspots: [
-      { rect: rect(8, 60, 44, 96), label: 'Leave the match', action: { kind: 'root', tab: 'chats' } },
-      { rect: rect(280, 702, 356, 744), label: 'Roll the dice', action: { kind: 'toast', text: 'Rolled a 6!' } },
-      { rect: rect(12, 108, 94, 150), label: 'Switch to Carrom', action: go('carrom', 'fade', true) },
+      { rect: rect(10, 130, 46, 166), label: 'Leave the match', action: back },
+      { rect: rect(283, 604, 355, 641), label: 'Roll the dice', action: { kind: 'toast', text: 'Rolled a 6!' } },
     ],
   },
   clips: {
@@ -261,19 +326,20 @@ export const SCREENS: Record<ScreenId, Screen> = {
     title: 'Clip player',
     dark: true,
     hotspots: [
-      { rect: rect(6, 60, 42, 94), label: 'Close clip', action: back },
-      { rect: rect(308, 535, 350, 585), label: 'Like', action: { kind: 'like' } },
+      { rect: rect(4, 57, 44, 97), label: 'Close clip', action: back },
+      { rect: rect(308, 561, 358, 605), label: 'Like', action: { kind: 'like' } },
     ],
   },
 };
 
 export const TAB_ROOT: Record<TabId, ScreenId> = {
   ai: 'ai',
+  calls: 'calls',
   chats: 'chats',
   moments: 'moments',
   communities: 'communities',
   map: 'map_intro',
-  games: 'carrom',
+  games: 'games',
   clips: 'clips',
 };
 

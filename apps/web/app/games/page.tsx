@@ -41,7 +41,7 @@ export default function GamesPage() {
         }
         badges={<E2EEBadge state="refereed" detail="Moves, scores and results" />}
         aside={
-          <PagePhone path={['carrom']} label="A Carrom match in Voiid, interactive" caption="Live preview · tap Strike" />
+          <PagePhone path={['games', 'carrom']} label="A Carrom match in Voiid, interactive" caption="Live preview · tap Strike" />
         }
       />
 

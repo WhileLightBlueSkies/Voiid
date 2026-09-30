@@ -261,13 +261,13 @@
   min-width: 0;
   border: 0;
   outline: 0;
-  background: #fff;
+  background: #edf1f2; /* the screenshot pill’s fill, so the live field blends into it */
   padding: 0 1cqw;
   font: 400 4.25cqw/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   color: #0d1416;
   caret-color: #13828c;
 }
-.input::placeholder { color: #8e9a9e; }
+.input::placeholder { color: #8c9393; }
 
 .send {
   position: absolute;

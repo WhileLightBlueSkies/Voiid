@@ -228,7 +228,7 @@ export function SiteHeader() {
                 </div>
               </li>
 
-              {HEADER_NAV.filter((i) => i.href !== '/messaging').map((item) => (
+              {HEADER_NAV.map((item) => (
                 <li key={item.href}>
                   <Link
                     href={item.href}
@@ -241,7 +241,7 @@ export function SiteHeader() {
               ))}
             </ul>
 
-            <Link href="/messaging" className={styles.cta}>
+            <Link href="/#download" className={styles.cta}>
               <span>Get Voiid</span>
               <Glyph name="arrow-right" size={13} className={styles.ctaArrow} />
             </Link>

@@ -82,7 +82,7 @@ export default function CallsPage() {
         }
         badges={<E2EEBadge state="e2ee" detail="All call media · verified keying" />}
         aside={
-          <PagePhone path={['chats', 'group_convo', 'group_call']} label="A Voiid group call, interactive" caption="Live preview · leave, then start video" />
+          <PagePhone path={['groups', 'group_convo', 'group_call']} label="A Voiid group call, interactive" caption="Live preview · leave, then start video" />
         }
       />
 
@@ -169,7 +169,7 @@ export default function CallsPage() {
       >
         <Split
           aside={
-            <PagePhone path={['chats', 'group_convo', 'group_video']} label="A Voiid group video call, interactive" size="md" tilt="left" />
+            <PagePhone path={['groups', 'group_convo', 'group_video']} label="A Voiid group video call, interactive" size="md" tilt="left" />
           }
         >
           <div className={styles.prosePlus}>

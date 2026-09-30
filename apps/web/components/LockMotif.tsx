@@ -29,9 +29,9 @@ export type LockMotifProps = {
 };
 
 const DEFAULT_LABEL =
-  'Animated diagram: a message written on her phone is sealed with her key into ' +
+  'Animated diagram: a message written on device 1 is sealed with its key into ' +
   'ciphertext, passes through the Voiid server, which holds no key and cannot read ' +
-  'it, and is opened with his key on his phone.';
+  'it, and is opened with the key on device 2.';
 
 const WIRE = 'M118 232 C 190 232, 190 168, 250 168 C 310 168, 310 232, 382 232';
 
@@ -114,7 +114,7 @@ export function LockMotif({
       <circle cx="250" cy="168" r="14" className={styles.relayRing} />
 
       <g className={styles.noKey}>
-        <rect x="296" y="60" width="118" height="30" rx="15" />
+        <rect x="296" y="60" width="164" height="30" rx="15" />
         <g className={styles.noKeyIcon} transform="translate(314 75)">
           <circle cx="-4" cy="0" r="4" />
           <path d="M0 0 H 9 M 6 0 v 3.5" />
@@ -137,7 +137,7 @@ export function LockMotif({
         <path d="M-7.5 0 H 17 M 9 0 v 7 M 17 0 v 5" />
       </g>
       <text x="85" y="356" className={styles.label} textAnchor="middle">
-        her key
+        device 1
       </text>
 
       {/* ---- right device: his ---------------------------------------------- */}
@@ -152,7 +152,7 @@ export function LockMotif({
         <path d="M-7.5 0 H 17 M 9 0 v 7 M 17 0 v 5" />
       </g>
       <text x="415" y="356" className={styles.label} textAnchor="middle">
-        his key
+        device 2
       </text>
 
       {/* ---- the sealed packet riding the wire, ciphertext churning above it -- */}
@@ -169,13 +169,13 @@ export function LockMotif({
       {/* ---- the step being shown ------------------------------------------ */}
       <g className={styles.captions}>
         <text x="250" y="300" textAnchor="middle" className={`${styles.caption} ${styles.c1}`}>
-          1 · sealed on her phone
+          1 · sealed on device 1
         </text>
         <text x="250" y="300" textAnchor="middle" className={`${styles.caption} ${styles.c2}`}>
           2 · relayed, never read
         </text>
         <text x="250" y="300" textAnchor="middle" className={`${styles.caption} ${styles.c3}`}>
-          3 · opened on his phone
+          3 · opened on device 2
         </text>
       </g>
     </svg>

@@ -4,8 +4,8 @@
    * container, so `position: sticky` still works for anything inside. */
   overflow: clip;
   isolation: isolate;
-  padding-block: clamp(var(--space-2xl), 8vw, var(--space-4xl))
-    clamp(var(--space-2xl), 7vw, var(--space-4xl));
+  padding-block: clamp(var(--space-xl), 5vw, 88px)
+    clamp(var(--space-xl), 5vw, 88px);
   /* NIGHT — the same ground as the homepage hero. Every page opens on it. */
   background: radial-gradient(120% 90% at 70% 0%, #06201f 0%, #031214 62%);
   color: #eefaf9;
@@ -46,7 +46,7 @@
   --header-lane: calc(var(--space-sm) + 52px);
   margin-block-start: calc(var(--header-lane) * -1);
   padding-block-start: calc(
-    clamp(var(--space-2xl), 8vw, var(--space-4xl)) + var(--header-lane)
+    clamp(var(--space-xl), 5vw, 88px) + var(--header-lane)
   );
 }
 
@@ -66,7 +66,7 @@
 @media (min-width: 900px) {
   .split .inner {
     grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-    gap: var(--space-3xl);
+    gap: var(--space-2xl);
   }
   .split.reverse .copy { order: 2; }
   .split.reverse .aside { order: 1; }
@@ -295,4 +295,30 @@
 .actions :global(.btn-secondary) {
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
+}
+
+/* A feature that is designed but not shipped yet. Same pill as the E2EE badge. */
+.soon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  align-self: flex-start;
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--color-warning, #d97706) 35%, transparent);
+  background: color-mix(in srgb, var(--color-warning, #d97706) 12%, transparent);
+  color: var(--color-warning, #b45309);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.soon::before {
+  content: '';
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: currentColor;
 }
