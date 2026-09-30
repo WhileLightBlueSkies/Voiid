@@ -35,6 +35,18 @@ enum class MessageKind { TEXT, IMAGE, VOICE, DOCUMENT, SYSTEM, POLL, LOCATION, C
  * failure mode (caller dies mid-call → no log for anyone) and a second source of truth for
  * something both sides already know.
  */
+/**
+ * Is this call still RINGING rather than missed? Mirrors iOS `LocalStore.isRinging`.
+ *
+ * A row is written the moment a call starts with a provisional outcome of "missed", which the
+ * answer or the hang-up overwrites. So "missed" with no end time is a call that has not
+ * finished — reading it as missed put "Missed call" in the chat while the phone was ringing.
+ * Bounded: a ring that never recorded an end (app killed mid-ring) counts as missed after 90s.
+ */
+fun isCallRinging(outcome: String, startedAtMs: Long, endedAt: Long?, connectedAt: Long?): Boolean =
+    outcome == "missed" && endedAt == null && connectedAt == null &&
+        System.currentTimeMillis() - startedAtMs < 90_000
+
 data class VCallLog(
     val callId: String,
     val isVideo: Boolean,
@@ -46,6 +58,8 @@ data class VCallLog(
     val connectedAt: Long? = null,
 ) {
     val answered: Boolean get() = outcome == "answered"
+    /** Still ringing — not missed yet. See [isCallRinging]. */
+    val ringing: Boolean get() = isCallRinging(outcome, startedAt, endedAt, connectedAt)
     /** Seconds of connected time; null unless the call was actually answered. */
     val durationSeconds: Long?
         get() = if (answered && endedAt != null) ((endedAt - (connectedAt ?: startedAt)) / 1000).coerceAtLeast(0) else null

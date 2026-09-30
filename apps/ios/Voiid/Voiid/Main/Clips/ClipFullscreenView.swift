@@ -84,14 +84,31 @@ struct ClipFullscreenView: View {
 
     private var pages: [Clip] { feed == nil ? engine.clips : injected }
 
+    /// The notch and home-indicator margins, read from the WINDOW.
+    ///
+    /// A GeometryReader that ignores the safe area reports zero insets inside it, so the close
+    /// button landed under the Dynamic Island and the rail on the home indicator. The window
+    /// always knows the real margins; the proxy's value is only a fallback.
+    static func windowInsets(fallback: EdgeInsets) -> EdgeInsets {
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+        guard let i = window?.safeAreaInsets, i.top > 0 || i.bottom > 0 else { return fallback }
+        return EdgeInsets(top: i.top, leading: i.left, bottom: i.bottom, trailing: i.right)
+    }
+
     private var currentClip: Clip? {
         pages.indices.contains(index) ? pages[index] : nil
     }
 
     var body: some View {
+        // EDGE TO EDGE, like every reels player: the video runs under the status bar and the
+        // home indicator, and only the controls keep clear of them (`insets` → the page chrome).
         GeometryReader { geo in
-            pager(size: geo.size)
+            pager(size: geo.size, insets: Self.windowInsets(fallback: geo.safeAreaInsets))
         }
+        .ignoresSafeArea()
         .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .overlay(alignment: .top) {
@@ -206,7 +223,7 @@ struct ClipFullscreenView: View {
     ///
     /// It also read `UIScreen.main.bounds`, which is wrong under split-view/iPad and is
     /// deprecated — the size now comes from the enclosing GeometryReader.
-    private func pager(size: CGSize) -> some View {
+    private func pager(size: CGSize, insets: EdgeInsets) -> some View {
         ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
                 ForEach(Array(pages.enumerated()), id: \.element.id) { i, clip in
@@ -221,7 +238,8 @@ struct ClipFullscreenView: View {
                         onFollow: { follow(clip) },
                         onMore: { moreFor = clip },
                         onShare: { sharing = clip },
-                        onBack: { dismiss() }
+                        onBack: { dismiss() },
+                        insets: insets
                     )
                     .frame(width: size.width, height: size.height)
                     .id(i)
@@ -398,13 +416,16 @@ private struct ClipPlayerPage: View {
     /// Share: Send in Voiid, or the link outside. Raised on the pager, like More.
     let onShare: () -> Void
     let onBack: () -> Void
+    /// The screen's safe-area insets: the video ignores them, the controls respect them.
+    var insets: EdgeInsets = EdgeInsets()
 
-    @State private var muted = true
+    /// SOUND ON BY DEFAULT, and one setting for the whole feed. Every clip used to start
+    /// muted and a tap unmuted only that one clip, so each new clip went silent again — which
+    /// read as "the audio did not upload". Muting now sticks across clips and sessions.
+    @AppStorage("voiid.clips.muted") private var muted = false
     /// Double-tap to like: the second tap inside this window is a like, not a mute.
     @State private var lastTapAt: Date = .distantPast
     @State private var pendingMute: Task<Void, Never>?
-    /// A press on either side becomes a speed hold only once it has been held a moment.
-    @State private var holdTask: Task<Void, Never>?
     /// The heart that bursts where you double-tapped.
     @State private var burst: HeartBurst?
 
@@ -413,6 +434,18 @@ private struct ClipPlayerPage: View {
         let point: CGPoint
     }
     @State private var ready = false
+    /// The caption is open in full. A tap anywhere on the video closes it again.
+    @State private var captionOpen = false
+    /// The speaker flashes in the middle when sound changes, instead of sitting in a corner.
+    @State private var muteFlash = false
+
+    /// A portrait clip FILLS the screen, the way reels do; a landscape one is fitted so it is
+    /// never cropped to a sliver. Unknown dimensions are treated as portrait — that is what
+    /// the camera records.
+    private var isPortrait: Bool {
+        guard let w = clip.width, let h = clip.height, w > 0, h > 0 else { return true }
+        return h >= w
+    }
     /// Non-nil while the user is holding one side of the screen (Instagram-style scrub speed).
     @State private var heldSpeed: Float?
     /// Drives the one-shot scale pop on the heart.
@@ -435,17 +468,40 @@ private struct ClipPlayerPage: View {
                     // (no way to set videoGravity) and ships player controls we then have to
                     // disable. `.resizeAspect` keeps the true aspect ratio — a portrait clip is
                     // never stretched and a landscape one is never cropped.
-                    ClipPlayerLayerView(player: player)
+                    ClipPlayerLayerView(player: player, fills: isPortrait)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .opacity(ready ? 1 : 0)
                         .allowsHitTesting(false)
                 }
 
                 scrim(pageHeight: geo.size.height)
+
+                // Hold the LEFT third for 0.5x, the RIGHT third for 2x; release restores 1x.
+                // UNDER the chrome, so the rail and caption take their own taps; the zones only
+                // get touches that land on bare video.
+                HStack(spacing: 0) {
+                    speedZone(0.5).frame(width: geo.size.width / 3)
+                    Spacer(minLength: 0).allowsHitTesting(false)
+                    speedZone(2.0).frame(width: geo.size.width / 3)
+                }
+                .padding(.top, insets.top + 56)
+                .allowsHitTesting(!compact)
+
                 chrome
 
                 if let heldSpeed {
                     speedPill(heldSpeed)
+                }
+
+                if muteFlash {
+                    Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 26, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 72, height: 72)
+                        .background(Circle().fill(.black.opacity(0.45)))
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        .allowsHitTesting(false)
+                        .accessibilityLabel(muted ? "Muted" : "Sound on")
                 }
 
                 if let burst {
@@ -463,64 +519,41 @@ private struct ClipPlayerPage: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .animation(.easeOut(duration: 0.25), value: ready)
             .contentShape(Rectangle())
-            // Press-and-hold the LEFT third for 0.5x, the RIGHT third for 2x; release restores
-            // 1x. minimumDistance 0 makes this fire on touch-down, and the distance check in
-            // onEnded is what keeps a plain tap working as the mute toggle.
-            // ONE GESTURE, THREE MEANINGS:
-            //  • hold a side third ~0.3s → 0.5x (left) or 2x (right) until release;
-            //  • double-tap anywhere → like, with a heart where you tapped (like only — a
-            //    second double-tap never takes it back, the same as everywhere people do this);
-            //  • single tap → mute toggle, after a beat, so a double-tap is not also a mute.
-            // The speed hold used to start on touch-DOWN, which made every tap on the sides
-            // a speed change and left them unable to mute or like.
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        guard holdTask == nil, heldSpeed == nil, !compact else { return }
-                        let third = geo.size.width / 3
-                        let speed: Float?
-                        if value.startLocation.x < third { speed = 0.5 }
-                        else if value.startLocation.x > geo.size.width - third { speed = 2.0 }
-                        else { speed = nil }
-                        guard let speed else { return }
-                        holdTask = Task { @MainActor in
+            // ── TOUCH HANDLING THAT LEAVES THE SWIPE TO THE PAGER ───────────────────────
+            // This was ONE `DragGesture(minimumDistance: 0)` doing tap, double-tap and hold.
+            // A zero-distance drag claims every touch the moment it lands, so the paging
+            // ScrollView behind it never saw the swipe and the feed would not scroll.
+            //
+            // Now: a TAP (which never claims a drag) for mute and double-tap-to-like, and a
+            // LONG PRESS on each side third for speed, which fails the moment the finger moves
+            // and so hands a swipe straight back to the pager.
+            .simultaneousGesture(
+                SpatialTapGesture().onEnded { value in
+                    guard !compact else { return }
+                    if captionOpen {
+                        withAnimation(.easeOut(duration: 0.2)) { captionOpen = false }
+                        return
+                    }
+                    let now = Date()
+                    if now.timeIntervalSince(lastTapAt) < 0.3 {
+                        pendingMute?.cancel()
+                        pendingMute = nil
+                        lastTapAt = .distantPast
+                        doubleTapLike(at: value.location)
+                    } else {
+                        lastTapAt = now
+                        pendingMute = Task { @MainActor in
                             try? await Task.sleep(nanoseconds: 300_000_000)
                             guard !Task.isCancelled else { return }
-                            heldSpeed = speed
-                            player?.rate = speed
+                            muted.toggle()
+                            player?.isMuted = muted
                             Haptics.tap()
+                            withAnimation(.easeOut(duration: 0.15)) { muteFlash = true }
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            withAnimation(.easeOut(duration: 0.25)) { muteFlash = false }
                         }
                     }
-                    .onEnded { value in
-                        holdTask?.cancel()
-                        holdTask = nil
-                        if heldSpeed != nil {
-                            heldSpeed = nil
-                            // Setting rate resumes playback; only restore it if this page is
-                            // still the visible one.
-                            player?.rate = isActive ? 1.0 : 0.0
-                            return
-                        }
-                        // A genuine tap (not a swipe that became a page change).
-                        guard abs(value.translation.height) < 10,
-                              abs(value.translation.width) < 10, !compact else { return }
-                        let now = Date()
-                        if now.timeIntervalSince(lastTapAt) < 0.3 {
-                            pendingMute?.cancel()
-                            pendingMute = nil
-                            lastTapAt = .distantPast
-                            doubleTapLike(at: value.location)
-                        } else {
-                            lastTapAt = now
-                            pendingMute = Task { @MainActor in
-                                try? await Task.sleep(nanoseconds: 300_000_000)
-                                guard !Task.isCancelled else { return }
-                                muted.toggle()
-                                player?.isMuted = muted
-                                Haptics.tap()
-                            }
-                        }
-                    }
+                }
             )
         }
         .onChange(of: isActive) { _, active in
@@ -534,6 +567,7 @@ private struct ClipPlayerPage: View {
         }
         .task(id: player) {
             guard let player else { return }
+            ClipAudio.activate()
             player.isMuted = muted
             // Poll readiness rather than KVO — a handful of 120ms checks is cheaper to
             // reason about here than an observer whose lifetime must track the pager.
@@ -546,6 +580,23 @@ private struct ClipPlayerPage: View {
                 try? await Task.sleep(nanoseconds: 120_000_000)
             }
         }
+    }
+
+    /// A side third that plays at `speed` while held. `maximumDistance` makes it give up as
+    /// soon as the finger travels, so starting a swipe here still pages the feed.
+    private func speedZone(_ speed: Float) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onLongPressGesture(minimumDuration: 0.3, maximumDistance: 12) {
+                heldSpeed = speed
+                player?.rate = speed
+                Haptics.tap()
+            } onPressingChanged: { pressing in
+                guard !pressing, heldSpeed != nil else { return }
+                heldSpeed = nil
+                // Setting rate resumes playback; only restore it if this page is visible.
+                player?.rate = isActive ? 1.0 : 0.0
+            }
     }
 
     /// The white-on-anything problem: captions, counts and the back chevron were drawn
@@ -564,18 +615,25 @@ private struct ClipPlayerPage: View {
                            startPoint: .top, endPoint: .bottom)
                 .frame(height: 140)
             Spacer(minLength: 0)
-            LinearGradient(colors: [.clear, .black.opacity(0.65)],
+            LinearGradient(colors: [.clear, .black.opacity(captionOpen ? 0.85 : 0.7)],
                            startPoint: .top, endPoint: .bottom)
-                .frame(height: max(220, pageHeight * 0.3))
+                .frame(height: max(captionOpen ? 420 : 260, pageHeight * (captionOpen ? 0.5 : 0.32)))
+                .animation(.easeOut(duration: 0.2), value: captionOpen)
         }
         .allowsHitTesting(false)
         .opacity(compact ? 0.35 : 1)
         .animation(.easeInOut(duration: 0.2), value: compact)
     }
 
-    /// Built to the Voiid Ui reference (Chat/ClipPlayerScreen.swift): close top-left, the
-    /// creator bottom-left, and a rail of Like · Comments · Share · More on the right. The mute
-    /// state stays top-right — the reference is silent, real video is not.
+    /// ── THE LAYOUT (Voiid Ui Chat/ClipPlayerScreen.swift) ─────────────────────────
+    /// The video owns the screen; everything else sits at its edges, inside the safe area.
+    ///   • TOP: close only. Mute flashes in the middle when it changes (see `muteFlash`).
+    ///   • RIGHT RAIL, bottom-aligned: the creator's face first (+ to follow), then Like,
+    ///     Comment, Share, More.
+    ///   • BOTTOM LEFT: handle and age with Follow, the caption (cut with "more"), then a quiet
+    ///     line of audio and views. The column stops short of the rail, so a long caption
+    ///     never runs under the buttons.
+    ///   • VERY BOTTOM: a hairline of playback progress.
     private var chrome: some View {
         VStack(spacing: 0) {
             HStack {
@@ -588,11 +646,6 @@ private struct ClipPlayerPage: View {
                 }
                 .accessibilityLabel("Close")
                 Spacer()
-                Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .font(.system(size: 16))
-                    .foregroundColor(.white.opacity(0.9))
-                    .frame(width: 44, height: 44)
-                    .accessibilityLabel(muted ? "Muted" : "Sound on")
             }
             .padding(.horizontal, VoiidSpacing.xs)
 
@@ -600,49 +653,131 @@ private struct ClipPlayerPage: View {
 
             HStack(alignment: .bottom, spacing: VoiidSpacing.md) {
                 creatorBlock
-                Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 actionRail
+                    .frame(width: 56)
             }
-            .padding(.horizontal, VoiidSpacing.md)
-            .padding(.bottom, VoiidSpacing.sm)
+            .padding(.leading, VoiidSpacing.md)
+            .padding(.trailing, 10)
+            .padding(.bottom, 14)
+
+            progressBar
         }
+        .padding(.top, insets.top)
+        .padding(.bottom, insets.bottom)
+        .shadow(color: .black.opacity(0.45), radius: 4, y: 1)
     }
 
     private var creatorBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                ProfileAvatarButton(photoURL: clip.authorPhotoURL, name: clip.authorName, size: 32)
-                Text(clip.authorHandle.map { "@\($0)" } ?? clip.authorName)
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                if clip.authorVerified {
-                    Image(systemName: "checkmark.seal.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(VoiidBrand.limeBright)
-                        .accessibilityLabel("Verified")
+                HStack(spacing: 5) {
+                    Text(clip.authorHandle.map { "@\($0)" } ?? clip.authorName)
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    if clip.authorVerified {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(VoiidBrand.limeBright)
+                            .accessibilityLabel("Verified")
+                    }
+                    Text("· \(Self.age(clip.createdAt))")
+                        .font(VoiidFont.rounded(13))
+                        .foregroundColor(.white.opacity(0.7))
                 }
                 // Following someone you have just found should not cost a trip to their
                 // profile — shown only when the follow state is known (see `canFollow`).
                 if canFollow { followChip }
             }
-            Text("\(ClipCount.compact(clip.viewCount)) views")
-                .font(VoiidFont.rounded(12))
-                .foregroundColor(.white.opacity(0.7))
-            if let caption = clip.caption, !caption.isEmpty {
-                Text(caption)
-                    .font(VoiidFont.rounded(14))
-                    .foregroundColor(.white)
-                    .lineLimit(2)
+
+            if let caption = clip.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !caption.isEmpty {
+                captionView(caption)
             }
+
+            HStack(spacing: 6) {
+                Image(systemName: "music.note")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Original audio · \(clip.authorHandle.map { "@\($0)" } ?? clip.authorName)")
+                    .lineLimit(1)
+                Text("·")
+                Text(clip.viewCount == 1 ? "1 view" : "\(ClipCount.compact(clip.viewCount)) views")
+                    .monospacedDigit()
+                    .layoutPriority(1)
+            }
+            .font(VoiidFont.rounded(12.5))
+            .foregroundColor(.white.opacity(0.8))
         }
-        .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
     }
 
-    /// Counts under Like and Comments, because a rail of bare glyphs says what you CAN do and
-    /// nothing about the clip. Share and More carry no number — there is nothing to count.
+    /// Two or three lines cut at a word with "… more" inline; the whole caption on tap. One
+    /// that always shows in full covers the video; one that never can hides what was said.
+    private func captionView(_ caption: String) -> some View {
+        let long = caption.count > 80
+        let shown = (captionOpen || !long) ? caption : Self.clipped(caption, to: 80)
+        return Button {
+            Haptics.tap()
+            withAnimation(.easeOut(duration: 0.2)) { captionOpen.toggle() }
+        } label: {
+            (Text(shown)
+                + Text(captionOpen || !long ? "" : "… ")
+                + Text(captionOpen || !long ? "" : "more").fontWeight(.semibold)
+                    .foregroundColor(.white.opacity(0.7)))
+                .font(VoiidFont.rounded(14))
+                .foregroundColor(.white)
+                .multilineTextAlignment(.leading)
+                .lineLimit(captionOpen ? 10 : 3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .buttonStyle(.plain)
+        .disabled(!long)
+        .accessibilityLabel(caption)
+    }
+
+    static func clipped(_ text: String, to limit: Int) -> String {
+        let head = String(text.prefix(limit))
+        guard let space = head.lastIndex(of: " ") else { return head }
+        return String(head[..<space])
+    }
+
+    /// "5m", "3h", "2d", "4w" — the reels-feed shorthand beside the handle.
+    static func age(_ date: Date) -> String {
+        let s = max(0, Int(Date().timeIntervalSince(date)))
+        if s < 3600 { return "\(max(1, s / 60))m" }
+        if s < 86_400 { return "\(s / 3600)h" }
+        if s < 7 * 86_400 { return "\(s / 86_400)d" }
+        return "\(s / (7 * 86_400))w"
+    }
+
+    /// The rail: the creator's face first, then Like, Comments, Share, More.
     private var actionRail: some View {
-        VStack(spacing: VoiidSpacing.md) {
+        VStack(spacing: 18) {
+            ProfileAvatarButton(photoURL: clip.authorPhotoURL, name: clip.authorName, size: 44)
+                .overlay(Circle().stroke(.white, lineWidth: 1.5))
+                .overlay(alignment: .bottom) {
+                    if canFollow {
+                        Button {
+                            Haptics.tap()
+                            onFollow()
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .heavy))
+                                .foregroundColor(.white)
+                                .frame(width: 20, height: 20)
+                                .background(Circle().fill(VoiidColor.accent))
+                                .frame(width: 32, height: 32)       // a bigger target than it looks
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .offset(y: 16)
+                        .accessibilityLabel("Follow")
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .padding(.bottom, 6)
+                .accessibilityLabel(clip.authorHandle.map { "@\($0)" } ?? clip.authorName)
+
             likeAction
             railButton(icon: "bubble.right", count: clip.commentCount, label: "Comments") {
                 onOpenComments()
@@ -656,9 +791,26 @@ private struct ClipPlayerPage: View {
                 onMore()
             }
         }
-        .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
     }
 
+    /// A hairline that fills with real playback time and restarts as the clip loops.
+    private var progressBar: some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            let total = player?.currentItem?.duration.seconds ?? 0
+            let now = player?.currentTime().seconds ?? 0
+            let progress = (total.isFinite && total > 0) ? min(1, max(0, now / total)) : 0
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(.white.opacity(0.25))
+                    Rectangle().fill(.white.opacity(0.9))
+                        .frame(width: geo.size.width * progress)
+                }
+            }
+            .frame(height: 2)
+        }
+        .allowsHitTesting(false)
+        .opacity(isActive ? 1 : 0)
+    }
 
     private var followChip: some View {
         Button {
@@ -668,10 +820,10 @@ private struct ClipPlayerPage: View {
             Text("Follow")
                 .font(VoiidFont.rounded(13, .semibold))
                 .foregroundColor(.white)
-                .padding(.horizontal, VoiidSpacing.md)
-                .frame(height: 30)
-                .overlay(Capsule().stroke(.white, lineWidth: 1))
-                .padding(.vertical, 7)      // 44pt of hit height around a 30pt chip
+                .padding(.horizontal, 12)
+                .frame(height: 26)
+                .overlay(Capsule().stroke(.white.opacity(0.85), lineWidth: 1))
+                .padding(.vertical, 9)      // 44pt of hit height around a 26pt chip
                 .contentShape(Rectangle())
         }
         .buttonStyle(SoftPressStyle())
@@ -744,19 +896,20 @@ private struct ClipPlayerPage: View {
     }
 
     private func railIcon(_ icon: String, count: Int?, tint: Color = .white) -> some View {
-        VStack(spacing: 3) {
+        VStack(spacing: 4) {
             Image(systemName: icon)
-                .font(.system(size: 24))
+                .font(.system(size: 27))
                 .foregroundColor(tint)
+                .frame(height: 30)
             if let count {
                 Text(ClipCount.compact(count))
-                    .font(VoiidFont.rounded(11.5, .semibold))
+                    .font(VoiidFont.rounded(12, .semibold))
                     .foregroundColor(.white)
                     .monospacedDigit()
                     .contentTransition(.numericText())
             }
         }
-        .frame(width: 52, height: count == nil ? 44 : 56)
+        .frame(width: 56, height: count == nil ? 44 : 56)
         .contentShape(Rectangle())
     }
 }
@@ -771,17 +924,19 @@ private struct ClipPlayerPage: View {
 /// is what `.resizeAspectFill` / Android's RESIZE_MODE_ZOOM were doing wrong).
 private struct ClipPlayerLayerView: UIViewRepresentable {
     let player: AVPlayer
+    var fills: Bool = false
 
     func makeUIView(context: Context) -> PlayerLayerView {
         let view = PlayerLayerView()
         view.backgroundColor = .black
-        view.playerLayer.videoGravity = .resizeAspect
+        view.playerLayer.videoGravity = fills ? .resizeAspectFill : .resizeAspect
         view.playerLayer.player = player
         return view
     }
 
     func updateUIView(_ view: PlayerLayerView, context: Context) {
         if view.playerLayer.player !== player { view.playerLayer.player = player }
+        view.playerLayer.videoGravity = fills ? .resizeAspectFill : .resizeAspect
     }
 
     final class PlayerLayerView: UIView {
@@ -849,4 +1004,21 @@ final class ClipPlayerPool: ObservableObject {
     }
 
     func releaseAll() { retainOnly([]) }
+}
+
+/// Puts the app in PLAYBACK mode while clips play.
+///
+/// Without it iOS keeps the default "ambient" session, which the ring/silent switch mutes —
+/// so with the switch on silent, every clip played without sound however it was uploaded.
+/// Playback is what every video app uses. Left alone during a call: the call owns the session.
+@MainActor
+enum ClipAudio {
+    static func activate() {
+        guard CallService.shared.active == nil else { return }
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playback {
+            try? session.setCategory(.playback, mode: .moviePlayback)
+        }
+        try? session.setActive(true)
+    }
 }

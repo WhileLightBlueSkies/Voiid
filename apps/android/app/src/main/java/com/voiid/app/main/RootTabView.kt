@@ -10,6 +10,8 @@ import com.voiid.app.ui.components.dismissKeyboardOnScrollOrTap
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.outlined.SmartDisplay
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.Text
 import androidx.compose.ui.semantics.semantics
@@ -130,6 +132,7 @@ private enum class Tab(
     val label: String,
 ) {
     AI(Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome, "AI"),
+    CALLS(Icons.Outlined.Call, Icons.Filled.Call, "Calls"),     // iOS phone / phone.fill — left of Chats, as in Voiid Ui
     CHAT(Icons.Outlined.Forum, Icons.Filled.Forum, "Chats"),   // iOS bubble.left.and.bubble.right
     STORIES(DashedCircleIcon, Icons.Filled.Album, "Moments"),   // iOS circle.dashed / circle.circle.fill   // chat-adjacent: replies land in chats
     COMMUNITIES(Icons.Outlined.Groups, Icons.Filled.Groups, "Communities"),
@@ -140,7 +143,7 @@ private enum class Tab(
 
     companion object {
         // Keep declaration before visible: companion properties initialize in order.
-        private val SHIPPED = setOf(CHAT, STORIES, COMMUNITIES, GAMES, CLIPS)
+        private val SHIPPED = setOf(CHAT, CALLS, STORIES, COMMUNITIES, GAMES, CLIPS)
 
         /**
          * The tabs the bar actually shows, and the order it steps through.
@@ -559,6 +562,7 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                                     else android.widget.Toast.makeText(context, "Couldn’t load your social profile. Please try again.", android.widget.Toast.LENGTH_LONG).show()
                                 }
                             })
+                        Tab.CALLS -> CallsTab(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
                         Tab.AI -> AIChatView(ai)
                         Tab.STORIES -> com.voiid.app.main.stories.StoriesHomeView(
                             stories,

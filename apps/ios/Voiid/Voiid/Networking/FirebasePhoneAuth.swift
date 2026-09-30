@@ -42,20 +42,20 @@ enum FirebasePhoneAuth {
     /// default is so expensive to debug.
     private static func describe(_ error: Error, phase: String) -> String {
         let ns = error as NSError
-        print("[VOIID][FirebaseAuth] ❌ \(phase) failed")
-        print("[VOIID][FirebaseAuth]    domain=\(ns.domain) code=\(ns.code)")
-        print("[VOIID][FirebaseAuth]    localized=\(ns.localizedDescription)")
+        NSLog("%@", "[VOIID][FirebaseAuth] ❌ \(phase) failed")
+        NSLog("%@", "[VOIID][FirebaseAuth]    domain=\(ns.domain) code=\(ns.code)")
+        NSLog("%@", "[VOIID][FirebaseAuth]    localized=\(ns.localizedDescription)")
 
         if let code = AuthErrorCode(rawValue: ns.code) {
-            print("[VOIID][FirebaseAuth]    AuthErrorCode=\(code)")
+            NSLog("%@", "[VOIID][FirebaseAuth]    AuthErrorCode=\(code)")
         }
         for (key, value) in ns.userInfo {
-            print("[VOIID][FirebaseAuth]    userInfo[\(key)] = \(value)")
+            NSLog("%@", "[VOIID][FirebaseAuth]    userInfo[\(key)] = \(value)")
         }
         if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
-            print("[VOIID][FirebaseAuth]    underlying domain=\(underlying.domain) code=\(underlying.code)")
+            NSLog("%@", "[VOIID][FirebaseAuth]    underlying domain=\(underlying.domain) code=\(underlying.code)")
             for (key, value) in underlying.userInfo {
-                print("[VOIID][FirebaseAuth]    underlying[\(key)] = \(value)")
+                NSLog("%@", "[VOIID][FirebaseAuth]    underlying[\(key)] = \(value)")
             }
         }
 
@@ -93,7 +93,7 @@ enum FirebasePhoneAuth {
 
     /// Start verification: Firebase sends the SMS and returns a verification ID.
     static func sendCode(to e164: String) async throws -> String {
-        print("[VOIID][FirebaseAuth] sendCode → \(e164)")
+        NSLog("%@", "[VOIID][FirebaseAuth] sendCode → \(e164)")
         #if targetEnvironment(simulator) || DEBUG
         Auth.auth().settings?.isAppVerificationDisabledForTesting = true
         #endif
@@ -110,6 +110,7 @@ enum FirebasePhoneAuth {
                         userInfo: [NSLocalizedDescriptionKey: "No verification ID"]))
                     return
                 }
+                NSLog("%@", "[VOIID][FirebaseAuth] sendCode OK — verification ID received")
                 cont.resume(returning: verificationID)
             }
         }
@@ -122,6 +123,7 @@ enum FirebasePhoneAuth {
             .credential(withVerificationID: verificationID, verificationCode: code)
         do {
             let result = try await Auth.auth().signIn(with: credential)
+            NSLog("%@", "[VOIID][FirebaseAuth] verify OK — signed in to Firebase")
             return try await result.user.getIDToken()
         } catch {
             throw AuthFailure(message: describe(error, phase: "verify"))

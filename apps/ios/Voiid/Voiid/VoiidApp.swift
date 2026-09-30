@@ -285,11 +285,46 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
         completionHandler([])
         guard let conversationId = info["conversation_id"] as? String else { return }
+        let messageId = info["message_id"] as? String
         Task { @MainActor in
             guard UIApplication.shared.applicationState == .active else { return }
+            var title = content.title
+            var body = content.body
+            // WHO AND WHAT, EVEN WHEN THE EXTENSION DID NOT FINISH. The push carries only the
+            // placeholder "New message"; the notification extension swaps in the sender and
+            // text, but in the foreground it competes with the app's own sync for the same
+            // conversation and can hand over the placeholder. The app is running and usually
+            // already has the message, so it names the sender itself — waiting a moment for
+            // the live sync if the message has not landed yet.
+            if body.isEmpty || title == "New message", let messageId {
+                for _ in 0..<12 {
+                    if let named = Self.bannerText(conversationId: conversationId, messageId: messageId) {
+                        (title, body) = named
+                        break
+                    }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
             NotificationMessageRouter.shared.showBanner(conversationId: conversationId,
-                messageId: info["message_id"] as? String, title: content.title, body: content.body)
+                messageId: messageId, title: title, body: body)
         }
+    }
+
+    /// Sender and text for an in-app banner, from the message store — nil until the message
+    /// has been decrypted into it. Same wording as the notification extension.
+    @MainActor
+    static func bannerText(conversationId: String, messageId: String) -> (String, String)? {
+        guard let msg = ChatEngine.shared.storedMessage(id: messageId, conversationId: conversationId),
+              !msg.isMine, !msg.failed, msg.control != true else { return nil }
+        let sender = SharedDirectory.displayName(msg.senderId)
+        let body = msg.media != nil ? (msg.text.isEmpty ? "📎 Media" : "📎 \(msg.text)")
+                                    : (msg.text.isEmpty ? "New message" : msg.text)
+        // A group names itself and puts the sender in the line; a 1:1 is just the person.
+        if let group = SharedDirectory.conversationTitle(conversationId),
+           GroupEngine.shared.hasGroup(conversationId: conversationId) {
+            return (group, "\(sender): \(body)")
+        }
+        return (sender, body)
     }
 
     // APNs token -> Firebase Auth (used for silent-push app verification) AND the

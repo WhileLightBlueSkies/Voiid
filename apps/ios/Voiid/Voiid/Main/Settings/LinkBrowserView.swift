@@ -17,76 +17,191 @@ struct LinkBrowserView: View {
     @State private var operation: Task<Void, Never>?
     @State private var authentication: LAContext?
 
+    // Design reference: Voiid Ui/Chat/LinkedDevicesScreen.swift (LinkBrowserSheet).
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 24) {
+                Group {
                     if linked {
-                        Image(systemName: "checkmark.shield.fill")
-                            .font(.system(size: 56)).foregroundStyle(VoiidColor.primary)
-                        Text("Browser linked").font(.title2.bold())
-                        Text("You can remove its access at any time in Linked Devices.")
-                            .foregroundStyle(VoiidColor.textSecondary)
-                        Button("Done") { dismiss() }.buttonStyle(.borderedProminent).tint(VoiidColor.primary)
+                        linkedStep
                     } else if let preview {
-                        Image(systemName: "laptopcomputer").font(.system(size: 48)).foregroundStyle(VoiidColor.primary)
-                        Text("Link this browser?").font(.title2.bold())
-                        Text(preview.device_name).font(.headline)
-                        VStack(spacing: 12) {
-                            Text("Check this code matches your browser")
-                                .font(.subheadline).foregroundStyle(VoiidColor.textSecondary)
-                            Text(preview.verification_code).font(.title2.monospacedDigit().bold())
-                                .accessibilityLabel("Verification code: \(preview.verification_code)")
-                        }
-                        .padding().frame(maxWidth: .infinity)
-                        .background(VoiidColor.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-                        Text("This browser will be able to send and receive messages as you. Only approve a QR code on your own computer. Never link a code sent by someone else.")
-                            .font(.body).foregroundStyle(VoiidColor.textSecondary)
-                        Button(action: approve) {
-                            HStack {
-                                if busy { ProgressView().tint(.white) }
-                                Text(busy ? "Confirming…" : "Confirm and Link")
-                            }.frame(maxWidth: .infinity, minHeight: 44)
-                        }
-                        .buttonStyle(.borderedProminent).tint(VoiidColor.primary).disabled(busy)
-                        Button("Scan a Different Code", action: reset).disabled(busy)
+                        confirmStep(preview)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
                     } else {
-                        Text("Scan the code on Voiid Web")
-                            .font(.title2.bold())
-                        Text("Open Voiid Web on your computer, then point your camera at its QR code.")
-                            .foregroundStyle(VoiidColor.textSecondary)
-                        if cameraAllowed {
-                            BrowserCamera(isScanning: active && scenePhase == .active && !busy && error == nil,
-                                          onCode: scan, onUnavailable: { error = "Camera unavailable. Check camera access in Settings and try again." })
-                                .frame(height: 320)
-                                .clipShape(RoundedRectangle(cornerRadius: 24))
-                                .overlay { Image(systemName: "viewfinder").font(.system(size: 190, weight: .ultraLight)).foregroundStyle(.white.opacity(0.85)).allowsHitTesting(false) }
-                                .accessibilityLabel("Camera for scanning a Voiid Web QR code")
-                        }
-                        if busy { ProgressView("Checking browser…").tint(VoiidColor.primary) }
-                        Text("Scanning does not grant access. You will confirm the browser on the next screen.")
-                            .font(.footnote).foregroundStyle(VoiidColor.textSecondary)
-                    }
-                    if let error {
-                        Text(error).foregroundStyle(VoiidColor.error).font(.callout).accessibilityAddTraits(.updatesFrequently)
-                        if preview == nil {
-                            Button("Try Again") { reset(); operation = Task { await requestCamera() } }
-                            Button("Open Settings") {
-                                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-                            }
-                        }
+                        scanStep
                     }
                 }
-                .multilineTextAlignment(.center).padding(24)
+                .padding(.horizontal, VoiidSpacing.lg)
+                .padding(.vertical, VoiidSpacing.md)
+                .animation(.snappy, value: preview?.verification_code)
             }
-            .softTopEdgeEffect()
-            .background(VoiidColor.background).foregroundStyle(VoiidColor.textPrimary)
-            .navigationTitle("Link a Browser").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { cancel(); dismiss() }.disabled(busy && preview != nil) } }
+            .softScrollEdge()
+            .background(VoiidColor.background.ignoresSafeArea())
+            .foregroundStyle(VoiidColor.textPrimary)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { cancel(); dismiss() }.disabled(busy && preview != nil)
+                }
+            }
         }
+        .tint(VoiidColor.accentInk)
         .interactiveDismissDisabled(busy)
         .task { active = true; await requestCamera() }
         .onDisappear { cancel() }
+    }
+
+    // MARK: Step 1 — scan
+
+    private var scanStep: some View {
+        VStack(spacing: VoiidSpacing.lg) {
+            VStack(spacing: 6) {
+                Text("Link a Browser")
+                    .font(.system(.title2, design: .rounded, weight: .bold))
+                Text("Open Voiid Web on your computer and scan the QR code it shows.")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(VoiidColor.textSecondary)
+            }
+            .multilineTextAlignment(.center)
+
+            ZStack {
+                Color.black
+                if cameraAllowed {
+                    BrowserCamera(isScanning: active && scenePhase == .active && !busy && error == nil,
+                                  onCode: scan,
+                                  onUnavailable: { error = "Camera unavailable. Check camera access in Settings and try again." })
+                        .accessibilityLabel("Camera for scanning a Voiid Web QR code")
+                    ScanBrackets(inset: 28, color: VoiidColor.primary)
+                        .padding(.vertical, 26)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                    if busy {
+                        ProgressView("Checking browser…").tint(.white).foregroundStyle(.white)
+                            .padding(VoiidSpacing.md)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                } else {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .accessibilityHidden(true)
+                }
+            }
+            .aspectRatio(1, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+
+            if let error {
+                VStack(spacing: VoiidSpacing.sm) {
+                    Text(error)
+                        .font(.system(.callout, design: .rounded))
+                        .foregroundStyle(VoiidColor.error)
+                        .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.updatesFrequently)
+                    HStack(spacing: VoiidSpacing.md) {
+                        Button("Try Again") { reset(); operation = Task { await requestCamera() } }
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        }
+                    }
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                }
+            }
+
+            Label("Only link computers you own", systemImage: "lock.fill")
+                .font(.system(.footnote, design: .rounded))
+                .foregroundStyle(VoiidColor.textSecondary)
+            Text("Scanning does not grant access. You will confirm the browser on the next screen.")
+                .font(.system(.footnote, design: .rounded))
+                .foregroundStyle(VoiidColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    // MARK: Step 2 — confirm
+
+    private func confirmStep(_ preview: DeviceDirectoryService.LinkPreview) -> some View {
+        VStack(spacing: VoiidSpacing.lg) {
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: 40))
+                .foregroundStyle(VoiidColor.accentInk)
+                .frame(width: 84, height: 84)
+                .background(VoiidColor.accentTint, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .padding(.top, VoiidSpacing.lg)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 6) {
+                Text("Link \(preview.device_name)?")
+                    .font(.system(.title2, design: .rounded, weight: .bold))
+                Text("Check this code matches the one on your computer.")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(VoiidColor.textSecondary)
+            }
+            .multilineTextAlignment(.center)
+
+            Text(preview.verification_code)
+                .font(.system(size: 40, weight: .semibold, design: .monospaced))
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
+                .padding(.horizontal, VoiidSpacing.lg)
+                .padding(.vertical, VoiidSpacing.md)
+                .background(VoiidColor.surfaceCard, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .accessibilityLabel("Verification code: \(preview.verification_code.map(String.init).joined(separator: " "))")
+
+            Text("This browser will be able to send and receive messages as you. If the codes don't match, or someone sent you this code, cancel.")
+                .font(.system(.footnote, design: .rounded))
+                .foregroundStyle(VoiidColor.textSecondary)
+                .multilineTextAlignment(.center)
+
+            if let error {
+                Text(error)
+                    .font(.system(.callout, design: .rounded))
+                    .foregroundStyle(VoiidColor.error)
+                    .multilineTextAlignment(.center)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+
+            Button(action: approve) {
+                HStack(spacing: 8) {
+                    if busy { ProgressView().tint(.white) }
+                    Text(busy ? "Confirming…" : "Codes Match — Link")
+                }
+                .font(.system(.body, design: .rounded, weight: .semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .prominentAction()
+            .disabled(busy)
+
+            Button("Scan a Different Code", action: reset)
+                .font(.system(.subheadline, design: .rounded))
+                .disabled(busy)
+        }
+    }
+
+    // MARK: Step 3 — linked
+
+    private var linkedStep: some View {
+        VStack(spacing: VoiidSpacing.lg) {
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(VoiidColor.accentInk)
+                .padding(.top, VoiidSpacing.xl)
+            VStack(spacing: 6) {
+                Text("Browser Linked")
+                    .font(.system(.title2, design: .rounded, weight: .bold))
+                Text("You can remove its access at any time in Linked Devices.")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(VoiidColor.textSecondary)
+            }
+            .multilineTextAlignment(.center)
+            Button {
+                dismiss()
+            } label: {
+                Text("Done")
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .prominentAction()
+        }
     }
 
     private func requestCamera() async {

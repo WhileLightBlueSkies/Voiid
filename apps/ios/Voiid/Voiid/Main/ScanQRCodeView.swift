@@ -308,7 +308,8 @@ struct QRActionButtonStyle: ButtonStyle {
 /// `inset` pulls all four toward the centre — that is the capture gesture: the frame closing
 /// on what it caught, which reads as deliberate where a scale on the whole window would just
 /// look like a zoom.
-private struct ScanBrackets: View {
+/// Shared with Link a Browser, so both scanners frame a code the same way.
+struct ScanBrackets: View {
     var inset: CGFloat
     var color: Color
 

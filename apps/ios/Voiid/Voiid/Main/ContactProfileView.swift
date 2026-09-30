@@ -94,6 +94,8 @@ struct ContactProfileView: View {
                 // 10pt reads as one continuous page; at 20 each card floated as its own
                 // screen. Calls and Settings have no reference equivalent and keep their
                 // place at the end, before the danger zone.
+                // THE REFERENCE'S ORDER, exactly (Voiid Ui ContactScreen): identity, actions,
+                // contact details, encryption, about, media, block/report, footer.
                 VStack(spacing: 10) {
                     quickActions
                     contactDetailsCard
@@ -101,13 +103,12 @@ struct ContactProfileView: View {
                     aboutCard
                     sharedMediaCard
                     callHistoryCard
-                    settingsCard
                     dangerCard
+                    versionNote
+                        .padding(.top, VoiidSpacing.sm)
                 }
-                // 20pt gutters: 24 left the cards floating in a wide margin on a 390pt phone.
-                // 16pt gutters, the reference's `VoiidSpacing.md`.
                 .padding(.horizontal, VoiidSpacing.md)
-                .padding(.top, VoiidSpacing.md)
+                .padding(.top, 10)
                 .padding(.bottom, VoiidSpacing.xl)
                 // SKELETON TO CONTENT IS A CROSSFADE, NOT A CUT.
                 //
@@ -152,8 +153,15 @@ struct ContactProfileView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .scrollIndicators(.hidden)
+        .softTopEdgeEffect()
+        // THE REFERENCE'S CHROME: two floating circles over the page rather than the system
+        // bar, so the page starts at the avatar. The system bar is hidden, and swipe-back is
+        // restored explicitly — hiding the back button otherwise kills the edge swipe.
+        .overlay(alignment: .top) { floatingHeader }
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .voiidInteractiveSwipeBack()
         // The system's own chevron and tint. The forced-white version was correct while a
         // dark photograph sat behind the bar; on the flat ground it is now white-on-light —
         // the one control that must always be findable would be invisible.
@@ -240,21 +248,26 @@ struct ContactProfileView: View {
         .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title, conversationId: conversation.id) }
         .sheet(isPresented: $showAllCalls) {
             NavigationStack {
-                List(allCalls, id: \.id) { entry in
-                    callRow(entry)
-                        .listRowBackground(VoiidColor.surfaceCard)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(allCalls.enumerated()), id: \.element.id) { index, entry in
+                            if index > 0 { callDivider }
+                            callRow(entry)
+                        }
+                    }
+                    .glassCard()
+                    .padding(VoiidSpacing.md)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
                 .background(VoiidColor.background)
-                .navigationTitle("Calls")
+                .navigationTitle("Calls with \(firstName)")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { showAllCalls = false }
                     }
                 }
             }
+            .presentationDetents([.medium, .large])
         }
         .confirmationDialog("Clear this chat?", isPresented: $showClearChatConfirm,
                             titleVisibility: .visible) {
@@ -375,7 +388,8 @@ struct ContactProfileView: View {
                 //
                 // Copying the number without the layout it compensates for is how a value
                 // that is correct in one place becomes wrong in another.
-                .padding(.top, VoiidSpacing.md)
+                // Clears the floating header, as in the reference.
+                .padding(.top, 52)
 
             HStack(spacing: 6) {
                 Text(displayName)
@@ -389,22 +403,88 @@ struct ContactProfileView: View {
                 // says nothing. It goes in the day the field exists.
             }
 
-            // NO PRESENCE LINE. The reference shows "Online / Last seen recently", but this
-            // screen has never fetched presence — it is a profile read, not a live
-            // subscription — and inventing a status here would either be a guess or a lie.
-            //
-            // The chat header already carries it, live, where it belongs.
-
-            // The handle, which the old full-bleed header buried in a line over the photo.
-            if let handle = profile?.username, !handle.isEmpty {
-                Text("@\(handle)")
+            // PRESENCE, from the same live source as the chat header, and hidden by the same
+            // privacy switch. When nothing is known the line is left out rather than guessed.
+            if let presence {
+                Text(presence.text)
                     .font(VoiidFont.rounded(14))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(presence.online ? VoiidColor.onlineText : VoiidColor.textSecondary)
             }
 
             encryptedPill
         }
         .frame(maxWidth: .infinity)
+    }
+
+    @ObservedObject private var privacy = PrivacySettings.shared
+
+    private var presence: (text: String, online: Bool)? {
+        guard privacy.showOnlineStatus else { return nil }
+        let live = chat.directConversations.first(where: { $0.id == conversation.id })
+        if live?.isOnline == true { return ("Online", true) }
+        if let seen = live?.lastSeenAt { return ("Last seen \(VoiidDate.relative(seen))", false) }
+        return nil
+    }
+
+    /// Back and More, floating over the page — the reference's header.
+    ///
+    /// MORE IS A REAL MENU. The reference draws the button and leaves it empty; here it holds
+    /// the two conversation actions that have no tile of their own, so it is never a dead tap.
+    private var floatingHeader: some View {
+        HStack {
+            Button { Haptics.tap(); dismiss() } label: {
+                circleChrome("chevron.left")
+            }
+            .buttonStyle(SoftPressStyle())
+            .accessibilityLabel("Back")
+
+            Spacer(minLength: 0)
+
+            Menu {
+                Button { showSafetyNumber = true } label: {
+                    Label("Verify safety number", systemImage: "lock.shield")
+                }
+                Button(role: .destructive) { showClearChatConfirm = true } label: {
+                    Label("Clear chat", systemImage: "trash")
+                }
+            } label: {
+                circleChrome("ellipsis")
+            }
+            .accessibilityLabel("More")
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.xs)
+    }
+
+    private func circleChrome(_ icon: String) -> some View {
+        Circle()
+            .fill(VoiidColor.surfaceCard)
+            .frame(width: 38, height: 38)
+            .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+            .overlay {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+            }
+            .contentShape(Circle())
+    }
+
+    /// The reference's footer. It said "You're both using the latest version of Voiid", which
+    /// this app cannot know about the other phone — so the same line states what IS true.
+    private var versionNote: some View {
+        HStack(alignment: .top, spacing: VoiidSpacing.sm) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 13))
+                .foregroundColor(VoiidColor.textSecondary)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(VoiidColor.surfaceCard))
+            Text("Messages and calls with \(firstName) are end-to-end encrypted.\nYour conversations are protected.")
+                .font(VoiidFont.rounded(12.5))
+                .foregroundColor(VoiidColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     /// 88pt, no photo bleed. Falls back to initials on the brand gradient.
@@ -443,42 +523,97 @@ struct ContactProfileView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// FOUR EQUAL TILES — the Voiid Ui reference's `ContactScreen.actions`.
+    ///
+    /// Mute joins Message, Voice call and Video call as the fourth. It used to be a separate
+    /// "Notifications" card near the bottom, which put an action you reach for on this
+    /// contact below their shared media and call history. Muting passes the same test as the
+    /// other three — it is something you do TO this conversation from here — so it sits with
+    /// them, and the tile turns solid while it is on, saying so without opening anything.
     private var quickActions: some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            actionButton("message.fill", "Message", filled: true) { dismiss() }
-            actionButton("phone.fill", "Call", filled: false) { requestCall(.voice) }
-            actionButton("video.fill", "Video", filled: false) { requestCall(.video) }
+        HStack(spacing: 10) {
+            actionTile("message", "Message") { dismiss() }
+            actionTile("phone", "Voice call") { requestCall(.voice) }
+            actionTile("video", "Video call") { requestCall(.video) }
+            muteTile
         }
     }
 
-    private func actionButton(_ icon: String, _ label: String,
-                              filled: Bool, _ tap: @escaping () -> Void) -> some View {
-        Button(action: { Haptics.tap(); tap() }) {
-            VStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .semibold))
-                Text(label)
-                    .font(VoiidFont.rounded(12, .medium))
-            }
-            .foregroundStyle(filled ? VoiidColor.textOnPrimary : VoiidColor.primary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 62)
-            .background {
-                // The PRIMARY action stays solid — glass on the one button you are most
-                // likely to press would make it recede exactly where it should lead. The
-                // secondary two are glass, so the group reads as one family with a clear
-                // first among them.
-                if filled {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(VoiidColor.primary)
-                        .shadow(color: VoiidColor.primary.opacity(0.28), radius: 12, y: 5)
-                }
-            }
-            .glassIfNeeded(!filled, cornerRadius: 18)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    private func actionTile(_ icon: String, _ label: String,
+                            _ tap: @escaping () -> Void) -> some View {
+        Button { Haptics.tap(); tap() } label: {
+            tileLabel(icon: icon, label: label, isActive: false)
         }
         .buttonStyle(SoftPressStyle())
         .accessibilityLabel(label)
+    }
+
+    /// Mute: the system dropdown of durations, opened from the tile. A switch silently picks
+    /// the most extreme mute; a duration lifts on its own. Unmute leads when already muted.
+    ///
+    /// ── THE MENU HANGS OFF AN INVISIBLE UIKIT BUTTON ────────────────────────────
+    /// As a SwiftUI `Menu`, iOS lifted the TILE itself into the menu's presentation and, after
+    /// closing, kept it in that layer — so while the page scrolled the tile lagged and bobbed
+    /// up and down. Here the visible tile is plain SwiftUI and the real `UIMenu` belongs to a
+    /// transparent UIButton laid over it: the same native dropdown, but what gets lifted is
+    /// invisible, and the tile never leaves the scroll.
+    private var muteTile: some View {
+        tileLabel(icon: isMuted ? "bell.slash.fill" : "bell",
+                  label: muteTileLabel, isActive: isMuted)
+            .overlay {
+                NativeMenuButton(menu: muteMenu)
+                    .accessibilityLabel(isMuted ? "Notifications \(muteSubtitle)" : "Mute")
+                    .accessibilityHint("Choose how long to mute")
+            }
+    }
+
+    private var muteMenu: UIMenu {
+        var items: [UIMenuElement] = []
+        if isMuted {
+            items.append(UIAction(title: "Unmute", image: UIImage(systemName: "bell"),
+                                  attributes: .destructive) { _ in unmute() })
+        }
+        let durations = MuteStore.Duration.allCases.map { d in
+            UIAction(title: d == .always ? "Always" : d.title,
+                     image: UIImage(systemName: d == .always ? "bell.slash.fill" : "clock")) { _ in
+                mute(for: d)
+            }
+        }
+        items.append(UIMenu(title: "Mute for", options: .displayInline, children: durations))
+        return UIMenu(children: items)
+    }
+
+    /// Says WHEN it lifts — "Muted" alone leaves the user guessing whether it is an hour or
+    /// forever, which is the problem the durations exist to solve.
+    private var muteTileLabel: String {
+        guard isMuted else { return "Mute" }
+        guard let until = MuteStore.mutedUntil(conversation.id) else { return "Muted" }
+        let hours = max(1, Int((until.timeIntervalSinceNow / 3600).rounded(.up)))
+        return hours < 24 ? "Muted · \(hours)h" : "Muted · \((hours + 23) / 24)d"
+    }
+
+    /// One appearance for all four tiles, so the three buttons and the mute menu cannot drift.
+    private func tileLabel(icon: String, label: String, isActive: Bool) -> some View {
+        VStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundColor(isActive ? VoiidColor.textOnAccent : VoiidColor.accentInk)
+                .contentTransition(.symbolEffect(.replace))
+            Text(label)
+                .font(VoiidFont.rounded(11.5, .medium))
+                .foregroundColor(isActive ? VoiidColor.textOnAccent : VoiidColor.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
+        .background(isActive ? VoiidColor.accent : VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+            .stroke(isActive ? VoiidColor.accent : VoiidColor.divider, lineWidth: 1))
+        .animation(.easeOut(duration: 0.18), value: isActive)
+        .accessibilityAddTraits(isActive ? [.isSelected] : [])
     }
 
     /// The peer's photo reference, preferring the freshly-fetched profile and falling back to
@@ -510,82 +645,57 @@ struct ContactProfileView: View {
     /// status saw it labelled "About" and a user with both lost the status entirely.
     @ViewBuilder
     private var aboutCard: some View {
-        // PARSED ONCE, and every branch below keys off the parsed value rather than the raw
-        // string. Testing the raw string in one place and the parsed one in another is how an
-        // unrecognised value ends up rendering nothing at all: skipped by the status branch
-        // for being unknown, and skipped by the fallback for being non-empty.
+        // The reference's About card: a title and the words, nothing else — and ABSENT when
+        // the person wrote nothing, rather than a stock line they never wrote. Status and bio
+        // are separate server fields; status is parsed against the vocabulary so an
+        // unrecognised value shows as nothing rather than as unvetted text.
         let status = AvailabilityStatus.from(profile?.statusText)
-        let about = profile?.about ?? ""
-        card("About") {
-            if loadState == .loading {
-                // A SKELETON, not a spinner. The card already occupies this space, so a
-                // centred spinner would make the layout jump when text replaces it; two
-                // dimmed bars the height of the real lines keep the geometry identical.
-                VStack(alignment: .leading, spacing: 8) {
-                    Capsule().fill(VoiidColor.textPrimary.opacity(0.08)).frame(height: 14)
-                    Capsule().fill(VoiidColor.textPrimary.opacity(0.08))
-                        .frame(width: 180, height: 14)
-                }
-                .modifier(PulsePlaceholder())
-            } else if loadState == .failed && status == nil && about.isEmpty {
-                // FAILED IS NOT EMPTY. Showing "Hey there! I am using Voiid." here would put
-                // words in this person's mouth that they never wrote, purely because our
-                // request failed — so the failure says so, and offers the retry.
-                HStack(spacing: VoiidSpacing.sm) {
-                    Image(systemName: "wifi.exclamationmark")
-                        .font(.system(size: 14))
-                        .foregroundStyle(VoiidColor.textSecondary)
-                    Text("Couldn't load profile")
-                        .font(VoiidFont.rounded(15, .regular))
-                        .foregroundStyle(VoiidColor.textSecondary)
-                    Spacer(minLength: 0)
-                    Button("Retry") {
-                        Haptics.tap()
-                        Task { await loadProfile() }
-                    }
-                    .font(VoiidFont.rounded(14, .semibold))
-                    .foregroundStyle(VoiidColor.primary)
-                }
-            } else if let availability = status {
-                // A KNOWN STATUS, drawn from the vocabulary rather than printed as whatever
-                // text the column held.
-                //
-                // `status_text` accepted anything until the write path was closed to four
-                // values, so a row could still contain arbitrary text nobody validated and no
-                // report path covers. `AvailabilityStatus.from` returns nil for anything
-                // outside the set, and this branch is skipped — an unrecognised value shows as
-                // no status rather than as unvetted text on a stranger's profile.
-                //
-                // The glyph is the status's own, so "Busy" looks the same here as it does in
-                // the owner's Settings picker.
-                HStack(alignment: .top, spacing: VoiidSpacing.sm) {
-                    Image(systemName: availability.systemImage)
-                        .font(.system(size: 12))
-                        .foregroundColor(availability.tint)
-                        .padding(.top, 3)
-                    Text(availability.label)
-                        .font(VoiidFont.rounded(16, .medium))
-                        .foregroundColor(VoiidColor.textPrimary)
-                    Spacer(minLength: 0)
-                }
-                if !about.isEmpty {
-                    Divider().background(VoiidColor.divider.opacity(0.4))
-                }
-            }
-            if !about.isEmpty {
-                Text(about)
-                    .font(VoiidFont.rounded(16, .regular))
+        let about = (profile?.about ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let aboutShown = about == status?.label ? "" : about
+        if loadState == .loading || loadState == .failed || status != nil || !aboutShown.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("About")
+                    .font(VoiidFont.rounded(16, .semibold))
                     .foregroundColor(VoiidColor.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
+
+                if loadState == .loading && status == nil && aboutShown.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Capsule().fill(VoiidColor.textPrimary.opacity(0.08)).frame(height: 12)
+                        Capsule().fill(VoiidColor.textPrimary.opacity(0.08)).frame(width: 180, height: 12)
+                    }
+                    .modifier(PulsePlaceholder())
+                } else if loadState == .failed && status == nil && aboutShown.isEmpty {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        Text("Couldn't load profile")
+                            .font(VoiidFont.rounded(14))
+                            .foregroundColor(VoiidColor.textSecondary)
+                        Spacer(minLength: 0)
+                        Button("Retry") { Haptics.tap(); Task { await loadProfile() } }
+                            .font(VoiidFont.rounded(14, .semibold))
+                            .foregroundStyle(VoiidColor.primary)
+                    }
+                } else {
+                    if let status {
+                        HStack(spacing: 5) {
+                            Image(systemName: status.systemImage)
+                                .font(.system(size: 11))
+                                .foregroundColor(status.tint)
+                            Text(status.label)
+                                .font(VoiidFont.rounded(14))
+                                .foregroundColor(VoiidColor.textSecondary)
+                        }
+                    }
+                    if !aboutShown.isEmpty {
+                        Text(aboutShown)
+                            .font(VoiidFont.rounded(14))
+                            .foregroundColor(VoiidColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
-            // Only when BOTH are genuinely absent. Previously the default text was shown
-            // whenever `about` was empty, which meant a peer with a real status still read
-            // "Hey there! I am using Voiid." — a message they never wrote.
-            if status == nil && about.isEmpty {
-                Text("Hey there! I am using Voiid.")
-                    .font(VoiidFont.rounded(16, .regular))
-                    .foregroundColor(VoiidColor.textSecondary)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(VoiidSpacing.md)
+            .glassCard()
         }
     }
 
@@ -610,12 +720,18 @@ struct ContactProfileView: View {
     /// the profile was open shows up), expensive enough that it must never sit in `body`.
     private func loadLocalContent() async {
         let convId = conversation.id
-        let media: [MediaRef] = await Task.detached(priority: .userInitiated) {
-            await ChatEngine.shared.messages(conversationId: convId)
-                .compactMap { $0.media }
-                .filter { $0.mime.hasPrefix("image/") || $0.mime.hasPrefix("video/") }
-                .reversed()
-        }.value
+        // LET THE PUSH FINISH FIRST. This used to start on the frame the profile appeared,
+        // so its work competed with the slide-in and the transition stuttered.
+        try? await Task.sleep(for: .milliseconds(320))
+        guard !Task.isCancelled else { return }
+        // From the chat that is ALREADY IN MEMORY (ChatStore holds the open conversation).
+        // `ChatEngine.messages` looked off-main but ChatEngine is @MainActor, so it re-decoded
+        // and re-sorted the whole history on the main thread — the lag on opening a profile
+        // from a long chat.
+        let media: [MediaRef] = chat.messages(for: convId)
+            .compactMap { $0.mediaRef }
+            .filter { $0.mime.hasPrefix("image/") || $0.mime.hasPrefix("video/") }
+            .reversed()
         // Load more than the card shows, so "See all" has something to reveal without a
         // second query. 40 bounds it — a card is not a call log.
         allCalls = Array(LocalStore.callsForConversation(convId).reversed().prefix(40))
@@ -624,33 +740,66 @@ struct ContactProfileView: View {
         recentCalls = calls
     }
 
+    /// The reference's media card: a header that is itself the way in (title, count,
+    /// chevron), then one row of equal squares ending in the overflow count as a tile.
+    /// A "+12" that cannot be tapped is a tease, so it opens the same gallery.
+    @ViewBuilder
     private var sharedMediaCard: some View {
-        card(
-            "Media",
-            accessory: sharedMedia.isEmpty ? nil : AnyView(
-                Button("See all") { Haptics.tap(); showAllMedia = true }
-                    .font(VoiidFont.rounded(13, .medium))
-                    .foregroundColor(VoiidColor.primary)
-            )
-        ) {
-            if sharedMedia.isEmpty {
-                mediaEmptyState
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: VoiidSpacing.sm) {
-                        ForEach(Array(sharedMedia.prefix(8)), id: \.mediaUrl) { ref in
-                            SharedMediaThumb(ref: ref)
-                                .frame(width: 76, height: 76).clipped()
-                                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+        // The reference's card: a header that is itself the way in, then one row of equal
+        // squares ending in the overflow count. Absent when nothing has been shared, as in
+        // the reference.
+        if !sharedMedia.isEmpty {
+            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                Button { Haptics.tap(); showAllMedia = true } label: {
+                    HStack {
+                        Text("Media")
+                            .font(VoiidFont.rounded(16, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+                        Spacer(minLength: 0)
+                        Text("\(sharedMedia.count)")
+                            .font(VoiidFont.rounded(15))
+                            .foregroundColor(VoiidColor.textSecondary)
+                            .monospacedDigit()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(VoiidColor.textSecondary.opacity(0.7))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                let overflow = sharedMedia.count - 4
+                HStack(spacing: 8) {
+                    ForEach(Array(sharedMedia.prefix(overflow > 1 ? 4 : 5)), id: \.mediaUrl) { ref in
+                        Color.clear
+                            .aspectRatio(1, contentMode: .fit)
+                            .overlay { SharedMediaThumb(ref: ref) }
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    if overflow > 1 {
+                        Button { Haptics.tap(); showAllMedia = true } label: {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(VoiidColor.fieldFill)
+                                .aspectRatio(1, contentMode: .fit)
+                                .overlay {
+                                    Text("+\(overflow)")
+                                        .font(VoiidFont.rounded(15, .semibold))
+                                        .foregroundColor(VoiidColor.textPrimary)
+                                        .minimumScaleFactor(0.7)
+                                        .lineLimit(1)
+                                }
+                        }
+                        .buttonStyle(SoftPressStyle())
+                        .accessibilityLabel("See all \(sharedMedia.count) items")
+                    } else if sharedMedia.count < 5 {
+                        ForEach(0..<(5 - sharedMedia.count), id: \.self) { _ in
+                            Color.clear.aspectRatio(1, contentMode: .fit)
                         }
                     }
-                    .padding(.vertical, 1)
                 }
-                // Bleed the strip to the card edge so thumbnails scroll OUT of frame rather
-                // than stopping short of it — the cut edge is what tells the eye it scrolls.
-                .padding(.horizontal, -VoiidSpacing.md)
-                .padding(.leading, VoiidSpacing.md)
             }
+            .padding(VoiidSpacing.md)
+            .glassCard()
         }
     }
 
@@ -734,26 +883,41 @@ struct ContactProfileView: View {
         let handle = profile?.username?.trimmingCharacters(in: .whitespaces)
 
         if (phone?.isEmpty == false) || (handle?.isEmpty == false) {
-            card("Contact") {
+            // THE REFERENCE'S CARD: title inside, rows edge to edge, an inset rule between.
+            // Phone's trailing button messages them; the username's copies it.
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Contact details")
+                    .font(VoiidFont.rounded(16, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.top, VoiidSpacing.md)
+                    .padding(.bottom, VoiidSpacing.sm)
+
                 if let phone, !phone.isEmpty {
-                    detailRow(icon: "phone.fill", label: "Phone", value: phone,
-                              trailingIcon: "phone.arrow.up.right",
-                              trailingLabel: "Call \(phone)") {
-                        pendingCall = .voice
-                        dismiss()
+                    detailRow(icon: "phone", label: "Phone number", value: phone)
+                    if handle?.isEmpty == false {
+                        Rectangle()
+                            .fill(VoiidColor.divider)
+                            .frame(height: 1)
+                            .padding(.leading, 60)
                     }
                 }
                 if let handle, !handle.isEmpty {
-                    if phone?.isEmpty == false {
-                        VoiidRowDivider()
-                    }
-                    detailRow(icon: "at", label: "Username", value: "@\(handle)",
-                              trailingIcon: "message.fill",
-                              trailingLabel: "Message @\(handle)") {
-                        dismiss()
-                    }
+                    detailRow(icon: "at", label: "Username", value: "@\(handle)")
                 }
             }
+            .padding(.bottom, VoiidSpacing.sm)
+            .glassCard()
+        }
+    }
+
+    private func copy(_ value: String, as label: String) {
+        UIPasteboard.general.string = value
+        Haptics.success()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { copiedLabel = label }
+        Task {
+            try? await Task.sleep(for: .seconds(1.6))
+            withAnimation(.easeOut(duration: 0.25)) { copiedLabel = nil }
         }
     }
 
@@ -774,28 +938,17 @@ struct ContactProfileView: View {
     /// ── FEEDBACK ON THE CAUSAL EVENT ────────────────────────────────────────────
     /// Copy fires a success haptic and a toast naming what was copied, on the same frame as
     /// the tap. A copy with no feedback is indistinguishable from a tap that missed.
-    private func detailRow(icon: String, label: String, value: String,
-                           trailingIcon: String, trailingLabel: String,
-                           trailingAction: @escaping () -> Void) -> some View {
-        HStack(spacing: VoiidSpacing.md) {
-            Image(systemName: icon)
-                .font(.system(size: 17, weight: .medium))
-                .foregroundColor(VoiidColor.accentInk)
-                // A fixed column, so the two rows' text starts at the same x whatever the
-                // glyph's own width is.
-                .frame(width: 26)
-
-            Button {
-                UIPasteboard.general.string = value
-                Haptics.success()
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                    copiedLabel = label
-                }
-                Task {
-                    try? await Task.sleep(for: .seconds(1.6))
-                    withAnimation(.easeOut(duration: 0.25)) { copiedLabel = nil }
-                }
-            } label: {
+    /// A detail row: glyph, label, value; tapping the row copies the value.
+    ///
+    /// NO TRAILING BUTTONS (Voiid Ui ContactScreen). The message and copy icons repeated
+    /// actions the screen already has — Message is the first tile, and the row copies.
+    private func detailRow(icon: String, label: String, value: String) -> some View {
+        Button { copy(value, as: label) } label: {
+            HStack(spacing: VoiidSpacing.md) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundColor(VoiidColor.accentInk)
+                    .frame(width: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label)
                         .font(VoiidFont.rounded(13))
@@ -805,112 +958,175 @@ struct ContactProfileView: View {
                         .foregroundColor(VoiidColor.textPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
-                        // Numbers align down the card whatever digits they contain.
                         .monospacedDigit()
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                Spacer(minLength: 0)
             }
-            // Presses on TOUCH-DOWN. `.plain` gives no feedback at all, so a copyable value
-            // read as inert text and nobody discovered it was tappable.
-            .buttonStyle(SoftPressStyle())
-            .accessibilityLabel("\(label), \(value)")
-            .accessibilityHint("Copies to the clipboard")
-
-            Button {
-                Haptics.tap()
-                trailingAction()
-            } label: {
-                Image(systemName: trailingIcon)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(VoiidColor.accentInk)
-                    // A TINTED DISC, not a bare glyph. Floating ink beside text reads as
-                    // decoration; a filled shape reads as a control, which is what tells
-                    // someone this row has a second, different action.
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(VoiidColor.accent.opacity(0.12)))
-                    // 44pt of target around a 34pt disc.
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(SoftPressStyle())
-            .accessibilityLabel(trailingLabel)
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 8)
+        .buttonStyle(RowButtonStyle())
+        .accessibilityLabel("\(label), \(value)")
+        .accessibilityHint("Copies to the clipboard")
     }
 
-    private var seeAllCallsButton: some View {
-        Button {
-            Haptics.tap()
-            showAllCalls = true
-        } label: {
-            Text("See all")
-                .font(VoiidFont.rounded(13, .medium))
-                .foregroundColor(VoiidColor.primary)
-        }
-        .buttonStyle(.plain)
-    }
-
+    /// Calls with this person — the Voiid Ui design, on the real `call_history` table.
+    ///
+    /// The header says how you talk in one line (how many calls, how long in total); the rows
+    /// are the three most recent, because that is what anyone opening a profile after a missed
+    /// call is looking for. A missed call carries Call back: the one row whose obvious next
+    /// action is not "look at it". Hidden when you have only ever texted.
     @ViewBuilder
     private var callHistoryCard: some View {
-        // Hidden entirely when there are none: an empty "Calls" card on a contact you have
-        // only ever texted is an affordance to nothing.
-        if !recentCalls.isEmpty {
-            // "See all" only when there IS more — an accessory that reveals nothing is worse
-            // than none, and the count tells you whether it is worth the tap.
-            card("Calls", accessory: allCalls.count > recentCalls.count
-                 ? AnyView(seeAllCallsButton) : nil) {
-                ForEach(Array(recentCalls.enumerated()), id: \.element.id) { index, entry in
-                    if index > 0 {
-                        Divider().background(VoiidColor.divider.opacity(0.4))
+        if !allCalls.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Calls")
+                            .font(VoiidFont.rounded(16, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+                        Text(callSummary)
+                            .font(VoiidFont.rounded(12.5))
+                            .foregroundColor(VoiidColor.textSecondary)
                     }
+                    Spacer(minLength: 0)
+                    if allCalls.count > 3 {
+                        Button { Haptics.tap(); showAllCalls = true } label: {
+                            HStack(spacing: 3) {
+                                Text("See all")
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .font(VoiidFont.rounded(14, .medium))
+                            .foregroundColor(VoiidColor.accentInk)
+                        }
+                        .buttonStyle(SoftPressStyle())
+                    }
+                }
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.top, VoiidSpacing.md)
+                .padding(.bottom, VoiidSpacing.sm)
+
+                ForEach(Array(allCalls.prefix(3).enumerated()), id: \.element.id) { index, entry in
+                    if index > 0 { callDivider }
                     callRow(entry)
                 }
             }
+            .padding(.bottom, VoiidSpacing.xs)
+            .glassCard()
         }
+    }
+
+    private var callDivider: some View {
+        Rectangle().fill(VoiidColor.divider).frame(height: 1).padding(.leading, 64)
+    }
+
+    private func isMissed(_ entry: LocalStore.CallHistoryEntry) -> Bool {
+        entry.direction == "incoming" && entry.outcome != "answered" && !isRinging(entry)
+    }
+
+    /// Still ringing — not missed yet. See `LocalStore.isRinging`.
+    private func isRinging(_ entry: LocalStore.CallHistoryEntry) -> Bool {
+        LocalStore.isRinging(outcome: entry.outcome, startedAt: entry.startedAt,
+                             endedAt: entry.endedAt, connectedAt: entry.connectedAt)
+    }
+
+    /// Talk time, from when the call connected (not when it started ringing) to when it ended.
+    private func talkSeconds(_ entry: LocalStore.CallHistoryEntry) -> Int {
+        guard entry.outcome == "answered", let ended = entry.endedAt else { return 0 }
+        return max(0, Int(ended.timeIntervalSince(entry.connectedAt ?? entry.startedAt)))
+    }
+
+    /// "4 calls · 35 min talked" — or just the count when nothing connected.
+    private var callSummary: String {
+        let count = allCalls.count == 1 ? "1 call" : "\(allCalls.count) calls"
+        let minutes = allCalls.map(talkSeconds).reduce(0, +) / 60
+        return minutes > 0 ? "\(count) · \(minutes) min talked" : count
     }
 
     private func callRow(_ entry: LocalStore.CallHistoryEntry) -> some View {
-        let incoming = entry.direction == "incoming"
-        let missed = incoming && entry.outcome != "answered"
-        return HStack(spacing: VoiidSpacing.md) {
-            // Same arrow language as the transcript bubble, so the two surfaces teach the
-            // same vocabulary rather than each inventing one.
-            Image(systemName: missed ? "phone.arrow.down.left"
-                                     : (incoming ? "arrow.down.left" : "arrow.up.right"))
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(missed ? VoiidColor.error : VoiidColor.textSecondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 1) {
+        let missed = isMissed(entry)
+        let video = entry.kind == "video"
+        return HStack(spacing: 12) {
+            // The glyph says what kind; the badge says which way; the tint says whether it
+            // connected. Red is never the only signal — the title says "Missed" too.
+            Circle()
+                .fill(missed ? VoiidColor.error.opacity(0.12) : VoiidColor.accent.opacity(0.12))
+                .frame(width: 36, height: 36)
+                .overlay {
+                    Image(systemName: video ? "video.fill" : "phone.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(missed ? VoiidColor.error : VoiidColor.accentInk)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    Image(systemName: missed ? "xmark"
+                          : (entry.direction == "incoming" ? "arrow.down.left" : "arrow.up.right"))
+                        .font(.system(size: 8, weight: .heavy))
+                        .foregroundColor(.white)
+                        .frame(width: 15, height: 15)
+                        .background(Circle().fill(missed ? VoiidColor.error : VoiidColor.accentInk))
+                        .overlay(Circle().stroke(VoiidColor.surfaceCard, lineWidth: 2))
+                        .offset(x: 3, y: 3)
+                }
+
+            VStack(alignment: .leading, spacing: 2) {
                 Text(callTitle(entry))
-                    .font(VoiidFont.rounded(15, .regular))
-                    .foregroundStyle(missed ? VoiidColor.error : VoiidColor.textPrimary)
-                Text(entry.startedAt, style: .date)
-                    .font(VoiidFont.rounded(11, .regular))
-                    .foregroundStyle(VoiidColor.textSecondary)
+                    .font(VoiidFont.rounded(15, .medium))
+                    .foregroundColor(missed ? VoiidColor.error : VoiidColor.textPrimary)
+                Text(entry.startedAt.formatted(.relative(presentation: .named)))
+                    .font(VoiidFont.rounded(12.5))
+                    .foregroundColor(VoiidColor.textSecondary)
             }
-            Spacer()
-            Image(systemName: entry.kind == "video" ? "video.fill" : "phone.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(VoiidColor.placeholder)
+
+            Spacer(minLength: 0)
+
+            if missed {
+                Button {
+                    Haptics.tap()
+                    showAllCalls = false
+                    requestCall(video ? .video : .voice)
+                } label: {
+                    Text("Call back")
+                        .font(VoiidFont.rounded(13, .semibold))
+                        .foregroundColor(VoiidColor.textOnAccent)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
+                        .background(Capsule().fill(VoiidColor.accent))
+                }
+                .buttonStyle(SoftPressStyle())
+            } else {
+                Text(callTrailing(entry))
+                    .font(VoiidFont.rounded(13))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .monospacedDigit()
+            }
         }
-        .padding(.vertical, 3)
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
     }
 
     private func callTitle(_ entry: LocalStore.CallHistoryEntry) -> String {
-        let incoming = entry.direction == "incoming"
+        let medium = entry.kind == "video" ? "video" : "voice"
+        if isMissed(entry) { return entry.outcome == "declined" ? "Declined \(medium) call" : "Missed \(medium) call" }
+        return entry.direction == "incoming" ? "Incoming \(medium)" : "Outgoing \(medium)"
+    }
+
+    /// Duration for a call that connected; otherwise what happened to it.
+    private func callTrailing(_ entry: LocalStore.CallHistoryEntry) -> String {
+        // Ringing, or answered and still going: there is no finished call to describe yet.
+        if isRinging(entry) || (entry.outcome == "answered" && entry.endedAt == nil) { return "Now" }
         switch entry.outcome {
         case "answered":
-            guard let ended = entry.endedAt else { return incoming ? "Incoming" : "Outgoing" }
-            let secs = max(0, Int(ended.timeIntervalSince(entry.startedAt)))
+            let secs = talkSeconds(entry)
+            if secs < 60 { return "\(secs) sec" }
             let mins = secs / 60
-            let duration = mins >= 60
-                ? String(format: "%d:%02d:%02d", mins / 60, mins % 60, secs % 60)
-                : String(format: "%d:%02d", mins, secs % 60)
-            return (incoming ? "Incoming · " : "Outgoing · ") + duration
-        case "declined": return incoming ? "Declined" : "Call declined"
-        case "failed":   return "Call failed"
-        default:         return incoming ? "Missed" : "No answer"
+            return mins < 60 ? "\(mins) min" : "\(mins / 60) hr \(mins % 60) min"
+        case "busy":     return "Busy"
+        case "declined": return "Declined"
+        case "failed":   return "Failed"
+        default:         return "No answer"
         }
     }
 
@@ -920,35 +1136,48 @@ struct ContactProfileView: View {
     /// take on faith. This row is what turns it into something checkable — and it sits above
     /// mute and block because it is the more consequential fact about the conversation.
     private var encryptionCard: some View {
-        card("Encryption") {
-            Button {
-                Haptics.tap(); showSafetyNumber = true
-            } label: {
-                HStack(spacing: VoiidSpacing.md) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(VoiidColor.success)
-                        .frame(width: 24)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("End-to-end encrypted")
-                            .font(VoiidFont.rounded(16, .regular))
-                            .foregroundStyle(VoiidColor.textPrimary)
-                        Text("Tap to verify with a safety number")
-                            .font(VoiidFont.rounded(12, .regular))
-                            .foregroundStyle(VoiidColor.textSecondary)
+        Button {
+            Haptics.tap(); showSafetyNumber = true
+        } label: {
+            HStack(spacing: VoiidSpacing.md) {
+                Circle()
+                    .fill(VoiidColor.accent.opacity(0.10))
+                    .frame(width: 44, height: 44)
+                    .overlay(Circle().stroke(VoiidColor.accent.opacity(0.5), lineWidth: 1))
+                    .overlay {
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(VoiidColor.accentInk)
                     }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(VoiidColor.placeholder)
+                    .padding(.leading, VoiidSpacing.md)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("End-to-end Encrypted")
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundColor(VoiidColor.accentInk)
+                    // Names the person, and still says where to CHECK it: a claim you cannot
+                    // verify is one you have to take on faith.
+                    Text("Messages, calls and media are secured with end-to-end encryption. Only you and \(firstName) can read or listen to them.")
+                        .font(VoiidFont.rounded(12.5))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
                 }
-                .padding(.vertical, 2)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(VoiidColor.textSecondary.opacity(0.7))
             }
-            // SoftPressStyle, not .plain. This row opens the safety-number screen — the
-            // anti-MITM verification, the most consequential control on this page — and it
-            // reacted to a press with nothing at all until the finger lifted.
-            .buttonStyle(SoftPressStyle(scale: 0.98))
+            .padding(.trailing, VoiidSpacing.md)
+            .padding(.vertical, VoiidSpacing.sm)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(SoftPressStyle(scale: 0.98))
+        .glassCard()
+        .accessibilityElement(children: .combine)
+    }
+
+    private var firstName: String {
+        displayName.split(separator: " ").first.map(String.init) ?? displayName
     }
 
     /// Mute, with real durations and real effect.
@@ -966,49 +1195,6 @@ struct ContactProfileView: View {
     ///
     /// A muted conversation still DELIVERS: it lands in Notification Centre and the badge,
     /// without a sound or a banner. Muting means "stop interrupting me", not "hide this".
-    private var settingsCard: some View {
-        card {
-            Menu {
-                if isMuted {
-                    Button(role: .destructive) { unmute() } label: {
-                        Label("Unmute", systemImage: "bell")
-                    }
-                    Divider()
-                }
-                ForEach(MuteStore.Duration.allCases) { d in
-                    Button { mute(for: d) } label: { Text(d.title) }
-                }
-            } label: {
-                HStack(spacing: VoiidSpacing.md) {
-                    Image(systemName: isMuted ? "bell.slash.fill" : "bell")
-                        .font(.system(size: 17))
-                        .foregroundColor(isMuted ? VoiidColor.primary : VoiidColor.textSecondary)
-                        .frame(width: 24)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Notifications")
-                            .font(VoiidFont.rounded(16, .regular))
-                            .foregroundColor(VoiidColor.textPrimary)
-                        // STATES THE CURRENT STATE, and when it ends. "Muted" alone leaves
-                        // the user wondering whether it is for an hour or forever.
-                        Text(muteSubtitle)
-                            .font(VoiidFont.rounded(12))
-                            .foregroundColor(VoiidColor.textSecondary)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(VoiidColor.placeholder)
-                }
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
     private var muteSubtitle: String {
         guard isMuted else { return "On" }
         guard let until = MuteStore.mutedUntil(conversation.id) else { return "Muted" }
@@ -1040,21 +1226,46 @@ struct ContactProfileView: View {
     /// you opened to see someone's photo. The red carries it, and the confirmation catches
     /// the mistake.
     private var dangerCard: some View {
-        card {
-            // CLEAR CHAT LIVES HERE NOW, not in a toolbar overflow menu. It is a destructive
-            // action on the CONVERSATION, and this card is already where the conversation's
-            // destructive actions live — putting it beside Block and Report means one place
-            // to look rather than two, and the chat toolbar loses its last reason to carry an
-            // ellipsis.
-            actionRow("trash.fill", "Clear chat") { showClearChatConfirm = true }
-            Divider().background(VoiidColor.divider.opacity(0.4))
-            actionRow(isBlocked ? "hand.raised.slash.fill" : "hand.raised.fill",
-                      isBlocked ? "Unblock \(displayName)" : "Block \(displayName)") {
-                showBlockConfirm = true
+        // The reference's card: two rows, edge to edge. Clear chat moved to the More menu in
+        // the header — it acts on the conversation, not on the person.
+        VStack(spacing: 0) {
+            Button { Haptics.rigid(); showBlockConfirm = true } label: {
+                dangerRow(icon: isBlocked ? "hand.raised.slash.fill" : "hand.raised.fill",
+                          title: isBlocked ? "Unblock \(firstName)" : "Block \(firstName)",
+                          tint: isBlocked ? VoiidColor.accentInk : VoiidColor.error)
             }
-            Divider().background(VoiidColor.divider.opacity(0.4))
-            actionRow("exclamationmark.bubble.fill", "Report \(displayName)") { showReportConfirm = true }
+            .buttonStyle(RowButtonStyle())
+
+            Rectangle()
+                .fill(VoiidColor.divider)
+                .frame(height: 1)
+                .padding(.leading, 56)
+
+            Button { Haptics.rigid(); showReportConfirm = true } label: {
+                dangerRow(icon: "exclamationmark.bubble.fill",
+                          title: "Report \(firstName)", tint: VoiidColor.error)
+            }
+            .buttonStyle(RowButtonStyle())
         }
+        .glassCard()
+    }
+
+    private func dangerRow(icon: String, title: String, tint: Color) -> some View {
+        HStack(spacing: VoiidSpacing.md) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundColor(tint)
+                .frame(width: 26)
+            Text(title)
+                .font(VoiidFont.rounded(15, .medium))
+                .foregroundColor(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 13)
+        .contentShape(Rectangle())
     }
 
     // MARK: blocking
@@ -1145,27 +1356,26 @@ struct ContactProfileView: View {
         accessory: AnyView? = nil,
         @ViewBuilder _ content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+        // THE TITLE SITS INSIDE THE CARD, as in the Voiid Ui reference: "Contact details",
+        // "About", "Calls" each head their own surface, so a section reads as one object
+        // rather than a caption floating over a box.
+        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
             if title != nil || accessory != nil {
                 HStack(alignment: .firstTextBaseline, spacing: VoiidSpacing.sm) {
                     if let title {
-                        Text(title.uppercased())
-                            .font(VoiidFont.rounded(12, .semibold))
-                            // Caps need positive tracking to stay legible; this is the same
-                            // treatment Apple uses on grouped section headers.
-                            .kerning(0.6)
-                            .foregroundColor(VoiidColor.textSecondary)
+                        Text(title)
+                            .font(VoiidFont.rounded(16, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
                     }
                     Spacer(minLength: 0)
                     accessory
                 }
-                .padding(.horizontal, VoiidSpacing.xs)
             }
-            VStack(alignment: .leading, spacing: VoiidSpacing.md) { content() }
-                .padding(VoiidSpacing.md)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .glassCard()
+            content()
         }
+        .padding(VoiidSpacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard()
     }
 
     private func actionRow(_ icon: String, _ text: String, _ tap: @escaping () -> Void) -> some View {
@@ -1230,5 +1440,24 @@ extension View {
         return self
             .background(VoiidColor.surfaceCard, in: shape)
             .overlay(shape.stroke(VoiidColor.divider, lineWidth: 1))
+    }
+}
+
+/// A transparent UIButton whose tap opens a native `UIMenu`. Laid over a SwiftUI view so the
+/// view keeps its own look while the menu is the system's — see `ContactProfileView.muteTile`.
+struct NativeMenuButton: UIViewRepresentable {
+    let menu: UIMenu
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .custom)
+        button.backgroundColor = .clear
+        button.showsMenuAsPrimaryAction = true
+        button.menu = menu
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        // Rebuilt on every state change so Unmute appears the moment something is muted.
+        button.menu = menu
     }
 }

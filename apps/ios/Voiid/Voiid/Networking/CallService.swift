@@ -249,6 +249,10 @@ final class CallService: NSObject, ObservableObject {
     private var offerTimeoutTask: Task<Void, Never>?
     /// How long a push-rung call may ring without an offer before we give up.
     private static let offerTimeout: Duration = .seconds(30)
+    /// How long a SECOND call waits for the user before we tell its caller "busy". It shared
+    /// the 30s offer timeout, so a caller whose own ring runs 60s was turned away at 30 — to
+    /// them it looked like an instant decline. 45s matches Android's incoming ring cap.
+    private static let waitingCallRing: Duration = .seconds(45)
 
     // MARK: Incoming ring cap
     //
@@ -1635,7 +1639,7 @@ final class CallService: NSObject, ObservableObject {
     private func startWaitingCallTimeout(for callId: String) {
         waitingCallTimeoutTask?.cancel()
         waitingCallTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.offerTimeout)
+            try? await Task.sleep(for: Self.waitingCallRing)
             guard !Task.isCancelled, let self else { return }
             guard let waiting = self.waitingCall, waiting.id == callId else { return }
             NSLog("[VOIID] call waiting: \(callId) unanswered — ending")
@@ -1652,7 +1656,8 @@ final class CallService: NSObject, ObservableObject {
     /// Shared terminal classification for primary, waiting and conference calls.
     /// A local answer without media is a failure; another device's answer is still answered.
     static func finalCallOutcome(outgoing: Bool, connected: Bool, locallyAnswered: Bool,
-                                 declined: Bool, failed: Bool, takenElsewhere: String? = nil)
+                                 declined: Bool, failed: Bool, busy: Bool = false,
+                                 takenElsewhere: String? = nil)
         -> (history: String, callKit: CXCallEndedReason) {
         if let takenElsewhere {
             if takenElsewhere == "answer" { return ("answered", .answeredElsewhere) }
@@ -1660,9 +1665,14 @@ final class CallService: NSObject, ObservableObject {
             return ("declined", .declinedElsewhere)
         }
         if connected { return ("answered", .remoteEnded) }
+        // BUSY is its own outcome: they were on another call. Filing it as "declined" (or,
+        // worse, "failed") told the caller something that did not happen.
+        if busy { return ("busy", .unanswered) }
         if declined { return ("declined", .declinedElsewhere) }
         if locallyAnswered || failed { return ("failed", .failed) }
-        return (outgoing ? "failed" : "missed", .unanswered)
+        // Nobody picked up. For an outgoing call that is "No answer", not a failure: every
+        // unanswered call used to be filed "failed" and read "Call failed" in the chat.
+        return ("missed", .unanswered)
     }
 
     private func clearWaitingCall(sendBusy: Bool, decline: Bool = false,
@@ -2217,8 +2227,9 @@ final class CallService: NSObject, ObservableObject {
         }
         let result = Self.finalCallOutcome(outgoing: call.isOutgoing, connected: everConnected,
             locallyAnswered: localAnswerGiven,
-            declined: pendingEndReason == .declined || pendingEndReason == .busy,
+            declined: pendingEndReason == .declined,
             failed: pendingEndReason == .setupFailed || pendingEndReason == .iceFailed,
+            busy: pendingEndReason == .busy,
             takenElsewhere: takenElsewhere)
         if !fromCallKit { CallManager.shared.endCall(uuid: call.uuid, reason: result.callKit) }
         let outcome = result.history
@@ -2237,9 +2248,10 @@ final class CallService: NSObject, ObservableObject {
         // The missed-call banner. The scheduled request is only a backstop for the app
         // not being alive; when we ARE alive we know the answer right now, so either
         // replace it with an immediate banner or drop it entirely. `outcome` already
-        // encodes every exclusion the banner needs: answered, declined, busy, failed,
-        // and outgoing calls are all something other than "missed".
-        if outcome == "missed" {
+        // encodes every exclusion the banner needs: answered, declined, busy and failed. An
+        // unanswered OUTGOING call is also "missed" now (it reads "No answer"), so direction
+        // is checked too — nobody should get a missed-call alert for a call they placed.
+        if outcome == "missed" && !call.isOutgoing {
             MissedCallNotifier.fireNow(callId: call.id, peerUserId: call.peerUserId,
                                        displayName: call.title, isVideo: call.isVideo,
                                        conversationId: call.conversationId)

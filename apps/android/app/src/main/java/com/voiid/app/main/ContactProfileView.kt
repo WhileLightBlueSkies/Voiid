@@ -13,6 +13,13 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -115,6 +122,9 @@ fun ContactProfileView(
      * to follow, and duplicating either here would let the two paths drift.
      */
     onClearChat: () -> Unit = {},
+    /** "Online" / "Last seen …" from the chat's live source, or null when unknown or hidden
+     *  by the privacy switch. Passed in so the profile and the chat header can never disagree. */
+    presence: Pair<String, Boolean>? = null,
 ) {
     BackHandler { onBack() }
     val context = LocalContext.current
@@ -145,8 +155,9 @@ fun ContactProfileView(
     /** Report flow: the confirmation establishes intent, the sheet collects the reason. */
     var showReportSheet by remember { mutableStateOf(false) }
     var photoUrl by remember { mutableStateOf<String?>(null) }
-    // The four most recent calls with this contact, newest first — same source the transcript's
-    // call bubbles use, asked a different question. Four because the card is a summary, not a log.
+    // Every call with this contact, newest first — same source the transcript's call bubbles
+    // use, asked a different question. The card shows three; See all shows the rest.
+    var showAllCalls by remember { mutableStateOf(false) }
     var recentCalls by remember {
         mutableStateOf<List<com.voiid.app.store.CallHistoryRow>>(emptyList())
     }
@@ -154,7 +165,7 @@ fun ContactProfileView(
         recentCalls = com.voiid.app.store.LocalStore
             .callsForConversation(context, conversation.id)
             .sortedByDescending { it.startedAt }
-            .take(4)
+            .take(40)
     }
 
     // Real profile: full name + @username from the backend; the phone number from
@@ -320,318 +331,291 @@ fun ContactProfileView(
         )
     }
 
+    // Shared media — real, from the message store, loaded off the composition thread.
+    var sharedMedia by remember(conversation.id) {
+        mutableStateOf<List<com.voiid.app.net.ChatEngine.MediaRef>>(emptyList())
+    }
+    LaunchedEffect(conversation.id) {
+        sharedMedia = withContext(Dispatchers.IO) {
+            com.voiid.app.net.ChatEngine.get(context).messages(conversation.id)
+                .mapNotNull { it.media }
+                .filter { it.mime.startsWith("image/") || it.mime.startsWith("video/") }
+                .reversed()
+        }
+    }
+    val firstName = conversation.title.split(" ").firstOrNull().orEmpty().ifBlank { conversation.title }
+    var showMore by remember { mutableStateOf(false) }
+
+    // THE VOIID UI REFERENCE (ContactScreen), section for section and in its order: identity,
+    // four tiles, contact details, encryption, about, media, block/report, footer — on a flat
+    // ground, with two floating circles for chrome. Mirrors iOS ContactProfileView.
     Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
-        // A TINTED GROUND, not flat. The cards are translucent — over a single flat colour
-        // there is nothing to show through and they render as grey slabs, wasting the effect.
-        // A soft wash of the brand colour under the top of the scroll gives them something to
-        // sit on. Mirrors iOS.
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(520.dp)
-                .background(
-                    // 0.08, not 0.16. That value was tuned for iOS, where a real backdrop
-                    // BLUR softens the tint before it reaches the eye. Android has no blur
-                    // here, so the same alpha rendered as a flat purple wash behind the
-                    // cards. Halved, it does what it is for — giving the translucent edges
-                    // something to pick up — without colouring the page.
-                    Brush.verticalGradient(
-                        listOf(VoiidColor.primary.copy(alpha = 0.08f), Color.Transparent),
-                    ),
-                ),
-        )
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .statusBarsPadding()
+                .padding(horizontal = VoiidSpacing.md)
+                .padding(bottom = VoiidSpacing.xl),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // ── Identity ──
             val resolvedPhoto = photoUrl
                 ?: UserDirectory.photoUrl(conversation.peerUserId ?: "")
                 ?: conversation.photoURL
             Column(
-                Modifier.fillMaxWidth().statusBarsPadding().padding(top = 56.dp, start = 24.dp, end = 24.dp),
+                // Clears the floating header, as in the reference.
+                Modifier.fillMaxWidth().padding(top = 52.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
             ) {
                 ProfileAvatar(
                     photoUrl = resolvedPhoto, name = conversation.title, size = 88.dp,
-                    modifier = Modifier.clip(CircleShape).softClickable {
-                        if (!resolvedPhoto.isNullOrBlank()) viewPhoto = true
-                    },
+                    modifier = Modifier.clip(CircleShape)
+                        .border(2.dp, VoiidColor.accent.copy(alpha = 0.6f), CircleShape)
+                        .softClickable { if (!resolvedPhoto.isNullOrBlank()) viewPhoto = true },
                 )
                 Text(conversation.title, style = VoiidFont.rounded(22, FontWeight.Bold),
-                    color = VoiidColor.textPrimary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                username?.takeIf { it.isNotBlank() }?.let {
-                    Text("@$it", style = VoiidFont.rounded(14, FontWeight.Medium),
-                        color = VoiidColor.textSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    color = VoiidColor.textPrimary, maxLines = 1,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                // Same live source and privacy switch as the chat header; left out when unknown.
+                presence?.let { (text, online) ->
+                    Text(text, style = VoiidFont.rounded(14),
+                        color = if (online) VoiidColor.success else VoiidColor.textSecondary)
                 }
-                (savedNumber ?: fullName?.takeIf { it != conversation.title })?.let {
-                    Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                }
-            }
-
-            Column(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 20.dp, bottom = 32.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
-            ) {
-                // Message / Call / Video, as three equal capsules — NOT one segmented block.
-                // A segmented control reads as "pick a mode"; these are three separate things
-                // you can do. Message leads on brand fill because it is what this screen is
-                // overwhelmingly opened to do.
                 Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.clip(RoundedCornerShape(999.dp))
+                        .background(VoiidColor.accent.copy(alpha = 0.10f))
+                        .border(1.dp, VoiidColor.accent.copy(alpha = 0.45f), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    QuickAction(Icons.AutoMirrored.Filled.Message, "Message", filled = true, modifier = Modifier.weight(1f)) { haptics.tap(); onBack() }
-                    QuickAction(Icons.Default.Call, "Call", filled = false, modifier = Modifier.weight(1f)) { haptics.tap(); onStartCall(CallKind.VOICE); onBack() }
-                    QuickAction(Icons.Default.Videocam, "Video", filled = false, modifier = Modifier.weight(1f)) { haptics.tap(); onStartCall(CallKind.VIDEO); onBack() }
+                    Icon(Icons.Default.Lock, null, tint = VoiidColor.accentInk, modifier = Modifier.size(12.dp))
+                    Text("End-to-end Encrypted", style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.accentInk)
                 }
-
-            // About AND status — two distinct fields. This screen only ever read `bio`, so a
-            // contact who set a status showed nothing at all here.
-            // SKELETON TO CONTENT IS A CROSSFADE, NOT A CUT. The skeleton is deliberately
-            // the same geometry as the real text, so the layout does not move when the
-            // profile lands — but the swap itself was one frame, which made that carefully
-            // matched geometry read as a glitch rather than as content arriving.
-            //
-            // Opacity only: nothing travels, so it is safe under Reduce Motion with no gate.
-            androidx.compose.animation.Crossfade(
-                targetState = profileLoading,
-                animationSpec = tween(220),
-                label = "aboutLoad",
-            ) { loading ->
-            ProfileCard("About") {
-                // DE-DUPLICATE. `status_text` and `bio` are separate server fields, but the
-                // profile editor writes the same string to both — so a user who set "Testing
-                // 2" saw it rendered TWICE with a divider between, which is what the stray
-                // bar under the text was. Identical values collapse to one line.
-                val statusShown = statusText?.takeIf { it.isNotBlank() }
-                val bioShown = bio?.takeIf { it.isNotBlank() && it != statusShown }
-                statusShown?.let { st ->
-                    Row(verticalAlignment = Alignment.Top) {
-                        Icon(
-                            Icons.Default.FormatQuote, null, tint = VoiidColor.primary,
-                            modifier = Modifier.size(15.dp).padding(top = 2.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(st, style = VoiidFont.rounded(16, FontWeight.Medium), color = VoiidColor.textPrimary)
-                    }
-                    if (bioShown != null) {
-                        HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-                    }
-                }
-                bioShown?.let {
-                    Text(it, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
-                }
-                // Only when BOTH are absent — otherwise a peer with a real status was shown
-                // "Hey there! I am using Voiid.", a message they never wrote.
-                if (statusShown == null && bioShown == null && !loading) {
-                    Text("Hey there! I am using Voiid.", style = VoiidFont.rounded(16), color = VoiidColor.textSecondary)
-                }
-                // A SKELETON, not a spinner, and the same shape the real lines will take —
-                // so the card does not resize when text lands. Mirrors iOS.
-                if (loading && statusShown == null && bioShown == null) {
-                    ProfileAboutSkeleton()
-                }
-            }
             }
 
-            // Shared media — REAL recent photos from the message store (never DummyData).
-            // Videos count too — this filtered to `image/` only, so a chat full of videos
-            // reported "no media shared yet".
-            // Loaded OFF the composition thread. `remember` already stopped this recomputing
-            // on every recomposition, but the FIRST pass still decoded the entire message
-            // store inline — which on a chat with real history stalls the frame that opens
-            // the screen. Mirrors the iOS fix.
-            var sharedMedia by remember(conversation.id) {
-                mutableStateOf<List<com.voiid.app.net.ChatEngine.MediaRef>>(emptyList())
+            // ── Four equal tiles; mute is the fourth ──
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ContactTile(Icons.AutoMirrored.Filled.Message, "Message", modifier = Modifier.weight(1f)) { onBack() }
+                ContactTile(Icons.Default.Call, "Voice call", modifier = Modifier.weight(1f)) { onStartCall(CallKind.VOICE); onBack() }
+                ContactTile(Icons.Default.Videocam, "Video call", modifier = Modifier.weight(1f)) { onStartCall(CallKind.VIDEO); onBack() }
+                MuteTile(conversation.id, modifier = Modifier.weight(1f))
             }
-            LaunchedEffect(conversation.id) {
-                sharedMedia = withContext(Dispatchers.IO) {
-                    com.voiid.app.net.ChatEngine.get(context).messages(conversation.id)
-                        .mapNotNull { it.media }
-                        .filter { it.mime.startsWith("image/") || it.mime.startsWith("video/") }
-                        .reversed()
-                }
-            }
-            val recentPhotos = sharedMedia.take(8)
-            ProfileCard(
-                title = "Media",
-                accessory = if (recentPhotos.isEmpty()) null else ({
-                    Text(
-                        "See all", style = VoiidFont.rounded(13, FontWeight.Medium),
-                        color = VoiidColor.primary,
-                        modifier = Modifier.softClickable { showAllMedia = true },
-                    )
-                }),
-            ) {
-                if (recentPhotos.isEmpty()) {
-                    // GHOST TILES, not a floating icon in a void. A centred disc and two lines
-                    // in an otherwise blank card reads as a HOLE in the layout; showing the
-                    // SHAPE the content will take makes the card look designed-but-empty and
-                    // says at a glance what would appear here. Matches iOS `mediaEmptyState`.
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(Icons.Default.Image, Icons.Default.Videocam, Icons.Default.PhotoLibrary)
-                            .forEach { ghost ->
-                                Box(
-                                    Modifier
-                                        .size(76.dp)
-                                        .dashedBorder(VoiidColor.divider, VoiidRadius.md),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        ghost, null,
-                                        tint = VoiidColor.placeholder.copy(alpha = 0.5f),
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                            }
-                    }
-                    Text(
-                        "Photos, videos and files you share with ${conversation.title} appear here.",
-                        style = VoiidFont.rounded(12),
-                        color = VoiidColor.textSecondary,
-                    )
-                } else {
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        recentPhotos.forEach { ref ->
-                            Box(Modifier.size(76.dp).clip(RoundedCornerShape(VoiidRadius.md))) { SharedMediaThumb(ref) }
+
+            // ── Contact details: title inside, rows edge to edge, inset rule between ──
+            // The number is the one from YOUR address book; the server never discloses it.
+            if (!savedNumber.isNullOrBlank() || !username.isNullOrBlank()) {
+                Column(Modifier.fillMaxWidth().glassCard().padding(bottom = VoiidSpacing.sm)) {
+                    Text("Contact details", style = VoiidFont.rounded(16, FontWeight.SemiBold),
+                        color = VoiidColor.textPrimary,
+                        modifier = Modifier.padding(start = VoiidSpacing.md, end = VoiidSpacing.md,
+                            top = VoiidSpacing.md, bottom = VoiidSpacing.sm))
+                    savedNumber?.takeIf { it.isNotBlank() }?.let { phone ->
+                        ContactDetailRow(Icons.Default.Phone, "Phone number", phone)
+                        if (!username.isNullOrBlank()) {
+                            HorizontalDivider(color = VoiidColor.divider, modifier = Modifier.padding(start = 60.dp))
                         }
                     }
-                }
-            }
-
-            // Calls
-            //
-            // The transcript already shows call bubbles, but a profile is where you go to answer
-            // "how often do we actually talk?" — and scrolling a whole chat to reconstruct that is
-            // not an answer. Same data, different question.
-            //
-            // HIDDEN ENTIRELY when there are none: an empty "Calls" card on a contact you have only
-            // ever texted is an affordance to nothing. Mirrors iOS `callHistoryCard`.
-            if (recentCalls.isNotEmpty()) {
-                ProfileCard(title = "Calls") {
-                    recentCalls.forEachIndexed { index, entry ->
-                        if (index > 0) {
-                            HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-                        }
-                        CallHistoryRowView(entry)
+                    username?.takeIf { it.isNotBlank() }?.let { handle ->
+                        ContactDetailRow(Icons.Default.AlternateEmail, "Username", "@$handle")
                     }
                 }
             }
 
-            // Encryption
-            //
-            // A claim of end-to-end encryption the user cannot verify is a claim they have to take
-            // on faith. This row turns it into something checkable — and it sits ABOVE mute and
-            // block because it is the more consequential fact about the conversation.
-            //
-            // 1:1 only: a safety number compares two identity keys, and a group has no single pair.
+            // ── Encryption: opens the safety number, so the claim can be checked ──
             if (conversation.type != ConversationType.GROUP) {
-                ProfileCard(title = "Encryption") {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            // softClickable, not clickable. This row opens the safety-number
-                            // screen — the anti-MITM verification, the most consequential
-                            // control on this page — and it reacted to a press with nothing
-                            // at all. It also carries the haptic on press-DOWN, which is why
-                            // the call no longer fires its own.
-                            .softClickable { showSafetyNumber = true }
-                            .padding(vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+                Row(
+                    Modifier.fillMaxWidth().glassCard().softClickable { showSafetyNumber = true }
+                        .padding(start = VoiidSpacing.md, end = VoiidSpacing.md, top = VoiidSpacing.sm, bottom = VoiidSpacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+                ) {
+                    Box(
+                        Modifier.size(44.dp).clip(CircleShape)
+                            .background(VoiidColor.accent.copy(alpha = 0.10f))
+                            .border(1.dp, VoiidColor.accent.copy(alpha = 0.5f), CircleShape),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Icon(
-                            Icons.Default.Lock,
-                            contentDescription = null,
-                            tint = VoiidColor.success,
-                            modifier = Modifier.size(24.dp),
+                        Icon(Icons.Default.Security, null, tint = VoiidColor.accentInk, modifier = Modifier.size(20.dp))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("End-to-end Encrypted", style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                            color = VoiidColor.accentInk)
+                        Text(
+                            "Messages, calls and media are secured with end-to-end encryption. " +
+                                "Only you and $firstName can read or listen to them.",
+                            style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary,
                         )
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "End-to-end encrypted",
-                                color = VoiidColor.textPrimary,
-                                fontSize = 16.sp,
-                            )
-                            Text(
-                                "Tap to verify with a safety number",
-                                color = VoiidColor.textSecondary,
-                                fontSize = 12.sp,
-                            )
+                    }
+                    Icon(Icons.Default.ChevronRight, null,
+                        tint = VoiidColor.textSecondary.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+                }
+            }
+
+            // ── About: title and the words; absent when the person wrote nothing ──
+            val statusShown = statusText?.takeIf { it.isNotBlank() }
+            val bioShown = bio?.takeIf { it.isNotBlank() && it != statusShown }
+            if (profileLoading || statusShown != null || bioShown != null) {
+                Column(
+                    Modifier.fillMaxWidth().glassCard().padding(VoiidSpacing.md),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text("About", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                    if (profileLoading && statusShown == null && bioShown == null) {
+                        ProfileAboutSkeleton()
+                    }
+                    statusShown?.let { Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) }
+                    bioShown?.let { Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) }
+                }
+            }
+
+            // ── Media: header is the way in, then equal squares ending in "+N" ──
+            if (sharedMedia.isNotEmpty()) {
+                Column(
+                    Modifier.fillMaxWidth().glassCard().padding(VoiidSpacing.md),
+                    verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                ) {
+                    Row(Modifier.fillMaxWidth().softClickable { showAllMedia = true },
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text("Media", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                        Spacer(Modifier.weight(1f))
+                        Text("${sharedMedia.size}", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
+                        Icon(Icons.Default.ChevronRight, null,
+                            tint = VoiidColor.textSecondary.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+                    }
+                    val overflow = sharedMedia.size - 4
+                    val shown = sharedMedia.take(if (overflow > 1) 4 else 5)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        shown.forEach { ref ->
+                            Box(Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(12.dp))) { SharedMediaThumb(ref) }
                         }
-                        Icon(
-                            Icons.Default.ChevronRight,
-                            contentDescription = null,
-                            tint = VoiidColor.placeholder,
-                            modifier = Modifier.size(16.dp),
-                        )
+                        if (overflow > 1) {
+                            Box(
+                                Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(12.dp))
+                                    .background(VoiidColor.fieldFill)
+                                    .softClickable { showAllMedia = true }
+                                    .semantics { contentDescription = "See all ${sharedMedia.size} items" },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("+$overflow", style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                                    color = VoiidColor.textPrimary, maxLines = 1)
+                            }
+                        } else {
+                            repeat(5 - shown.size) { Spacer(Modifier.weight(1f)) }
+                        }
                     }
                 }
             }
 
-            // Settings
-            // One toggle, no trailing dividers. Two HorizontalDividers were left behind when
-            // the rows between them (search-in-chat, wallpaper — both unimplemented) were
-            // removed, so the card drew separators separating nothing.
-            // iOS "Contact" card: tap a value to copy it; the trailing button acts on it.
-            if (!savedNumber.isNullOrBlank() || !username.isNullOrBlank()) ProfileCard {
-                savedNumber?.takeIf { it.isNotBlank() }?.let { phone ->
-                    ContactDetailRow(Icons.Default.Phone, "Phone", phone, Icons.Default.Call, "Call $phone") {
-                        haptics.tap(); onStartCall(CallKind.VOICE)
+            // ── Calls: below Media, as on iOS. Hidden when you have only ever texted. ──
+            // The Voiid Ui design: a header saying how you talk, the three latest calls, Call back
+            // on a missed one, See all for the rest. Mirrors iOS ContactProfileView.
+            if (recentCalls.isNotEmpty()) {
+                Column(Modifier.fillMaxWidth().glassCard().padding(bottom = VoiidSpacing.xs)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = VoiidSpacing.md, end = VoiidSpacing.md,
+                            top = VoiidSpacing.md, bottom = VoiidSpacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Calls", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                            Text(callSummary(recentCalls), style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary)
+                        }
+                        if (recentCalls.size > 3) {
+                            Row(
+                                Modifier.softClickable { showAllCalls = true }.padding(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("See all", style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.accentInk)
+                                Icon(Icons.Default.ChevronRight, null, tint = VoiidColor.accentInk, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                    recentCalls.take(3).forEachIndexed { index, entry ->
+                        if (index > 0) HorizontalDivider(color = VoiidColor.divider, modifier = Modifier.padding(start = 64.dp))
+                        CallHistoryRowView(entry) { kind -> onStartCall(kind); onBack() }
                     }
                 }
-                if (!savedNumber.isNullOrBlank() && !username.isNullOrBlank())
-                    HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-                username?.takeIf { it.isNotBlank() }?.let { handle ->
-                    ContactDetailRow(Icons.Default.AlternateEmail, "Username", "@$handle",
-                        Icons.AutoMirrored.Filled.Message, "Message @$handle") { haptics.tap(); onBack() }
+            }
+
+            // ── Block / Report: two rows edge to edge. Clear chat lives in the More menu. ──
+            Column(Modifier.fillMaxWidth().glassCard()) {
+                DangerRow(
+                    if (isBlocked) Icons.Default.Block else Icons.Default.Block,
+                    if (isBlocked) "Unblock $firstName" else "Block $firstName",
+                    if (isBlocked) VoiidColor.accentInk else VoiidColor.error,
+                ) { haptics.rigid(); confirm = "block" }
+                HorizontalDivider(color = VoiidColor.divider, modifier = Modifier.padding(start = 56.dp))
+                DangerRow(Icons.Default.Report, "Report $firstName", VoiidColor.error) { haptics.rigid(); confirm = "report" }
+            }
+
+            // ── Footer. The reference claims both phones run the latest version, which this
+            // app cannot know about the other phone, so it states what IS true. ──
+            Row(
+                Modifier.fillMaxWidth().padding(top = VoiidSpacing.sm),
+                horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+            ) {
+                Box(Modifier.size(34.dp).clip(CircleShape).background(VoiidColor.surfaceCard),
+                    contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.Lock, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(13.dp))
                 }
-            }
-
-            ProfileCard {
-                MuteRow(conversation.id)
-            }
-
-            // Danger
-            ProfileCard {
-                // CLEAR CHAT LIVES HERE NOW, not in the chat's overflow menu. It is a
-                // destructive action on the CONVERSATION, and this card is already where the
-                // conversation's destructive actions live — one place to look rather than
-                // two, and the chat toolbar loses its last reason to carry an ellipsis.
-                ProfileRow(Icons.Default.Delete, "Clear chat", tint = VoiidColor.error) { haptics.rigid(); confirm = "clear" }
-                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-                ProfileRow(
-        Icons.Default.Block,
-        if (isBlocked) "Unblock ${conversation.title}" else "Block ${conversation.title}",
-        tint = VoiidColor.error,
-    ) { haptics.rigid(); confirm = "block" }
-                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-                ProfileRow(Icons.Default.Report, "Report ${conversation.title}", tint = VoiidColor.error) { haptics.rigid(); confirm = "report" }
+                Text("Messages and calls with $firstName are end-to-end encrypted.\nYour conversations are protected.",
+                    style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary)
             }
         }
+
+        // ── Floating chrome: Back and More ──
+        Row(
+            Modifier.fillMaxWidth().statusBarsPadding()
+                .padding(horizontal = VoiidSpacing.md).padding(top = VoiidSpacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircleChrome(Icons.Default.ChevronLeft, "Back") { onBack() }
+            Spacer(Modifier.weight(1f))
+            Box {
+                CircleChrome(Icons.Default.MoreHoriz, "More") { showMore = true }
+                androidx.compose.material3.DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Verify safety number") },
+                        leadingIcon = { Icon(Icons.Default.Security, null) },
+                        onClick = { showMore = false; showSafetyNumber = true },
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Clear chat", color = VoiidColor.error) },
+                        leadingIcon = { Icon(Icons.Default.Delete, null, tint = VoiidColor.error) },
+                        onClick = { showMore = false; confirm = "clear" },
+                    )
+                }
             }
+        }
     }
 
-    // A full-size back target on the profile surface.
-
-    Box(
-        Modifier
-            .statusBarsPadding()
-            .padding(start = 8.dp, top = 4.dp)
-            .size(48.dp)
-            .clip(CircleShape)
-            .background(VoiidColor.fieldFill)
-            // The one control that must always work, and it had no press state.
-            .softClickable { onBack() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            Icons.Default.ChevronLeft, "Back",
-            tint = VoiidColor.textPrimary,
-            modifier = Modifier.size(24.dp),
-        )
+    if (showAllCalls) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showAllCalls = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(16.dp).clip(RoundedCornerShape(20.dp))
+                    .background(VoiidColor.background).padding(vertical = 12.dp),
+            ) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("Calls with ${conversation.title.split(" ").firstOrNull().orEmpty()}",
+                        style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary,
+                        modifier = Modifier.weight(1f))
+                    Text("Done", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.accentInk,
+                        modifier = Modifier.softClickable { showAllCalls = false }.padding(8.dp))
+                }
+                Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                    recentCalls.forEachIndexed { index, entry ->
+                        if (index > 0) HorizontalDivider(color = VoiidColor.divider, modifier = Modifier.padding(start = 64.dp))
+                        CallHistoryRowView(entry) { kind -> showAllCalls = false; onStartCall(kind); onBack() }
+                    }
+                }
+            }
+        }
     }
-
     if (showAllMedia) {
         SharedMediaSheet(conversationId = conversation.id, onDismiss = { showAllMedia = false })
     }
@@ -670,38 +654,30 @@ fun ContactProfileView(
 }
 
 @Composable
-private fun QuickAction(
-    icon: ImageVector,
-    label: String,
-    filled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-        modifier = modifier
-            .height(62.dp)
-            .clip(RoundedCornerShape(18.dp))
-            // The PRIMARY action stays solid — a translucent fill on the one button you are
-            // most likely to press would make it recede exactly where it should lead.
-            .background(if (filled) VoiidColor.primary else VoiidColor.primary.copy(alpha = 0.10f))
-            .softClickable(onClick = onClick),
+private fun CircleChrome(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(38.dp).clip(CircleShape).background(VoiidColor.surfaceCard)
+            .border(1.dp, VoiidColor.divider, CircleShape)
+            .softClickable(onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            icon, null,
-            tint = if (filled) VoiidColor.textOnPrimary else VoiidColor.primary,
-            modifier = Modifier.size(17.dp),
-        )
-        Spacer(Modifier.height(5.dp))
-        Text(
-            label,
-            style = VoiidFont.rounded(12, FontWeight.Medium),
-            color = if (filled) VoiidColor.textOnPrimary else VoiidColor.primary,
-        )
+        Icon(icon, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(18.dp))
     }
 }
 
+@Composable
+private fun DangerRow(icon: ImageVector, title: String, tint: Color, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().softClickable(onClick = onClick)
+            .padding(horizontal = VoiidSpacing.md, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+        Text(title, style = VoiidFont.rounded(15, FontWeight.Medium), color = tint, maxLines = 1)
+    }
+}
 
 /**
  * A dashed placeholder outline, for empty-state ghost tiles.
@@ -726,9 +702,9 @@ private fun Modifier.dashedBorder(color: Color, radius: androidx.compose.ui.unit
 /**
  * A grouped surface, optionally titled.
  *
- * The TITLE SITS OUTSIDE the card, in caps at 12sp — the platform grouped-list idiom on both
- * OSes. It used to be inside at 15sp semibold, which made every card open with a line of text
- * the same weight as its content; six of those stacked gave the page no hierarchy at all.
+ * THE TITLE SITS INSIDE THE CARD, as in the Voiid Ui reference and on iOS: "Contact details",
+ * "About", "Calls" each head their own surface, so a section reads as one object rather than
+ * a caption floating over a box.
  */
 @Composable
 fun ProfileCard(
@@ -736,29 +712,104 @@ fun ProfileCard(
     accessory: (@Composable () -> Unit)? = null,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        Modifier.fillMaxWidth().glassCard().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
         if (title != null || accessory != null) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 title?.let {
-                    Text(
-                        it.uppercase(),
-                        // Caps need positive tracking to stay legible.
-                        style = VoiidFont.rounded(12, FontWeight.SemiBold).copy(letterSpacing = 0.6.sp),
-                        color = VoiidColor.textSecondary,
-                    )
+                    Text(it, style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
                 }
                 Spacer(Modifier.weight(1f))
                 accessory?.invoke()
             }
         }
-        Column(
-            Modifier.fillMaxWidth().glassCard().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            content = content,
+        content()
+    }
+}
+
+/**
+ * One of the four contact tiles. One appearance for the three buttons and the mute tile, so
+ * they cannot drift apart. Mirrors iOS `ContactProfileView.tileLabel`.
+ */
+@Composable
+private fun ContactTileBody(icon: ImageVector, label: String, active: Boolean, modifier: Modifier) {
+    val shape = RoundedCornerShape(VoiidRadius.lg)
+    Column(
+        modifier
+            .clip(shape)
+            .background(if (active) VoiidColor.accent else VoiidColor.surfaceCard)
+            .border(1.dp, if (active) VoiidColor.accent else VoiidColor.divider, shape)
+            .padding(vertical = 11.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Icon(icon, null, tint = if (active) VoiidColor.textOnAccent else VoiidColor.accentInk,
+            modifier = Modifier.size(19.dp))
+        Text(label, style = VoiidFont.rounded(11.5f, FontWeight.Medium),
+            color = if (active) VoiidColor.textOnAccent else VoiidColor.textPrimary, maxLines = 1)
+    }
+}
+
+@Composable
+private fun ContactTile(icon: ImageVector, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    ContactTileBody(icon, label, active = false,
+        modifier = modifier.softClickable(onClick = onClick).semantics { contentDescription = label })
+}
+
+/**
+ * Mute as the fourth tile, with real durations (MuteStore). A choice, not a toggle: a switch
+ * silently picks the most extreme mute. Unmute leads when already muted, because that is what
+ * someone opening it almost always wants. Replaces the old Notifications row.
+ */
+@Composable
+private fun MuteTile(conversationId: String, modifier: Modifier = Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
+    var muted by remember(conversationId) { mutableStateOf(com.voiid.app.net.MuteStore.isMuted(context, conversationId)) }
+    var until by remember(conversationId) { mutableStateOf(com.voiid.app.net.MuteStore.mutedUntil(context, conversationId)) }
+    var choosing by remember { mutableStateOf(false) }
+    // Says WHEN it lifts; "Muted" alone leaves the user guessing.
+    val label = when {
+        !muted -> "Mute"
+        until == null -> "Muted"
+        else -> {
+            val hours = maxOf(1L, ((until!! - System.currentTimeMillis()) + 3_599_999L) / 3_600_000L)
+            if (hours < 24) "Muted · ${hours}h" else "Muted · ${(hours + 23) / 24}d"
+        }
+    }
+    // A DROPDOWN anchored to the tile, matching iOS.
+    Box(modifier) {
+        ContactTileBody(
+            if (muted) Icons.Default.NotificationsOff else Icons.Default.Notifications, label, active = muted,
+            modifier = Modifier.fillMaxWidth().softClickable { choosing = true }
+                .semantics { contentDescription = if (muted) label else "Mute. Choose how long to mute" },
         )
+        androidx.compose.material3.DropdownMenu(expanded = choosing, onDismissRequest = { choosing = false }) {
+            if (muted) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("Unmute", color = VoiidColor.error) },
+                    trailingIcon = { Icon(Icons.Default.Notifications, null, tint = VoiidColor.error) },
+                    onClick = {
+                        com.voiid.app.net.MuteStore.unmute(context, conversationId); muted = false; until = null; choosing = false
+                    },
+                )
+                HorizontalDivider(color = VoiidColor.divider)
+            }
+            Text("Mute for", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+            com.voiid.app.net.MuteStore.Duration.entries.forEach { d ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(d.title) },
+                    onClick = {
+                        com.voiid.app.net.MuteStore.mute(context, conversationId, d)
+                        muted = true; until = com.voiid.app.net.MuteStore.mutedUntil(context, conversationId); choosing = false
+                        haptics.selection()
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -791,81 +842,117 @@ fun ToggleRow(icon: ImageVector, text: String, checked: Boolean, onChange: (Bool
     }
 }
 
+/** Still ringing — not missed yet. call_history stores SECONDS. */
+private fun isRingingCall(entry: com.voiid.app.store.CallHistoryRow) =
+    com.voiid.app.model.isCallRinging(entry.outcome, entry.startedAt * 1000L, entry.endedAt, entry.connectedAt)
+
+private fun isMissedCall(entry: com.voiid.app.store.CallHistoryRow) =
+    entry.direction == "incoming" && entry.outcome != "answered" && !isRingingCall(entry)
+
+/** Talk time in seconds: from when the call connected to when it ended. Stored in SECONDS. */
+private fun talkSeconds(entry: com.voiid.app.store.CallHistoryRow): Long {
+    if (entry.outcome != "answered") return 0
+    val ended = entry.endedAt ?: return 0
+    return (ended - (entry.connectedAt ?: entry.startedAt)).coerceAtLeast(0)
+}
+
+/** "4 calls · 35 min talked", or just the count when nothing connected. */
+private fun callSummary(calls: List<com.voiid.app.store.CallHistoryRow>): String {
+    val count = if (calls.size == 1) "1 call" else "${calls.size} calls"
+    val minutes = calls.sumOf { talkSeconds(it) } / 60
+    return if (minutes > 0) "$count · $minutes min talked" else count
+}
+
 /**
- * One call in the profile's Calls card.
+ * One call in the profile's Calls card — the Voiid Ui design, mirroring iOS `callRow`.
  *
- * SAME ARROW LANGUAGE as the transcript's call bubble, so the two surfaces teach one vocabulary
- * rather than each inventing its own: down-left for incoming, up-right for outgoing, and a distinct
- * missed-call glyph in the error colour when an incoming call went unanswered.
- *
- * Mirrors iOS `callRow` / `callTitle`.
+ * The glyph says what kind, the small badge says which way, the tint says whether it connected;
+ * red is never the only signal, because the title says "Missed" too. A missed call carries Call
+ * back in place of a duration.
  */
 @Composable
-private fun CallHistoryRowView(entry: com.voiid.app.store.CallHistoryRow) {
-    val incoming = entry.direction == "incoming"
-    val missed = incoming && entry.outcome != "answered"
-
+private fun CallHistoryRowView(entry: com.voiid.app.store.CallHistoryRow, onCallBack: (CallKind) -> Unit) {
+    val missed = isMissedCall(entry)
+    val video = entry.kind == "video"
+    val tint = if (missed) VoiidColor.error else VoiidColor.accentInk
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        Modifier.fillMaxWidth().padding(horizontal = VoiidSpacing.md, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Icon(
-            when {
-                missed -> Icons.Default.PhoneMissed
-                incoming -> Icons.Default.CallReceived
-                else -> Icons.Default.CallMade
-            },
-            contentDescription = null,
-            tint = if (missed) VoiidColor.error else VoiidColor.textSecondary,
-            modifier = Modifier.size(20.dp),
-        )
-        Column(Modifier.weight(1f)) {
+        Box(Modifier.size(36.dp)) {
+            Box(
+                Modifier.size(36.dp).clip(CircleShape)
+                    .background(if (missed) VoiidColor.error.copy(alpha = 0.12f) else VoiidColor.accent.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(if (video) Icons.Default.Videocam else Icons.Default.Call, null, tint = tint, modifier = Modifier.size(16.dp))
+            }
+            Box(
+                Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).size(15.dp)
+                    .clip(CircleShape).background(VoiidColor.surfaceCard).padding(2.dp)
+                    .clip(CircleShape).background(tint),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    when {
+                        missed -> Icons.Default.Close
+                        entry.direction == "incoming" -> Icons.Default.CallReceived
+                        else -> Icons.Default.CallMade
+                    },
+                    null, tint = Color.White, modifier = Modifier.size(8.dp),
+                )
+            }
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            val medium = if (video) "video" else "voice"
             Text(
-                callTitleFor(entry),
-                style = VoiidFont.rounded(15),
+                when {
+                    missed && entry.outcome == "declined" -> "Declined $medium call"
+                    missed -> "Missed $medium call"
+                    entry.direction == "incoming" -> "Incoming $medium"
+                    else -> "Outgoing $medium"
+                },
+                style = VoiidFont.rounded(15, FontWeight.Medium),
                 color = if (missed) VoiidColor.error else VoiidColor.textPrimary,
             )
             Text(
                 // call_history stores SECONDS; the formatter wants millis.
-                android.text.format.DateFormat.format("d MMM yyyy", entry.startedAt * 1000L).toString(),
-                style = VoiidFont.rounded(11),
-                color = VoiidColor.textSecondary,
+                android.text.format.DateUtils.getRelativeTimeSpanString(
+                    entry.startedAt * 1000L, System.currentTimeMillis(),
+                    android.text.format.DateUtils.MINUTE_IN_MILLIS,
+                ).toString(),
+                style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary,
             )
         }
-        Icon(
-            if (entry.kind == "video") Icons.Default.Videocam else Icons.Default.Call,
-            contentDescription = null,
-            tint = VoiidColor.placeholder,
-            modifier = Modifier.size(14.dp),
-        )
-    }
-}
-
-/**
- * "Incoming · 2:14" / "Missed" / "Call declined".
- *
- * The DURATION is what makes an answered call informative — "Incoming" alone says nothing about
- * whether you spoke for ten seconds or an hour. Hours are only shown when there are hours, so the
- * common case stays short.
- */
-private fun callTitleFor(entry: com.voiid.app.store.CallHistoryRow): String {
-    val incoming = entry.direction == "incoming"
-    return when (entry.outcome) {
-        "answered" -> {
-            val ended = entry.endedAt ?: return if (incoming) "Incoming" else "Outgoing"
-            val secs = (ended - entry.startedAt).coerceAtLeast(0)
-            val mins = secs / 60
-            val duration = if (mins >= 60) {
-                String.format("%d:%02d:%02d", mins / 60, mins % 60, secs % 60)
-            } else {
-                String.format("%d:%02d", mins, secs % 60)
+        if (missed) {
+            Box(
+                Modifier.height(30.dp).clip(RoundedCornerShape(999.dp)).background(VoiidColor.accent)
+                    .softClickable { onCallBack(if (video) CallKind.VIDEO else CallKind.VOICE) }
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Call back", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textOnAccent)
             }
-            (if (incoming) "Incoming · " else "Outgoing · ") + duration
+        } else {
+            val secs = talkSeconds(entry)
+            Text(
+                // Ringing, or answered and still going: no finished call to describe yet.
+                if (isRingingCall(entry) || (entry.outcome == "answered" && entry.endedAt == null)) "Now"
+                else when (entry.outcome) {
+                    "answered" -> when {
+                        secs < 60 -> "$secs sec"
+                        secs < 3600 -> "${secs / 60} min"
+                        else -> "${secs / 3600} hr ${(secs / 60) % 60} min"
+                    }
+                    "busy" -> "Busy"
+                    "declined" -> "Declined"
+                    "failed" -> "Failed"
+                    else -> "No answer"
+                },
+                style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+            )
         }
-        "declined" -> if (incoming) "Declined" else "Call declined"
-        "failed" -> "Call failed"
-        else -> if (incoming) "Missed" else "No answer"
     }
 }
 
@@ -1003,23 +1090,24 @@ fun MuteRow(conversationId: String) {
 }
 
 
-/** One Contact-card row: value copies on tap ("Copies to the clipboard"); trailing button acts. */
+/** One Contact-details row, as in the reference: glyph, label, value; tapping copies the value.
+ *  No trailing buttons — Message is the first tile, and the row itself copies. */
 @Composable
-private fun ContactDetailRow(icon: ImageVector, label: String, value: String, actionIcon: ImageVector, actionLabel: String, onAction: () -> Unit) {
+private fun ContactDetailRow(icon: ImageVector, label: String, value: String) {
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Icon(icon, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
-        Column(
-            Modifier.weight(1f).softClickable {
-                clipboard.setText(androidx.compose.ui.text.AnnotatedString(value)); haptics.selection()
-            }.semantics(mergeDescendants = true) { contentDescription = "$label, $value. Copies to the clipboard" },
-        ) {
-            Text(label, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
-            Text(value, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
-        }
-        androidx.compose.material3.IconButton(onClick = onAction) {
-            Icon(actionIcon, actionLabel, tint = VoiidColor.accentInk, modifier = Modifier.size(20.dp))
+    Row(
+        Modifier.fillMaxWidth()
+            .softClickable { clipboard.setText(androidx.compose.ui.text.AnnotatedString(value)); haptics.selection() }
+            .semantics(mergeDescendants = true) { contentDescription = "$label, $value. Copies to the clipboard" }
+            .padding(horizontal = VoiidSpacing.md, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+    ) {
+        Icon(icon, null, tint = VoiidColor.accentInk, modifier = Modifier.width(26.dp).size(20.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+            Text(value, style = VoiidFont.rounded(15, FontWeight.Medium), color = VoiidColor.textPrimary, maxLines = 1)
         }
     }
 }

@@ -219,6 +219,12 @@ object LocalStore {
         Unit
     }
 
+    /** Remove one call row (swipe-to-delete on the Calls tab). Device-local. */
+    suspend fun deleteCall(context: Context, id: String) = withContext(Dispatchers.IO) {
+        runCatching { db(context).calls().delete(id) }
+        Unit
+    }
+
     suspend fun callsForConversation(context: Context, conversationId: String): List<CallHistoryRow> =
         withContext(Dispatchers.IO) {
             runCatching { db(context).calls().forConversation(conversationId) }.getOrDefault(emptyList())

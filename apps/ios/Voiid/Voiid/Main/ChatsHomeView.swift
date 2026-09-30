@@ -24,7 +24,6 @@ struct ChatsHomeView: View {
     @State private var callTarget: VConversation?
     @State private var activeCall: CallRequest?
     @ObservedObject private var layoutPref = ChatLayoutPreference.shared
-    @State private var showCallLog = false
     @State private var showNewChat = false
     /// Search is revealed by the header's magnifier rather than occupying the band always —
     /// see `referenceHeader`.
@@ -57,7 +56,6 @@ struct ChatsHomeView: View {
         showFindByUsername = false
         showRequests = false
         showNewGroup = false
-        showCallLog = false
         openConversation = conv
         notificationRouter.consumeConversation(destination)
         return true
@@ -258,9 +256,6 @@ struct ChatsHomeView: View {
             .onChange(of: chat.directConversations.map(\.id) + chat.groupConversations.map(\.id)) { _, _ in
                 if let destination = notificationRouter.pendingConversation { _ = resolveNotification(destination) }
             }
-            .sheet(isPresented: $showCallLog) {
-                CallLogView()
-            }
             .sheet(isPresented: $showSettings) {
                 // The theme preference is applied at ContentView, and a SHEET is presented in
                 // its own window — so SwiftUI's environment does not carry the override
@@ -317,39 +312,8 @@ struct ChatsHomeView: View {
             }
             .sheet(item: $callTarget) { conv in
                 CallTypeSheet(title: conv.title) { kind in
-                    // Mirrors ChatDetailView.startCall. Without peerUserId (1:1) or
-                    // conversationId (group) CallScreen falls back to the SIMULATED
-                    // path — so calls started from the list must carry them, or they
-                    // silently do nothing real.
-                    let isGroup = conv.type == .group
-                    // 1:1 and group calls both own the audio route, so they're
-                    // mutually exclusive.
-                    guard GroupCallService.canStart() else { return }
-                    // A real group call needs the MLS group to exist: the media key is
-                    // derived from it, and joining without it would hand plaintext to
-                    // the SFU. Fall back rather than silently downgrade.
-                    let conversationId: String? = (isGroup && GroupEngine.shared.hasGroup(conversationId: conv.id))
-                        ? conv.id
-                        : nil
-                    // Load REAL members for the group-call tiles (never DummyData), then start.
-                    Task {
-                        var members: [VMember] = []
-                        if isGroup, let cm = try? await ChatService.shared.members(conversationId: conv.id) {
-                            let myId = TokenStore.shared.userId
-                            members = cm.map { m in
-                                VMember(id: m.userId, name: m.name ?? "VOIID user", phone: "", photoName: nil,
-                                        role: m.role, statusText: nil, isYou: m.userId == myId)
-                            }
-                        }
-                        activeCall = CallRequest(
-                            title: conv.title,
-                            isGroup: isGroup,
-                            members: members,
-                            photoName: conv.photoName,
-                            kind: kind,
-                            peerUserId: isGroup ? nil : conv.peerUserId,
-                            conversationId: conversationId)
-                    }
+                    // Same request as a chat or the Calls tab builds — see CallLauncher.
+                    Task { activeCall = await CallLauncher.request(for: conv, kind: kind) }
                 }
             }
             // ChatStore is injected BY HAND, not inherited. CallScreen needs it (for the
@@ -577,9 +541,6 @@ struct ChatsHomeView: View {
             // is the discoverable path, and the avatar stays as the shortcut for anyone
             // who already knows it.
             Divider()
-            Button { Haptics.tap(); showCallLog = true } label: {
-                Label("Calls", systemImage: "phone")
-            }
             Button { Haptics.tap(); showSettings = true } label: {
                 Label("Settings", systemImage: "gearshape")
             }

@@ -389,8 +389,11 @@ enum LocalStore {
                 let page = try await APIClient().request("GET", "calls/history/missed\(suffix)", as: Page.self)
                 guard TokenStore.shared.userId == account else { return }
                 let clearedThrough = UserDefaults.standard.double(forKey: "voiid.calls-cleared.\(account)")
+                let deleted = Set(UserDefaults.standard.stringArray(forKey: "voiid.calls-deleted.\(account)") ?? [])
                 for call in page.calls {
                     if call.started_at.timeIntervalSince1970 <= clearedThrough { continue }
+                    // Swiped away in Calls — recovery must not resurrect it.
+                    if deleted.contains(call.id) { continue }
                     // Existing local outcomes (answered, declined, taken elsewhere) win.
                     let committed = db.writeCommitted { database in
                         try database.execute(sql: """
@@ -410,6 +413,20 @@ enum LocalStore {
     }
 
     static let callHistoryDidChange = Notification.Name("VoiidCallHistoryDidChange")
+
+    /// Is this call still RINGING rather than missed?
+    ///
+    /// A row is written the moment a call starts, with a provisional outcome of "missed"
+    /// that the answer or the hang-up overwrites (see CallService.beginCallTelemetry). So
+    /// "missed" with no end time is a call that has not finished yet — reading it as missed
+    /// put "Missed call" in the chat while the phone was still ringing.
+    ///
+    /// Bounded: a ring that never recorded an end (the app was killed mid-ring) is treated as
+    /// missed after 90 seconds, longer than any ring lasts, so nothing sits on "ringing" forever.
+    static func isRinging(outcome: String, startedAt: Date, endedAt: Date?, connectedAt: Date?) -> Bool {
+        outcome == "missed" && endedAt == nil && connectedAt == nil
+            && Date().timeIntervalSince(startedAt) < 90
+    }
 
     @discardableResult
     static func recordCall(id: String, conversationId: String?, peerUserId: String?,
@@ -531,9 +548,27 @@ enum LocalStore {
         }
     }
 
+    /// Delete one call row. Backs swipe-to-delete in the Calls tab.
+    ///
+    /// The id is remembered (per account, newest 500) because missed-call recovery re-fetches
+    /// from the server with INSERT OR IGNORE — without the tombstone, a deleted missed call
+    /// would reappear on the next foreground.
+    static func deleteCall(id: String) {
+        callWriteLock.lock(); defer { callWriteLock.unlock() }
+        guard db.writeCommitted({ database in
+            try database.execute(sql: "DELETE FROM call_history WHERE id = ?", arguments: [id])
+        }) else { return }
+        var pending = UserDefaults.standard.dictionary(forKey: pendingCallKey) ?? [:]
+        if pending.removeValue(forKey: id) != nil { UserDefaults.standard.set(pending, forKey: pendingCallKey) }
+        let key = "voiid.calls-deleted.\(TokenStore.shared.userId ?? "signed-out")"
+        let tombstones = (UserDefaults.standard.stringArray(forKey: key) ?? []) + [id]
+        UserDefaults.standard.set(Array(tombstones.suffix(500)), forKey: key)
+        NotificationCenter.default.post(name: callHistoryDidChange, object: nil)
+    }
+
     /// A row of the global call log. Distinct from [CallHistoryEntry] because it carries the
     /// conversation and peer the transcript version does not need.
-    struct CallLogEntry: Identifiable {
+    struct CallLogEntry: Identifiable, Hashable {
         let id: String
         let conversationId: String?
         let peerUserId: String?
@@ -548,7 +583,11 @@ enum LocalStore {
         var incoming: Bool { direction == "incoming" }
         /// Missed means it RANG and was never answered. A call the user declined was
         /// answered-by-a-human-decision and must not sit in the missed filter.
-        var missed: Bool { incoming && outcome != "answered" && outcome != "declined" }
+        var missed: Bool { incoming && outcome != "answered" && outcome != "declined" && !ringing }
+        /// Still ringing — not missed yet. See `LocalStore.isRinging`.
+        var ringing: Bool {
+            LocalStore.isRinging(outcome: outcome, startedAt: startedAt, endedAt: endedAt, connectedAt: connectedAt)
+        }
 
         /// Seconds, or nil when the call never connected.
         var duration: TimeInterval? {

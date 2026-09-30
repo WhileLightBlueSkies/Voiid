@@ -43,7 +43,11 @@ async function api<T = any>(path: string, body?: unknown, method = body === unde
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
   if (response.status === 401 && state?.auth) { await erase(); throw new Error('This browser was signed out. Link it again from your phone.'); }
   if (!response.ok) {
-    const error = new Error(response.status === 429 ? 'Too many requests. Wait a little and retry.' : response.status === 404 ? 'This link or item has expired.' : 'The server could not complete this request.');
+    // Say WHY when the server says why. "Could not complete this request" for a server that has
+    // browser linking switched off sent people looking for an outage that was not there.
+    const code = await response.clone().json().then((b: any) => b?.code, () => undefined);
+    const error = new Error(code === 'web_linking_unavailable' ? 'Linking a browser is not switched on for this Voiid server yet.'
+      : response.status === 429 ? 'Too many requests. Wait a little and retry.' : response.status === 404 ? 'This link or item has expired.' : 'The server could not complete this request.');
     Object.assign(error, { status: response.status }); throw error;
   }
   return response.json() as Promise<T>;

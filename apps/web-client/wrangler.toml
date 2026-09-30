@@ -1,0 +1,11 @@
+# Cloudflare Pages project for Voiid Web. Deploy steps: CLOUDFLARE.md.
+name = "voiid-messenger"   # NOT "voiid-web": that project is the voiid.app marketing site
+compatibility_date = "2026-09-01"
+pages_build_output_dir = "dist"
+
+[vars]
+# The exact public origin, no trailing slash. MUST equal VOIID_WEB_ORIGIN on the relay
+# (voiid-ws) — the relay refuses a browser socket whose Origin differs.
+VOIID_WEB_ORIGIN = "https://web.voiid.app"
+VOIID_API_UPSTREAM = "https://api.voiid.app"
+VOIID_WS_UPSTREAM = "https://api.voiid.app/ws"

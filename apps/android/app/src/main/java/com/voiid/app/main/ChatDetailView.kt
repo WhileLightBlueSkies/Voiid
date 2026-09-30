@@ -687,6 +687,14 @@ fun ChatDetailView(
                     // Same delegation as the call above: the chat owns the store, so the
                     // profile asks rather than reaching for it.
                     onClearChat = { showDetails = false; chat.clearChat(conversation.id) },
+                    presence = (chat.directConversations.firstOrNull { it.id == conversation.id } ?: conversation).let { live ->
+                        when {
+                            !com.voiid.app.model.PrivacySettings.showOnlineStatus(context) -> null
+                            live.isOnline -> "Online" to true
+                            live.lastSeenAt != null -> "Last seen ${VoiidDate.relative(live.lastSeenAt!!)}" to false
+                            else -> null
+                        }
+                    },
                 )
             }
         }

@@ -148,7 +148,13 @@ struct SocialProfileView: View {
         .fullScreenCover(item: $openIndex.asIdentifiable()) { boxed in
             ClipFullscreenView(startIndex: boxed.value, feed: pagerFeed)
                 .navigationTransition(.zoom(sourceID: zoomID(boxed.value), in: zoom))
+                // ALL THREE objects the player reads, explicitly. This cover passed only
+                // `creators`, and a profile reached from outside the Clips tab (a community,
+                // a game, a chat) has no ClipsEngine above it — so opening a clip here crashed
+                // the app the moment the player read like state. Same set as ClipShare.
+                .environmentObject(ClipsEngine.shared)
                 .environmentObject(creators)
+                .environmentObject(session)
         }
     }
 

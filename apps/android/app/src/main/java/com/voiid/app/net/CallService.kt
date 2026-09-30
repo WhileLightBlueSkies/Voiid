@@ -2244,7 +2244,9 @@ object CallManager {
         // anything that never connected is a miss, which is the whole point of the log.
         val outcome = when {
             s.connectedAtMs != null || reason == "answered-elsewhere" -> "answered"
-            reason in setOf("declined", "busy", "declined-elsewhere") -> "declined"
+            // BUSY is its own outcome — they were on another call, which is not a decline.
+            reason == "busy" -> "busy"
+            reason in setOf("declined", "declined-elsewhere") -> "declined"
             s.accepted || reason in setOf("ice-failed", "ice-closed", "setup-failed", "ring-failed", "unavailable") -> "failed"
             else -> "missed"
         }

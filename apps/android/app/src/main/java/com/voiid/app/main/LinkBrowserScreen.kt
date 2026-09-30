@@ -1,5 +1,14 @@
 package com.voiid.app.main
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Lock
+import com.voiid.app.ui.components.softClickable
 import android.Manifest
 import android.app.Activity
 import android.app.KeyguardManager
@@ -170,85 +179,130 @@ fun LinkBrowserScreen(onClose: () -> Unit) {
         }
     }
 
-    BackupScaffold(title = "Link a Browser", onBack = { if (!(busy && preview != null)) onClose() }) {
+    // Design reference: Voiid Ui/Chat/LinkedDevicesScreen.swift (LinkBrowserSheet).
+    BackHandler { if (!(busy && preview != null)) onClose() }
+    Column(
+        Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().navigationBarsPadding(),
+    ) {
+        Box(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 16.dp)) {
+            Text(
+                "Cancel", style = VoiidFont.rounded(17), color = VoiidColor.accentInk.copy(alpha = if (busy && preview != null) 0.4f else 1f),
+                modifier = Modifier.align(Alignment.CenterStart)
+                    .softClickable(enabled = !(busy && preview != null)) { operation?.cancel(); onClose() },
+            )
+        }
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             val current = preview
             when {
                 linked -> {
-                    Icon(Icons.Filled.VerifiedUser, null, tint = VoiidColor.primary, modifier = Modifier.size(56.dp))
-                    Text("Browser linked", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
-                    Text("You can remove its access at any time in Linked Devices.",
-                        style = VoiidFont.rounded(16), color = VoiidColor.textSecondary, textAlign = TextAlign.Center)
-                    PrimaryAction("Done", busy = false, onClick = onClose)
+                    Spacer(Modifier.height(24.dp))
+                    Icon(Icons.Filled.VerifiedUser, null, tint = VoiidColor.accentInk, modifier = Modifier.size(56.dp))
+                    Title("Browser Linked", "You can remove its access at any time in Linked Devices.")
+                    PrimaryPill("Done", modifier = Modifier.fillMaxWidth(), onClick = onClose)
                 }
                 current != null -> {
-                    Icon(Icons.Filled.Laptop, null, tint = VoiidColor.primary, modifier = Modifier.size(48.dp))
-                    Text("Link this browser?", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
-                    Text(current.device_name, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-                    Column(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                            .background(VoiidColor.primary.copy(alpha = 0.08f)).padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Text("Check this code matches your browser", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
-                        Text(current.verification_code,
-                            style = VoiidFont.rounded(22, FontWeight.Bold).copy(fontFamily = FontFamily.Monospace, letterSpacing = 2.sp),
-                            color = VoiidColor.textPrimary,
-                            modifier = Modifier.semantics { contentDescription = "Verification code: ${current.verification_code}" })
-                    }
-                    Text("This browser will be able to send and receive messages as you. Only approve a QR code on your own computer. Never link a code sent by someone else.",
-                        style = VoiidFont.rounded(16), color = VoiidColor.textSecondary, textAlign = TextAlign.Center)
-                    PrimaryAction(if (busy) "Confirming…" else "Confirm and Link", busy = busy, onClick = ::approve)
-                    TextButton(onClick = ::reset, enabled = !busy) {
-                        Text("Scan a Different Code", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.primary)
-                    }
+                    Spacer(Modifier.height(12.dp))
+                    Box(
+                        Modifier.size(84.dp).clip(RoundedCornerShape(22.dp)).background(VoiidColor.accentTint),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.Filled.Laptop, null, tint = VoiidColor.accentInk, modifier = Modifier.size(40.dp)) }
+                    Title("Link ${current.device_name}?", "Check this code matches the one on your computer.")
+                    Text(
+                        current.verification_code,
+                        style = VoiidFont.rounded(40, FontWeight.SemiBold).copy(fontFamily = FontFamily.Monospace),
+                        color = VoiidColor.textPrimary,
+                        maxLines = 1,
+                        modifier = Modifier.clip(RoundedCornerShape(18.dp)).background(VoiidColor.surfaceCard)
+                            .padding(horizontal = 24.dp, vertical = 16.dp)
+                            .semantics { contentDescription = "Verification code: ${current.verification_code.toList().joinToString(" ")}" },
+                    )
+                    Text(
+                        "This browser will be able to send and receive messages as you. If the codes don't match, or someone sent you this code, cancel.",
+                        style = VoiidFont.rounded(13), color = VoiidColor.textSecondary, textAlign = TextAlign.Center,
+                    )
+                    error?.let { Text(it, style = VoiidFont.rounded(15), color = VoiidColor.error, textAlign = TextAlign.Center) }
+                    PrimaryPill(if (busy) "Confirming…" else "Codes Match — Link", modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = ::approve)
+                    Text("Scan a Different Code", style = VoiidFont.rounded(15), color = VoiidColor.accentInk,
+                        modifier = Modifier.softClickable(enabled = !busy, onClick = ::reset))
                 }
                 else -> {
-                    Text("Scan the code on Voiid Web", style = VoiidFont.rounded(22, FontWeight.Bold),
-                        color = VoiidColor.textPrimary, textAlign = TextAlign.Center)
-                    Text("Open Voiid Web on your computer, then point your camera at its QR code.",
-                        style = VoiidFont.rounded(16), color = VoiidColor.textSecondary, textAlign = TextAlign.Center)
-                    if (cameraAllowed) {
-                        Box(
-                            Modifier.fillMaxWidth().height(320.dp).clip(RoundedCornerShape(24.dp)).background(Color.Black)
-                                .semantics { contentDescription = "Camera for scanning a Voiid Web QR code" },
-                            contentAlignment = Alignment.Center,
-                        ) {
+                    Title("Link a Browser", "Open Voiid Web on your computer and scan the QR code it shows.")
+                    Box(
+                        Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(28.dp)).background(Color.Black)
+                            .semantics { contentDescription = "Camera for scanning a Voiid Web QR code" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (cameraAllowed) {
                             CameraFeed(
                                 scanning = resumed && !busy && error == null,
                                 onCamera = {},
                                 onDecoded = ::scan,
                                 onError = { error = "Camera unavailable. Check camera access in Settings and try again." },
                             )
-                            Icon(Icons.Filled.QrCodeScanner, null, tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(190.dp))
+                            ScanCorners(VoiidColor.primary, Modifier.fillMaxSize().padding(28.dp))
+                            if (busy) Row(
+                                Modifier.clip(RoundedCornerShape(14.dp)).background(Color.Black.copy(alpha = 0.55f)).padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                                Text("Checking browser…", style = VoiidFont.rounded(15), color = Color.White)
+                            }
+                        } else {
+                            Icon(Icons.Filled.QrCodeScanner, null, tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(34.dp))
                         }
                     }
-                    if (busy) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        CircularProgressIndicator(color = VoiidColor.primary, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-                        Text("Checking browser…", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
+                    error?.let { message ->
+                        Text(message, style = VoiidFont.rounded(15), color = VoiidColor.error, textAlign = TextAlign.Center)
+                        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                            Text("Try Again", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.accentInk,
+                                modifier = Modifier.softClickable {
+                                    reset()
+                                    if (!cameraAllowed) permissionLauncher.launch(Manifest.permission.CAMERA)
+                                })
+                            Text("Open Settings", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.accentInk,
+                                modifier = Modifier.softClickable {
+                                    context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
+                                })
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Filled.Lock, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(13.dp))
+                        Text("Only link computers you own", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
                     }
                     Text("Scanning does not grant access. You will confirm the browser on the next screen.",
                         style = VoiidFont.rounded(13), color = VoiidColor.textSecondary, textAlign = TextAlign.Center)
                 }
             }
-            error?.let { message ->
-                Text(message, style = VoiidFont.rounded(15), color = VoiidColor.error, textAlign = TextAlign.Center)
-                if (current == null) {
-                    TextButton(onClick = {
-                        reset()
-                        if (!cameraAllowed) permissionLauncher.launch(Manifest.permission.CAMERA)
-                    }) { Text("Try Again", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.primary) }
-                    TextButton(onClick = {
-                        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
-                    }) { Text("Open Settings", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.primary) }
-                }
-            }
         }
+    }
+}
+
+@Composable
+private fun Title(title: String, subtitle: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary, textAlign = TextAlign.Center)
+        Text(subtitle, style = VoiidFont.rounded(15), color = VoiidColor.textSecondary, textAlign = TextAlign.Center)
+    }
+}
+
+/** Four corner brackets — the iOS scanner's `ScanBrackets`, drawn once. */
+@Composable
+private fun ScanCorners(color: Color, modifier: Modifier) {
+    androidx.compose.foundation.Canvas(modifier) {
+        val arm = 34.dp.toPx(); val w = 4.dp.toPx()
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = w, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        fun corner(x: Float, y: Float, dx: Float, dy: Float) {
+            val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(x, y + dy * arm); lineTo(x, y); lineTo(x + dx * arm, y)
+            }
+            drawPath(path, color, style = stroke)
+        }
+        corner(0f, 0f, 1f, 1f); corner(size.width, 0f, -1f, 1f)
+        corner(0f, size.height, 1f, -1f); corner(size.width, size.height, -1f, -1f)
     }
 }
 

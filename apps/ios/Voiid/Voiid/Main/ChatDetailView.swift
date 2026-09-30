@@ -1387,13 +1387,14 @@ struct CallLogBubble: View {
     let log: VCallLog
     var onCallBack: () -> Void
 
-    private var missed: Bool { log.incoming && !log.answered }
+    /// Not while it is still ringing: the row says "missed" until the call ends.
+    private var missed: Bool { log.incoming && !log.answered && !log.ringing }
 
     /// The call-log arrow. Direction first, medium second: whether it was video is already in
     /// the title text, but whether YOU called THEM is not stated anywhere else.
     private var directionIcon: String {
         if missed { return "phone.arrow.down.left" }          // arrived, unanswered
-        if log.outcome == "declined" { return "phone.down.fill" }
+        if log.outcome == "declined" || log.outcome == "busy" { return "phone.down.fill" }
         return log.incoming ? "arrow.down.left" : "arrow.up.right"
     }
 
@@ -1408,11 +1409,13 @@ struct CallLogBubble: View {
         // "Incoming"/"Outgoing" is stated, not implied. An answered call read only "Voice
         // call" regardless of who placed it, so the transcript could not tell you whether you
         // called them or they called you — the single most useful fact in a call log.
-        if log.answered {
+        // A ringing call reads as what it is — incoming or outgoing — until it ends.
+        if log.answered || log.ringing {
             let medium = log.isVideo ? "video call" : "voice call"
             return (log.incoming ? "Incoming " : "Outgoing ") + medium
         }
         switch log.outcome {
+        case "busy":     return "Busy"
         case "declined": return log.incoming ? "Declined call" : "Call declined"
         case "failed":   return "Call failed"
         default:

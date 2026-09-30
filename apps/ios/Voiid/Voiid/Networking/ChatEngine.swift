@@ -897,7 +897,17 @@ final class ChatEngine {
         // the caller hands the notification to iOS, this process is frozen or killed. A receipt
         // left in flight then never reached the server, and the sender sat on one tick until
         // the recipient opened the app. Whatever does not make it stays queued for next time.
-        await flushPendingDelivered()
+        //
+        // AT MOST TWO SECONDS. The notification waits on this, and on a slow network an
+        // unbounded POST held the banner back until iOS gave up on the extension and showed
+        // the bare "New message" placeholder — no sender, no text. Cut short, the receipt
+        // simply stays queued and goes with the next wake, sync or app open.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.flushPendingDelivered() }
+            group.addTask { try? await Task.sleep(for: .seconds(2)) }
+            await group.next()
+            group.cancelAll()
+        }
         return preview
     }
 

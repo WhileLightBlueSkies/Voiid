@@ -177,7 +177,6 @@ fun ChatsHomeView(
     var tab by remember { mutableStateOf(ChatTab.CHATS) }
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
-    var showCallLog by remember { mutableStateOf(false) }
     var showNewChat by remember { mutableStateOf(false) }
     /** Set by the menu so the sheet knows whether to build a GROUP, independent of the tab. */
     var forceGroup by remember { mutableStateOf(false) }
@@ -246,7 +245,6 @@ fun ChatsHomeView(
             onNewGroup = { forceGroup = true; showNewChat = true },
             onFindByUsername = { showFindByUsername = true },
             onScanCode = { showScanner = true },
-            onOpenCallLog = { showCallLog = true },
             onOpenSettings = { settingsNav.push("settings") },
         )
         Tabs(tab) { haptics.selection(); tab = it }
@@ -427,22 +425,6 @@ fun ChatsHomeView(
         }
     }
 
-    // Calls — fullscreen dialog, same pattern as Settings below.
-    if (showCallLog) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showCallLog = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            CallLogScreen(
-                chat = chat,
-                onBack = { showCallLog = false },
-                // Close FIRST, then open the chat — leaving the dialog up would push the
-                // conversation behind it.
-                onOpenConversation = { conv -> showCallLog = false; onOpenConversation(conv) },
-            )
-        }
-    }
-
     // ONE window for the whole settings cluster: pushes preserve hierarchy (Storage can
     // open Backup ON TOP of itself and Back returns to Storage), and Back from the root
     // route is what closes back to Chats.
@@ -612,22 +594,8 @@ fun ChatsHomeView(
         CallTypeSheet(
             title = c.title,
             onPick = { kind ->
-                val isGroup = c.type == ConversationType.GROUP
-                // Load REAL members for the group-call tiles (never DummyData), then start.
-                scope.launch {
-                    val members = if (isGroup) {
-                        runCatching { com.voiid.app.net.ChatService(context).fetchMembers(c.id) }
-                            .getOrDefault(emptyList())
-                            .map { com.voiid.app.model.VMember(id = it.userId, name = it.name, phone = "", role = com.voiid.app.model.MemberRole.MEMBER, isYou = it.isYou) }
-                    } else emptyList()
-                    onStartCall(
-                        CallRequest(
-                            title = c.title, isGroup = isGroup, members = members,
-                            photoName = c.photoName, kind = kind,
-                            conversationId = c.id, peerUserId = c.peerUserId,
-                        ),
-                    )
-                }
+                // Same request the Calls tab builds — see callRequestFor in CallLogScreen.kt.
+                scope.launch { onStartCall(callRequestFor(context, c, kind)) }
                 callTarget = null
             },
             onDismiss = { callTarget = null },
@@ -1038,7 +1006,6 @@ private fun Header(
     onNewGroup: () -> Unit,
     onFindByUsername: () -> Unit,
     onScanCode: () -> Unit,
-    onOpenCallLog: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -1081,9 +1048,6 @@ private fun Header(
                             menuOpen = false; haptics.tap(); onNewGroup()
                         }
                         VoiidMenuDivider()
-                        VoiidMenuItem("Calls", Icons.Default.Call) {
-                            menuOpen = false; haptics.tap(); onOpenCallLog()
-                        }
                         VoiidMenuItem("Settings", Icons.Default.Settings) {
                             menuOpen = false; haptics.tap(); onOpenSettings()
                         }

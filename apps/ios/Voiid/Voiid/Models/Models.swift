@@ -40,13 +40,18 @@ struct VCallLog: Hashable {
     let callId: String
     var isVideo: Bool
     var incoming: Bool
-    /// answered | missed | declined | failed — the vocabulary written by CallService.
+    /// answered | missed | declined | busy | failed — the vocabulary written by CallService.
+    /// "missed" on an outgoing call means nobody picked up ("No answer").
     var outcome: String
     var startedAt: Date
     var endedAt: Date?
     var connectedAt: Date? = nil
 
     var answered: Bool { outcome == "answered" }
+    /// Still ringing — not missed yet. See `LocalStore.isRinging`.
+    var ringing: Bool {
+        LocalStore.isRinging(outcome: outcome, startedAt: startedAt, endedAt: endedAt, connectedAt: connectedAt)
+    }
     /// Seconds of connected time; nil unless the call was actually answered.
     var durationSeconds: Int? {
         guard answered, let endedAt else { return nil }

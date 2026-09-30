@@ -462,6 +462,10 @@ abstract class CallHistoryDao {
     @Query("DELETE FROM call_history")
     abstract fun clearAll()
 
+    /** Backs swipe-to-delete on the Calls tab. */
+    @Query("DELETE FROM call_history WHERE id = :id")
+    abstract fun delete(id: String)
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertIgnore(row: CallHistoryRow)
 

@@ -10,4 +10,7 @@ await copyFile('../web/public/voiid-logomark.svg', 'dist/mark.svg');
 // Self-hosted, Latin subset: the CSP allows fonts from this origin only (font-src 'self').
 for (const font of ['plus-jakarta-sans-latin', 'geist-latin', 'geist-mono-latin']) await copyFile(`fonts/${font}.woff2`, `dist/fonts/${font}.woff2`);
 await writeFile('dist/index.html', '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="referrer" content="no-referrer"><title>Voiid Web</title><link rel="icon" href="/mark.svg"><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script type="module" src="/app.js"></script></body></html>');
-console.log('Built Voiid Web. Start with npm start --workspace @voiid/web-client.');
+// Cloudflare Pages "advanced mode": dist/_worker.js serves the site and proxies /api/v1 and
+// /live, mirroring server.mjs. Harmless locally — server.mjs never serves it.
+await copyFile('cloudflare/worker.js', 'dist/_worker.js');
+console.log('Built Voiid Web. Start with npm start --workspace @voiid/web-client, or deploy: see CLOUDFLARE.md.');

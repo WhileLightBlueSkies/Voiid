@@ -33,4 +33,16 @@ extension View {
                 .background(.ultraThinMaterial, in: Circle())
         }
     }
+
+    /// The screen's one primary button: Liquid Glass on iOS 26, the bordered-prominent capsule
+    /// it replaced on 18. Tide either way.
+    @ViewBuilder
+    func prominentAction() -> some View {
+        if #available(iOS 26.0, *) {
+            self.buttonStyle(.glassProminent).controlSize(.large).tint(VoiidColor.accent)
+        } else {
+            self.buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                .controlSize(.large).tint(VoiidColor.accent)
+        }
+    }
 }

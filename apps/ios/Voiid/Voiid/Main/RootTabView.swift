@@ -88,7 +88,9 @@ struct RootTabView: View {
 
     // The asset/label ternaries were hardcoded for exactly three cases; with a 4th tab they
     // become switches so a future 5th tab is a compile error to omit, not a silent wrong icon.
-    enum Tab: CaseIterable { case ai, chat, stories, communities, map, games, clips
+    // Calls sits LEFT of Chats, as in the Voiid Ui reference. The app still opens on Chats:
+    // the default is `.chat` by name (`tab`/`barTab` above), not the first visible tab.
+    enum Tab: CaseIterable { case ai, calls, chat, stories, communities, map, games, clips
 
         /// The tabs the bar actually shows, and the order the swipe moves through.
         ///
@@ -102,7 +104,7 @@ struct RootTabView: View {
         static var visible: [Tab] { allCases.filter { shipped.contains($0) } }
 
         /// Main surfaces enabled for the current test round.
-        private static let shipped: Set<Tab> = [.chat, .stories, .communities, .games, .clips]
+        private static let shipped: Set<Tab> = [.chat, .calls, .stories, .communities, .games, .clips]
 
         /// SF Symbols, OUTLINE weight — the inactive state.
         ///
@@ -116,6 +118,7 @@ struct RootTabView: View {
             switch self {
             case .ai:      return "sparkles"
             case .chat:    return "bubble.left.and.bubble.right"
+            case .calls:   return "phone"
             case .stories:     return "circle.dashed"
             case .communities: return "person.3"
             case .map:         return "map"
@@ -131,6 +134,7 @@ struct RootTabView: View {
             switch self {
             case .ai:      return "sparkles"          // no filled variant; weight carries it
             case .chat:    return "bubble.left.and.bubble.right.fill"
+            case .calls:   return "phone.fill"
             case .stories:     return "circle.circle.fill"
             case .communities: return "person.3.fill"
             case .map:         return "map.fill"
@@ -143,6 +147,7 @@ struct RootTabView: View {
             switch self {
             case .ai:      return "AI"
             case .chat:    return "Chats"
+            case .calls:   return "Calls"
             case .stories:     return "Moments"
             case .communities: return "Communities"
             case .map:         return "Map"
@@ -166,6 +171,7 @@ struct RootTabView: View {
 
                 switch t {
                 case .chat:    ChatsHomeView()
+                case .calls:   CallLogView()
                 case .ai:      AIHubView()
                 case .stories: StoriesHomeView()
                 case .map:     MapTabView()

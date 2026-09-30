@@ -524,14 +524,15 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
 @Composable
 private fun CallLogBubble(log: VCallLog, onCallBack: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
-    val missed = log.incoming && !log.answered
+    // Not while it is still ringing: the row says "missed" until the call ends.
+    val missed = log.incoming && !log.answered && !log.ringing
     val onOwnBubble = !log.incoming
 
     // DIRECTION, not medium. Every call drew the same phone glyph, so an incoming call was
     // indistinguishable from an outgoing one — the single most useful fact about a call log
     // was the one thing it did not show. Mirrors iOS `directionIcon`.
     val icon = when {
-        log.outcome == "declined" -> Icons.Default.CallEnd
+        log.outcome == "declined" || log.outcome == "busy" -> Icons.Default.CallEnd
         missed -> Icons.Default.CallMissed
         log.incoming -> Icons.Default.CallReceived
         else -> Icons.Default.CallMade
@@ -550,10 +551,11 @@ private fun CallLogBubble(log: VCallLog, onCallBack: () -> Unit) {
     val title = when {
         // "Incoming"/"Outgoing" in words as well as in the arrow — the glyph carries it at a
         // glance, the word removes any doubt, and it is what a screen reader announces.
-        log.answered -> {
+        log.answered || log.ringing -> {
             val medium = if (log.isVideo) "video call" else "voice call"
             if (log.incoming) "Incoming $medium" else "Outgoing $medium"
         }
+        log.outcome == "busy" -> "Busy"
         log.outcome == "declined" -> if (log.incoming) "Declined call" else "Call declined"
         log.outcome == "failed" -> "Call failed"
         log.incoming -> if (log.isVideo) "Missed video call" else "Missed voice call"
