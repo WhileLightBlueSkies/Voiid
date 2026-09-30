@@ -194,7 +194,8 @@
   /* The single biggest lever on whether a marketing page reads as professional.
    * WhatsApp and Arattai both give a section far more air than a typical app UI
    * would; this is closer to their rhythm than to the app's. */
-  --section-gap: clamp(var(--space-3xl), 6vw + 2rem, 9rem);
+  /* One rhythm for every section on every page: 56px on phones up to 88px on wide screens. */
+  --section-gap: clamp(56px, 4vw + 1.5rem, 88px);
 
   /* ---- Radii — the app's, plus two larger ones for page-scale surfaces ---- */
   --radius-sm: 8px;
@@ -321,7 +322,7 @@ body {
 @media (max-width: 600px) {
   :root {
     --container-pad: 22px;
-    --section-gap: 5rem;
+    --section-gap: 56px;
     --text-display: clamp(3rem, 11.8vw, 3.6rem);
     --text-h1: clamp(2.65rem, 10vw, 3.1rem);
     --text-h2: clamp(2.1rem, 8vw, 2.6rem);

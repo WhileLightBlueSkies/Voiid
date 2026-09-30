@@ -12,7 +12,7 @@ import { PhoneMockup } from '../../components/PhoneMockup';
 export const metadata: Metadata = {
   title: 'Games',
   description:
-    'Four games you can play with a friend from inside the chat. The server referees ' +
+    'Carrom and Ludo, played with a friend from inside the chat. The server referees ' +
     'the match, so game moves are not end-to-end encrypted.',
 };
 
@@ -34,32 +34,26 @@ export default function GamesPage() {
         title={<>Play a friend without leaving the conversation.</>}
         lede={
           <>
-            Four games, played inside the chat you were already having. The invite arrives as
+            Carrom and Ludo, played inside the chat you were already having. The invite arrives as
             an ordinary encrypted message; the match itself is refereed by our server, which
             means the moves are not private — and that is worth being clear about.
           </>
         }
         badges={<E2EEBadge state="refereed" detail="Moves, scores and results" />}
         aside={
-          <PagePhone path={['games', 'game_play']} label="A Hand Cricket match in Voiid, interactive" caption="Live preview · show your fingers" />
+          <PagePhone path={['carrom']} label="A Carrom match in Voiid, interactive" caption="Live preview · tap Strike" />
         }
       />
 
-      <Section hue="games" eyebrow="The catalogue" title="Four games, properly finished">
+      <Section hue="games" eyebrow="The catalogue" title="Two games, properly finished">
         <Grid>
-          <FeatureCard title="Tic Tac Toe" glyph="games" hue="games">
-            The one everybody already knows the rules to. Best of nothing, settled in a minute.
+          <FeatureCard title="Carrom" glyph="games" hue="games">
+            The tabletop classic. Line up the striker, set your power, and pocket your coins
+            before the other side does — the queen included.
           </FeatureCard>
-          <FeatureCard title="Rock Paper Scissors" glyph="games" hue="games">
-            Simultaneous moves, which is exactly the case a referee is needed for — neither
-            phone can be trusted to reveal second.
-          </FeatureCard>
-          <FeatureCard title="Hand Cricket" glyph="games" hue="games">
-            The playground classic. Bat, bowl, and lose your wicket to a matching number.
-          </FeatureCard>
-          <FeatureCard title="Snake" glyph="games" hue="games">
-            Arcade Snake, refereed frame by frame so a modified client cannot simply declare
-            itself the winner.
+          <FeatureCard title="Ludo" glyph="games" hue="games">
+            Up to four players, one dice. The roll happens on the referee, so no phone can
+            quietly decide it always gets a six.
           </FeatureCard>
         </Grid>
       </Section>

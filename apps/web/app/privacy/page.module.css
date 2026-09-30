@@ -43,3 +43,68 @@
 .table tbody tr:last-child td {
   border-bottom: none;
 }
+
+/* ---- motion ---------------------------------------------------------------
+ * Keyed off [data-in], which <InView> sets once the block scrolls into view. */
+
+/* The table: rows slide in one after another, and each badge pops as its row lands. */
+.tableWrap tbody tr {
+  opacity: 0;
+  transform: translateX(-18px);
+  transition:
+    opacity 500ms var(--ease-out) calc(var(--i) * 90ms),
+    transform 600ms var(--ease-spring) calc(var(--i) * 90ms),
+    background-color 200ms ease-out;
+}
+.tableWrap[data-in] tbody tr { opacity: 1; transform: none; }
+.tableWrap tbody td:nth-child(2) > * {
+  scale: 0.6;
+  opacity: 0;
+  transition:
+    scale 500ms var(--ease-spring) calc(var(--i) * 90ms + 220ms),
+    opacity 300ms ease-out calc(var(--i) * 90ms + 220ms);
+}
+.tableWrap[data-in] tbody td:nth-child(2) > * { scale: 1; opacity: 1; }
+.tableWrap tbody tr:hover { background: var(--color-surface-2); }
+
+/* Metadata: each line starts under a black redaction bar that peels off, in turn —
+ * the page literally un-redacting what we hold. */
+.redacted { list-style: none; padding: 0; margin: var(--space-md) 0 var(--space-lg); display: grid; gap: 10px; }
+.redacted li {
+  position: relative;
+  padding-left: 22px;
+}
+.redacted li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--hue-privacy);
+}
+.redacted span {
+  position: relative;
+  display: inline;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  background-image: linear-gradient(var(--color-text), var(--color-text));
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 100% 100%;
+  color: transparent;
+  transition:
+    background-size 700ms var(--ease-in-out) calc(var(--i) * 260ms + 200ms),
+    color 300ms ease-out calc(var(--i) * 260ms + 450ms);
+}
+[data-in] > .redacted span {
+  background-size: 0% 100%;
+  color: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tableWrap tbody tr,
+  .tableWrap tbody td:nth-child(2) > *,
+  .redacted span { transition: none; }
+}

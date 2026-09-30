@@ -85,10 +85,10 @@ const CHAPTERS: Chapter[] = [
     label: 'Games',
     glyph: 'games',
     title: 'Games that live inside your chats.',
-    body: 'Hand Cricket, Snake and friends, one tap from the conversation. The server referees each match, so it sees the moves. That way a tampered app can’t cheat.',
+    body: 'Carrom and Ludo, one tap from the conversation. The server referees each match, so it sees the moves. That way a tampered app can’t cheat.',
     stance: 'public',
-    path: ['games'],
-    tryIt: 'Play Hand Cricket, call the toss',
+    path: ['carrom'],
+    tryIt: 'Tap Strike, then tap your name for Ludo',
     href: '/games',
   },
   {

@@ -7,20 +7,23 @@
  * ========================================================================== */
 
 .device {
-  --bezel: 3.4%;
+  /* iPhone 17 Pro proportions: a ~1.4mm black border inside a thin titanium band,
+   * and a screen that is exactly the 1206×2622 capture — the frame's aspect ratio
+   * is derived from the bezel so the screenshots are never stretched. */
+  --bezel: 2.3%;
   position: relative;
   width: 100%;
-  aspect-ratio: 1206 / 2622;
+  aspect-ratio: 1 / 2.1201; /* 1 / (0.954 × 2622/1206 + 2 × 0.023) */
   padding: var(--bezel);
-  border-radius: 17% / 7.8%;
-  background:
-    linear-gradient(145deg, #3b4448 0%, #15191b 22%, #0b0e0f 60%, #2a3134 100%);
+  border-radius: 16.9% / 7.97%; /* circular: 16.9% of the width */
+  background: #050607;
   box-shadow:
-    inset 0 0 0 1.5px rgba(255, 255, 255, 0.14),
-    inset 0 0 0 5px #050607,
-    0 2px 4px rgba(4, 12, 14, 0.2),
-    0 40px 80px -24px rgba(4, 30, 34, 0.55),
-    0 90px 140px -60px rgba(19, 130, 140, 0.45);
+    0 0 0 1px #6b7478,
+    0 0 0 2.5px #2b3134,
+    0 0 0 3px #8d979b,
+    0 2px 4px rgba(4, 12, 14, 0.22),
+    0 40px 80px -24px rgba(4, 30, 34, 0.45),
+    0 90px 140px -60px rgba(19, 130, 140, 0.35);
   isolation: isolate;
   user-select: none;
   -webkit-user-select: none;
@@ -36,7 +39,7 @@
   overflow: hidden;
   /* cqw here still resolves against .device — an element is never its own
    * container — so this radius tracks the bezel. */
-  border-radius: 12.6cqw;
+  border-radius: 14.6cqw;
   container-type: inline-size;
   background: #f6f8f8;
   transform: translateZ(0);
@@ -52,9 +55,9 @@
   background: linear-gradient(90deg, #0b0e0f, #3a4246);
   z-index: -1;
 }
-.buttonA { left: -0.9%; top: 17%; height: 4%; }
-.buttonB { left: -0.9%; top: 24%; height: 7.5%; }
-.buttonC { right: -0.9%; top: 25%; height: 11%; transform: scaleX(-1); }
+.buttonA { left: -1.3%; top: 17%; height: 4%; }
+.buttonB { left: -1.3%; top: 24%; height: 7.5%; }
+.buttonC { right: -1.3%; top: 25%; height: 11%; transform: scaleX(-1); }
 
 /* ---- layers + transitions ------------------------------------------------ */
 
@@ -366,6 +369,21 @@
 
 /* ---- chrome -------------------------------------------------------------- */
 
+/* The home indicator every real iPhone draws; the simulator captures leave it out. */
+.homeBar {
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: 0.9%;
+  width: 34%;
+  height: 1.25cqw;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.82);
+  pointer-events: none;
+}
+.screen[data-dark] .homeBar { background: rgba(255, 255, 255, 0.85); }
+
 .island {
   position: absolute;
   z-index: 20;
@@ -467,80 +485,9 @@
   .chatScroll, .tabbar { transition: none; }
 }
 
-/* ---- full screen --------------------------------------------------------- */
+/* ---- shell --------------------------------------------------------------- */
 
 .shell {
   position: relative;
   width: 100%;
-}
-
-.fullBtn {
-  position: absolute;
-  z-index: 30;
-  top: -16px;
-  right: -16px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 40px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(10, 34, 36, 0.78);
-  color: #eefaf9;
-  font: 650 13px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 10px 24px -10px rgba(0, 0, 0, 0.6);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  cursor: pointer;
-  transition: transform 160ms cubic-bezier(0.32, 0.72, 0, 1), background-color 160ms ease-out;
-}
-.fullBtn:hover { background: rgba(19, 130, 140, 0.9); }
-.fullBtn:active { transform: scale(0.95); }
-.fullBtn:focus-visible { outline: 2px solid #2ec5cf; outline-offset: 2px; }
-.fullBtn svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-/* Native fullscreen and the iPhone overlay share one layout: the phone as tall as
- * the screen allows, centred on night. */
-.shell[data-full] {
-  display: grid;
-  place-items: center;
-  background: radial-gradient(80% 60% at 50% 0%, #0b3c40, #031214 70%);
-  padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
-}
-.shell[data-full='overlay'] {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  width: 100vw;
-  height: 100dvh;
-  animation: fullIn 320ms cubic-bezier(0.32, 0.72, 0, 1);
-}
-.shell:fullscreen { width: 100vw; height: 100vh; }
-.shell[data-full] .device {
-  width: min(94vw, calc((100dvh - 40px) * 1206 / 2622));
-}
-.shell[data-full] .fullBtn {
-  position: fixed;
-  top: max(16px, env(safe-area-inset-top));
-  right: 16px;
-}
-@keyframes fullIn {
-  from { opacity: 0; transform: scale(0.96); }
-}
-
-@media (max-width: 520px) {
-  .fullBtn { top: -12px; right: -8px; padding: 0 10px; }
-  .fullBtn span { display: none; }
-  .fullBtn { width: 40px; justify-content: center; padding: 0; }
-  .shell[data-full] .fullBtn span { display: inline; }
-  .shell[data-full] .fullBtn { width: auto; padding: 0 14px; }
 }

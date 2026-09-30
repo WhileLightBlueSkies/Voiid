@@ -24,10 +24,10 @@ export const metadata: Metadata = {
  * being built; the copy labels those "in the design build".
  */
 
-const MARQUEE = ['Chats', 'Group calls', 'Live map', 'Moments', 'Communities', 'Hand Cricket', 'Clips', 'Ghost Mode', 'Voiid AI', 'Voice notes'];
+const MARQUEE = ['Chats', 'Group calls', 'Live map', 'Moments', 'Communities', 'Carrom & Ludo', 'Clips', 'Ghost Mode', 'Voiid AI', 'Voice notes'];
 
-const GALLERY_A = ['chats', 'group_video', 'map', 'moments', 'game_play', 'community_detail'];
-const GALLERY_B = ['clips', 'ai_chat', 'convo', 'games', 'map_privacy', 'group_call'];
+const GALLERY_A = ['chats', 'group_video', 'map', 'moments', 'carrom', 'community_detail'];
+const GALLERY_B = ['clips', 'ai_chat', 'convo', 'ludo', 'map_privacy', 'group_call'];
 
 const ENCRYPTED = [
   'Every message, one-to-one and in groups',

@@ -1,4 +1,14 @@
+/*
+ * One 9s timeline drives every moving part. The beats, in % of the loop:
+ *
+ *    0–24   her phone: the message appears, her key lights, the words scramble
+ *   24–46   the sealed packet climbs the wire to the server
+ *   46–62   the server scans it — beam, ring, "no key · can't read"
+ *   62–80   the packet drops to his phone
+ *   80–96   his key lights, the ciphertext resolves back into the message
+ */
 .motif {
+  --loop: 9s;
   width: 100%;
   height: auto;
   max-width: 100%;
@@ -13,6 +23,16 @@
 .bloomIn { stop-color: var(--hue-chat); stop-opacity: 0.26; }
 .bloomOut { stop-color: var(--hue-chat); stop-opacity: 0; }
 
+.bloom {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: breathe var(--loop) var(--ease-in-out) infinite;
+}
+@keyframes breathe {
+  0%, 100% { opacity: 0.75; transform: scale(0.96); }
+  54% { opacity: 1; transform: scale(1.04); }
+}
+
 /* ---- the wire ------------------------------------------------------------ */
 
 .wire {
@@ -20,7 +40,6 @@
   opacity: 0.75;
   animation: crawl 2.6s linear infinite;
 }
-
 @keyframes crawl {
   to { stroke-dashoffset: -32; }
 }
@@ -32,20 +51,84 @@
   stroke: var(--color-text-dim);
   stroke-width: 2;
 }
-
 .deviceScreen {
   fill: var(--hue-chat);
   fill-opacity: 0.14;
   stroke: none;
 }
 
-/* ---- keys. They are the point of the diagram, so they carry the brand hue. */
+/* ---- bubbles: plaintext lines, and the same lines chopped into ciphertext ---- */
+
+.bubbleBox { stroke: none; }
+.bubbleOut .bubbleBox { fill: var(--hue-chat); }
+.bubbleIn .bubbleBox { fill: var(--color-surface); stroke: var(--color-divider); stroke-width: 1; }
+
+.plain line,
+.cipher line {
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.bubbleOut line { stroke: #fff; }
+.bubbleIn line { stroke: var(--color-text-dim); }
+.cipher line { stroke-dasharray: 2 4; }
+
+.bubbleOut { animation: herBubble var(--loop) var(--ease-in-out) infinite; }
+.bubbleOut .plain { animation: herPlain var(--loop) linear infinite; }
+.bubbleOut .cipher { animation: herCipher var(--loop) linear infinite; }
+
+@keyframes herBubble {
+  0% { opacity: 0; transform: translateY(8px); }
+  5%, 24% { opacity: 1; transform: none; }
+  30%, 100% { opacity: 0; transform: translate(12px, -14px) scale(0.6); }
+}
+@keyframes herPlain {
+  0%, 16% { opacity: 1; }
+  20%, 100% { opacity: 0; }
+}
+@keyframes herCipher {
+  0%, 16% { opacity: 0; }
+  20%, 100% { opacity: 1; stroke-dashoffset: 0; }
+}
+
+.bubbleIn { animation: hisBubble var(--loop) var(--ease-in-out) infinite; }
+.bubbleIn .plain { animation: hisPlain var(--loop) linear infinite; }
+.bubbleIn .cipher { animation: hisCipher var(--loop) linear infinite; }
+
+@keyframes hisBubble {
+  0%, 78% { opacity: 0; transform: translate(-12px, -14px) scale(0.6); }
+  84%, 96% { opacity: 1; transform: none; }
+  100% { opacity: 0; }
+}
+@keyframes hisPlain {
+  0%, 87% { opacity: 0; }
+  91%, 100% { opacity: 1; }
+}
+@keyframes hisCipher {
+  0%, 87% { opacity: 1; }
+  91%, 100% { opacity: 0; }
+}
+
+.bubbleOut, .bubbleIn { transform-box: fill-box; transform-origin: center; }
+
+/* ---- keys. They are the point of the diagram, so they carry the brand hue,
+ * and each lights up at the moment it does its work. ------------------------- */
 
 .key {
   fill: none;
   stroke: var(--hue-chat);
   stroke-width: 2.4;
   stroke-linecap: round;
+}
+.keyHer { animation: keyHer var(--loop) var(--ease-in-out) infinite; }
+.keyHis { animation: keyHis var(--loop) var(--ease-in-out) infinite; }
+
+@keyframes keyHer {
+  0%, 9%, 26%, 100% { stroke-width: 2.4; filter: none; }
+  14%, 20% { stroke-width: 3.2; filter: drop-shadow(0 0 6px var(--hue-chat)); }
+}
+@keyframes keyHis {
+  0%, 80%, 97%, 100% { stroke-width: 2.4; filter: none; }
+  85%, 91% { stroke-width: 3.2; filter: drop-shadow(0 0 6px var(--hue-chat)); }
 }
 
 /* ---- server -------------------------------------------------------------- */
@@ -56,61 +139,122 @@
   stroke-width: 2;
   opacity: 0.85;
 }
+.serverSlot { stroke-width: 2; stroke-linecap: round; opacity: 0.45; }
+.led { fill: var(--color-success); stroke: none; animation: blink 1.8s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0.35; } }
 
-.led { fill: var(--color-success); stroke: none; }
-.ledDim { fill: var(--color-text-dim); stroke: none; opacity: 0.5; }
-
-/* ---- padlock ------------------------------------------------------------- */
-
-.lock {
-  stroke: var(--hue-chat);
-  stroke-width: 2.4;
-  fill: none;
+.ledScan {
+  fill: var(--color-text-dim);
+  stroke: none;
+  opacity: 0.5;
+  animation: ledScan var(--loop) linear infinite;
+}
+@keyframes ledScan {
+  0%, 46%, 64%, 100% { fill: var(--color-text-dim); opacity: 0.5; }
+  48%, 52%, 56%, 60% { fill: var(--color-warning); opacity: 1; }
+  50%, 54%, 58%, 62% { opacity: 0.3; }
 }
 
-.lockBody {
-  fill: var(--color-background);
+.beamTrack { stroke: var(--color-text-dim); stroke-width: 2; opacity: 0.4; }
+.beam {
   stroke: var(--hue-chat);
-}
-
-.shackle {
+  stroke-width: 3;
   stroke-linecap: round;
+  stroke-dasharray: 14 60;
+  opacity: 0;
+  animation: beam var(--loop) linear infinite;
+}
+@keyframes beam {
+  0%, 45% { opacity: 0; stroke-dashoffset: 0; }
+  47% { opacity: 1; }
+  62% { opacity: 1; stroke-dashoffset: -220; }
+  64%, 100% { opacity: 0; stroke-dashoffset: -220; }
+}
+
+.relayRing {
+  fill: none;
+  stroke: var(--hue-chat);
+  stroke-width: 2;
+  opacity: 0;
   transform-box: fill-box;
-  transform-origin: 50% 100%;
-  animation: latch 5.2s var(--ease-in-out) infinite;
+  transform-origin: center;
+  animation: ring var(--loop) var(--ease-out) infinite;
+}
+@keyframes ring {
+  0%, 46% { opacity: 0; transform: scale(0.6); }
+  48% { opacity: 0.9; transform: scale(1); }
+  62%, 100% { opacity: 0; transform: scale(2.4); }
 }
 
-/* The shackle lifts and settles once per packet — the visual rhyme is "sealed". */
-@keyframes latch {
-  0%, 62% { transform: translateY(0); }
-  70% { transform: translateY(-5px); }
-  86%, 100% { transform: translateY(0); }
+/* "no key · can't read" — pops beside the server while it looks at the packet. */
+.noKey {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 0% 50%;
+  animation: noKey var(--loop) var(--ease-spring, var(--ease-out)) infinite;
 }
-
-.lockPin { fill: var(--hue-chat); stroke: var(--hue-chat); }
+.noKey rect {
+  fill: var(--color-surface);
+  stroke: var(--color-warning);
+  stroke-width: 1.5;
+}
+.noKeyIcon { fill: none; stroke: var(--color-warning); stroke-width: 2; stroke-linecap: round; }
+.strike { stroke-width: 2.2; }
+.noKeyText {
+  fill: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: var(--weight-medium);
+}
+@keyframes noKey {
+  0%, 48% { opacity: 0; transform: translateX(-8px) scale(0.85); }
+  52%, 64% { opacity: 1; transform: none; }
+  70%, 100% { opacity: 0; transform: translateX(6px); }
+}
 
 /* ---- the packet ---------------------------------------------------------- */
 
 .packet {
-  fill: var(--color-surface);
-  stroke: var(--hue-chat);
-  stroke-width: 2;
-  stroke-linejoin: round;
-  /* Same geometry as the two <path> elements above. Keep them in step. */
+  /* Same geometry as WIRE in LockMotif.tsx. Keep them in step. */
   offset-path: path('M118 232 C 190 232, 190 168, 250 168 C 310 168, 310 232, 382 232');
   offset-rotate: 0deg;
   offset-distance: 0%;
-  animation: travel 5.2s var(--ease-in-out) infinite;
+  animation: travel var(--loop) var(--ease-in-out) infinite;
 }
+.envelope {
+  fill: var(--hue-chat);
+  stroke: var(--hue-chat);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px var(--hue-chat));
+}
+.envelopeFlap { stroke: #fff; stroke-width: 2; stroke-linejoin: round; }
 
 @keyframes travel {
-  0%, 8% { offset-distance: 0%; opacity: 0; }
-  14% { opacity: 1; }
-  76% { offset-distance: 100%; opacity: 1; }
-  84%, 100% { offset-distance: 100%; opacity: 0; }
+  0%, 24% { offset-distance: 0%; opacity: 0; transform: scale(0.4); }
+  28% { offset-distance: 2%; opacity: 1; transform: none; }
+  46%, 62% { offset-distance: 50%; opacity: 1; }
+  54% { transform: scale(1.12); }
+  78% { offset-distance: 100%; opacity: 1; transform: none; }
+  84%, 100% { offset-distance: 100%; opacity: 0; transform: scale(0.4); }
 }
 
-/* ---- labels -------------------------------------------------------------- */
+/* The ciphertext over the packet never holds still: three strings take turns. */
+.scramble text {
+  fill: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0;
+  animation: scramble 0.45s steps(1) infinite;
+}
+.scramble text:nth-child(2) { animation-delay: -0.15s; }
+.scramble text:nth-child(3) { animation-delay: -0.3s; }
+@keyframes scramble {
+  0% { opacity: 1; }
+  33.3%, 100% { opacity: 0; }
+}
+
+/* ---- labels and the step captions ---------------------------------------- */
 
 .label {
   fill: var(--color-text-dim);
@@ -126,22 +270,24 @@
   font-size: 14px;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  opacity: 0.75;
+  opacity: 0;
 }
+.c1 { animation: c1 var(--loop) linear infinite; }
+.c2 { animation: c2 var(--loop) linear infinite; }
+.c3 { animation: c3 var(--loop) linear infinite; }
+@keyframes c1 { 0%, 2% { opacity: 0; } 5%, 36% { opacity: 0.85; } 40%, 100% { opacity: 0; } }
+@keyframes c2 { 0%, 38% { opacity: 0; } 42%, 70% { opacity: 0.85; } 74%, 100% { opacity: 0; } }
+@keyframes c3 { 0%, 72% { opacity: 0; } 76%, 96% { opacity: 0.85; } 100% { opacity: 0; } }
 
 /*
- * The global reduced-motion rule collapses durations, which would leave the packet
- * at its 0% keyframe — invisible, at the left end. Park it mid-flight instead, so
- * the still frame reads as "a sealed thing in transit" rather than as a bug.
+ * Reduced motion: one still frame that tells the whole story — both messages
+ * readable at the ends, the sealed packet mid-wire under the server, and the
+ * server's "no key" tag showing.
  */
 @media (prefers-reduced-motion: reduce) {
-  .packet {
-    animation: none;
-    offset-distance: 46%;
-    opacity: 1;
-  }
-  .wire,
-  .shackle {
-    animation: none;
-  }
+  .motif * { animation: none !important; }
+  .bubbleOut, .bubbleIn, .plain, .noKey, .c2 { opacity: 1; transform: none; }
+  .cipher, .c1, .c3, .beam, .relayRing { opacity: 0; }
+  .packet { offset-distance: 50%; opacity: 1; }
+  .scramble text:first-child { opacity: 1; }
 }

@@ -27,8 +27,6 @@ export function HeroPhone() {
         const y = e.clientY / window.innerHeight - 0.5;
         stage.style.setProperty('--rx', `${(-y * 6).toFixed(2)}deg`);
         stage.style.setProperty('--ry', `${(x * 9).toFixed(2)}deg`);
-        stage.style.setProperty('--px', `${(x * 26).toFixed(1)}px`);
-        stage.style.setProperty('--py', `${(y * 20).toFixed(1)}px`);
       });
     };
     window.addEventListener('pointermove', onMove, { passive: true });
@@ -64,16 +62,12 @@ export function HeroPhone() {
       <div className={`${styles.chip} ${styles.chipC}`} aria-hidden="true">
         <span className={styles.chipIcon} data-tone="gold"><Glyph name="games" size={15} /></span>
         <span>
-          <b>Hand Cricket</b>
-          <small>Your turn to bat</small>
+          <b>Carrom</b>
+          <small>Your turn to strike</small>
         </span>
       </div>
 
       <p className={styles.tryIt} aria-hidden="true">
-        <svg viewBox="0 0 60 40" width="46" height="30">
-          <path d="M4 34 C 18 32, 34 22, 50 8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-          <path d="M40 8 L 51 7 L 49 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
         It&rsquo;s live. Tap anything.
       </p>
     </div>

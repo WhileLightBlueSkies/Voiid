@@ -119,7 +119,7 @@
   position: relative;
   /* Slide under the floating header so the night reaches the top of the window. */
   margin-top: calc(-1 * (var(--header-height) + 16px));
-  padding: calc(var(--header-height) + 48px) 0 clamp(64px, 8vw, 110px);
+  padding: calc(var(--header-height) + 48px) 0 var(--section-gap);
   min-height: 100svh;
   display: flex;
   align-items: center;
@@ -277,11 +277,10 @@
 .heroStage {
   --rx: 0deg;
   --ry: 0deg;
-  --px: 0px;
-  --py: 0px;
   position: relative;
   justify-self: center;
-  width: clamp(250px, calc((100svh - 150px) * 0.46), 350px);
+  /* Real-world phone size (~72mm wide on a laptop), shrinking only when the window is too short. */
+  width: min(360px, calc((100svh - 120px) * 0.4717));
   perspective: 1400px;
   animation: stageIn 1200ms 150ms var(--ease-ios) both;
 }
@@ -338,9 +337,7 @@
   backdrop-filter: blur(16px) saturate(160%);
   color: var(--on-night);
   white-space: nowrap;
-  translate: var(--px) var(--py);
-  transition: translate 600ms var(--ease-ios);
-  /* Decoration: it floats over the phone's edges and must never eat a tap. */
+  /* Decoration beside the phone, never on it: it ignores the mouse and never eats a tap. */
   pointer-events: none;
 }
 .chip b { display: block; font-size: 0.86rem; font-weight: 700; letter-spacing: -0.01em; }
@@ -357,9 +354,9 @@
 .chipIcon[data-tone='blue'] { background: linear-gradient(135deg, #7aa2ff, #3b5bdb); }
 .chipIcon[data-tone='gold'] { background: linear-gradient(135deg, #ffd479, #e8912d); }
 
-.chipA { left: -40%; top: 12%; animation: bob 6s ease-in-out infinite, chipIn 800ms 700ms var(--ease-ios) both; }
-.chipB { right: -32%; top: 44%; animation: bob 7s -2s ease-in-out infinite, chipIn 800ms 900ms var(--ease-ios) both; }
-.chipC { left: -34%; bottom: 16%; animation: bob 6.5s -4s ease-in-out infinite, chipIn 800ms 1100ms var(--ease-ios) both; }
+.chipA { right: calc(100% + 24px); top: 16%; animation: bob 6s ease-in-out infinite, chipIn 800ms 700ms var(--ease-ios) both; }
+.chipB { right: calc(100% + 24px); top: 44%; animation: bob 7s -2s ease-in-out infinite, chipIn 800ms 900ms var(--ease-ios) both; }
+.chipC { right: calc(100% + 24px); bottom: 20%; animation: bob 6.5s -4s ease-in-out infinite, chipIn 800ms 1100ms var(--ease-ios) both; }
 @keyframes bob {
   50% { transform: translateY(-10px); }
 }
@@ -371,20 +368,19 @@
 .tryIt {
   position: absolute;
   z-index: 3;
-  right: -30%;
-  bottom: 3%;
+  /* Under the phone, centred. */
+  left: 50%;
+  top: calc(100% + 22px);
+  translate: -50% 0;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  justify-content: center;
   color: var(--mint);
   font-size: 0.95rem;
   font-weight: 650;
-  transform: rotate(-4deg);
+  white-space: nowrap;
   pointer-events: none;
   animation: chipIn 800ms 1500ms var(--ease-ios) both;
 }
-.tryIt svg { transform: scaleX(-1) rotate(-8deg); margin-left: 8px; }
 
 /* ---- marquee -------------------------------------------------------------- */
 
@@ -422,7 +418,7 @@
 /* ---- tour / story --------------------------------------------------------- */
 
 .tour {
-  padding: clamp(96px, 12vw, 160px) 0 clamp(80px, 10vw, 140px);
+  padding: var(--section-gap) 0;
   background:
     radial-gradient(60% 40% at 20% 10%, rgba(19, 130, 140, 0.07), transparent 70%),
     var(--color-background);
@@ -451,7 +447,8 @@
   gap: 18px;
 }
 .storyPhone {
-  width: clamp(270px, calc((100svh - var(--header-height) - 120px) * 0.46), 390px);
+  /* Real-world phone size; the hint under it can overlap the fold on short windows. */
+  width: min(360px, calc((100svh - var(--header-height) - 40px) * 0.4717));
   filter: drop-shadow(0 30px 40px rgba(13, 20, 22, 0.18));
 }
 
@@ -490,7 +487,7 @@
 }
 .storyStep {
   position: relative;
-  min-height: 72vh;
+  min-height: 56vh;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -509,7 +506,13 @@
   background: var(--color-border);
   transition: background-color 400ms ease-out;
 }
-.storyStep:last-child { min-height: 60vh; }
+/* The phone lets go when this step's bottom reaches the window's bottom. Just enough
+ * space under the copy (~300px tall) that it sits at the phone's middle at that
+ * moment — no more, so the page doesn't run empty before the next section. */
+.storyStep:last-child {
+  min-height: 0;
+  padding-bottom: max(32px, calc(50svh - var(--header-height) / 2 - 150px));
+}
 .storyStep[data-active='true'] { opacity: 1; }
 .storyStep[data-active='true']::before {
   background: linear-gradient(180deg, var(--aqua), var(--color-primary));
@@ -585,7 +588,7 @@
 
 .sealed {
   position: relative;
-  padding: clamp(96px, 12vw, 150px) 0;
+  padding: var(--section-gap) 0;
   background: var(--night);
   color: var(--on-night);
   isolation: isolate;
@@ -752,7 +755,7 @@
 /* ---- the line (ledger) -------------------------------------------------- */
 
 .line2 {
-  padding: clamp(96px, 12vw, 150px) 0;
+  padding: var(--section-gap) 0;
   background: var(--color-background);
 }
 .ledger {
@@ -814,7 +817,7 @@
 /* ---- gallery ---------------------------------------------------------------- */
 
 .gallery {
-  padding: clamp(40px, 6vw, 80px) 0 clamp(96px, 12vw, 150px);
+  padding: var(--section-gap) 0;
   background: linear-gradient(180deg, var(--color-background), #eef4f4);
   overflow: hidden;
 }
@@ -856,7 +859,7 @@
 
 .download {
   position: relative;
-  padding: clamp(96px, 12vw, 150px) 0 0;
+  padding: var(--section-gap) 0 0;
   background: radial-gradient(100% 80% at 30% 0%, var(--night-2), var(--night) 70%);
   color: var(--on-night);
   isolation: isolate;
@@ -928,10 +931,7 @@
 /* ---- responsive ----------------------------------------------------------- */
 
 @media (max-width: 1180px) {
-  .chipA { left: -20%; }
-  .chipB { right: -20%; }
-  .chipC { left: -16%; }
-  .tryIt { right: -14%; bottom: -6%; }
+  .chip { right: calc(100% + 12px); }
 }
 
 @media (max-width: 959px) {
@@ -941,10 +941,8 @@
   .heroActions { justify-content: center; }
   .heroStats { justify-content: center; }
   .heroStats div { justify-items: center; }
-  .heroStage { margin-top: 24px; width: min(320px, 74vw); }
-  .chipA { left: -16%; top: 10%; }
-  .chipB { right: -14%; top: 48%; }
-  .chipC { display: none; }
+  .heroStage { margin-top: 24px; width: min(360px, 86vw); }
+  .chip { display: none; }
   .tryIt { display: none; }
 
   .story { grid-template-columns: minmax(0, 1fr); }

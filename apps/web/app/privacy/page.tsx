@@ -5,6 +5,9 @@ import { FeatureCard } from '../../components/FeatureCard';
 import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { LockMotif } from '../../components/LockMotif';
+import { InView } from '../../components/InView';
+import { Reveal } from '../../components/Reveal';
+import type { CSSProperties } from 'react';
 import styles from './page.module.css';
 import { buildPageMetadata } from '../../lib/metadata';
 
@@ -44,6 +47,14 @@ const ROWS: Row[] = [
     detail: 'Our server is the referee, so it reads the moves. The invite is an encrypted message.' },
 ];
 
+const METADATA = [
+  'Which accounts exchange messages, and when — not what they said.',
+  'Your phone number, because it is how an account is verified.',
+  'Device type and app version, so we can ship updates that work.',
+  'IP addresses on connection, which is unavoidable for anything on the internet.',
+  'Call records: who, when, how long.',
+];
+
 export default function PrivacyPage() {
   return (
     <>
@@ -68,14 +79,14 @@ export default function PrivacyPage() {
         lede="If this table and the code ever disagree, the code is right and this page is a bug."
         width="wide"
       >
-        <div className={styles.tableWrap}>
+        <InView className={styles.tableWrap}>
           <table className={styles.table}>
             <thead>
               <tr><th scope="col">Surface</th><th scope="col">State</th><th scope="col">What that means</th></tr>
             </thead>
             <tbody>
-              {ROWS.map((r) => (
-                <tr key={r.surface}>
+              {ROWS.map((r, i) => (
+                <tr key={r.surface} style={{ '--i': i } as CSSProperties}>
                   <th scope="row">{r.surface}</th>
                   <td><E2EEBadge state={r.state} size="sm" /></td>
                   <td>{r.detail}</td>
@@ -83,7 +94,7 @@ export default function PrivacyPage() {
               ))}
             </tbody>
           </table>
-        </div>
+        </InView>
       </Section>
 
       <Section
@@ -97,13 +108,15 @@ export default function PrivacyPage() {
           Encryption protects content. It does not hide that a conversation happened. To deliver
           a message at all, we necessarily hold some of this:
         </p>
-        <ul>
-          <li>Which accounts exchange messages, and when — not what they said.</li>
-          <li>Your phone number, because it is how an account is verified.</li>
-          <li>Device type and app version, so we can ship updates that work.</li>
-          <li>IP addresses on connection, which is unavoidable for anything on the internet.</li>
-          <li>Call records: who, when, how long.</li>
-        </ul>
+        <InView>
+          <ul className={styles.redacted}>
+            {METADATA.map((m, i) => (
+              <li key={m} style={{ '--i': i } as CSSProperties}>
+                <span>{m}</span>
+              </li>
+            ))}
+          </ul>
+        </InView>
         <Callout tone="honest" title="We would rather name it than imply it away">
           A service that claims to see nothing at all is either not delivering your messages or
           not telling you the truth. What we can promise is that we do not hold your content,
@@ -113,21 +126,27 @@ export default function PrivacyPage() {
 
       <Section hue="privacy" eyebrow="Your rights" title="Under India&rsquo;s DPDP Act">
         <Grid>
-          <FeatureCard title="Access and correction" glyph="note" hue="privacy">
-            You can ask what personal data we hold about you and have it corrected. Because
-            your messages are encrypted, an export contains metadata — we cannot produce
-            content we cannot read.
-          </FeatureCard>
-          <FeatureCard title="Erasure" glyph="shield" hue="privacy">
-            Deleting your account starts a real erasure, not a hidden flag: an automated job
-            removes your rows and your uploaded media, and your sessions stop working
-            immediately rather than when a token happens to expire.
-          </FeatureCard>
-          <FeatureCard title="Consent you can withdraw" glyph="check" hue="privacy">
-            Withdrawing consent is built to be as easy as giving it, and we record which
-            version of which notice you agreed to, so &ldquo;what did I actually agree to&rdquo;
-            has an answer.
-          </FeatureCard>
+          <Reveal delay={0}>
+            <FeatureCard title="Access and correction" glyph="note" hue="privacy">
+              You can ask what personal data we hold about you and have it corrected. Because
+              your messages are encrypted, an export contains metadata — we cannot produce
+              content we cannot read.
+            </FeatureCard>
+          </Reveal>
+          <Reveal delay={110}>
+            <FeatureCard title="Erasure" glyph="shield" hue="privacy">
+              Deleting your account starts a real erasure, not a hidden flag: an automated job
+              removes your rows and your uploaded media, and your sessions stop working
+              immediately rather than when a token happens to expire.
+            </FeatureCard>
+          </Reveal>
+          <Reveal delay={220}>
+            <FeatureCard title="Consent you can withdraw" glyph="check" hue="privacy">
+              Withdrawing consent is built to be as easy as giving it, and we record which
+              version of which notice you agreed to, so &ldquo;what did I actually agree to&rdquo;
+              has an answer.
+            </FeatureCard>
+          </Reveal>
         </Grid>
         <Callout tone="note" title="Where we are, honestly">
           These are commitments and the controls behind them are being built — not a

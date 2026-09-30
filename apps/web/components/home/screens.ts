@@ -29,12 +29,8 @@ export type ScreenId =
   | 'map'
   | 'ai'
   | 'ai_chat'
-  | 'games'
-  | 'game_setup'
-  | 'game_toss'
-  | 'game_won_toss'
-  | 'game_play'
-  | 'game_out'
+  | 'carrom'
+  | 'ludo'
   | 'clips'
   | 'clip_player';
 
@@ -153,7 +149,6 @@ export const SCREENS: Record<ScreenId, Screen> = {
   group_call: {
     id: 'group_call',
     title: 'Group voice call',
-    dark: true,
     hotspots: [
       { rect: rect(15, 64, 49, 98), label: 'Back to the chat', action: back },
       { rect: rect(157, 686, 211, 744), label: 'Leave call', action: back },
@@ -236,57 +231,23 @@ export const SCREENS: Record<ScreenId, Screen> = {
     title: 'Voiid AI chat',
     hotspots: [{ rect: rect(6, 63, 40, 97), label: 'Back', action: back }],
   },
-  games: {
-    id: 'games',
-    title: 'Games',
-    tab: 'games',
+  // The Games tab opens straight into a match: Carrom and Ludo are the two games shown.
+  carrom: {
+    id: 'carrom',
+    title: 'Carrom',
     hotspots: [
-      { rect: rect(15, 114, 353, 161), label: 'Continue Hand Cricket', action: go('game_setup', 'sheet') },
-      { rect: rect(15, 325, 353, 508), label: 'Play Hand Cricket', action: go('game_setup', 'sheet') },
+      { rect: rect(8, 60, 52, 104), label: 'Leave the match', action: { kind: 'root', tab: 'chats' } },
+      { rect: rect(254, 710, 354, 756), label: 'Strike', action: { kind: 'toast', text: 'Pocketed!' } },
+      { rect: rect(20, 108, 166, 154), label: 'Switch to Ludo', action: go('ludo', 'fade', true) },
     ],
   },
-  game_setup: {
-    id: 'game_setup',
-    title: 'Hand Cricket setup',
-    sheetTop: 340,
+  ludo: {
+    id: 'ludo',
+    title: 'Ludo',
     hotspots: [
-      { rect: rect(0, 0, 368, 335), label: 'Close', action: back },
-      { rect: rect(22, 672, 346, 720), label: 'Start game', action: go('game_toss', 'fade', true) },
-      { rect: rect(130, 722, 238, 748), label: 'Not now', action: back },
-    ],
-  },
-  game_toss: {
-    id: 'game_toss',
-    title: 'The coin toss',
-    dark: true,
-    hotspots: [
-      { rect: rect(22, 514, 177, 559), label: 'Call heads', action: go('game_won_toss', 'fade', true) },
-      { rect: rect(190, 514, 346, 559), label: 'Call tails', action: go('game_won_toss', 'fade', true) },
-    ],
-  },
-  game_won_toss: {
-    id: 'game_won_toss',
-    title: 'You won the toss',
-    dark: true,
-    hotspots: [
-      { rect: rect(22, 543, 178, 589), label: 'Bat first', action: go('game_play', 'fade', true) },
-      { rect: rect(190, 543, 346, 589), label: 'Bowl first', action: go('game_play', 'fade', true) },
-    ],
-  },
-  game_play: {
-    id: 'game_play',
-    title: 'Hand Cricket',
-    hotspots: [
-      { rect: rect(6, 61, 42, 97), label: 'Leave the match', action: { kind: 'root', tab: 'games' } },
-      { rect: rect(20, 690, 348, 758), label: 'Show your fingers', action: go('game_out', 'fade', true) },
-    ],
-  },
-  game_out: {
-    id: 'game_out',
-    title: 'Bowled!',
-    hotspots: [
-      { rect: rect(6, 61, 42, 97), label: 'Leave the match', action: { kind: 'root', tab: 'games' } },
-      { rect: rect(20, 690, 348, 758), label: 'Play the next ball', action: go('game_play', 'fade', true) },
+      { rect: rect(8, 60, 44, 96), label: 'Leave the match', action: { kind: 'root', tab: 'chats' } },
+      { rect: rect(280, 702, 356, 744), label: 'Roll the dice', action: { kind: 'toast', text: 'Rolled a 6!' } },
+      { rect: rect(12, 108, 94, 150), label: 'Switch to Carrom', action: go('carrom', 'fade', true) },
     ],
   },
   clips: {
@@ -312,7 +273,7 @@ export const TAB_ROOT: Record<TabId, ScreenId> = {
   moments: 'moments',
   communities: 'communities',
   map: 'map_intro',
-  games: 'games',
+  games: 'carrom',
   clips: 'clips',
 };
 
