@@ -7,6 +7,7 @@ import com.voiid.app.main.walkthrough.WalkthroughAdvance
 import com.voiid.app.main.walkthrough.WalkthroughProgress
 import org.junit.Test
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 
 class AppWalkthroughPlanTest {
@@ -26,8 +27,12 @@ class AppWalkthroughPlanTest {
         )
         assertEquals("chats", AppWalkthroughPlan.steps.first().id)
         assertEquals("settings_page", AppWalkthroughPlan.steps.last().id)
-        assertEquals(WalkthroughPresentationMode.EVERY_APP_LAUNCH, AppWalkthroughPlan.presentationMode)
-        assertTrue(AppWalkthroughPlan.shouldPresent(AppWalkthroughPlan.VERSION))
+        // Once per install or new account: shown until this version is completed, then never
+        // again on relaunch.
+        assertEquals(WalkthroughPresentationMode.FIRST_INCOMPLETE_VERSION, AppWalkthroughPlan.presentationMode)
+        assertTrue(AppWalkthroughPlan.shouldPresent(0))
+        assertTrue(AppWalkthroughPlan.shouldPresent(AppWalkthroughPlan.VERSION - 1))
+        assertFalse(AppWalkthroughPlan.shouldPresent(AppWalkthroughPlan.VERSION))
     }
 
     @Test

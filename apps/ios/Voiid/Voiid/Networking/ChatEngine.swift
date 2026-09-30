@@ -297,7 +297,9 @@ final class ChatEngine {
         // Inbound only: our own echo is not a delivery to anyone, and control envelopes and
         // undecryptable tombstones were never received by a person.
         if !m.isMine, m.control != true, !m.failed {
-            Task { await markReceipts([m.id], status: "delivered") }
+            // Queued synchronously, not from a Task: in the notification extension a Task
+            // started here may never run before the process is frozen.
+            queueDelivered([m.id])
         }
     }
 
@@ -416,10 +418,37 @@ final class ChatEngine {
         return msg
     }
 
+    #if !NSE_EXTENSION
+    /// Ask iOS for time to finish a send after the app leaves the screen. The expiry handler
+    /// ends the task itself: running out the clock without ending it gets the app killed.
+    static func beginBackgroundWork(_ name: String) -> UIBackgroundTaskIdentifier {
+        let app = UIApplication.shared
+        var id: UIBackgroundTaskIdentifier = .invalid
+        id = app.beginBackgroundTask(withName: name) {
+            app.endBackgroundTask(id)
+            id = .invalid
+        }
+        return id
+    }
+
+    static func endBackgroundWork(_ id: UIBackgroundTaskIdentifier) {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+    }
+    #endif
+
     /// Try to send every PENDING text message in a conversation (offline retry).
     /// Network failures are swallowed — the message stays pending and is retried
     /// on the next flush (open / sync / reconnect).
     func flushPending(conversationId: String, peerUserId: String) async {
+        // KEEP RUNNING IF THE APP IS LEFT MID-SEND. Tap send and swipe home, and iOS suspended
+        // the app with the POST in flight — the message sat on the clock until the app was
+        // next opened. It also held the cross-process lock while suspended, which blocked the
+        // notification extension from decrypting anything that arrived meanwhile.
+        #if !NSE_EXTENSION
+        let bg = Self.beginBackgroundWork("chat-send")
+        defer { Self.endBackgroundWork(bg) }
+        #endif
         // Take the cross-process lock + reload shared state so an outbound send never
         // races the NSE's inbound decrypt over the same session keychain item.
         await CrossProcessLock.withLock {
@@ -547,6 +576,11 @@ final class ChatEngine {
         // "uploaded" does not, it failed at encrypt or R2 upload; if both print but nothing
         // arrives, it failed in the fan-out/send below (the caller logs that catch).
         NSLog("[VOIID] 🖼️ sendMedia start: \(data.count) bytes, mime=\(mime)")
+        // Same reason as flushPending: an upload must not freeze because the app was left.
+        #if !NSE_EXTENSION
+        let bg = Self.beginBackgroundWork("chat-media-send")
+        defer { Self.endBackgroundWork(bg) }
+        #endif
         // 1. Encrypt the blob (e2e-core) → ciphertext + media key.
         let enc = try encryptMedia(plaintext: data)
         // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
@@ -858,6 +892,16 @@ final class ChatEngine {
     /// identity from the shared keychain WITHOUT any device registration (that stays the
     /// app's job). Returns nil on any failure so the NSE shows the safe placeholder.
     func notificationDecrypt(messageId: String, conversationId: String) async -> NotificationPreview? {
+        let preview = await notificationDecryptMessage(messageId: messageId, conversationId: conversationId)
+        // SEND "DELIVERED" BEFORE THE EXTENSION ENDS. Decrypting queued the receipt; the moment
+        // the caller hands the notification to iOS, this process is frozen or killed. A receipt
+        // left in flight then never reached the server, and the sender sat on one tick until
+        // the recipient opened the app. Whatever does not make it stays queued for next time.
+        await flushPendingDelivered()
+        return preview
+    }
+
+    private func notificationDecryptMessage(messageId: String, conversationId: String) async -> NotificationPreview? {
         guard E2EManager.shared.loadForExtension() else { return nil }
         guard let myId = TokenStore.shared.userId else { return nil }
 
@@ -1231,29 +1275,103 @@ final class ChatEngine {
     private func markReceipts(_ messageIds: [String], status: String) async {
         // Read disclosure must only use the bounded conversation queue below.
         guard status == "delivered" else { return }
-        guard !messageIds.isEmpty else { return }
-        for start in stride(from: 0, to: messageIds.count, by: 500) {
-            let ids = Array(messageIds[start..<min(start + 500, messageIds.count)])
-            NSLog("[VOIID] 📤 receipt \(status) x\(ids.count)")
-            // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
-            // issues no device claim), so without this the server records every receipt against a
-            // NULL device — see the callerDeviceId note in routes/receipts.ts.
-            struct Body: Encodable {
-                let message_ids: [String]
-                let status: String
-                let device_id: String?
-            }
-            // Delivery acknowledgements outlive the screen's polling task.
-            let body = Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
-            let api = self.api
-            Task.detached {
-            do {
-                _ = try await api.request("POST", "receipts/mark", body: body) as EmptyResponse
-            } catch {
-                NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
-            }
-            }
+        queueDelivered(messageIds)
+    }
+
+    // MARK: - Delivered receipts (queued, shared with the notification extension)
+    //
+    // "Delivered" is what turns the sender's single tick into two. It used to be a
+    // fire-and-forget POST, which lost it in exactly the case it matters most: a message
+    // arriving while the app is in the background. The notification extension decrypts it,
+    // shows the banner and is frozen by iOS with the POST still in flight; and a POST that
+    // failed on a bad network was logged "will retry" with nothing retrying it. The message
+    // was already decrypted, so later syncs never counted it as new — the sender saw one tick
+    // until the recipient opened the chat and it jumped straight to Read.
+    //
+    // Now every id is written to a queue in the APP GROUP before anything is sent, so the app
+    // and the extension share it. It is removed only once the server has it (or has refused
+    // it for good). Flushed after every sync, before the extension ends, and on foreground.
+    // Duplicates are harmless: the server records delivery once per device.
+
+    private static let deliveredQueueCap = 2000
+    private var deliveredQueueKey: String { "voiid.delivered-pending.\(TokenStore.shared.userId ?? "signed-out")" }
+    private var sharedDefaults: UserDefaults { UserDefaults(suiteName: AppGroup.identifier) ?? .standard }
+    private var flushingDelivered = false
+
+    /// Record ids as owed a "delivered" receipt, then (in the app) start sending them.
+    func queueDelivered(_ ids: [String]) {
+        guard !ids.isEmpty, TokenStore.shared.userId != nil else { return }
+        let key = deliveredQueueKey
+        var pending = sharedDefaults.stringArray(forKey: key) ?? []
+        let known = Set(pending)
+        pending.append(contentsOf: ids.filter { !known.contains($0) })
+        // A phone offline for weeks must not grow this without bound; the oldest go first,
+        // and those are the ones whose sender has long since stopped looking at the tick.
+        if pending.count > Self.deliveredQueueCap { pending.removeFirst(pending.count - Self.deliveredQueueCap) }
+        sharedDefaults.set(pending, forKey: key)
+        #if !NSE_EXTENSION
+        // Not awaited by the caller: an unstructured Task does not inherit the caller's
+        // cancellation, so leaving a chat cannot kill the POST. If it fails, the queue keeps it.
+        Task { await self.flushPendingDelivered() }
+        #endif
+    }
+
+    private enum ReceiptPost { case sent, refused, later }
+
+    private func postDelivered(_ ids: [String]) async -> ReceiptPost {
+        struct Body: Encodable { let message_ids: [String]; let status: String; let device_id: String? }
+        // SEND THE DEVICE ID. The login token carries only user_id, so without this the server
+        // records the receipt against a NULL device — see routes/receipts.ts.
+        let body = Body(message_ids: ids, status: "delivered", device_id: E2EManager.shared.deviceId)
+        do {
+            _ = try await api.request("POST", "receipts/mark", body: body) as EmptyResponse
+            NSLog("[VOIID] 📤 receipt delivered x\(ids.count)")
+            return .sent
+        } catch APIError.http(let status, _, _) where (400...499).contains(status)
+                    && ![401, 408, 425, 429].contains(status) {
+            // A permanent refusal (message deleted, left the group, bad id). Retrying it
+            // forever would block the rest of the queue behind it.
+            NSLog("[VOIID] receipt delivered refused (\(status)) for \(ids.count)")
+            return .refused
+        } catch {
+            NSLog("[VOIID] receipt delivered pending retry: \(error.localizedDescription)")
+            return .later
         }
+    }
+
+    /// Send every queued "delivered" receipt. Safe to call from anywhere, any number of times.
+    func flushPendingDelivered() async {
+        guard !flushingDelivered, let account = TokenStore.shared.userId else { return }
+        flushingDelivered = true
+        defer { flushingDelivered = false }
+        let key = deliveredQueueKey
+        let pending = sharedDefaults.stringArray(forKey: key) ?? []
+        guard !pending.isEmpty else { return }
+        var settled = Set<String>()
+        for start in stride(from: 0, to: pending.count, by: 500) {
+            let ids = Array(pending[start..<min(start + 500, pending.count)])
+            switch await postDelivered(ids) {
+            case .sent:
+                settled.formUnion(ids)
+            case .refused where ids.count == 1:
+                settled.formUnion(ids)
+            case .refused:
+                // The server refuses the WHOLE batch if any one id is not ours to mark. Find
+                // the bad ones rather than dropping the good receipts with them.
+                for id in ids {
+                    let one = await postDelivered([id])
+                    if one != .later { settled.insert(id) }
+                }
+            case .later:
+                // Offline: the rest would fail the same way. Keep them all for next time.
+                break
+            }
+            if !settled.isSuperset(of: ids) { break }
+        }
+        // Re-read before writing: the other process may have queued more meanwhile.
+        guard !settled.isEmpty, TokenStore.shared.userId == account else { return }
+        let latest = sharedDefaults.stringArray(forKey: key) ?? []
+        sharedDefaults.set(latest.filter { !settled.contains($0) }, forKey: key)
     }
 
     private var maySendReadReceipts: Bool {
@@ -1320,6 +1438,7 @@ final class ChatEngine {
 
     #endif
     func flushPendingReceipts() async {
+        await flushPendingDelivered()
         #if !NSE_EXTENSION
         Task { await LocalStore.recoverMissedCalls() }
         await flushConversationReads()

@@ -38,6 +38,7 @@ import uniffi.voiid.encryptMedia
 class ChatEngine private constructor(context: Context) {
 
     companion object {
+        private const val DELIVERED_QUEUE_CAP = 2000
         @Volatile private var instance: ChatEngine? = null
         fun get(context: Context): ChatEngine =
             instance ?: synchronized(this) {
@@ -632,6 +633,11 @@ class ChatEngine private constructor(context: Context) {
 
     private suspend fun markReceipts(messageIds: List<String>, status: String) {
         if (messageIds.isEmpty()) return
+        if (status == "delivered") {
+            queueDelivered(messageIds)
+            receiptScope.launch { runCatching { flushPendingDelivered() } }
+            return
+        }
         for (ids in messageIds.chunked(500)) {
             android.util.Log.i("VOIID", "📤 receipt $status x${ids.size}")
             // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
@@ -667,6 +673,99 @@ class ChatEngine private constructor(context: Context) {
                         android.util.Log.w("VOIIDReceipt", "receipt $status failed, queued for retry", it)
                     }
             }
+        }
+    }
+
+    // ---- Delivered receipts (queued) -------------------------------------------------
+    //
+    // "Delivered" is what turns the sender's single tick into two. It used to be launched and
+    // forgotten, which lost it in exactly the case it matters most: a message arriving while
+    // the app is in the background. The push handler decrypted it, posted the notification and
+    // returned; Android then froze the process with the POST still in flight, and it went out
+    // only when the app was next opened. A POST that failed on a bad network was not retried
+    // at all (only "read" was), and the message, already decrypted, never counted as new
+    // again. Mirrors iOS ChatEngine.queueDelivered.
+    //
+    // Every id is written to disk BEFORE anything is sent and removed only once the server
+    // has it or has refused it for good. Flushed after every sync, by the push handler before
+    // it returns, and on foreground. Duplicates are harmless: the server records delivery
+    // once per device.
+
+    private val deliveredLock = Mutex()        // one flush at a time
+    private val deliveredFile = Any()          // guards the read-modify-write of the queue
+    private fun deliveredKey(account: String) = "delivered_pending.$account"
+
+    private fun loadDelivered(account: String): MutableList<String> {
+        val raw = prefs.getString(deliveredKey(account), null) ?: return mutableListOf()
+        return runCatching {
+            val arr = org.json.JSONArray(raw)
+            MutableList(arr.length()) { arr.getString(it) }
+        }.getOrElse { mutableListOf() }
+    }
+
+    private fun saveDelivered(account: String, ids: List<String>) {
+        prefs.edit().putString(deliveredKey(account), org.json.JSONArray(ids).toString()).commit()
+    }
+
+    private fun queueDelivered(ids: List<String>) {
+        val account = tokens.userId ?: return
+        if (ids.isEmpty()) return
+        synchronized(deliveredFile) {
+            val pending = loadDelivered(account)
+            val known = pending.toHashSet()
+            ids.filterTo(pending) { it !in known }
+            // A phone offline for weeks must not grow this without bound; the oldest go first.
+            val capped = if (pending.size > DELIVERED_QUEUE_CAP) pending.takeLast(DELIVERED_QUEUE_CAP) else pending
+            saveDelivered(account, capped)
+        }
+    }
+
+    private enum class ReceiptPost { SENT, REFUSED, LATER }
+
+    private suspend fun postDelivered(ids: List<String>): ReceiptPost {
+        // SEND THE DEVICE ID — see markReceipts.
+        val body = ApiClient.json.encodeToString(
+            MarkReadBody.serializer(), MarkReadBody(ids, "delivered", e2e.deviceId),
+        )
+        return try {
+            api.request("POST", "receipts/mark", jsonBody = body)
+            android.util.Log.i("VOIIDReceipt", "receipt delivered OK for ${ids.size}")
+            ReceiptPost.SENT
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: ApiError.Http) {
+            // A permanent refusal (message deleted, left the group, bad id) must not block
+            // the rest of the queue forever. Auth and rate limits are worth another try.
+            if (e.status in 400..499 && e.status !in setOf(401, 408, 425, 429)) ReceiptPost.REFUSED
+            else ReceiptPost.LATER
+        } catch (e: Exception) {
+            android.util.Log.w("VOIIDReceipt", "receipt delivered pending retry", e)
+            ReceiptPost.LATER
+        }
+    }
+
+    /** Send every queued "delivered" receipt. Safe to call from anywhere, any number of times. */
+    suspend fun flushPendingDelivered() = deliveredLock.withLock {
+        val account = tokens.userId ?: return@withLock
+        val pending = synchronized(deliveredFile) { loadDelivered(account) }
+        if (pending.isEmpty()) return@withLock
+        val settled = HashSet<String>()
+        for (ids in pending.chunked(500)) {
+            when (postDelivered(ids)) {
+                ReceiptPost.SENT -> settled.addAll(ids)
+                ReceiptPost.REFUSED -> if (ids.size == 1) settled.addAll(ids) else {
+                    // The server refuses the WHOLE batch if any one id is not ours to mark.
+                    // Find the bad ones rather than dropping the good receipts with them.
+                    for (id in ids) if (postDelivered(listOf(id)) != ReceiptPost.LATER) settled.add(id)
+                }
+                ReceiptPost.LATER -> Unit
+            }
+            if (!settled.containsAll(ids)) break   // offline: the rest would fail the same way
+        }
+        if (settled.isEmpty() || tokens.userId != account) return@withLock
+        // Re-read before writing: more may have been queued while this was sending.
+        synchronized(deliveredFile) {
+            saveDelivered(account, loadDelivered(account).filter { it !in settled })
         }
     }
 
@@ -787,6 +886,7 @@ class ChatEngine private constructor(context: Context) {
     }
 
     suspend fun flushPendingReceipts() {
+        flushPendingDelivered()
         flushConversationReads()
         if (!com.voiid.app.model.PrivacySettings.sendReadReceipts(appContext)) return
         val ids = pendingReadReceipts.toList()
