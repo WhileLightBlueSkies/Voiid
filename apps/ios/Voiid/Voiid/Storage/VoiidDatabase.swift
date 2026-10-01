@@ -345,6 +345,19 @@ final class VoiidDatabase {
         }
     }
 
+    /// A write that does NOT wait. For re-derivable caches written from the main thread: the
+    /// synchronous `write` blocked the frame being drawn for the length of the transaction,
+    /// which showed up as dropped frames while scrolling (Animation Hitches, 2026-09-30).
+    /// GRDB serialises it with every other write, so ordering is unchanged.
+    func writeInBackground(_ block: @escaping (Database) throws -> Void) {
+        guard let pool else { return }
+        pool.asyncWrite({ database in try block(database) }, completion: { _, result in
+            if case .failure(let error) = result {
+                NSLog("[VOIID] db background write failed: \(error.localizedDescription)")
+            }
+        })
+    }
+
     /// A write whose outcome is unambiguous: `true` only if the transaction committed.
     ///
     /// For any caller that reports durability onwards — an acknowledgement, a dirty marker, a

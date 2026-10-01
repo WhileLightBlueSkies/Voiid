@@ -517,12 +517,25 @@ fun MainScreen(session: com.voiid.app.model.AppSession, chat: ChatStore, ai: AIS
                     }
                 }
 
+                // EVERY TAB STAYS COMPOSED, AND IS PREPARED BEFORE IT IS SEEN. Mirrors iOS
+                // RootTabView's mounted tabs. With only one neighbour kept, any tab two swipes
+                // away was disposed and rebuilt on return — reloading its data and losing its
+                // scroll position, in front of the user. After launch the window widens one
+                // tab at a time, so each remaining tab composes and loads out of sight rather
+                // than all of them landing in one frame.
+                var keepAlive by remember { androidx.compose.runtime.mutableIntStateOf(1) }
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(1_500)
+                    while (keepAlive < Tab.visible.size - 1) {
+                        keepAlive += 1
+                        kotlinx.coroutines.delay(450)
+                    }
+                }
+
                 HorizontalPager(
                     state = pagerState,
                     modifier = Modifier.fillMaxSize(),
-                    // beyondViewportPageCount keeps one neighbour alive so the swipe reveals
-                    // content immediately rather than composing it mid-drag.
-                    beyondViewportPageCount = 1,
+                    beyondViewportPageCount = keepAlive,
                     key = { Tab.visible[it] },
                 ) { page ->
                     val shownTab = Tab.visible[page]

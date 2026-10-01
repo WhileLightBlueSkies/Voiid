@@ -179,8 +179,13 @@ enum LocalStore {
     static func saveConversations(_ convs: [VConversation]) {
         guard !convs.isEmpty else { return }
         let now = Int64(Date().timeIntervalSince1970)
-        db.write { database in
-            for c in convs.map(applyingReadPosition) {
+        // OFF THE MAIN THREAD. This runs after every chat-list sync, from the main actor, and
+        // the synchronous write held the frame for the whole transaction — a dropped frame
+        // under the user's finger each time. It is a cache of server state, re-derived on
+        // the next sync, so nothing waits on it.
+        let rows = convs.map(applyingReadPosition)
+        db.writeInBackground { database in
+            for c in rows {
                 try database.execute(sql: """
                     INSERT INTO conversations
                         (id, kind, title, peer_user_id, photo_url, last_message_at, unread_count, updated_at)

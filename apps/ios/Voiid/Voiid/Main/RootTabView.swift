@@ -65,6 +65,9 @@ struct RootTabView: View {
     /// The tab a drag is heading for, or nil when no drag is in flight. Non-nil is what
     /// mounts the second page.
     @State private var draggingToward: Tab?
+    /// Tabs opened at least once this session. They STAY MOUNTED, hidden, instead of being
+    /// torn down on every switch — see the ZStack in `body`.
+    @State private var mounted: [Tab] = [.chat]
     @Namespace private var indicator
     /// True for the moment the indicator is travelling between tabs — drives its stretch.
     @State private var isSliding = false
@@ -165,6 +168,20 @@ struct RootTabView: View {
     /// The cost of building a neighbour is low because every tab defers its real work to
     /// `.onAppear`/`.task`, which SwiftUI fires when the view actually appears rather than
     /// when it is constructed.
+    /// Where a tab sits in the swipe strip: the current one follows the finger, the one being
+    /// dragged toward is parked one screen away on the side it arrives from (derived from the
+    /// tab ORDER, not from `tabDrag`, whose sign flips at the swap), and every other mounted
+    /// tab rests in place, hidden.
+    private func offset(for t: Tab, width w: CGFloat) -> CGFloat {
+        if t == tab { return tabDrag }
+        if t == draggingToward,
+           let here = Tab.visible.firstIndex(of: tab),
+           let there = Tab.visible.firstIndex(of: t) {
+            return tabDrag + (there > here ? w : -w)
+        }
+        return 0
+    }
+
     @ViewBuilder
     func page(_ t: Tab) -> some View {
         Group {
@@ -210,29 +227,23 @@ struct RootTabView: View {
                 // Publishing this one upward means both sides animate to and park at the
                 // same number by construction.
                 let w = geo.size.width
+                // EVERY TAB YOU HAVE OPENED STAYS ALIVE.
+                //
+                // Only the selected tab used to exist, so each switch threw the previous tab
+                // away and built the next from nothing — layout, list, toolbar, data load.
+                // Profiled on device (Animation Hitches, 2026-09-30) that was the 0.2–0.6s
+                // freeze on switching to Calls and Games, and the reason every tab forgot its
+                // scroll position. Now a tab is built once, the first time it is opened, and
+                // afterwards is only shown or hidden. Hidden tabs are invisible, take no
+                // touches and are skipped by VoiceOver.
                 ZStack {
-                    page(tab)
-                        .offset(x: tabDrag)
-
-                    // The tab being dragged TOWARD, parked exactly one screen away on the
-                    // side it will arrive from, so the pair moves as one strip.
-                    //
-                    // THE SIDE IS DERIVED FROM THE TARGET, NOT FROM `tabDrag`.
-                    //
-                    // It used to read `tabDrag < 0 ? w : -w`, and that sign flips the instant
-                    // `tabDrag` is zeroed at the swap — so on the very frame the strip lands,
-                    // the neighbour teleported a full screen width to the opposite side. That
-                    // is the blip: not a timing error but a one-frame jump baked into the
-                    // geometry, which is why fixing the swap's timing did not remove it.
-                    //
-                    // Comparing tab positions instead gives a side that is constant for the
-                    // whole gesture and does not depend on a value the commit is about to
-                    // reset.
-                    if let neighbour = draggingToward,
-                       let here = Tab.visible.firstIndex(of: tab),
-                       let there = Tab.visible.firstIndex(of: neighbour) {
-                        page(neighbour)
-                            .offset(x: tabDrag + (there > here ? w : -w))
+                    ForEach(Tab.visible.filter { mounted.contains($0) || $0 == tab || $0 == draggingToward },
+                            id: \.self) { t in
+                        page(t)
+                            .offset(x: offset(for: t, width: w))
+                            .opacity(t == tab || t == draggingToward ? 1 : 0)
+                            .allowsHitTesting(t == tab)
+                            .accessibilityHidden(t != tab)
                     }
                 }
                 .frame(width: w, height: geo.size.height)
@@ -333,8 +344,28 @@ struct RootTabView: View {
         .onChange(of: tab) { old, new in
             session.resetChrome()
             moveBarIndicator(from: old, to: new)
+            if !mounted.contains(new) { mounted.append(new) }
         }
         .onAppear { barTab = tab }
+        // PREPARE THE OTHER TABS BEFORE THEY ARE SEEN. Mounted-once tabs stop the rebuild on
+        // every switch, but the FIRST visit still built the tab and loaded its data while the
+        // user watched — the "refresh" that played out live on a swipe. So after launch each
+        // remaining tab is mounted hidden, one at a time, and loads while nobody is looking.
+        //
+        // Only at a root screen and never mid-swipe: every tab shows the tab bar when it
+        // appears, and preparing one while a chat is open would put the bar over the chat.
+        .task(id: session.route) {
+            try? await Task.sleep(for: .seconds(1.5))
+            while let next = Tab.visible.first(where: { !mounted.contains($0) }) {
+                guard !Task.isCancelled else { return }
+                if session.hideTabBar || draggingToward != nil || tabDrag != 0 {
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                mounted.append(next)
+                try? await Task.sleep(for: .milliseconds(450))
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: session.hideTabBar)
         // Bring the Map engine to life at shell load so inbound encrypted fixes are received
         // and decrypted even when the Map tab is not the active one — otherwise a contact's
