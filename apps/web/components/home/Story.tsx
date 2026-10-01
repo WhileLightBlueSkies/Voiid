@@ -24,15 +24,15 @@ type Chapter = {
 /*
  * Stances follow the schema, not the marketing: messages, calls, location and
  * moments are E2EE; clips and live game state are server-readable by design.
- * Communities and AI are in the design build but not shipped, so they say so.
+ * Communities is in the design build but not shipped, so it says so.
  */
 const CHAPTERS: Chapter[] = [
   {
     id: 'chats',
     label: 'Chats',
     glyph: 'chat',
-    title: 'Say it. Only they can read it.',
-    body: 'One-to-one and group chats, sealed on your phone for every device on the other end. Voice notes, photos, replies and the pin to the café all travel the same way.',
+    title: 'Say it loud. Say it private.',
+    body: 'Access denied to everyone but those it’s meant for. One-to-one and group chats, encrypted on your phone. Voice notes, photos, replies. Everything remains private. Forever.',
     stance: 'e2ee',
     path: ['chats', 'convo'],
     tryIt: 'Type a message and hit send',
@@ -101,16 +101,6 @@ const CHAPTERS: Chapter[] = [
     path: ['clips'],
     tryIt: 'Open a clip and double-tap the heart',
     href: '/clips',
-  },
-  {
-    id: 'ai',
-    label: 'Voiid AI',
-    glyph: 'sparkle',
-    title: 'Catch up in one line.',
-    body: 'Summaries of what you missed, a draft for the reply you’ve been avoiding, and translation. It’s being designed now and will ask before it reads anything.',
-    stance: 'preview',
-    path: ['ai', 'ai_chat'],
-    tryIt: 'Go back and try “Draft a reply”',
   },
 ];
 

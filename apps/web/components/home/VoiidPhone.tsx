@@ -22,7 +22,7 @@ import styles from './VoiidPhone.module.css';
  *
  * Each screen is a screenshot of the iOS design build; every button that matters has
  * a hotspot laid over it, so the phone behaves like the app without shipping the app.
- * Two things are live rather than pictures: the tab bar (so all eight tabs are
+ * Two things are live rather than pictures: the tab bar (so all seven tabs are
  * reachable even though the app scrolls its bar) and the chat composer, which really
  * sends and gets a reply.
  *

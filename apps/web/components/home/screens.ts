@@ -13,7 +13,7 @@
  * rendered size.
  */
 
-export type TabId = 'ai' | 'calls' | 'chats' | 'moments' | 'communities' | 'map' | 'games' | 'clips';
+export type TabId = 'calls' | 'chats' | 'moments' | 'communities' | 'map' | 'games' | 'clips';
 
 export type ScreenId =
   | 'chats'
@@ -31,8 +31,6 @@ export type ScreenId =
   | 'map_intro'
   | 'map_privacy'
   | 'map'
-  | 'ai'
-  | 'ai_chat'
   | 'games'
   | 'carrom_setup'
   | 'carrom'
@@ -94,7 +92,6 @@ const go = (to: ScreenId, via: Transition, replace = false): Action => ({ kind: 
 const back: Action = { kind: 'back' };
 
 export const TABS: { id: TabId; label: string }[] = [
-  { id: 'ai', label: 'AI' },
   { id: 'calls', label: 'Calls' },
   { id: 'chats', label: 'Chats' },
   { id: 'moments', label: 'Moments' },
@@ -111,7 +108,6 @@ export const SCREENS: Record<ScreenId, Screen> = {
     tab: 'chats',
     hotspots: [
       { rect: rect(135, 211, 232, 308), label: 'Open chat with Ananya Sharma', action: go('convo', 'push') },
-      { rect: rect(135, 325, 232, 422), label: 'Open Voiid AI', action: go('ai_chat', 'push') },
       { rect: rect(184, 150, 368, 192), label: 'Show groups', action: go('groups', 'fade', true) },
     ],
   },
@@ -253,20 +249,6 @@ export const SCREENS: Record<ScreenId, Screen> = {
       { rect: rect(162, 378, 206, 440), label: 'You', action: { kind: 'toast', text: 'Visible to All Friends · 1 hour' } },
     ],
   },
-  ai: {
-    id: 'ai',
-    title: 'Voiid AI',
-    tab: 'ai',
-    hotspots: [
-      { rect: rect(15, 176, 354, 244), label: 'Catch me up', action: go('ai_chat', 'push') },
-      { rect: rect(15, 253, 354, 321), label: 'Draft a reply', action: go('ai_chat', 'push') },
-    ],
-  },
-  ai_chat: {
-    id: 'ai_chat',
-    title: 'Voiid AI chat',
-    hotspots: [{ rect: rect(4, 62, 40, 100), label: 'Back', action: back }],
-  },
   // Games → pick a game → "How do you want to play?" sheet → the match, as in the app.
   games: {
     id: 'games',
@@ -333,7 +315,6 @@ export const SCREENS: Record<ScreenId, Screen> = {
 };
 
 export const TAB_ROOT: Record<TabId, ScreenId> = {
-  ai: 'ai',
   calls: 'calls',
   chats: 'chats',
   moments: 'moments',

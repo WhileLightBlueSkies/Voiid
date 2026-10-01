@@ -24,10 +24,10 @@ export const metadata: Metadata = {
  * being built; the copy labels those "in the design build".
  */
 
-const MARQUEE = ['Chats', 'Group calls', 'Live map', 'Moments', 'Communities', 'Carrom & Ludo', 'Clips', 'Ghost Mode', 'Voiid AI', 'Voice notes'];
+const MARQUEE = ['Chats', 'Group calls', 'Live map', 'Moments', 'Communities', 'Carrom & Ludo', 'Clips', 'Ghost Mode', 'Voice notes'];
 
 const GALLERY_A = ['chats', 'group_video', 'map', 'moments', 'carrom', 'community_detail'];
-const GALLERY_B = ['clips', 'ai_chat', 'convo', 'ludo', 'map_privacy', 'group_call'];
+const GALLERY_B = ['clips', 'convo', 'ludo', 'map_privacy', 'group_call'];
 
 const ENCRYPTED = [
   'Every message, one-to-one and in groups',
@@ -65,12 +65,12 @@ export default function HomePage() {
         <div className={styles.heroInner}>
           <div className={styles.heroCopy}>
             <h1 id="hero-title" className={styles.heroTitle}>
-              <span className={styles.line}>Everything you share.</span>
-              <span className={`${styles.line} ${styles.shine}`}>Nothing we can read.</span>
+              <span className={styles.line}>Come to the Voiid.</span>
+              <span className={`${styles.line} ${styles.shine}`}>Bring your truth.</span>
             </h1>
             <p className={styles.heroLede}>
-              Chats, calls, a live map, moments, clips and games in one app. The private parts
-              are end-to-end encrypted and we hold no key. The public parts are labelled public.
+              Reclaim your social space. Chats, calls, live map, moments, clips and games. All in
+              one app. End-to-end encrypted. Think of it as your own private playground.
             </p>
             <div className={styles.heroActions}>
               <a href="#tour" className={styles.btnPrimary}>
@@ -84,15 +84,15 @@ export default function HomePage() {
             <dl className={styles.heroStats}>
               <div>
                 <dt>4</dt>
-                <dd>surfaces sealed end to end</dd>
+                <dd>The number of encrypted surfaces.</dd>
               </div>
               <div>
                 <dt>0</dt>
-                <dd>keys we hold to your chats</dd>
+                <dd>The number of keys we have to your chats.</dd>
               </div>
               <div>
                 <dt>1</dt>
-                <dd>app instead of five</dd>
+                <dd>Just one app that does the work of five.</dd>
               </div>
             </dl>
           </div>
@@ -118,11 +118,11 @@ export default function HomePage() {
         <Reveal className={styles.sectionHead}>
           <p className={styles.kicker}>The tour</p>
           <h2 id="tour-title" className={styles.h2}>
-            One app. <span className={styles.muted}>Seven places to be.</span>
+            One app. <span className={styles.muted}>A thousand places to be.</span>
           </h2>
           <p className={styles.lede}>
-            Scroll, and the phone follows. Every button you see works, so tap your way in and
-            out the way you would in the app.
+            Scroll, and the phone follows. Every button is a gateway to a new life. The first
+            fully encrypted super app from India.
           </p>
         </Reveal>
         <Story />
@@ -134,11 +134,12 @@ export default function HomePage() {
         <Reveal className={styles.sectionHead}>
           <p className={`${styles.kicker} ${styles.kickerDark}`}>How it stays private</p>
           <h2 id="sealed-title" className={`${styles.h2} ${styles.onDark}`}>
-            Sealed here. Opened there. <span className={styles.shine}>Noise in between.</span>
+            From here. To there. <span className={styles.shine}>Gibberish in between.</span>
           </h2>
           <p className={`${styles.lede} ${styles.onDarkDim}`}>
-            Your phone locks each message with the recipient&rsquo;s key before it leaves.
-            Our servers pass it along without being able to open it. This is what they see.
+            Your phone locks each message with the recipient&rsquo;s key before it leaves your
+            phone. Our servers pass it along without ever knowing what&rsquo;s in it. Look below,
+            and you see what we see.
           </p>
         </Reveal>
 

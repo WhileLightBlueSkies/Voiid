@@ -51,7 +51,7 @@
 }
 .h2 {
   font-size: clamp(2.1rem, 1.3rem + 3.2vw, 3.9rem);
-  line-height: 1.04;
+  line-height: 1.12;
   letter-spacing: -0.035em;
   font-weight: 800;
   text-wrap: balance;
@@ -73,6 +73,8 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  /* background-clip:text only paints the inline box, which stops short of descenders (g, y, p) */
+  padding-bottom: 0.14em;
   animation: shine 9s linear infinite;
 }
 @keyframes shine {
@@ -228,7 +230,7 @@
 .heroTitle {
   margin-top: 22px;
   font-size: clamp(2.7rem, 1.2rem + 4.2vw, 5rem);
-  line-height: 0.98;
+  line-height: 1.1;
   letter-spacing: -0.045em;
   font-weight: 800;
   color: var(--on-night);
@@ -526,7 +528,7 @@
 .stepTitle {
   margin-top: 14px;
   font-size: clamp(1.7rem, 1.2rem + 1.6vw, 2.6rem);
-  line-height: 1.08;
+  line-height: 1.15;
   letter-spacing: -0.03em;
   font-weight: 800;
   text-wrap: balance;
@@ -1041,7 +1043,7 @@
   .hero { padding-top: calc(var(--header-height) + 56px); }
   .heroInner { text-align: start; }
   .heroCopy { align-items: flex-start; }
-  .heroTitle { max-width: 12ch; margin-top: 18px; font-size: clamp(2.8rem, 11.5vw, 3.45rem); line-height: 1.01; }
+  .heroTitle { max-width: 12ch; margin-top: 18px; font-size: clamp(2.8rem, 11.5vw, 3.45rem); line-height: 1.1; }
   .heroLede { margin: 20px 0 0; max-width: 36ch; font-size: 1.125rem; line-height: 1.52; }
   .heroActions { width: 100%; justify-content: flex-start; gap: 10px; margin-top: 24px; }
   .heroActions a { flex: 1; justify-content: center; min-height: 54px; padding-inline: 10px; }

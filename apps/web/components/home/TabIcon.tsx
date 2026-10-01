@@ -19,13 +19,6 @@ export function TabIcon({ tab, filled }: { tab: TabId; filled: boolean }) {
   const fill = filled ? 'currentColor' : 'none';
 
   switch (tab) {
-    case 'ai':
-      return (
-        <svg {...common}>
-          <path fill={fill} d="M10 3.5l1.6 4.4c.3.9 1 1.6 1.9 1.9l4.4 1.6-4.4 1.6c-.9.3-1.6 1-1.9 1.9L10 19.3l-1.6-4.4c-.3-.9-1-1.6-1.9-1.9L2.1 11.4l4.4-1.6c.9-.3 1.6-1 1.9-1.9z" />
-          <path fill={fill} d="M18.5 2.5l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6zM18 16.5l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z" />
-        </svg>
-      );
     case 'calls':
       return (
         <svg {...common}>
